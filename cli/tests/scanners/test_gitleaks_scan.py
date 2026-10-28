@@ -141,6 +141,89 @@ def test_target_outside_repo_root_is_refused(
         )
 
 
+def _log_opts_passed(argv_file: Path) -> str:
+    argv = argv_file.read_text().splitlines()
+    return argv[argv.index("--log-opts") + 1]
+
+
+@pytest.mark.parametrize(
+    ("log_opts", "expected"),
+    [
+        (None, "--text --no-textconv --no-ext-diff --full-history --all --diff-filter=tuxdb"),
+        (
+            "1111111..2222222 -- demo-shop",
+            "--text --no-textconv --no-ext-diff --diff-filter=tuxdb 1111111..2222222 -- demo-shop",
+        ),
+        (
+            "--first-parent --since=2026-01-01 origin/main..HEAD",
+            "--text --no-textconv --no-ext-diff --diff-filter=tuxdb --first-parent --since=2026-01-01 "
+            "origin/main..HEAD",
+        ),
+    ],
+)
+def test_git_mode_always_forces_text_patches(
+    tmp_path: Path,
+    releases: FakeReleases,
+    write_lock: Callable[[str], Path],
+    log_opts: str | None,
+    expected: str,
+) -> None:
+    # A `-diff` attribute in the scanned repository's .gitattributes would otherwise turn patches into
+    # "Binary files differ" and hide secrets from Gitleaks.
+    lock, dest, argv_file, _ = fake_gitleaks(tmp_path, releases, write_lock)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    scan_secrets(repo, lock=lock, tools_dir=dest, platform=PLATFORM, mode="git", log_opts=log_opts)
+
+    assert argv_file.read_text().splitlines()[0] == "git"
+    assert _log_opts_passed(argv_file) == expected
+
+
+@pytest.mark.parametrize(
+    "log_opts",
+    [
+        "--output=/tmp/pwned a..b",  # git would write a file
+        "--ext-diff a..b",  # would undo --no-ext-diff
+        "--textconv a..b",
+        "--binary a..b",
+        "-p a..b",
+        "a..b --diff-filter=A -- src",
+    ],
+)
+def test_unsafe_log_options_are_refused(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path], log_opts: str
+) -> None:
+    lock, dest, argv_file, _ = fake_gitleaks(tmp_path, releases, write_lock)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pytest.raises(ScannerError, match="is not allowed in --log-opts"):
+        scan_secrets(repo, lock=lock, tools_dir=dest, platform=PLATFORM, mode="git", log_opts=log_opts)
+    assert not argv_file.exists(), "the scanner must not even start"
+
+
+def test_log_options_after_the_separator_are_pathspecs(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
+) -> None:
+    lock, dest, argv_file, _ = fake_gitleaks(tmp_path, releases, write_lock)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    scan_secrets(
+        repo, lock=lock, tools_dir=dest, platform=PLATFORM, mode="git", log_opts="a..b -- :(exclude)docs"
+    )
+    assert _log_opts_passed(argv_file).endswith("a..b -- :(exclude)docs")
+
+
+def test_log_options_are_refused_in_dir_mode(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
+) -> None:
+    lock, dest, _, _ = fake_gitleaks(tmp_path, releases, write_lock)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with pytest.raises(ScannerError, match="only applies to git mode"):
+        scan_secrets(repo, lock=lock, tools_dir=dest, platform=PLATFORM, log_opts="a..b")
+
+
 def test_cli_scan_secrets_writes_contract_valid_findings(
     tmp_path: Path,
     releases: FakeReleases,
@@ -303,3 +386,31 @@ def test_real_gitleaks_history_scan_finds_a_deleted_secret(tmp_path: Path) -> No
     assert len(raw) == 1
     assert raw[0]["File"] == "config.py"
     assert len(raw[0]["Commit"]) == 40
+
+
+@real
+@pytest.mark.integration
+@pytest.mark.parametrize("attribute", ["*.py -diff", "config.py binary"])
+def test_real_gitleaks_sees_through_author_gitattributes(tmp_path: Path, attribute: str) -> None:
+    # Without --text, `git log -p` prints "Binary files differ" for these files and Gitleaks finds nothing
+    # (reproduced with Gitleaks 8.30.1, both with a commit range and with its default full-history scan).
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    (repo / "app.py").write_text("print('hello')\n")
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "-c", "commit.gpgsign=false", "commit", "-qm", "base"], check=True)
+    head = subprocess.run([*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
+    base = head.stdout.strip()
+    (repo / ".gitattributes").write_text(f"{attribute}\n")
+    (repo / "config.py").write_text(f'TOKEN = "{_fake_github_token(4)}"\n')
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "-c", "commit.gpgsign=false", "commit", "-qm", "change"], check=True)
+    lock, tools = load_lock(REPO_LOCK), Path(str(TOOLS_DIR))
+
+    in_range = scan_secrets(repo, lock=lock, tools_dir=tools, mode="git", log_opts=f"{base}..HEAD")
+    full_history = scan_secrets(repo, lock=lock, tools_dir=tools, mode="git")
+
+    assert [item["File"] for item in in_range] == ["config.py"]
+    assert [item["File"] for item in full_history] == ["config.py"]
