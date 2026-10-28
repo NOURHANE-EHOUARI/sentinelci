@@ -18,6 +18,7 @@ PLATFORMS = ("linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64")
 Platform = Literal["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64"]
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
 _BINARY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_ASSET = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
 
 
 def _require_github_release(url: str, field: str) -> str:
@@ -84,12 +85,18 @@ class Tool(_Strict):
 
     @model_validator(mode="after")
     def _consistent(self) -> "Tool":
+        # Every URL must be an asset sitting directly in this tool's release for this version, so a reviewer
+        # reading a lock diff can trust where each hash comes from (no `..`, sub-paths or query strings).
         prefix = f"{self.homepage}/releases/download/v{self.version}/"
+        urls = [("checksums_url", self.checksums_url)]
         for platform, artifact in self.artifacts.items():
-            if not artifact.url.startswith(prefix):
-                raise ValueError(
-                    f"{platform}: url must start with {prefix} (version and homepage must match)"
-                )
+            urls += [(f"{platform}.url", artifact.url), (f"{platform}.checksums_url", artifact.checksums_url)]
+        for field, url in urls:
+            if url is None:
+                continue
+            asset = url[len(prefix) :] if url.startswith(prefix) else ""
+            if not _ASSET.fullmatch(asset):
+                raise ValueError(f"{field} must be a release asset directly under {prefix}: {url}")
         if self.checksums_url is None and any(a.checksums_url is None for a in self.artifacts.values()):
             raise ValueError(
                 "a checksums_url is required (tool-level or per artifact) so reviewers can check hashes"

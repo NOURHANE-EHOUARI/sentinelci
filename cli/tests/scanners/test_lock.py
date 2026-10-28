@@ -69,6 +69,48 @@ def test_invalid_lock_is_rejected(write_lock: Callable[[str], Path], old: str, n
         load_lock(write_lock(content.replace(old, new)))
 
 
+@pytest.mark.parametrize(
+    ("field", "bad_url"),
+    [
+        # `..` segments: passes a naive prefix check but points to another repository once normalized.
+        (
+            "url",
+            "https://github.com/example/fakescan/releases/download/v1.0.0/../../../../attacker/tools/releases/download/v1/x.tar.gz",
+        ),
+        ("url", "https://github.com/example/fakescan/releases/download/v1.0.0/sub/dir/fakescan.tar.gz"),
+        ("url", "https://github.com/example/fakescan/releases/download/v1.0.0/fakescan.tar.gz?redirect=evil"),
+        ("checksums_url", "https://github.com/attacker/tools/releases/download/v1.0.0/checksums.txt"),
+        ("checksums_url", "https://github.com/example/fakescan/releases/download/v9.9.9/checksums.txt"),
+        (
+            "checksums_url",
+            "https://github.com/example/fakescan/releases/download/v1.0.0/../../../../attacker/t/releases/download/v1/c.txt",
+        ),
+    ],
+)
+def test_release_urls_must_be_assets_of_the_pinned_release(
+    write_lock: Callable[[str], Path], field: str, bad_url: str
+) -> None:
+    content = archive_tool_lock(GOOD_SHA)
+    if field == "url":
+        old = "https://github.com/example/fakescan/releases/download/v1.0.0/fakescan_1.0.0_linux_amd64.tar.gz"
+    else:
+        old = "https://github.com/example/fakescan/releases/download/v1.0.0/checksums.txt"
+    assert old in content
+    with pytest.raises(ToolIntegrityError, match="release asset directly under"):
+        load_lock(write_lock(content.replace(old, bad_url)))
+
+
+def test_per_artifact_checksums_url_must_be_under_the_pinned_release(
+    write_lock: Callable[[str], Path],
+) -> None:
+    content = raw_tool_lock(GOOD_SHA).replace(
+        "https://github.com/example/rawtool/releases/download/v1.0.0/rawtool-linux-amd64.sha256",
+        "https://github.com/attacker/rawtool/releases/download/v1.0.0/rawtool-linux-amd64.sha256",
+    )
+    with pytest.raises(ToolIntegrityError, match="release asset directly under"):
+        load_lock(write_lock(content))
+
+
 def test_unknown_field_is_rejected(write_lock: Callable[[str], Path]) -> None:
     content = archive_tool_lock(GOOD_SHA).replace(
         'binary = "fakescan"', 'binary = "fakescan"\nskip_verify = true'
