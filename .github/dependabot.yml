@@ -21,3 +21,25 @@ updates:
     groups:
       python:
         patterns: ["*"]
+
+  # Local platform images (deploy/compose), pinned by tag and digest.
+  - package-ecosystem: docker-compose
+    directory: /deploy/compose
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      compose:
+        patterns: ["*"]
+
+  # Base images of the platform Dockerfiles.
+  - package-ecosystem: docker
+    directory: /platform/api
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      docker:
+        patterns: ["*"]
