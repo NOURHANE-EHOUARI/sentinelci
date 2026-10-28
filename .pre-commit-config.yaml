@@ -2,6 +2,13 @@
 repos:
   - repo: local
     hooks:
+      # No server-side branch protection while the repo is private (ADR-0006): refuse commits on main locally.
+      - id: no-commit-to-main
+        name: refuse commits on main (work on a task branch and open a PR)
+        entry: sh -c 'if [ "$(git rev-parse --abbrev-ref HEAD)" = "main" ]; then echo "Commits on main are not allowed. Create a branch, e.g. git switch -c a2/my-change"; exit 1; fi'
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: ruff-check
         name: ruff check
         entry: uv run ruff check --fix

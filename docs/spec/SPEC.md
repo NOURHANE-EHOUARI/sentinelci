@@ -10,8 +10,11 @@
 
 | Version | Change |
 |---|---|
-| 1.0 | Initial specification (PDF shared with the team). |
+| 1.1.2 | Tool lock is `tools.lock.toml` (read with the standard library: no extra dependency). A1 split: A1a = lock + `sentinel tools install/verify` (done), A1b = scanner adapters + Opengrep pinning via signature verification. |
+| 1.1.1a | Package fingerprints use the purl base (no version, qualifiers or subpath — same as the gate's waiver matching), agreed in the review of PR #1. "Green CI" may be a local `make check` report while Actions minutes are exhausted. |
+| 1.1.1 | No GitHub Pro: `main` protected by convention + local guard until the repository goes public. |
 | 1.1 | **Single private repository**: the demo target lives in `demo-shop/` instead of a second repo. **Private-phase adaptations** (§4.3, ADR-0006): Cosign key-pair signing without public transparency log, provenance as a Cosign attestation, no code-scanning upload, local registry for Kubernetes demos, Actions-minutes budget. Dependabot (with cooldown) replaces Renovate. |
+| 1.0 | Initial specification (PDF shared with the team). |
 
 ---
 
@@ -57,7 +60,7 @@ to LiteLLM's own CI, which ran Trivy. Supply-chain failures are category A03 of 
 | What went wrong | SentinelCI response |
 |---|---|
 | Actions referenced by mutable tags | Full-SHA pins + version comment, zizmor audit, Dependabot updates |
-| Scanner binaries trusted blindly | `tools.lock.yaml` with SHA-256/digests; `sentinel tools verify` first; mismatch = SC-010 BLOCK |
+| Scanner binaries trusted blindly | `tools.lock.toml` with SHA-256/digests; `sentinel tools verify` first; mismatch = SC-010 BLOCK |
 | Scan jobs could read publishing secrets | Scan jobs: `contents: read`, no secrets; signing job never runs repo code |
 | Publishing outside the reviewed path | Only artifacts signed by our release workflow are admitted by Kyverno |
 | Developer machines / AI agents as entry points | `CLAUDE.md` rules, no real secrets locally, dependencies only via lockfile + review |
@@ -113,8 +116,12 @@ Local CLI runs can **push** to the same ingestion API. No self-hosted runners (a
 - Keyless certificates embed the repository identity and are logged in the public Rekor log → key pairs until public.
 - GitHub artifact attestations require a public repository on non-Enterprise plans → Cosign attestations meanwhile.
 - The signing key is a repository secret referenced **only** by the attest job; rotate it when going public.
-- Branch protection on a private repo needs GitHub Pro (free for students via the Student Developer Pack).
-- Actions minutes are capped (Pro: 3,000/month): path filters, caching of vulnerability DBs, nightly full scans.
+- We stay on GitHub Free: server-side branch protection is not available for this private repository, so `main`
+  is protected **by convention** (every change through a PR, reviewed by the other member, merged only with
+  a green CI, or a local `make check` report on the PR head while Actions cannot run) plus a local pre-commit guard that refuses commits on `main`. Technical protection is enabled when
+  the repository goes public.
+- Actions minutes are capped (Free: 2,000/month for private repositories): path filters, caching of
+  vulnerability DBs, nightly full scans.
 - Going public = switch to GitHub mode (a configuration change, by design).
 
 ### 4.4 Component catalogue
@@ -140,7 +147,7 @@ Local CLI runs can **push** to the same ingestion API. No self-hosted runners (a
 
 | # | Stage | Tools | Output | Gate |
 |---|---|---|---|---|
-| 0 | Tool integrity | `sentinel tools verify` (tools.lock.yaml) | manifest | mismatch → SC-010 |
+| 0 | Tool integrity | `sentinel tools verify` (tools.lock.toml) | manifest | mismatch → SC-010 |
 | 1 | Secrets | Gitleaks (Betterleaks-compatible config) | SARIF | SC-001 |
 | 2 | SAST | Opengrep + Semgrep-format rules | SARIF/JSON | risk + policy |
 | 3 | SCA | Syft source SBOM → Grype; OSV | JSON | risk + policy |
@@ -350,7 +357,7 @@ Prometheus names: `sentinel_gate_decisions_total{verdict,context}`, `sentinel_fi
 | Observability / runtime | Prometheus, Grafana / Docker, Compose, kind, Helm, Argo CD |
 | Quality | pytest, Hypothesis, ruff, mypy (strict), import-linter, pre-commit, Dependabot (cooldown), zizmor |
 
-Pin exact versions (`tools.lock.yaml`, `uv.lock`, chart versions); never use `latest`.
+Pin exact versions (`tools.lock.toml`, `uv.lock`, chart versions); never use `latest`.
 
 ## 12. Repository layout
 
@@ -365,7 +372,7 @@ deploy/              (A) compose, kind, helm, kyverno, argocd, grafana
 eval/                (B) harness, datasets, reports
 demo-shop/           (A+B) INTENTIONALLY VULNERABLE: services/, infra/, gitops/, examples/bad-workflows/, ground-truth/
 docs/                spec/, adr/
-tools.lock.yaml      (A) pinned scanner versions + checksums
+tools.lock.toml      (A) pinned scanner versions + checksums
 ```
 
 ## 13. Contracts between the two tracks
@@ -381,7 +388,9 @@ CONTAINER ⇒ `package` + `image`. Optional blocks `enrichment` (B2) and `risk` 
 cannot contain `..`.
 
 **Fingerprint rules:**
-- SCA / CONTAINER: `sha256(category | vuln id | purl without version)` — after a bump the finding disappears.
+- SCA / CONTAINER: `sha256(category | vuln id | purl base)` where *purl base* = the purl without version,
+  qualifiers or subpath (same definition as `purl_base` in `policies/gate.rego`). After a bump the finding disappears; base-image point releases, other
+  architectures and Grype/Trivy qualifier differences keep the same fingerprint. Waivers use the same purl base.
 - SAST: `sha256(rule id | path | hash of normalized snippet)` — survives line shifts.
 - SECRET: `sha256(rule id | sha256(secret value))`.
 - IAC / PIPELINE: `sha256(rule id | path | resource or job id)`.
@@ -407,7 +416,8 @@ cannot contain `..`.
 ## 14. Engineering workflow
 
 - Trunk-based, branches `<task-id>/<name>` (e.g. `a2/normalizer-grype`), Conventional Commits, squash merge.
-- Protected `main`: PR + 1 approval (the other member) + required check `ci`; no force push.
+- `main` is protected by convention during the private phase (§4.3): PR + approval by the other member + green
+  `ci` before merge; no direct push, no force push. Enforced by branch protection once public.
 - **Cross-review rule:** the reviewer must be able to explain the change.
 - **Definition of done:** tests (core decision logic ≥ 80% coverage, policies ≥ 90% `opa test --coverage`),
   docs updated, CI green, contracts valid, reviewed.
@@ -425,7 +435,7 @@ Vertical ownership; each track has DevOps, security, backend/UI and an AI compon
 
 | ID | Task | Deliverables / acceptance | Sprint | Size |
 |---|---|---|---|---|
-| A1 | Scanner integration | Adapters (Gitleaks, Opengrep, Grype, Trivy, Checkov, zizmor) → `out/raw/`; `tools.lock.yaml` + `sentinel tools verify`. Accept: fixture test per adapter; tampered binary → SC-010; crash → SC-010 | S1 | M |
+| A1 | Scanner integration | Adapters (Gitleaks, Opengrep, Grype, Trivy, Checkov, zizmor) → `out/raw/`; `tools.lock.toml` + `sentinel tools verify`. Accept: fixture test per adapter; tampered binary → SC-010; crash → SC-010 | S1 | M |
 | A2 | Normalizer & fingerprints | SARIF/JSON → Finding v1, §13.1 fingerprints, cross-tool dedup. Accept: golden files; schema-valid; byte-identical output | S1 | M |
 | A3 | Hardened reusable pipeline | `sentinel-scan.yml` with job isolation, PR diff-aware + main modes, deterministic PR comment, SHA pins, demo-shop workflow. Accept: fake secret PR blocked; zizmor clean | S1–S2 | L |
 | A4 | Supply chain & release | `sentinel-release.yml`: build by digest, SBOMs, Cosign sign + attestations (SBOM, vuln, decision, provenance), signed evidence bundle, `sentinel verify`. Accept: verify fails on the 4 bad cases | S2 | L |
@@ -497,6 +507,7 @@ manipulate the AI (verdict unchanged) → prove (`sentinel replay`, Grafana).
 | Risk | Mitigation |
 |---|---|
 | Laptop resources | Compose profiles; small quantized model on the stronger machine |
+| Direct push to `main` (no server-side protection while private) | Team convention, local pre-commit guard, CI on every push to `main` |
 | Actions minutes (private) | Path filters, caches, nightly full scans |
 | Signing key in CI (private phase) | Only the attest job references it; rotate and switch to keyless when public |
 | External APIs down | Snapshots and offline fixtures |
@@ -524,8 +535,8 @@ schema-constrained outputs and injection isolation (0 verdict changes across [X]
 | 2 | Scaffold: uv workspace, packages, Makefile, CI (SHA-pinned, zizmor), CODEOWNERS, Dependabot, CLAUDE.md | done |
 | 3 | Contracts: finding, decision, patch proposal, verification result + fixtures + tests | done |
 | 4 | Spec v1.1 + ADRs in `docs/` | done |
-| 5 | Repository settings: branch protection on `main` (requires GitHub Pro), require SHA-pinned actions, read-only default workflow token, Dependabot alerts | to do (owner) |
-| 6 | Choose and pin tool versions in `tools.lock.yaml` | A |
+| 5 | Repository settings: require SHA-pinned actions, read-only default workflow token, Dependabot alerts (branch protection deferred to the public phase, convention + local guard meanwhile) | to do (owner) |
+| 6 | Choose and pin tool versions in `tools.lock.toml` | done (A1a; Opengrep pending) |
 | 7 | Compose skeleton (postgres+pgvector, redis, seaweedfs, ollama, api, prometheus, grafana; worker with B1, web with B7) | B |
 | 8 | `demo-shop/` skeleton + ground-truth format; first seeds | A9 + B9 |
 | 9 | GitHub Project board: one issue per task id | both |

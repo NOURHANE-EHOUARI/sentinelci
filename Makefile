@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup check lint format typecheck imports test zizmor compose-env up down
+.PHONY: help setup check lint format typecheck imports test zizmor tools tools-verify compose-env up down
 
 COMPOSE := docker compose -f deploy/compose/compose.yaml
 
@@ -31,6 +31,12 @@ test: ## Unit and contract tests
 
 zizmor: ## Static security audit of GitHub Actions workflows
 	uv run zizmor --offline --min-severity low .github/workflows
+
+tools: ## Download, hash-check and install the pinned scanners into .sentinel/tools
+	uv run sentinel tools install
+
+tools-verify: ## Fail closed unless installed scanners match tools.lock.toml (writes out/tools-manifest.json)
+	uv run sentinel tools verify --report out/tools-manifest.json
 
 compose-env: ## Create deploy/compose/.env with random local credentials (git-ignored, never overwritten)
 	uv run python deploy/compose/make_env.py

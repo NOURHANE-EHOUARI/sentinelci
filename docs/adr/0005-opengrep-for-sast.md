@@ -17,4 +17,6 @@ engine can be swapped for Semgrep CE with a one-line change.
 ## Consequences
 
 - Better detection of taint-style vulnerabilities on the benchmark.
-- We depend on a younger project; its version and checksum are pinned in `tools.lock.yaml` like every scanner.
+- We depend on a younger project; its version and checksum are pinned in `tools.lock.toml` like every scanner.
+- Opengrep publishes keyless Cosign signatures but no checksum file, so its digest is recorded only after the
+  signature has been verified (`sentinel tools pin`, follow-up of task A1).
