@@ -35,7 +35,10 @@ def test_secret_fingerprint_ignores_location() -> None:
         ("pkg:npm/%40types/node@20.1.0", "pkg:npm/%40types/node"),
         # Qualifiers describe the environment, not the package: they are dropped (decision on PR #1).
         ("pkg:deb/debian/openssl@3.0.11-1?arch=amd64&distro=debian-12", "pkg:deb/debian/openssl"),
-        ("pkg:golang/github.com/x/net@v0.20.0#http2", "pkg:golang/github.com/x/net#http2"),
+        (
+            "pkg:golang/github.com/x/net@v0.20.0#http2",
+            "pkg:golang/github.com/x/net",
+        ),  # subpath dropped, as in gate.rego
         ("pkg:pypi/no-version", "pkg:pypi/no-version"),
         # Non-canonical purls with an unencoded "@" in the namespace (some tools emit them).
         ("pkg:npm/@scope/left-pad@1.0.0", "pkg:npm/@scope/left-pad"),

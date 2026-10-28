@@ -19,19 +19,18 @@ def secret_fingerprint(rule_id: str, secret_value: str) -> str:
 
 
 def purl_base(purl: str) -> str:
-    """Package identity used in fingerprints and waivers: the purl without version and qualifiers.
+    """Package identity used in fingerprints and waivers: the purl without version, qualifiers or subpath.
 
+    Same definition as `purl_base` in policies/gate.rego, so fingerprints and waiver matching always agree.
     Qualifiers (arch, distro, ...) describe the environment, not the package: keeping them would make every
     OS-package finding look new after a base-image point release and would break Grype/Trivy dedup.
-    The subpath is kept. Only an "@" after the last "/" starts the version, so non-canonical purls with an
-    unencoded scope (pkg:npm/@scope/name) keep their namespace.
+    Only an "@" after the last "/" starts the version, so non-canonical purls with an unencoded scope
+    (pkg:npm/@scope/name) keep their namespace.
     """
-    head, hash_sep, subpath = purl.partition("#")
-    head = head.partition("?")[0]
+    head = purl.partition("#")[0].partition("?")[0]
     name_start = head.rfind("/") + 1
     at = head.rfind("@")
-    base = head[:at] if at >= name_start else head
-    return f"{base}{hash_sep}{subpath}"
+    return head[:at] if at >= name_start else head
 
 
 def package_fingerprint(category: str, vuln_id: str, purl: str) -> str:
