@@ -11,6 +11,7 @@
 | Version | Change |
 |---|---|
 | 1.0 | Initial specification (PDF shared with the team). |
+| 1.1.1 | No GitHub Pro: `main` protected by convention + local guard until the repository goes public. |
 | 1.1 | **Single private repository**: the demo target lives in `demo-shop/` instead of a second repo. **Private-phase adaptations** (§4.3, ADR-0006): Cosign key-pair signing without public transparency log, provenance as a Cosign attestation, no code-scanning upload, local registry for Kubernetes demos, Actions-minutes budget. Dependabot (with cooldown) replaces Renovate. |
 
 ---
@@ -113,8 +114,12 @@ Local CLI runs can **push** to the same ingestion API. No self-hosted runners (a
 - Keyless certificates embed the repository identity and are logged in the public Rekor log → key pairs until public.
 - GitHub artifact attestations require a public repository on non-Enterprise plans → Cosign attestations meanwhile.
 - The signing key is a repository secret referenced **only** by the attest job; rotate it when going public.
-- Branch protection on a private repo needs GitHub Pro (free for students via the Student Developer Pack).
-- Actions minutes are capped (Pro: 3,000/month): path filters, caching of vulnerability DBs, nightly full scans.
+- We stay on GitHub Free: server-side branch protection is not available for this private repository, so `main`
+  is protected **by convention** (every change through a PR, reviewed by the other member, merged only with a
+  green CI) plus a local pre-commit guard that refuses commits on `main`. Technical protection is enabled when
+  the repository goes public.
+- Actions minutes are capped (Free: 2,000/month for private repositories): path filters, caching of
+  vulnerability DBs, nightly full scans.
 - Going public = switch to GitHub mode (a configuration change, by design).
 
 ### 4.4 Component catalogue
@@ -407,7 +412,8 @@ cannot contain `..`.
 ## 14. Engineering workflow
 
 - Trunk-based, branches `<task-id>/<name>` (e.g. `a2/normalizer-grype`), Conventional Commits, squash merge.
-- Protected `main`: PR + 1 approval (the other member) + required check `ci`; no force push.
+- `main` is protected by convention during the private phase (§4.3): PR + approval by the other member + green
+  `ci` before merge; no direct push, no force push. Enforced by branch protection once public.
 - **Cross-review rule:** the reviewer must be able to explain the change.
 - **Definition of done:** tests (core decision logic ≥ 80% coverage, policies ≥ 90% `opa test --coverage`),
   docs updated, CI green, contracts valid, reviewed.
@@ -497,6 +503,7 @@ manipulate the AI (verdict unchanged) → prove (`sentinel replay`, Grafana).
 | Risk | Mitigation |
 |---|---|
 | Laptop resources | Compose profiles; small quantized model on the stronger machine |
+| Direct push to `main` (no server-side protection while private) | Team convention, local pre-commit guard, CI on every push to `main` |
 | Actions minutes (private) | Path filters, caches, nightly full scans |
 | Signing key in CI (private phase) | Only the attest job references it; rotate and switch to keyless when public |
 | External APIs down | Snapshots and offline fixtures |
@@ -524,7 +531,7 @@ schema-constrained outputs and injection isolation (0 verdict changes across [X]
 | 2 | Scaffold: uv workspace, packages, Makefile, CI (SHA-pinned, zizmor), CODEOWNERS, Dependabot, CLAUDE.md | done |
 | 3 | Contracts: finding, decision, patch proposal, verification result + fixtures + tests | done |
 | 4 | Spec v1.1 + ADRs in `docs/` | done |
-| 5 | Repository settings: branch protection on `main` (requires GitHub Pro), require SHA-pinned actions, read-only default workflow token, Dependabot alerts | to do (owner) |
+| 5 | Repository settings: require SHA-pinned actions, read-only default workflow token, Dependabot alerts (branch protection deferred to the public phase, convention + local guard meanwhile) | to do (owner) |
 | 6 | Choose and pin tool versions in `tools.lock.yaml` | A |
 | 7 | Compose skeleton (postgres+pgvector, redis, minio, ollama, api, worker, web, prometheus, grafana) | B |
 | 8 | `demo-shop/` skeleton + ground-truth format; first seeds | A9 + B9 |

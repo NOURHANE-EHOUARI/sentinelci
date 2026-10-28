@@ -37,7 +37,9 @@ The repository stays private until the project is complete. Until then (see ADR-
 - SLSA provenance is produced as a Cosign in-toto attestation (GitHub artifact attestations require a public repo).
 - Scan results go to PR comments, workflow artifacts and our dashboard (no GitHub code-scanning upload).
 - Kubernetes demos use the local registry of the kind cluster.
-- GitHub Actions minutes are limited: use path filters and caches; run the full image scan nightly on `main`.
+- GitHub Actions minutes are limited (Free plan): use path filters and caches; run the full image scan nightly on `main`.
+- `main` has no server-side protection: never commit or push to `main` directly. Always work on a task branch
+  and open a PR; the other team member reviews and merges only with a green CI.
 
 ## Commands
 
