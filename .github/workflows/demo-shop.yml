@@ -1,0 +1,37 @@
+name: demo-shop
+
+# Gates changes to the intentionally vulnerable demo target with the SentinelCI pipeline (SPEC section 5).
+# Pull requests: only what the pull request adds can block. Pushes to main: full scan of demo-shop/.
+# Pipeline changes on main (CLI, policies, lock, this workflow) also trigger a run, so they are exercised as
+# soon as they are merged.
+
+on:
+  pull_request:
+    paths:
+      - "demo-shop/**"
+  push:
+    branches: [main]
+    paths:
+      - "demo-shop/**"
+      - ".github/workflows/demo-shop.yml"
+      - ".github/workflows/sentinel-scan.yml"
+      - "cli/**"
+      - "policies/**"
+      - "tools.lock.toml"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: demo-shop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sentinel:
+    name: SentinelCI
+    uses: $/.github/workflows/sentinel-scan.yml
+    permissions:
+      contents: read # check out the pipeline and the change to scan
+      pull-requests: write # the report job posts one sticky comment
+    with:
+      path: demo-shop
