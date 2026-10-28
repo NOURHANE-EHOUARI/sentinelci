@@ -204,6 +204,7 @@ def scan_secrets_cmd(
     platform: PlatformOption = None,
 ) -> None:
     """Scan for secrets with the verified Gitleaks binary; raw secrets never leave memory."""
+    out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
     if mode not in ("dir", "git"):
         raise typer.BadParameter("mode must be 'dir' or 'git'")
     scan_mode: GitleaksMode = "git" if mode == "git" else "dir"

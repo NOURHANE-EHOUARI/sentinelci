@@ -222,6 +222,29 @@ def test_cli_scan_secrets_fails_closed_on_ignore_file(
     assert not out.exists()
 
 
+def test_cli_scan_failure_removes_an_older_findings_file(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
+) -> None:
+    _, dest, _, _ = fake_gitleaks(tmp_path, releases, write_lock, body='echo "FTL" >&2\nexit 1\n')
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    out = tmp_path / "secrets.ndjson"
+    out.write_text('{"stale": true}\n', encoding="utf-8")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "scan", "secrets", str(repo), "--out", str(out),
+            "--repo", "NOURHANE-EHOUARI/sentinelci", "--commit", "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+            "--context", "pr", "--lock", str(tmp_path / "tools.lock.toml"), "--tools-dir", str(dest),
+            "--platform", PLATFORM,
+        ],
+    )  # fmt: skip
+
+    assert result.exit_code == 3
+    assert not out.exists()
+
+
 # ------------------------------------------------------------------ integration (real Gitleaks)
 
 TOOLS_DIR = os.environ.get("SENTINEL_TOOLS_DIR")
