@@ -1,0 +1,294 @@
+"""The PR comment is a deterministic, fail-closed view of a Decision v1 record (task A3)."""
+
+import hashlib
+import json
+import os
+import random
+from pathlib import Path
+from typing import Any
+
+import pytest
+from typer.testing import CliRunner
+
+from sentinelci.cli import app
+from sentinelci.contracts.finding import Evidence, Finding, Location, Run, Tool
+from sentinelci.normalize.ndjson import dumps_ndjson
+from sentinelci.report.pr_comment import (
+    MARKER,
+    MAX_ROWS,
+    ReportError,
+    load_inputs,
+    render_no_decision,
+    render_pr_comment,
+)
+
+GOLDEN = Path(__file__).parent / "golden"
+COMMIT = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+RUN = Run(repo="NOURHANE-EHOUARI/sentinelci", commit=COMMIT, context="pr", ref="refs/pull/7/head")
+UPDATE = os.environ.get("SENTINEL_UPDATE_GOLDEN") == "1"
+
+
+def fid(seed: str) -> str:
+    return hashlib.sha256(seed.encode()).hexdigest()
+
+
+def secret(seed: str, path: str, line: int, *, rule: str = "generic-api-key", risk: Any = None) -> Finding:
+    return Finding(
+        id=fid(seed),
+        tool=Tool(name="gitleaks", version="8.30.1"),
+        rule_id=rule,
+        category="SECRET",
+        title="Detected a Generic API Key, potentially exposing access to various services.",
+        severity="HIGH",
+        run=RUN,
+        location=Location(path=path, start_line=line, end_line=line),
+        evidence=Evidence(secret_hash=fid(seed + "-secret")),
+        risk=risk,
+    )
+
+
+def decision_for(findings_bytes: bytes, **changes: Any) -> dict[str, Any]:
+    decision: dict[str, Any] = {
+        "schema_version": "1.1",
+        "decision_id": "0193f2c4-7a1e-5b3c-9d2e-4f5a6b7c8d9e",
+        "evaluated_at": "2026-11-10T10:00:00Z",
+        "subject": {"repo": RUN.repo, "ref": "refs/pull/7/head", "commit": COMMIT, "context": "pr"},
+        "verdict": "PASS",
+        "violations": [],
+        "waivers_applied": [],
+        "inputs": {
+            "findings_digest": "sha256:" + hashlib.sha256(findings_bytes).hexdigest(),
+            "enrichment_snapshot_digest": "sha256:" + "3" * 64,
+            "policy_bundle_digest": "sha256:" + "4" * 64,
+            "waivers_digest": "sha256:" + "5" * 64,
+            "risk_model_version": "1.0.0",
+            "tool_versions": {"gitleaks": "8.30.1", "opa": "1.21.4"},
+        },
+        "engine_version": "0.1.0",
+    }
+    decision.update(changes)
+    return decision
+
+
+def write_case(tmp_path: Path, findings: list[Finding], **changes: Any) -> tuple[Path, Path, dict[str, Any]]:
+    findings_path = tmp_path / "findings.ndjson"
+    findings_path.write_text(dumps_ndjson(findings), encoding="utf-8", newline="\n")
+    decision = decision_for(findings_path.read_bytes(), **changes)
+    decision_path = tmp_path / "decision.json"
+    decision_path.write_text(json.dumps(decision, indent=2), encoding="utf-8")
+    return decision_path, findings_path, decision
+
+
+def check_golden(name: str, text: str) -> None:
+    path = GOLDEN / name
+    if UPDATE:
+        path.write_text(text, encoding="utf-8", newline="\n")
+    assert text == path.read_text(encoding="utf-8"), f"{name} changed (SENTINEL_UPDATE_GOLDEN=1 to accept)"
+
+
+# ---------------------------------------------------------------- golden files
+
+
+def block_case(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    hostile_path = "demo-shop/@NOURHANE-EHOUARI/<img src=x>|`#1`/con\u202efig.py"
+    findings = [
+        secret("aws", "demo-shop/services/shop-api/app/config.py", 12, rule="aws-access-token"),
+        secret("hostile", hostile_path, 3),
+        secret(
+            "old",
+            "demo-shop/infra/terraform/main.tf",
+            40,
+            risk={"score": 55.0, "priority": "P1", "model_version": "1.0.0"},
+        ),
+    ]
+    violations = [
+        {"rule": "SC-006", "effect": "WARN", "finding_ids": [fid("old")], "message": "P1 finding"},
+        {
+            "rule": "SC-001",
+            "effect": "BLOCK",
+            "finding_ids": [fid("hostile"), fid("aws")],
+            "message": "Hard-coded secret",
+        },
+        {
+            "rule": "SC-010",
+            "effect": "BLOCK",
+            "finding_ids": [],
+            "message": "Scanner failure: opengrep timed out",
+        },
+    ]
+    decision_path, findings_path, _ = write_case(
+        tmp_path, findings, verdict="BLOCK", violations=violations, waivers_applied=["W-2026-001"]
+    )
+    baseline = tmp_path / "baseline.ndjson"
+    baseline.write_text(dumps_ndjson([findings[2]]), encoding="utf-8", newline="\n")
+    changes = tmp_path / "changes.txt"
+    changes.write_text("tools.lock.toml\npolicies/gate.rego\n\ntools.lock.toml\n", encoding="utf-8")
+    return decision_path, findings_path, baseline, changes
+
+
+def test_golden_block(tmp_path: Path) -> None:
+    decision, findings, baseline, changes = block_case(tmp_path)
+    inputs = load_inputs(decision, findings, baseline_path=baseline, pipeline_changes_path=changes)
+    check_golden("block.md", render_pr_comment(inputs))
+
+
+def test_golden_pass_without_findings(tmp_path: Path) -> None:
+    decision, findings, _ = write_case(tmp_path, [])
+    check_golden("pass.md", render_pr_comment(load_inputs(decision, findings)))
+
+
+def test_golden_no_decision() -> None:
+    check_golden("no-decision.md", render_no_decision("decision file not found: out/decision.v1.json"))
+
+
+# ---------------------------------------------------------------- determinism
+
+
+def test_same_inputs_give_the_same_bytes_whatever_the_order_in_the_decision(tmp_path: Path) -> None:
+    decision, findings, baseline, changes = block_case(tmp_path)
+    first = render_pr_comment(
+        load_inputs(decision, findings, baseline_path=baseline, pipeline_changes_path=changes)
+    )
+    data = json.loads(decision.read_text(encoding="utf-8"))
+    rng = random.Random(7)
+    for _ in range(5):
+        rng.shuffle(data["violations"])
+        for violation in data["violations"]:
+            rng.shuffle(violation["finding_ids"])
+        decision.write_text(json.dumps(data), encoding="utf-8")
+        again = load_inputs(decision, findings, baseline_path=baseline, pipeline_changes_path=changes)
+        assert render_pr_comment(again) == first
+
+
+def test_rows_are_capped(tmp_path: Path) -> None:
+    findings = [secret(f"s{i}", f"app/f{i:03}.py", 1) for i in range(MAX_ROWS + 7)]
+    violation = {"rule": "SC-001", "effect": "BLOCK", "finding_ids": [f.id for f in findings], "message": "x"}
+    decision, findings_path, _ = write_case(tmp_path, findings, verdict="BLOCK", violations=[violation])
+    text = render_pr_comment(load_inputs(decision, findings_path))
+    assert sum(1 for line in text.splitlines() if line.startswith("| `SC-001`")) == MAX_ROWS
+    assert "… and 7 more rows" in text
+    assert "57 HIGH (57 total)" in text
+
+
+def test_violation_naming_an_unknown_finding_is_shown_not_dropped(tmp_path: Path) -> None:
+    violation = {"rule": "SC-001", "effect": "BLOCK", "finding_ids": [fid("ghost")], "message": "x"}
+    decision, findings, _ = write_case(tmp_path, [], verdict="BLOCK", violations=[violation])
+    text = render_pr_comment(load_inputs(decision, findings))
+    assert f"`{fid('ghost')[:12]}` (not in the findings file)" in text
+
+
+def test_priorities_replace_severities_once_every_finding_is_scored(tmp_path: Path) -> None:
+    risk = {"score": 80.0, "priority": "P0", "model_version": "1.0.0"}
+    decision, findings, _ = write_case(
+        tmp_path, [secret("a", "a.py", 1, risk=risk), secret("b", "b.py", 2, risk=risk)]
+    )
+    assert "**Findings:** 2 P0 (2 total)" in render_pr_comment(load_inputs(decision, findings))
+
+
+# ---------------------------------------------------------------- fail closed
+
+
+def test_findings_that_do_not_match_the_decision_are_refused(tmp_path: Path) -> None:
+    decision, findings, _ = write_case(tmp_path, [secret("a", "a.py", 1)])
+    findings.write_text(dumps_ndjson([secret("b", "b.py", 1)]), encoding="utf-8", newline="\n")
+    with pytest.raises(ReportError, match="findings_digest mismatch"):
+        load_inputs(decision, findings)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda d: d.update(
+                verdict="PASS",
+                violations=[{"rule": "SC-001", "effect": "BLOCK", "finding_ids": [], "message": "x"}],
+            ),
+            "not a valid Decision v1",
+        ),
+        (lambda d: d.update(verdict="BLOCK"), "not a valid Decision v1"),
+        (lambda d: d.pop("inputs"), "not a valid Decision v1"),
+    ],
+)
+def test_inconsistent_decisions_are_refused(tmp_path: Path, mutate: Any, message: str) -> None:
+    decision, findings, data = write_case(tmp_path, [])
+    mutate(data)
+    decision.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ReportError, match=message):
+        load_inputs(decision, findings)
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        (b"not json\n", "line 1 is not a Finding v1"),
+        (b'{"id": "abc"}\n', "line 1 is not a Finding v1"),
+        (b"\xff\xfe\n", "not UTF-8"),
+    ],
+)
+def test_malformed_findings_are_refused(tmp_path: Path, content: bytes, message: str) -> None:
+    findings = tmp_path / "findings.ndjson"
+    findings.write_bytes(content)
+    decision = tmp_path / "decision.json"
+    decision.write_text(json.dumps(decision_for(content)), encoding="utf-8")
+    with pytest.raises(ReportError, match=message):
+        load_inputs(decision, findings)
+
+
+def test_duplicate_finding_ids_are_refused(tmp_path: Path) -> None:
+    line = dumps_ndjson([secret("a", "a.py", 1)])
+    findings = tmp_path / "findings.ndjson"
+    findings.write_text(line + line, encoding="utf-8", newline="\n")
+    decision = tmp_path / "decision.json"
+    decision.write_text(json.dumps(decision_for(findings.read_bytes())), encoding="utf-8")
+    with pytest.raises(ReportError, match="duplicate finding id"):
+        load_inputs(decision, findings)
+
+
+def test_missing_files_are_refused(tmp_path: Path) -> None:
+    with pytest.raises(ReportError, match="cannot read the report inputs"):
+        load_inputs(tmp_path / "decision.json", tmp_path / "findings.ndjson")
+
+
+# ---------------------------------------------------------------- CLI
+
+
+def _invoke(*args: str) -> Any:
+    return CliRunner().invoke(app, ["report", "pr-comment", *args])
+
+
+def test_cli_writes_the_comment(tmp_path: Path) -> None:
+    decision, findings, _ = write_case(tmp_path, [])
+    out = tmp_path / "out" / "comment.md"
+    result = _invoke("--decision", str(decision), "--findings", str(findings), "--out", str(out))
+    assert result.exit_code == 0, result.output
+    assert out.read_text(encoding="utf-8").startswith(MARKER + "\n## SentinelCI verdict: ✅ PASS")
+
+
+def test_cli_without_a_decision_writes_a_blocking_comment_and_exits_3(tmp_path: Path) -> None:
+    findings = tmp_path / "findings.ndjson"
+    findings.write_text("", encoding="utf-8")
+    out = tmp_path / "comment.md"
+    out.write_text("an older, passing comment", encoding="utf-8")
+    result = _invoke(
+        "--decision", str(tmp_path / "missing.json"), "--findings", str(findings), "--out", str(out)
+    )
+    assert result.exit_code == 3
+    assert "SC-010" in result.output
+    text = out.read_text(encoding="utf-8")
+    assert "NO DECISION (treated as BLOCK, rule SC-010)" in text
+    assert "an older, passing comment" not in text
+
+
+def test_cli_crash_never_leaves_an_older_comment_to_post(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def crash(_: object) -> str:
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr("sentinelci.cli.render_pr_comment", crash)
+    decision, findings, _ = write_case(tmp_path, [])
+    out = tmp_path / "comment.md"
+    out.write_text("an older, passing comment", encoding="utf-8")
+    result = _invoke("--decision", str(decision), "--findings", str(findings), "--out", str(out))
+    assert result.exit_code != 0
+    assert not out.exists()

@@ -21,6 +21,7 @@ from sentinelci.contracts.finding import Run, RunContext, Tool
 from sentinelci.normalize.errors import NormalizationError
 from sentinelci.normalize.gitleaks import load_gitleaks_report, normalize_gitleaks
 from sentinelci.normalize.ndjson import write_ndjson
+from sentinelci.report.pr_comment import ReportError, load_inputs, render_no_decision, render_pr_comment
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
 from sentinelci.scanners.installer import VerificationReport, install_tools, verify_tools
@@ -41,9 +42,11 @@ tools_app = typer.Typer(
 scan_app = typer.Typer(
     help="Run a verified scanner and write normalized Finding v1 NDJSON.", no_args_is_help=True
 )
+report_app = typer.Typer(help="Render reports from a decision record.", no_args_is_help=True)
 app.add_typer(normalize_app, name="normalize")
 app.add_typer(tools_app, name="tools")
 app.add_typer(scan_app, name="scan")
+app.add_typer(report_app, name="report")
 
 LockOption = Annotated[Path, typer.Option("--lock", help="Path to the tool lock file.")]
 DestOption = Annotated[Path, typer.Option("--dest", help="Installation directory (bin/ and cache/).")]
@@ -231,6 +234,40 @@ def scan_secrets_cmd(
     out.parent.mkdir(parents=True, exist_ok=True)
     write_ndjson(findings, out)
     typer.echo(f"gitleaks {tool_run.version}: {len(findings)} finding(s) written to {out}")
+
+
+# ---------------------------------------------------------------- report
+
+
+@report_app.command("pr-comment")
+def report_pr_comment(
+    decision: Annotated[Path, typer.Option(help="Decision v1 record written by `sentinel evaluate`.")],
+    findings: Annotated[Path, typer.Option(help="The findings NDJSON the decision was made on.")],
+    out: Annotated[Path, typer.Option(help="Destination Markdown file.")],
+    baseline: Annotated[
+        Path | None, typer.Option(help="Findings NDJSON of the base branch, to count new findings.")
+    ] = None,
+    pipeline_changes: Annotated[
+        Path | None,
+        typer.Option(help="File listing pipeline paths changed by the pull request, one per line."),
+    ] = None,
+) -> None:
+    """Render the deterministic PR comment.
+
+    Without a trustworthy decision, write a fail-closed "no decision" comment instead and exit 3.
+    """
+    out.unlink(missing_ok=True)  # never post an older comment if this run fails
+    out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        inputs = load_inputs(
+            decision, findings, baseline_path=baseline, pipeline_changes_path=pipeline_changes
+        )
+    except ReportError as exc:
+        out.write_text(render_no_decision(str(exc)), encoding="utf-8", newline="\n")
+        typer.echo(f"no trustworthy decision: {exc}\nFAIL CLOSED: treated as BLOCK (rule SC-010).", err=True)
+        raise typer.Exit(EXIT_UNTRUSTED_INPUT) from exc
+    out.write_text(render_pr_comment(inputs), encoding="utf-8", newline="\n")
+    typer.echo(f"verdict {inputs.decision.verdict}: comment written to {out}")
 
 
 if __name__ == "__main__":
