@@ -286,6 +286,8 @@ def test_cli_verify_fails_closed_with_exit_code_3(
     lock_path, dest = _cli_env(tmp_path, releases, write_lock)
     (dest / "bin" / "fakescan").write_bytes(b"tampered")
     report = tmp_path / "out" / "tools-manifest.json"
+    report.parent.mkdir()
+    report.write_text('{"stale": "manifest from an earlier, verified run"}\n', encoding="utf-8")
 
     result = CliRunner().invoke(
         app,
