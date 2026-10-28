@@ -154,7 +154,7 @@ def evaluate(
     bundle: PolicyBundle,
     opa: OpaRunner,
     tool_versions: Mapping[str, str] | None = None,
-    waivers: Sequence[Mapping[str, Any]] = (),
+    waivers: Sequence[Any] = (),
     enrichment_snapshot: bytes | None = None,
     sbom: bytes | None = None,
 ) -> dict[str, Any]:

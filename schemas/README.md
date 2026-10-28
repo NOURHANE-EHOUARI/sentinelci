@@ -8,6 +8,7 @@ JSON Schemas (draft 2020-12) shared by both tracks. See `docs/spec/SPEC.md` sect
 | `decision.v1.json` | B4 (policy engine) → A4, A5, platform |
 | `patch-proposal.v1.json` | A6 fixers / B6 LLM → A6 remediation loop |
 | `verification-result.v1.json` | A6 → platform, B8 |
+| `waivers.v1.json` | people via reviewed PRs (AI drafts only) → B4 gate, platform |
 
 Rules:
 

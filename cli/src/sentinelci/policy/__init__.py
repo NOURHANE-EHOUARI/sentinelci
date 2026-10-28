@@ -6,6 +6,7 @@ Must never import sentinel_ai: deterministic decides, AI advises.
 from sentinelci.policy.bundle import PolicyBundle
 from sentinelci.policy.decision import EvaluationError, Subject, evaluate, load_findings
 from sentinelci.policy.opa import OpaError, OpaRunner
+from sentinelci.policy.waivers import load_waivers
 
 __all__ = [
     "EvaluationError",
@@ -15,4 +16,5 @@ __all__ = [
     "Subject",
     "evaluate",
     "load_findings",
+    "load_waivers",
 ]

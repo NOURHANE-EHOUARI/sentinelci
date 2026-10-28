@@ -35,5 +35,29 @@ Runs the OPA policies in `policies/` and writes a Decision v1 record (`schemas/d
 - Recorded evidence: digests of the findings file, policy bundle (all files in `policies/` except
   `*_test.rego`), enrichment snapshot (the empty snapshot `{}` until B2 lands) and optional SBOM; the risk
   model version; versions of every tool that reported a finding, given with `--tool-version`, and OPA.
-- Rules implemented so far: SC-001 (secret, not waived) and SC-010 for malformed gate input. Waivers are
-  evaluated by the policy but not yet loaded from `.sentinel/waivers.yaml`.
+- Rules implemented so far: SC-001 (secret, not waived), SC-005 (invalid waiver) and SC-010 for
+  malformed gate input.
+
+### Waivers
+
+`--waivers` (default `.sentinel/waivers.yaml` when it exists) follows `schemas/waivers.v1.json`:
+
+```yaml
+version: 1
+waivers:
+  - id: waiver-2026-001                 # unique, recorded in the decision's waivers_applied
+    finding_id: 3f1c9a7e...             # one finding by fingerprint, or:
+    # vulnerability: CVE-2026-12345     # a vulnerability (CVE, GHSA, OSV id) in one package,
+    # purl: pkg:pypi/example-lib        # any version (purl without version)
+    owner: "@Hiba-elouazi"
+    justification: Fake demo credential listed in the ground truth.
+    expires_at: 2026-12-31T00:00:00Z    # RFC 3339 date-time, at most 90 days after evaluation
+```
+
+- A waiver applies to the findings it targets until `expires_at`. Expired waivers simply stop applying.
+- An invalid waiver (missing owner, justification or expiry, expiry more than 90 days after
+  `--evaluated-at`, unknown field, duplicate id, no or ambiguous target, purl with a version) never
+  applies, and SC-005 blocks with every reason. The policy checks entries, not the loader, so the
+  reasons reach the decision record.
+- A file that cannot be read (bad YAML, wrong top-level shape, `version` other than 1) means no decision:
+  exit code `2`.

@@ -4,7 +4,6 @@ Tests that need the real OPA binary skip when it is absent, unless SENTINEL_REQU
 """
 
 import json
-import os
 import shutil
 import sys
 from collections.abc import Sequence
@@ -59,16 +58,6 @@ class FakeOpa(OpaRunner):
 
     def eval(self, query: str, policies: Sequence[Path], input_doc: Any) -> Any:
         return self._result  # type: ignore[attr-defined]
-
-
-@pytest.fixture
-def opa_binary() -> Path:
-    try:
-        return OpaRunner.locate().binary
-    except OpaError:
-        if os.environ.get("SENTINEL_REQUIRE_OPA"):
-            pytest.fail("SENTINEL_REQUIRE_OPA is set but no OPA binary was found")
-        pytest.skip("OPA binary not installed (set SENTINEL_OPA or put opa on PATH)")
 
 
 @pytest.fixture

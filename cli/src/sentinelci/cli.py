@@ -21,6 +21,7 @@ from sentinelci.policy.decision import (
     now_utc,
 )
 from sentinelci.policy.opa import OpaError, OpaRunner
+from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH, load_waivers
 
 app = typer.Typer(
     name="sentinel",
@@ -84,6 +85,12 @@ def evaluate_command(
         list[str] | None,
         typer.Option(help="Scanner version as name=version (repeatable); recorded as evidence."),
     ] = None,
+    waivers: Annotated[
+        Path | None,
+        typer.Option(
+            help=f"Waivers file (schemas/waivers.v1.json). Default: {DEFAULT_WAIVERS_PATH} if present."
+        ),
+    ] = None,
     enrichment_snapshot: Annotated[Path | None, typer.Option(help="Enrichment snapshot file.")] = None,
     sbom: Annotated[Path | None, typer.Option(help="SBOM file to record by digest.")] = None,
     opa: Annotated[
@@ -96,6 +103,8 @@ def evaluate_command(
     """
     # A stale decision from an earlier run must never be mistaken for this run's result.
     output.unlink(missing_ok=True)
+    if waivers is None and Path(DEFAULT_WAIVERS_PATH).is_file():
+        waivers = Path(DEFAULT_WAIVERS_PATH)
     try:
         decision = evaluate(
             findings_data=findings.read_bytes(),
@@ -104,6 +113,7 @@ def evaluate_command(
             bundle=PolicyBundle.load(policy_dir),
             opa=OpaRunner.locate(opa),
             tool_versions=_parse_tool_versions(tool_version or []),
+            waivers=load_waivers(waivers.read_bytes()) if waivers else [],
             enrichment_snapshot=enrichment_snapshot.read_bytes() if enrichment_snapshot else None,
             sbom=sbom.read_bytes() if sbom else None,
         )
@@ -120,6 +130,8 @@ def evaluate_command(
         noun = "finding" if count == 1 else "findings"
         rule, effect, message = violation["rule"], violation["effect"], violation["message"]
         typer.echo(f"  {rule}  {effect:<5}  {message}  ({count} {noun})")
+    if decision["waivers_applied"]:
+        typer.echo(f"Waivers applied: {', '.join(decision['waivers_applied'])}")
     typer.echo(f"Decision written to {output}")
     if decision["verdict"] == "BLOCK":
         raise typer.Exit(EXIT_BLOCK)
