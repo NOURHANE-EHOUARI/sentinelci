@@ -11,7 +11,7 @@
 | Version | Change |
 |---|---|
 | 1.0 | Initial specification (PDF shared with the team). |
-| 1.1.1a | Package fingerprints use the purl base (no version, no qualifiers), agreed in the review of PR #1. "Green CI" may be a local `make check` report while Actions minutes are exhausted. |
+| 1.1.1a | Package fingerprints use the purl base (no version, qualifiers or subpath — same as the gate's waiver matching), agreed in the review of PR #1. "Green CI" may be a local `make check` report while Actions minutes are exhausted. |
 | 1.1.1 | No GitHub Pro: `main` protected by convention + local guard until the repository goes public. |
 | 1.1 | **Single private repository**: the demo target lives in `demo-shop/` instead of a second repo. **Private-phase adaptations** (§4.3, ADR-0006): Cosign key-pair signing without public transparency log, provenance as a Cosign attestation, no code-scanning upload, local registry for Kubernetes demos, Actions-minutes budget. Dependabot (with cooldown) replaces Renovate. |
 
@@ -387,8 +387,8 @@ CONTAINER ⇒ `package` + `image`. Optional blocks `enrichment` (B2) and `risk` 
 cannot contain `..`.
 
 **Fingerprint rules:**
-- SCA / CONTAINER: `sha256(category | vuln id | purl base)` where *purl base* = the purl without version and
-  without qualifiers (subpath kept). After a bump the finding disappears; base-image point releases, other
+- SCA / CONTAINER: `sha256(category | vuln id | purl base)` where *purl base* = the purl without version,
+  qualifiers or subpath (same definition as `purl_base` in `policies/gate.rego`). After a bump the finding disappears; base-image point releases, other
   architectures and Grype/Trivy qualifier differences keep the same fingerprint. Waivers use the same purl base.
 - SAST: `sha256(rule id | path | hash of normalized snippet)` — survives line shifts.
 - SECRET: `sha256(rule id | sha256(secret value))`.
