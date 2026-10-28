@@ -18,6 +18,9 @@ node_modules/
 out/
 *.sarif
 
+# Installed scanners (re-created and verified from tools.lock.toml)
+.sentinel/tools/
+
 # Secrets and signing material: never commit them
 .env
 .env.*

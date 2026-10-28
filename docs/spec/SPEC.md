@@ -11,6 +11,7 @@
 | Version | Change |
 |---|---|
 | 1.0 | Initial specification (PDF shared with the team). |
+| 1.1.2 | Tool lock is `tools.lock.toml` (read with the standard library: no extra dependency). A1 split: A1a = lock + `sentinel tools install/verify` (done), A1b = scanner adapters + Opengrep pinning via signature verification. |
 | 1.1.1 | No GitHub Pro: `main` protected by convention + local guard until the repository goes public. |
 | 1.1 | **Single private repository**: the demo target lives in `demo-shop/` instead of a second repo. **Private-phase adaptations** (§4.3, ADR-0006): Cosign key-pair signing without public transparency log, provenance as a Cosign attestation, no code-scanning upload, local registry for Kubernetes demos, Actions-minutes budget. Dependabot (with cooldown) replaces Renovate. |
 
@@ -58,7 +59,7 @@ to LiteLLM's own CI, which ran Trivy. Supply-chain failures are category A03 of 
 | What went wrong | SentinelCI response |
 |---|---|
 | Actions referenced by mutable tags | Full-SHA pins + version comment, zizmor audit, Dependabot updates |
-| Scanner binaries trusted blindly | `tools.lock.yaml` with SHA-256/digests; `sentinel tools verify` first; mismatch = SC-010 BLOCK |
+| Scanner binaries trusted blindly | `tools.lock.toml` with SHA-256/digests; `sentinel tools verify` first; mismatch = SC-010 BLOCK |
 | Scan jobs could read publishing secrets | Scan jobs: `contents: read`, no secrets; signing job never runs repo code |
 | Publishing outside the reviewed path | Only artifacts signed by our release workflow are admitted by Kyverno |
 | Developer machines / AI agents as entry points | `CLAUDE.md` rules, no real secrets locally, dependencies only via lockfile + review |
@@ -145,7 +146,7 @@ Local CLI runs can **push** to the same ingestion API. No self-hosted runners (a
 
 | # | Stage | Tools | Output | Gate |
 |---|---|---|---|---|
-| 0 | Tool integrity | `sentinel tools verify` (tools.lock.yaml) | manifest | mismatch → SC-010 |
+| 0 | Tool integrity | `sentinel tools verify` (tools.lock.toml) | manifest | mismatch → SC-010 |
 | 1 | Secrets | Gitleaks (Betterleaks-compatible config) | SARIF | SC-001 |
 | 2 | SAST | Opengrep + Semgrep-format rules | SARIF/JSON | risk + policy |
 | 3 | SCA | Syft source SBOM → Grype; OSV | JSON | risk + policy |
@@ -355,7 +356,7 @@ Prometheus names: `sentinel_gate_decisions_total{verdict,context}`, `sentinel_fi
 | Observability / runtime | Prometheus, Grafana / Docker, Compose, kind, Helm, Argo CD |
 | Quality | pytest, Hypothesis, ruff, mypy (strict), import-linter, pre-commit, Dependabot (cooldown), zizmor |
 
-Pin exact versions (`tools.lock.yaml`, `uv.lock`, chart versions); never use `latest`.
+Pin exact versions (`tools.lock.toml`, `uv.lock`, chart versions); never use `latest`.
 
 ## 12. Repository layout
 
@@ -370,7 +371,7 @@ deploy/              (A) compose, kind, helm, kyverno, argocd, grafana
 eval/                (B) harness, datasets, reports
 demo-shop/           (A+B) INTENTIONALLY VULNERABLE: services/, infra/, gitops/, examples/bad-workflows/, ground-truth/
 docs/                spec/, adr/
-tools.lock.yaml      (A) pinned scanner versions + checksums
+tools.lock.toml      (A) pinned scanner versions + checksums
 ```
 
 ## 13. Contracts between the two tracks
@@ -431,7 +432,7 @@ Vertical ownership; each track has DevOps, security, backend/UI and an AI compon
 
 | ID | Task | Deliverables / acceptance | Sprint | Size |
 |---|---|---|---|---|
-| A1 | Scanner integration | Adapters (Gitleaks, Opengrep, Grype, Trivy, Checkov, zizmor) → `out/raw/`; `tools.lock.yaml` + `sentinel tools verify`. Accept: fixture test per adapter; tampered binary → SC-010; crash → SC-010 | S1 | M |
+| A1 | Scanner integration | Adapters (Gitleaks, Opengrep, Grype, Trivy, Checkov, zizmor) → `out/raw/`; `tools.lock.toml` + `sentinel tools verify`. Accept: fixture test per adapter; tampered binary → SC-010; crash → SC-010 | S1 | M |
 | A2 | Normalizer & fingerprints | SARIF/JSON → Finding v1, §13.1 fingerprints, cross-tool dedup. Accept: golden files; schema-valid; byte-identical output | S1 | M |
 | A3 | Hardened reusable pipeline | `sentinel-scan.yml` with job isolation, PR diff-aware + main modes, deterministic PR comment, SHA pins, demo-shop workflow. Accept: fake secret PR blocked; zizmor clean | S1–S2 | L |
 | A4 | Supply chain & release | `sentinel-release.yml`: build by digest, SBOMs, Cosign sign + attestations (SBOM, vuln, decision, provenance), signed evidence bundle, `sentinel verify`. Accept: verify fails on the 4 bad cases | S2 | L |
@@ -532,7 +533,7 @@ schema-constrained outputs and injection isolation (0 verdict changes across [X]
 | 3 | Contracts: finding, decision, patch proposal, verification result + fixtures + tests | done |
 | 4 | Spec v1.1 + ADRs in `docs/` | done |
 | 5 | Repository settings: require SHA-pinned actions, read-only default workflow token, Dependabot alerts (branch protection deferred to the public phase, convention + local guard meanwhile) | to do (owner) |
-| 6 | Choose and pin tool versions in `tools.lock.yaml` | A |
+| 6 | Choose and pin tool versions in `tools.lock.toml` | done (A1a; Opengrep pending) |
 | 7 | Compose skeleton (postgres+pgvector, redis, minio, ollama, api, worker, web, prometheus, grafana) | B |
 | 8 | `demo-shop/` skeleton + ground-truth format; first seeds | A9 + B9 |
 | 9 | GitHub Project board: one issue per task id | both |
