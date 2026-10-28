@@ -18,17 +18,25 @@ def secret_fingerprint(rule_id: str, secret_value: str) -> str:
     return sha256_hex(_SEP.join((rule_id, sha256_hex(secret_value))))
 
 
-def purl_without_version(purl: str) -> str:
-    """Drop the `@version` part of a package URL, keeping qualifiers and subpath."""
+def purl_base(purl: str) -> str:
+    """Package identity used in fingerprints and waivers: the purl without version and qualifiers.
+
+    Qualifiers (arch, distro, ...) describe the environment, not the package: keeping them would make every
+    OS-package finding look new after a base-image point release and would break Grype/Trivy dedup.
+    The subpath is kept. Only an "@" after the last "/" starts the version, so non-canonical purls with an
+    unencoded scope (pkg:npm/@scope/name) keep their namespace.
+    """
     head, hash_sep, subpath = purl.partition("#")
-    head, query_sep, qualifiers = head.partition("?")
-    base = head.rsplit("@", 1)[0] if "@" in head else head
-    return f"{base}{query_sep}{qualifiers}{hash_sep}{subpath}"
+    head = head.partition("?")[0]
+    name_start = head.rfind("/") + 1
+    at = head.rfind("@")
+    base = head[:at] if at >= name_start else head
+    return f"{base}{hash_sep}{subpath}"
 
 
 def package_fingerprint(category: str, vuln_id: str, purl: str) -> str:
-    """SCA / CONTAINER: sha256(category | vuln id | purl without version) — a version bump fixes it."""
-    return sha256_hex(_SEP.join((category, vuln_id, purl_without_version(purl))))
+    """SCA / CONTAINER: sha256(category | vuln id | purl base) — a version bump fixes it."""
+    return sha256_hex(_SEP.join((category, vuln_id, purl_base(purl))))
 
 
 def normalize_snippet(snippet: str) -> str:

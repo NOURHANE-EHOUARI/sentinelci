@@ -108,6 +108,32 @@ def test_missing_required_field_fails_closed() -> None:
         normalize_gitleaks(broken, run=RUN, tool=TOOL)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("EndLine", "x"),
+        ("EndLine", 0),
+        ("EndLine", True),
+        ("EndLine", 11),  # before StartLine (12)
+        ("StartLine", True),
+        ("StartLine", "12"),
+    ],
+)
+def test_malformed_line_numbers_fail_closed(field: str, value: object) -> None:
+    broken = _report()
+    broken[0][field] = value
+    with pytest.raises(NormalizationError, match=f"invalid {field}"):
+        normalize_gitleaks(broken, run=RUN, tool=TOOL)
+
+
+def test_missing_end_line_defaults_to_start_line() -> None:
+    report = _report()[:1]
+    del report[0]["EndLine"]
+    (finding,) = normalize_gitleaks(report, run=RUN, tool=TOOL)
+    assert finding.location is not None
+    assert finding.location.end_line == finding.location.start_line == 12
+
+
 def test_path_outside_the_repository_fails_closed(tmp_path: Path) -> None:
     report = _report()
     report[0]["File"] = "/etc/passwd"
@@ -162,6 +188,38 @@ def test_cli_writes_ndjson(tmp_path: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     assert out.read_text(encoding="utf-8") == (FIXTURES / "expected.ndjson").read_text(encoding="utf-8")
+
+
+def test_cli_failure_never_leaves_an_older_findings_file(tmp_path: Path) -> None:
+    # A stale file from an earlier run could be read by a later step and lead to a wrong PASS.
+    out = tmp_path / "findings.ndjson"
+    out.write_text('{"stale": true}\n', encoding="utf-8")
+    result = CliRunner().invoke(
+        app,
+        [
+            "normalize", "gitleaks", str(FIXTURES / "redacted.json"),
+            "--out", str(out),
+            "--repo", RUN.repo, "--commit", RUN.commit, "--context", "pr",
+            "--tool-version", "8.30.1",
+        ],
+    )  # fmt: skip
+    assert result.exit_code == 3
+    assert not out.exists()
+
+
+def test_cli_malformed_report_exits_3_not_1(tmp_path: Path) -> None:
+    report = _report()
+    report[0]["EndLine"] = "x"
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps(report), encoding="utf-8")
+    result = CliRunner().invoke(
+        app,
+        [
+            "normalize", "gitleaks", str(bad), "--out", str(tmp_path / "o.ndjson"),
+            "--repo", RUN.repo, "--commit", RUN.commit, "--context", "pr", "--tool-version", "8.30.1",
+        ],
+    )  # fmt: skip
+    assert result.exit_code == 3, result.output
 
 
 def test_cli_fails_closed_with_dedicated_exit_code(tmp_path: Path) -> None:
