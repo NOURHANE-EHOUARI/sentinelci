@@ -138,7 +138,7 @@ Local CLI runs can **push** to the same ingestion API. No self-hosted runners (a
 | AI analyst | explanations, triage hints, patch proposals | Ollama, own provider interface | B |
 | Correlator | dedup, embeddings, clustering, labels | pgvector, scikit-learn/HDBSCAN | A |
 | Remediation orchestrator | fixers, branches/PRs, verification | GitHub App / token, httpx2 | A |
-| Evidence store | content-addressed bundles | MinIO (S3 API) | B |
+| Evidence store | content-addressed bundles | SeaweedFS (S3 API, ADR-0007) | B |
 | Database | runs, findings, decisions, waivers, groups, remediations | PostgreSQL + pgvector | B |
 | Web dashboard | product UI | React, TypeScript, Vite | B core, pages split |
 | Observability | metrics, dashboards as code | Prometheus, Grafana | A |
@@ -365,7 +365,7 @@ Prometheus names: `sentinel_gate_decisions_total{verdict,context}`, `sentinel_fi
 | IaC / CI config | Checkov / zizmor |
 | Signing / provenance | Cosign v3 (key pair now, keyless later); GitHub attestations after going public |
 | VEX / policy / admission | OpenVEX / OPA (Rego v1) / Kyverno ImageValidatingPolicy |
-| Backend / data | FastAPI, SQLAlchemy 2, Alembic, Celery, Redis / PostgreSQL + pgvector, MinIO |
+| Backend / data | FastAPI, SQLAlchemy 2, Alembic, Celery, Redis / PostgreSQL + pgvector, SeaweedFS (S3) |
 | AI | Ollama (local), own provider interface |
 | Frontend | React, TypeScript, Vite, TanStack Query, Tailwind, Recharts |
 | Observability / runtime | Prometheus, Grafana / Docker, Compose, kind, Helm, Argo CD |
@@ -464,7 +464,7 @@ Vertical ownership; each track has DevOps, security, backend/UI and an AI compon
 
 | ID | Task | Deliverables / acceptance | Sprint | Size |
 |---|---|---|---|---|
-| B1 | Platform backend | FastAPI, PostgreSQL + Alembic, MinIO, Celery + Redis, GitHub sync, OpenAPI in `schemas/`. Accept: `make up`; a sync ingests a real run; contract tests | S1 | L |
+| B1 | Platform backend | FastAPI, PostgreSQL + Alembic, SeaweedFS (S3), Celery + Redis, GitHub sync, OpenAPI in `schemas/`. Accept: `make up`; a sync ingests a real run; contract tests | S1 | L |
 | B2 | Enrichment | EPSS, KEV, OSV, reachability, `sentinel.yaml`; snapshots + offline fixtures | S2 | M |
 | B3 | Risk engine | §6.2 model, bands, factor breakdown, CVSS baseline. Accept: property tests (monotonicity, bounds) | S2 | M |
 | B4 | Policy & decisions | Rego SC-001…SC-010, profiles, diff-aware mode, waivers + VEX, Decision v1, `evaluate`, `replay`; minimal SC-001 for S1. Accept: coverage ≥ 90%; replay identical | S1–S2 | L |
@@ -551,7 +551,7 @@ schema-constrained outputs and injection isolation (0 verdict changes across [X]
 | 4 | Spec v1.1 + ADRs in `docs/` | done |
 | 5 | Repository settings: require SHA-pinned actions, read-only default workflow token, Dependabot alerts (branch protection deferred to the public phase, convention + local guard meanwhile) | to do (owner) |
 | 6 | Choose and pin tool versions in `tools.lock.toml` | done (A1a; Opengrep pending) |
-| 7 | Compose skeleton (postgres+pgvector, redis, minio, ollama, api, worker, web, prometheus, grafana) | B |
+| 7 | Compose skeleton (postgres+pgvector, redis, seaweedfs, ollama, api, prometheus, grafana; worker with B1, web with B7) | B |
 | 8 | `demo-shop/` skeleton + ground-truth format; first seeds | A9 + B9 |
 | 9 | GitHub Project board: one issue per task id | both |
 | 10 | Choose the local model and measure tokens/second | B |
