@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/NOURHANE-EHOUARI/sentinelci/schemas/finding.v1.json",
+  "title": "SentinelCI Finding v1",
+  "description": "One normalized security finding. Produced by the normalizer (A2), enriched by B2 and scored by B3. See docs/spec/SPEC.md section 13.1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "tool", "rule_id", "category", "title", "severity", "run"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "id": {
+      "description": "Stable fingerprint (sha256 hex). Rules per category are defined in SPEC section 13.1.",
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 }
+      }
+    },
+    "rule_id": { "type": "string", "minLength": 1 },
+    "category": { "enum": ["SECRET", "SAST", "SCA", "CONTAINER", "IAC", "PIPELINE", "LICENSE"] },
+    "title": { "type": "string", "minLength": 1 },
+    "message": { "type": "string" },
+    "severity": { "$ref": "#/$defs/severity" },
+    "severity_source": { "type": "string", "description": "Raw severity as reported by the tool." },
+    "cwe": { "type": "array", "items": { "type": "string", "pattern": "^CWE-[0-9]+$" }, "uniqueItems": true },
+    "cve": { "type": "array", "items": { "type": "string", "pattern": "^CVE-[0-9]{4}-[0-9]{4,}$" }, "uniqueItems": true },
+    "aliases": {
+      "description": "Other identifiers for the same vulnerability (GHSA, OSV, PYSEC...).",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relative_path" },
+        "start_line": { "type": "integer", "minimum": 1 },
+        "end_line": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["purl", "name", "version", "ecosystem"],
+      "properties": {
+        "purl": { "type": "string", "pattern": "^pkg:[a-z0-9.+-]+/.+" },
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "ecosystem": { "type": "string", "minLength": 1 },
+        "fixed_versions": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest"],
+      "properties": {
+        "ref": { "type": "string" },
+        "digest": { "$ref": "#/$defs/oci_digest" },
+        "layer": { "$ref": "#/$defs/oci_digest" }
+      }
+    },
+    "evidence": {
+      "description": "Secrets are never stored raw: only secret_hash, and the snippet must be redacted.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "snippet": { "type": "string", "maxLength": 2000 },
+        "secret_hash": { "$ref": "#/$defs/sha256_hex" }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "commit", "context"],
+      "properties": {
+        "repo": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "ref": { "type": "string" },
+        "context": { "enum": ["pr", "release", "local"] },
+        "run_id": { "type": "string" }
+      }
+    },
+    "enrichment": {
+      "description": "Added by enrichment (B2). Optional until enriched.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cvss": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["score"],
+          "properties": {
+            "version": { "type": "string" },
+            "score": { "type": "number", "minimum": 0, "maximum": 10 },
+            "vector": { "type": "string" }
+          }
+        },
+        "epss": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["score", "percentile", "date"],
+          "properties": {
+            "score": { "type": "number", "minimum": 0, "maximum": 1 },
+            "percentile": { "type": "number", "minimum": 0, "maximum": 1 },
+            "date": { "type": "string", "format": "date" }
+          }
+        },
+        "kev": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["listed"],
+          "properties": {
+            "listed": { "type": "boolean" },
+            "date_added": { "type": "string", "format": "date" }
+          }
+        },
+        "fix_available": { "type": "boolean" },
+        "reachability": { "enum": ["reachable", "imported", "unknown", "not_imported"] },
+        "exposure": { "enum": ["internet-facing", "internal", "offline"] }
+      }
+    },
+    "risk": {
+      "description": "Added by the risk engine (B3). Optional until scored.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "priority", "model_version"],
+      "properties": {
+        "score": { "type": "number", "minimum": 0, "maximum": 100 },
+        "priority": { "enum": ["P0", "P1", "P2", "P3", "P4"] },
+        "factors": { "type": "object", "additionalProperties": { "type": "number" } },
+        "model_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "category": { "const": "SECRET" } } },
+      "then": {
+        "required": ["location", "evidence"],
+        "properties": { "evidence": { "required": ["secret_hash"] } }
+      }
+    },
+    {
+      "if": { "properties": { "category": { "enum": ["SAST", "IAC", "PIPELINE"] } } },
+      "then": { "required": ["location"] }
+    },
+    {
+      "if": { "properties": { "category": { "enum": ["SCA", "LICENSE"] } } },
+      "then": { "required": ["package"] }
+    },
+    {
+      "if": { "properties": { "category": { "const": "CONTAINER" } } },
+      "then": { "required": ["package", "image"] }
+    }
+  ],
+  "$defs": {
+    "severity": { "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"] },
+    "sha256_hex": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "oci_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$)).+$"
+    }
+  }
+}

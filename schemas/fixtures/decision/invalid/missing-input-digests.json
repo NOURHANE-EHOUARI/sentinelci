@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "decision_id": "0193f2c4-7a1e-7b3c-9d2e-4f5a6b7c8da2",
+  "evaluated_at": "2026-11-10T10:00:00Z",
+  "subject": {
+    "repo": "NOURHANE-EHOUARI/sentinelci",
+    "commit": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    "context": "pr"
+  },
+  "verdict": "PASS",
+  "violations": [],
+  "waivers_applied": [],
+  "inputs": {
+    "findings_digest": "not-a-digest",
+    "risk_model_version": "1.0.0",
+    "tool_versions": {}
+  },
+  "engine_version": "0.1.0"
+}

@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "id": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee01",
+  "tool": { "name": "checkov", "version": "3.2.0" },
+  "rule_id": "CKV_K8S_16",
+  "category": "IAC",
+  "title": "Container should not be privileged",
+  "severity": "HIGH",
+  "location": { "path": "../../etc/passwd" },
+  "run": {
+    "repo": "NOURHANE-EHOUARI/sentinelci",
+    "commit": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    "context": "pr"
+  }
+}

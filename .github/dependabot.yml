@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Keeps the SHA pins of GitHub Actions up to date (the version comment is updated too).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7 # do not adopt a release in its first week (malicious releases are usually pulled fast)
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Python workspace (uv.lock). demo-shop/ is intentionally vulnerable and deliberately NOT listed here.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      python:
+        patterns: ["*"]

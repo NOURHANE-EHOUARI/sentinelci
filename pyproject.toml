@@ -1,0 +1,74 @@
+[project]
+name = "sentinelci-workspace"
+version = "0.0.0"
+description = "Workspace root for SentinelCI (not published)."
+requires-python = ">=3.12"
+dependencies = [
+    "sentinelci",
+    "sentinel-api",
+    "sentinel-worker",
+    "sentinel-ai",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.11",
+    "mypy>=1.15",
+    "jsonschema[format-nongpl]>=4.23",
+    "import-linter>=2.3",
+    "httpx2>=2.16",
+    "zizmor>=1.30",
+    "pre-commit>=4.0",
+]
+
+[tool.uv]
+package = false
+default-groups = ["dev"]
+
+[tool.uv.workspace]
+members = ["cli", "platform/api", "platform/worker", "ai"]
+
+[tool.uv.sources]
+sentinelci = { workspace = true }
+sentinel-api = { workspace = true }
+sentinel-worker = { workspace = true }
+sentinel-ai = { workspace = true }
+
+# ---------------------------------------------------------------- ruff
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+extend-exclude = ["demo-shop"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["sentinelci", "sentinel_api", "sentinel_worker", "sentinel_ai"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S101"]
+
+# ---------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["cli/src", "platform/api/src", "platform/worker/src", "ai/src"]
+
+# ---------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+testpaths = ["tests", "cli/tests", "platform/api/tests", "platform/worker/tests", "ai/tests"]
+addopts = "-ra --strict-markers --import-mode=importlib"
+
+# ---------------------------------------------------------------- import-linter
+# Principle P1: deterministic decides, AI advises.
+# The decision path (risk scoring and policy evaluation) must never depend on the AI package.
+[tool.importlinter]
+root_packages = ["sentinelci", "sentinel_ai"]
+
+[[tool.importlinter.contracts]]
+name = "Decision path never imports the AI package"
+type = "forbidden"
+source_modules = ["sentinelci.risk", "sentinelci.policy", "sentinelci.enrich", "sentinelci.normalize"]
+forbidden_modules = ["sentinel_ai"]

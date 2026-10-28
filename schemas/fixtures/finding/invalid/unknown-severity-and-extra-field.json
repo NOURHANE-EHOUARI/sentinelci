@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "id": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+  "tool": { "name": "opengrep", "version": "1.28.0" },
+  "rule_id": "python.lang.security.audit.formatted-sql-query",
+  "category": "SAST",
+  "title": "SQL query built with string formatting",
+  "severity": "SEVERE",
+  "location": { "path": "demo-shop/services/shop-api/app/db.py", "start_line": 40 },
+  "ai_says_safe": true,
+  "run": {
+    "repo": "NOURHANE-EHOUARI/sentinelci",
+    "commit": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    "context": "pr"
+  }
+}

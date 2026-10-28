@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "id": "0f9e8d7c6b5a49382716051f0e9d8c7b6a5948372615041f0e9d8c7b6a594837",
+  "tool": { "name": "trivy", "version": "0.69.3" },
+  "rule_id": "CVE-2099-0002",
+  "category": "CONTAINER",
+  "title": "openssl: denial of service",
+  "severity": "MEDIUM",
+  "cve": ["CVE-2099-0002"],
+  "package": {
+    "purl": "pkg:deb/debian/openssl@3.0.11-1",
+    "name": "openssl",
+    "version": "3.0.11-1",
+    "ecosystem": "debian"
+  },
+  "image": {
+    "ref": "ghcr.io/nourhane-ehouari/shop-api",
+    "digest": "sha256:5c3e1f0a9b8d7c6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e",
+    "layer": "sha256:1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809"
+  },
+  "run": {
+    "repo": "NOURHANE-EHOUARI/sentinelci",
+    "commit": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    "context": "local"
+  }
+}

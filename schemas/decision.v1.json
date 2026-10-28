@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/NOURHANE-EHOUARI/sentinelci/schemas/decision.v1.json",
+  "title": "SentinelCI Decision v1",
+  "description": "A signed, replayable release-gate decision. Produced by the policy engine (B4), attested by A4, enforced by A5. See docs/spec/SPEC.md section 6.5.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "decision_id", "evaluated_at", "subject", "verdict",
+    "violations", "waivers_applied", "inputs", "engine_version"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "decision_id": { "type": "string", "format": "uuid" },
+    "evaluated_at": {
+      "description": "Passed into the policy as input.evaluated_at. Policies never read the clock, so replay is exact.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "commit", "context"],
+      "properties": {
+        "repo": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "ref": { "type": "string" },
+        "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "image_digest": { "$ref": "#/$defs/oci_digest" },
+        "context": { "enum": ["pr", "release", "local"] }
+      }
+    },
+    "verdict": { "enum": ["PASS", "WARN", "BLOCK"] },
+    "violations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rule", "effect", "finding_ids", "message"],
+        "properties": {
+          "rule": { "type": "string", "pattern": "^SC-[0-9]{3}$" },
+          "effect": { "enum": ["WARN", "BLOCK"] },
+          "finding_ids": { "type": "array", "items": { "$ref": "#/$defs/sha256_hex" } },
+          "message": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "waivers_applied": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "inputs": {
+      "description": "Content digests of everything the decision depended on (principle P3: everything is evidence).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "findings_digest", "enrichment_snapshot_digest", "policy_bundle_digest",
+        "risk_model_version", "tool_versions"
+      ],
+      "properties": {
+        "findings_digest": { "$ref": "#/$defs/prefixed_sha256" },
+        "sbom_digest": { "$ref": "#/$defs/prefixed_sha256" },
+        "enrichment_snapshot_digest": { "$ref": "#/$defs/prefixed_sha256" },
+        "policy_bundle_digest": { "$ref": "#/$defs/prefixed_sha256" },
+        "risk_model_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "tool_versions": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "engine_version": { "type": "string", "minLength": 1 }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "verdict": { "const": "BLOCK" } } },
+      "then": { "properties": { "violations": { "contains": { "properties": { "effect": { "const": "BLOCK" } } } } } }
+    },
+    {
+      "if": { "properties": { "verdict": { "const": "WARN" } } },
+      "then": {
+        "properties": {
+          "violations": {
+            "contains": { "properties": { "effect": { "const": "WARN" } } },
+            "items": { "properties": { "effect": { "const": "WARN" } } }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "verdict": { "const": "PASS" } } },
+      "then": { "properties": { "violations": { "maxItems": 0 } } }
+    }
+  ],
+  "$defs": {
+    "sha256_hex": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "prefixed_sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "oci_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

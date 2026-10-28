@@ -1,0 +1,37 @@
+{
+  "schema_version": "1.0",
+  "decision_id": "0193f2c4-7a1e-7b3c-9d2e-4f5a6b7c8d9e",
+  "evaluated_at": "2026-11-10T10:00:00Z",
+  "subject": {
+    "repo": "NOURHANE-EHOUARI/sentinelci",
+    "ref": "refs/heads/main",
+    "commit": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    "image_digest": "sha256:5c3e1f0a9b8d7c6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e",
+    "context": "release"
+  },
+  "verdict": "BLOCK",
+  "violations": [
+    {
+      "rule": "SC-001",
+      "effect": "BLOCK",
+      "finding_ids": ["3f1c9a7e5b2d4c6a8e0f1b3d5c7a9e1f3b5d7c9a1e3f5b7d9c1a3e5f7b9d1c3a"],
+      "message": "Hard-coded secret"
+    },
+    {
+      "rule": "SC-006",
+      "effect": "WARN",
+      "finding_ids": ["c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00"],
+      "message": "High-priority finding"
+    }
+  ],
+  "waivers_applied": [],
+  "inputs": {
+    "findings_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "sbom_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "enrichment_snapshot_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "policy_bundle_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "risk_model_version": "1.0.0",
+    "tool_versions": { "gitleaks": "8.24.0", "grype": "0.92.0", "opa": "1.21.4" }
+  },
+  "engine_version": "0.1.0"
+}

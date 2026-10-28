@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/NOURHANE-EHOUARI/sentinelci/schemas/verification-result.v1.json",
+  "title": "SentinelCI Verification Result v1",
+  "description": "Outcome of verifying a patch proposal. The schema itself encodes the verification gate of docs/spec/SPEC.md section 9.2: VERIFIED is only possible when every condition holds.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "proposal_id", "attempt", "build_ok", "tests_ok",
+    "target_resolved", "new_findings", "verdict", "outcome", "verified_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "proposal_id": { "type": "string", "format": "uuid" },
+    "attempt": { "type": "integer", "minimum": 1, "maximum": 3 },
+    "build_ok": { "type": "boolean" },
+    "tests_ok": { "type": "boolean" },
+    "target_resolved": { "type": "boolean" },
+    "new_findings": {
+      "description": "Fingerprints of findings with severity MEDIUM or higher that appeared after the patch.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+    },
+    "verdict": { "enum": ["PASS", "WARN", "BLOCK"] },
+    "outcome": { "enum": ["VERIFIED", "REJECTED", "FAILED"] },
+    "pull_request": { "type": "integer", "minimum": 1 },
+    "verified_at": { "type": "string", "format": "date-time" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "outcome": { "const": "VERIFIED" } } },
+      "then": {
+        "properties": {
+          "build_ok": { "const": true },
+          "tests_ok": { "const": true },
+          "target_resolved": { "const": true },
+          "new_findings": { "maxItems": 0 },
+          "verdict": { "enum": ["PASS", "WARN"] }
+        }
+      }
+    }
+  ]
+}

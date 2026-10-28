@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "proposal_id": "0193f2c5-0000-7000-8000-000000000002",
+  "attempt": 2,
+  "build_ok": true,
+  "tests_ok": true,
+  "target_resolved": true,
+  "new_findings": ["0f9e8d7c6b5a49382716051f0e9d8c7b6a5948372615041f0e9d8c7b6a594837"],
+  "verdict": "WARN",
+  "outcome": "VERIFIED",
+  "verified_at": "2026-11-10T10:33:00Z"
+}
