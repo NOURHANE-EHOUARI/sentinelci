@@ -1,5 +1,7 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup check lint format typecheck imports test zizmor
+.PHONY: help setup check lint format typecheck imports test zizmor compose-env up down
+
+COMPOSE := docker compose -f deploy/compose/compose.yaml
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -29,3 +31,12 @@ test: ## Unit and contract tests
 
 zizmor: ## Static security audit of GitHub Actions workflows
 	uv run zizmor --offline --min-severity low .github/workflows
+
+compose-env: ## Create deploy/compose/.env with random local credentials (git-ignored, never overwritten)
+	uv run python deploy/compose/make_env.py
+
+up: compose-env ## Start the local platform; COMPOSE_PROFILES=ai,observability adds Ollama, Prometheus, Grafana
+	$(COMPOSE) up --detach --build --wait
+
+down: ## Stop the local platform (volumes are kept; `docker compose ... down --volumes` wipes them)
+	$(COMPOSE) down

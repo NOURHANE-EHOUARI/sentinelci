@@ -32,7 +32,7 @@ PR / push ──► GitHub Actions (scan · build · gate · sign/attest) ──
                      │                                                        │
                      │ evidence bundle                                        ▼
                      ▼                                         kind cluster: Argo CD ──► Kyverno admission ──► workloads
-          SentinelCI control plane (FastAPI · PostgreSQL+pgvector · MinIO · workers)
+          SentinelCI control plane (FastAPI · PostgreSQL+pgvector · SeaweedFS · workers)
           ├─ AI analyst (Ollama, advisory only) · correlator · remediation bot
           └─ dashboard (React) · Prometheus + Grafana
 ```
@@ -59,6 +59,7 @@ Requirements: [uv](https://docs.astral.sh/uv/), Python 3.12+, Docker (later spri
 ```bash
 make setup   # install the locked workspace and git hooks
 make check   # lint, strict typing, architecture contract, tests, workflow audit
+make up      # local platform in Docker (see deploy/compose/README.md)
 ```
 
 ## Documentation
