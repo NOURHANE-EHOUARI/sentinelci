@@ -12,7 +12,8 @@ private repositories:
   transparency log, which would disclose the private repository.
 - GitHub artifact attestations require a public repository on non-Enterprise plans.
 - Uploading SARIF to GitHub code scanning is not included for private repositories on our plan.
-- Branch protection for private repositories requires GitHub Pro; Actions minutes are capped.
+- We stay on GitHub Free: branch protection is unavailable for this private repository, and Actions minutes
+  are capped (2,000 per month).
 
 ## Decision
 
@@ -24,9 +25,13 @@ Until the repository goes public:
 3. Report results through PR comments, workflow artifacts and the SentinelCI dashboard.
 4. Push CI images to a private GHCR package; Kubernetes demos use the kind cluster's local registry.
 5. Budget Actions minutes: path filters, cached vulnerability databases, full image scans nightly on `main`.
+6. Protect `main` by convention: changes only through reviewed PRs merged with a green CI (or, while Actions
+   cannot run, a local `make check` report on the PR head), and a local pre-commit hook that refuses commits
+   on `main`.
 
-When the repository goes public, switch to GitHub mode: keyless signing via GitHub OIDC, GitHub artifact
-attestations in a reusable workflow (SLSA Build L3 target), SARIF upload to code scanning, public GHCR images.
+When the repository goes public, enable branch protection on `main` and switch to GitHub mode: keyless signing
+via GitHub OIDC, GitHub artifact attestations in a reusable workflow (SLSA Build L3 target), SARIF upload to
+code scanning, public GHCR images.
 
 ## Consequences
 
