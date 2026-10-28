@@ -78,6 +78,8 @@ make format     # auto-format
 
 - Run code from `demo-shop/` outside a container, or expose it beyond localhost.
 - Use `pull_request_target`, or give a job that executes repository code access to secrets or write tokens.
+- Judge a pull request with its own pipeline (CLI, `tools.lock.toml`, policies, waivers): the gate always uses
+  the base commit (ADR-0008).
 - Let any AI output change a verdict, create a waiver, or merge a PR.
 - Let the scanned repository configure or silence a scanner (config files, ignore files, inline allow
-  comments). Scanner configuration belongs to SentinelCI; exceptions are waivers.
+  comments, `.gitattributes`). Scanner configuration belongs to SentinelCI; exceptions are waivers.

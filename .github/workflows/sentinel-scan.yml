@@ -203,6 +203,8 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           REF: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/head', github.event.pull_request.number) || github.ref }}
           REPO: ${{ github.repository }}
+        # GitHub runs this with `bash -e`: the exit code is captured with `|| status=$?` so that a BLOCK (1) or
+        # no decision (3) is recorded and the decision is still uploaded; the last step fails the job.
         run: |
           set -uo pipefail
           mkdir -p "$RUNNER_TEMP/decision"
@@ -211,14 +213,14 @@ jobs:
           # Run from the pipeline checkout: policies and .sentinel/waivers.yaml come from the base commit, so a
           # pull request cannot waive its own findings (a waiver applies once it is reviewed and merged).
           cd pipeline
+          status=0
           "$SENTINEL" evaluate \
             --findings "$RUNNER_TEMP/in/findings.ndjson" \
             --repo "$REPO" --commit "$HEAD_SHA" --context "$CONTEXT" --ref "$REF" \
             --policy-dir policies \
             --opa "$RUNNER_TEMP/sentinel-tools/bin/opa" \
             "${versions[@]}" \
-            --output "$RUNNER_TEMP/decision/decision.v1.json"
-          status=$?
+            --output "$RUNNER_TEMP/decision/decision.v1.json" || status=$?
           echo "status=$status" >> "$GITHUB_OUTPUT"
           echo "sentinel evaluate exited with $status (0 PASS/WARN, 1 BLOCK, 3 no decision)"
 
@@ -278,6 +280,7 @@ jobs:
 
       - name: Render the comment
         id: render
+        # Exit 3 still writes a fail-closed comment: it is posted, then the last step fails the job.
         env:
           SENTINEL: ${{ github.workspace }}/pipeline/.venv/bin/sentinel
         run: |
@@ -287,12 +290,12 @@ jobs:
           if [ -f "$in/sentinel-scan/pipeline-changes.txt" ]; then
             extra+=(--pipeline-changes "$in/sentinel-scan/pipeline-changes.txt")
           fi
+          status=0
           "$SENTINEL" report pr-comment \
             --decision "$in/sentinel-decision/decision.v1.json" \
             --findings "$in/sentinel-scan/findings.ndjson" \
             "${extra[@]}" \
-            --out "$RUNNER_TEMP/comment.md"
-          status=$?
+            --out "$RUNNER_TEMP/comment.md" || status=$?
           echo "status=$status" >> "$GITHUB_OUTPUT"
           cat "$RUNNER_TEMP/comment.md" >> "$GITHUB_STEP_SUMMARY"
 
