@@ -304,7 +304,7 @@ def test_malformed_findings_fail_closed_and_remove_stale_decision(tmp_path: Path
     stale.parent.mkdir(parents=True)
     stale.write_text('{"verdict": "PASS"}', encoding="utf-8")
     code, out, output = run_evaluate(tmp_path, b"{broken\n", "--opa", str(opa_binary))
-    assert code == 2
+    assert code == 3
     assert "no decision was made" in out
     assert not output.exists()
 
@@ -314,7 +314,7 @@ def test_unusable_opa_binary_fails_closed(tmp_path: Path) -> None:
     not_opa.write_text("this is not an executable", encoding="utf-8")
     for opa in (tmp_path / "missing-opa", not_opa):
         code, out, output = run_evaluate(tmp_path, ndjson(CONTAINER), "--opa", str(opa))
-        assert code == 2, out
+        assert code == 3, out
         assert not output.exists()
 
 

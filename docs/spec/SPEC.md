@@ -263,7 +263,8 @@ draft a waiver PR; only a human approval makes it effective.
 
 Schema: `schemas/decision.v1.json`. Fields: `decision_id`, `evaluated_at`, `subject` (repo, ref, commit, image
 digest, context), `verdict`, `violations` (rule, effect, finding ids, message), `waivers_applied`, `inputs`
-(digests of findings, SBOM, enrichment snapshot, policy bundle; risk model version; tool versions),
+(digests of findings, SBOM, enrichment snapshot, policy bundle, waivers file (since 1.1); risk model version;
+tool versions),
 `engine_version`. The schema enforces verdict consistency (BLOCK ⇒ at least one BLOCK violation; PASS ⇒ none).
 Attached to the image as an in-toto attestation, predicate type
 `https://github.com/NOURHANE-EHOUARI/sentinelci/specs/release-decision/v1`. `sentinel replay` re-evaluates from

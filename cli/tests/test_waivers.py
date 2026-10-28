@@ -1,5 +1,6 @@
 """Waivers (SPEC section 6.4) and rule SC-005: loading `.sentinel/waivers.yaml` and the gate's verdicts."""
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -98,20 +99,20 @@ def test_unreadable_waivers_file_fails_the_evaluation(data: bytes) -> None:
 # ---------------------------------------------------------------- schema and policy agree
 
 
-def gate(opa_binary: Path, waivers: list[Any], findings: bytes = b"") -> dict[str, Any]:
+def gate(opa_binary: Path, waivers: bytes | None, findings: bytes = b"") -> dict[str, Any]:
     return evaluate(
         findings_data=findings,
         subject=Subject(repo="NOURHANE-EHOUARI/sentinelci", commit=COMMIT, context="pr"),
         evaluated_at=WHEN,
         bundle=PolicyBundle.load(POLICIES),
         opa=OpaRunner(binary=opa_binary),
-        waivers=waivers,
+        waivers_data=waivers,
     )
 
 
-def fixture_waivers(path: Path) -> list[Any]:
+def fixture_waivers(path: Path) -> bytes:
     # JSON is YAML: the fixtures go through the same loader as a real waivers file.
-    return load_waivers(path.read_bytes())
+    return path.read_bytes()
 
 
 @pytest.mark.parametrize("path", sorted((FIXTURES / "valid").glob("*.json")), ids=lambda p: p.stem)
@@ -125,6 +126,31 @@ def test_schema_invalid_waivers_are_blocked_by_sc005(path: Path, opa_binary: Pat
     decision = gate(opa_binary, fixture_waivers(path))
     assert decision["verdict"] == "BLOCK"
     assert {v["rule"] for v in decision["violations"]} == {"SC-005"}
+
+
+# ---------------------------------------------------------------- evidence: waivers_digest (Decision 1.1)
+
+
+def test_decision_records_the_digest_of_the_waivers_file_as_read(opa_binary: Path) -> None:
+    data = VALID_WAIVERS_YAML.encode("utf-8")
+    decision = gate(opa_binary, data)
+    assert decision["schema_version"] == "1.1"
+    assert decision["inputs"]["waivers_digest"] == "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def test_no_waivers_file_is_recorded_as_empty_content(opa_binary: Path) -> None:
+    empty = "sha256:" + hashlib.sha256(b"").hexdigest()
+    assert gate(opa_binary, None)["inputs"]["waivers_digest"] == empty
+    assert gate(opa_binary, b"") == gate(opa_binary, None)
+
+
+def test_any_change_to_the_waivers_file_changes_the_decision_id(opa_binary: Path) -> None:
+    data = VALID_WAIVERS_YAML.encode("utf-8")
+    first = gate(opa_binary, data)
+    second = gate(opa_binary, data + b"# reviewed again\n")
+    assert first["waivers_applied"] == second["waivers_applied"]
+    assert first["inputs"]["waivers_digest"] != second["inputs"]["waivers_digest"]
+    assert first["decision_id"] != second["decision_id"]
 
 
 # ---------------------------------------------------------------- sentinel evaluate
@@ -203,5 +229,5 @@ def test_unreadable_waivers_file_makes_no_decision(
     if content is not None:
         waivers.write_text(content, encoding="utf-8")
     code, out, output = run_evaluate(tmp_path, opa_binary, "--waivers", str(waivers))
-    assert code == 2, out
+    assert code == 3, out
     assert not output.exists()

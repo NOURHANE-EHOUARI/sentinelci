@@ -18,9 +18,11 @@ from typing import Any
 
 from sentinelci import __version__
 from sentinelci.policy.bundle import PolicyBundle
+from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaRunner
+from sentinelci.policy.waivers import load_waivers
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 GATE_QUERY = "data.sentinel.gate.decision"
 CONTEXTS = ("pr", "release", "local")
 VERDICTS = ("PASS", "WARN", "BLOCK")
@@ -35,10 +37,6 @@ _REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _COMMIT = re.compile(r"^[a-f0-9]{40}$")
 _OCI_DIGEST = re.compile(r"^sha256:[a-f0-9]{64}$")
 _SHA256_HEX = re.compile(r"^[a-f0-9]{64}$")
-
-
-class EvaluationError(Exception):
-    """The gate could not produce a decision. Callers must fail closed."""
 
 
 @dataclass(frozen=True)
@@ -154,12 +152,15 @@ def evaluate(
     bundle: PolicyBundle,
     opa: OpaRunner,
     tool_versions: Mapping[str, str] | None = None,
-    waivers: Sequence[Any] = (),
+    waivers_data: bytes | None = None,
     enrichment_snapshot: bytes | None = None,
     sbom: bytes | None = None,
 ) -> dict[str, Any]:
     """Run the release gate and return a Decision v1 record."""
     findings = load_findings(findings_data)
+    # Parsed from the same bytes that are digested, so the record names exactly what was evaluated.
+    waivers_data = b"" if waivers_data is None else waivers_data
+    waivers = load_waivers(waivers_data)
     timestamp = canonical_time(evaluated_at)
 
     inputs: dict[str, Any] = {
@@ -168,6 +169,7 @@ def evaluate(
             EMPTY_ENRICHMENT_SNAPSHOT if enrichment_snapshot is None else enrichment_snapshot
         ),
         "policy_bundle_digest": bundle.digest,
+        "waivers_digest": sha256_digest(waivers_data),
         "risk_model_version": bundle.risk_model_version,
         "tool_versions": _tool_versions(findings, tool_versions or {}, opa.version()),
     }
@@ -178,7 +180,7 @@ def evaluate(
         opa.eval(
             GATE_QUERY,
             bundle.rego_files,
-            {"evaluated_at": timestamp, "findings": findings, "waivers": list(waivers)},
+            {"evaluated_at": timestamp, "findings": findings, "waivers": waivers},
         )
     )
 

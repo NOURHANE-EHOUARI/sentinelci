@@ -22,10 +22,11 @@ sentinel evaluate --findings out/findings.v1.ndjson \
   --tool-version gitleaks=8.24.0 -o out/decision.v1.json
 ```
 
-Runs the OPA policies in `policies/` and writes a Decision v1 record (`schemas/decision.v1.json`).
+Runs the OPA policies in `policies/` and writes a Decision record (`schemas/decision.v1.json`, `schema_version` 1.1).
 
-- Exit code: `0` PASS or WARN, `1` BLOCK, `2` no decision could be made (bad input, OPA missing,
-  failing or timing out). Treat `2` as blocked: the gate fails closed, and an older decision file at the
+- Exit code: `0` PASS or WARN, `1` BLOCK, `2` usage error, `3` no decision could be made (bad input,
+  OPA missing, failing or timing out; same code as `sentinel normalize` for untrusted input). Treat `3`
+  as blocked: the gate fails closed, and an older decision file at the
   output path is deleted before evaluation starts.
 - OPA is a pinned binary (version and SHA-256 in `.github/workflows/ci.yml`): pass `--opa`, set
   `SENTINEL_OPA`, or put `opa` on `PATH`.
@@ -33,7 +34,8 @@ Runs the OPA policies in `policies/` and writes a Decision v1 record (`schemas/d
   Same inputs give a byte-identical file, including `decision_id`, which is a UUIDv5 of the subject,
   time, input digests and engine version.
 - Recorded evidence: digests of the findings file, policy bundle (all files in `policies/` except
-  `*_test.rego`), enrichment snapshot (the empty snapshot `{}` until B2 lands) and optional SBOM; the risk
+  `*_test.rego`), waivers file as read (empty content when there is none), enrichment snapshot (the empty
+  snapshot `{}` until B2 lands) and optional SBOM; the risk
   model version; versions of every tool that reported a finding, given with `--tool-version`, and OPA.
 - Rules implemented so far: SC-001 (secret, not waived), SC-005 (invalid waiver) and SC-010 for
   malformed gate input.
@@ -60,4 +62,4 @@ waivers:
   applies, and SC-005 blocks with every reason. The policy checks entries, not the loader, so the
   reasons reach the decision record.
 - A file that cannot be read (bad YAML, wrong top-level shape, `version` other than 1) means no decision:
-  exit code `2`.
+  exit code `3`.

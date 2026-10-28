@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from sentinelci.policy.decision import EvaluationError
+from sentinelci.policy.errors import EvaluationError
 
 DEFAULT_WAIVERS_PATH = ".sentinel/waivers.yaml"
 WAIVERS_FILE_VERSION = 1

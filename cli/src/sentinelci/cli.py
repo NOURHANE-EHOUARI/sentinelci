@@ -1,6 +1,12 @@
 """Command-line entry point (`sentinel`).
 
 Sub-commands are added task by task (see docs/spec/SPEC.md, section 15).
+
+Exit codes of `evaluate`:
+    0  PASS or WARN
+    1  BLOCK
+    2  usage error (Typer)
+    3  no decision could be made -> callers must fail closed
 """
 
 import os
@@ -12,16 +18,10 @@ import typer
 
 from sentinelci import __version__
 from sentinelci.policy.bundle import BundleError, PolicyBundle
-from sentinelci.policy.decision import (
-    CONTEXTS,
-    EvaluationError,
-    Subject,
-    dumps_decision,
-    evaluate,
-    now_utc,
-)
+from sentinelci.policy.decision import CONTEXTS, Subject, dumps_decision, evaluate, now_utc
+from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaError, OpaRunner
-from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH, load_waivers
+from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
 
 app = typer.Typer(
     name="sentinel",
@@ -30,7 +30,7 @@ app = typer.Typer(
 )
 
 EXIT_BLOCK = 1
-EXIT_ERROR = 2
+EXIT_NO_DECISION = 3
 
 
 @app.callback()
@@ -99,7 +99,7 @@ def evaluate_command(
 ) -> None:
     """Run the release gate and write a Decision v1 record.
 
-    Exit code 0 for PASS or WARN, 1 for BLOCK, 2 when no decision could be made (fail closed).
+    Exit code 0 for PASS or WARN, 1 for BLOCK, 3 when no decision could be made (fail closed).
     """
     # A stale decision from an earlier run must never be mistaken for this run's result.
     output.unlink(missing_ok=True)
@@ -113,14 +113,14 @@ def evaluate_command(
             bundle=PolicyBundle.load(policy_dir),
             opa=OpaRunner.locate(opa),
             tool_versions=_parse_tool_versions(tool_version or []),
-            waivers=load_waivers(waivers.read_bytes()) if waivers else [],
+            waivers_data=waivers.read_bytes() if waivers else None,
             enrichment_snapshot=enrichment_snapshot.read_bytes() if enrichment_snapshot else None,
             sbom=sbom.read_bytes() if sbom else None,
         )
     except (BundleError, EvaluationError, OpaError, OSError) as exc:
         typer.echo(f"sentinel evaluate: {exc}", err=True)
         typer.echo("sentinel evaluate: no decision was made; treat this change as blocked.", err=True)
-        raise typer.Exit(EXIT_ERROR) from exc
+        raise typer.Exit(EXIT_NO_DECISION) from exc
 
     _write_atomically(output, dumps_decision(decision))
 

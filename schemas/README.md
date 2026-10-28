@@ -15,5 +15,8 @@ Rules:
 - Every schema has `fixtures/<name>/valid/` and `fixtures/<name>/invalid/` examples; `tests/contracts` checks
   that valid ones pass and invalid ones fail. Add a fixture for every new rule you encode.
 - A breaking change creates a new version (`finding.v2.json`) — never edit a released version's meaning.
+- An additive change may bump the minor `schema_version` in the same file (`decision.v1.json` accepts
+  `1.0` and `1.1`): every older document stays valid, and the schema states what the new minor version
+  requires. Current minor versions: decision 1.1 (`inputs.waivers_digest`).
 - Schemas encode safety rules where possible (no raw secrets, no path traversal, VERIFIED only when every
   verification condition holds, verdict consistent with violations).
