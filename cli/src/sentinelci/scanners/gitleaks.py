@@ -9,6 +9,12 @@ request they are written by the person whose change is being checked, so each on
   because Gitleaks *always* also loads `<source>/.gitleaksignore` (cmd/root.go), a scan target containing that
   file is refused (fail closed). Exceptions must go through SentinelCI waivers.
 
+In git mode, Gitleaks reads `git log -p`, and git applies the scanned repository's `.gitattributes` to
+that output: a `-diff` or `binary` attribute added by the author turns a file's patch into "Binary files
+differ", so its secrets are never seen. Patches are therefore forced to text (`--text`, no textconv, no
+external diff), and caller-supplied `--log-opts` are limited to revisions, pathspecs and a few harmless
+options, so they cannot turn that back off or make git write files (`--output`).
+
 The raw report contains real secret values: it is written to a private temporary directory and deleted as soon
 as it has been read. Only the normalized, hashed findings leave this module.
 """
@@ -27,6 +33,29 @@ from sentinelci.scanners.runner import DEFAULT_TIMEOUT_S, ToolRun, is_within, ru
 
 GitleaksMode = Literal["dir", "git"]
 IGNORE_FILE = ".gitleaksignore"
+
+# Always passed to `git log` in git mode (see the module docstring).
+GIT_LOG_HARDENING = ("--text", "--no-textconv", "--no-ext-diff")
+# Gitleaks' own default when no --log-opts is given (sources/git.go): every ref, deleted files excluded.
+GIT_LOG_DEFAULT = ("--full-history", "--all", "--diff-filter=tuxdb")
+_SAFE_LOG_FLAGS = frozenset({"--all", "--full-history", "--first-parent", "--no-merges"})
+_SAFE_LOG_PREFIXES = ("--since=", "--until=", "--max-count=")
+
+
+def git_log_opts(log_opts: str | None) -> str:
+    """The `--log-opts` value for Gitleaks: hardening flags first, then a validated range and pathspecs."""
+    if not log_opts:
+        return " ".join((*GIT_LOG_HARDENING, *GIT_LOG_DEFAULT))
+    tokens = log_opts.split()  # Gitleaks itself splits on spaces, so no token can contain one
+    separator = tokens.index("--") if "--" in tokens else len(tokens)
+    for token in tokens[:separator]:
+        allowed = token in _SAFE_LOG_FLAGS or token.startswith(_SAFE_LOG_PREFIXES)
+        if token.startswith("-") and not allowed:
+            raise ScannerError(
+                f"git log option {token!r} is not allowed in --log-opts: only revisions, pathspecs and "
+                f"{', '.join(sorted(_SAFE_LOG_FLAGS))}, --since=, --until=, --max-count= are accepted"
+            )
+    return " ".join((*GIT_LOG_HARDENING, "--diff-filter=tuxdb", *tokens))
 
 
 def _relative_target(target: Path, repo_root: Path) -> str:
@@ -75,6 +104,9 @@ def scan_secrets_with_run(
     """Same as `scan_secrets`, also returning the run metadata for the evidence bundle."""
     repo_root = repo_root or target
     source = _relative_target(target, repo_root)
+    if mode != "git" and log_opts:
+        raise ScannerError("--log-opts only applies to git mode")
+    hardened_log_opts = git_log_opts(log_opts) if mode == "git" else None
     if (repo_root / source / IGNORE_FILE).exists():
         raise ScannerError(
             f"{IGNORE_FILE} found at the root of the scanned tree ({source}). Gitleaks would let it silence "
@@ -103,8 +135,8 @@ def scan_secrets_with_run(
             "--no-color",
             "--log-level", "error",
         ]  # fmt: skip
-        if mode == "git" and log_opts:
-            args += ["--log-opts", log_opts]
+        if hardened_log_opts is not None:
+            args += ["--log-opts", hardened_log_opts]
 
         run = run_verified_tool(
             "gitleaks",

@@ -195,7 +195,8 @@ def scan_secrets_cmd(
     ] = None,
     mode: Annotated[str, typer.Option(help="dir (working tree) or git (history).")] = "dir",
     log_opts: Annotated[
-        str | None, typer.Option(help="git mode only: commit range, e.g. origin/main..HEAD.")
+        str | None,
+        typer.Option(help="git mode only: commit range and pathspecs, e.g. 'origin/main..HEAD -- src'."),
     ] = None,
     lock: LockOption = Path(LOCK_FILE_NAME),
     tools_dir: Annotated[
