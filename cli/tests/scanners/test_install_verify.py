@@ -308,6 +308,26 @@ def test_cli_verify_fails_closed_with_exit_code_3(
     assert not report.exists(), "no manifest may be produced for an unverified toolchain"
 
 
+def test_cli_verify_failure_removes_an_older_manifest(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
+) -> None:
+    # A manifest left by an earlier run must not vouch for a toolchain that now fails verification.
+    lock_path, dest = _cli_env(tmp_path, releases, write_lock)
+    report = tmp_path / "out" / "tools-manifest.json"
+    report.parent.mkdir(parents=True)
+    report.write_text('{"stale": true}\n', encoding="utf-8")
+    (dest / "bin" / "fakescan").write_bytes(b"tampered")
+
+    result = CliRunner().invoke(
+        app,
+        ["tools", "verify", "--lock", str(lock_path), "--dest", str(dest), "--platform", PLATFORM,
+         "--report", str(report)],
+    )  # fmt: skip
+
+    assert result.exit_code == 3
+    assert not report.exists()
+
+
 def test_cli_list_shows_pinned_tools() -> None:
     result = CliRunner().invoke(
         app, ["tools", "list", "--lock", str(Path(__file__).resolve().parents[3] / "tools.lock.toml")]

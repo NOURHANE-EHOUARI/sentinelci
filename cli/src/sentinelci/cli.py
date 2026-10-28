@@ -119,7 +119,7 @@ def _write_manifest(report: VerificationReport, lock_path: Path, destination: Pa
     }
     destination.parent.mkdir(parents=True, exist_ok=True)
     tmp = destination.with_suffix(destination.suffix + ".tmp")
-    tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     tmp.replace(destination)
 
 
@@ -161,6 +161,8 @@ def tools_verify(
     ] = None,
 ) -> None:
     """Fail closed unless every installed binary is exactly the one pinned in the lock."""
+    if report is not None:
+        report.unlink(missing_ok=True)  # an older manifest must never vouch for a failing toolchain
     try:
         result = verify_tools(load_lock(lock), dest, platform=platform, only=tools)
     except ToolIntegrityError as exc:
