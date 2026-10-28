@@ -6,9 +6,12 @@ Exit codes:
     0  success (`evaluate`: PASS or WARN)
     1  `evaluate`: BLOCK
     2  usage error (Typer)
-    3  untrusted input or no decision could be made -> callers must fail closed (rule SC-010)
+    3  untrusted input, untrusted toolchain (tool missing or tampered), or no decision could be made
+       -> callers must fail closed (rule SC-010)
 """
 
+import hashlib
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -26,8 +29,12 @@ from sentinelci.policy.decision import CONTEXTS, Subject, dumps_decision, evalua
 from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaError, OpaRunner
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
+from sentinelci.scanners.errors import ToolIntegrityError
+from sentinelci.scanners.installer import VerificationReport, install_tools, verify_tools
+from sentinelci.scanners.lock import LOCK_FILE_NAME, load_lock
 
 EXIT_UNTRUSTED_INPUT = 3
+DEFAULT_TOOLS_DIR = Path(".sentinel/tools")
 
 app = typer.Typer(
     name="sentinel",
@@ -35,7 +42,28 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 normalize_app = typer.Typer(help="Convert raw scanner output into Finding v1 NDJSON.", no_args_is_help=True)
+tools_app = typer.Typer(
+    help="Install and verify the pinned security tools (tools.lock.toml).", no_args_is_help=True
+)
 app.add_typer(normalize_app, name="normalize")
+app.add_typer(tools_app, name="tools")
+
+LockOption = Annotated[Path, typer.Option("--lock", help="Path to the tool lock file.")]
+DestOption = Annotated[Path, typer.Option("--dest", help="Installation directory (bin/ and cache/).")]
+PlatformOption = Annotated[
+    str | None, typer.Option("--platform", help="Override platform detection, e.g. linux-amd64.")
+]
+ToolsArgument = Annotated[
+    list[str] | None, typer.Argument(help="Tools to process (default: all pinned tools).")
+]
+
+
+def _fail_closed(exc: Exception) -> typer.Exit:
+    typer.echo(
+        f"error: {exc}\nFAIL CLOSED: the toolchain or its output cannot be trusted (rule SC-010).", err=True
+    )
+    return typer.Exit(EXIT_UNTRUSTED_INPUT)
+
 
 EXIT_BLOCK = 1
 EXIT_NO_DECISION = 3
@@ -145,6 +173,9 @@ def evaluate_command(
         raise typer.Exit(EXIT_BLOCK)
 
 
+# ---------------------------------------------------------------- normalize
+
+
 @normalize_app.command("gitleaks")
 def normalize_gitleaks_cmd(
     report: Annotated[Path, typer.Argument(help="Gitleaks JSON report (generated without --redact).")],
@@ -152,7 +183,7 @@ def normalize_gitleaks_cmd(
     repo: Annotated[str, typer.Option(help="Repository as owner/name.")],
     commit: Annotated[str, typer.Option(help="Commit SHA that was scanned.")],
     context: Annotated[RunContext, typer.Option(help="Run context.")],
-    tool_version: Annotated[str, typer.Option(help="Gitleaks version from tools.lock.yaml.")],
+    tool_version: Annotated[str, typer.Option(help=f"Gitleaks version from {LOCK_FILE_NAME}.")],
     ref: Annotated[str | None, typer.Option(help="Git ref that was scanned.")] = None,
     run_id: Annotated[str | None, typer.Option(help="CI run identifier.")] = None,
     repo_root: Annotated[Path, typer.Option(help="Repository root used to relativize paths.")] = Path("."),
@@ -168,10 +199,83 @@ def normalize_gitleaks_cmd(
             repo_root=repo_root,
         )
     except NormalizationError as exc:
-        typer.echo(f"error: {exc} (fail closed: treat as SC-010)", err=True)
-        raise typer.Exit(EXIT_UNTRUSTED_INPUT) from exc
+        raise _fail_closed(exc) from exc
     write_ndjson(findings, out)
     typer.echo(f"{len(findings)} finding(s) written to {out}")
+
+
+# ---------------------------------------------------------------- tools
+
+
+def _write_manifest(report: VerificationReport, lock_path: Path, destination: Path) -> None:
+    """Evidence of the exact toolchain used (feeds `inputs.tool_versions` of the decision record)."""
+    manifest = {
+        "schema_version": 1,
+        "platform": report.platform,
+        "lock_sha256": hashlib.sha256(lock_path.read_bytes()).hexdigest(),
+        "tools": {
+            entry.name: {
+                "version": entry.version,
+                "artifact_sha256": entry.artifact_sha256,
+                "binary_sha256": entry.binary_sha256,
+            }
+            for entry in report.entries
+        },
+    }
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    tmp = destination.with_suffix(destination.suffix + ".tmp")
+    tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    tmp.replace(destination)
+
+
+@tools_app.command("list")
+def tools_list(lock: LockOption = Path(LOCK_FILE_NAME)) -> None:
+    """Show the pinned tools and versions."""
+    try:
+        tool_lock = load_lock(lock)
+    except ToolIntegrityError as exc:
+        raise _fail_closed(exc) from exc
+    for name, tool in sorted(tool_lock.tools.items()):
+        typer.echo(f"{name:<10} {tool.version:<10} {', '.join(sorted(tool.artifacts))}")
+
+
+@tools_app.command("install")
+def tools_install(
+    tools: ToolsArgument = None,
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    dest: DestOption = DEFAULT_TOOLS_DIR,
+    platform: PlatformOption = None,
+) -> None:
+    """Download the pinned artifacts, check their SHA-256 against the lock, and install the binaries."""
+    try:
+        report = install_tools(load_lock(lock), dest, platform=platform, only=tools)
+    except ToolIntegrityError as exc:
+        raise _fail_closed(exc) from exc
+    for entry in report.entries:
+        typer.echo(f"installed {entry.name} {entry.version} ({entry.binary_sha256[:12]}) -> {entry.path}")
+
+
+@tools_app.command("verify")
+def tools_verify(
+    tools: ToolsArgument = None,
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    dest: DestOption = DEFAULT_TOOLS_DIR,
+    platform: PlatformOption = None,
+    report: Annotated[
+        Path | None, typer.Option("--report", help="Write the verified tool manifest (JSON) here.")
+    ] = None,
+) -> None:
+    """Fail closed unless every installed binary is exactly the one pinned in the lock."""
+    if report is not None:
+        report.unlink(missing_ok=True)  # an older manifest must never vouch for a failing toolchain
+    try:
+        result = verify_tools(load_lock(lock), dest, platform=platform, only=tools)
+    except ToolIntegrityError as exc:
+        raise _fail_closed(exc) from exc
+    if report is not None:
+        _write_manifest(result, lock, report)
+    for entry in result.entries:
+        typer.echo(f"verified {entry.name} {entry.version} sha256={entry.binary_sha256}")
 
 
 if __name__ == "__main__":

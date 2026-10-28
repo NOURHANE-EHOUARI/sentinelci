@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup check lint format typecheck imports policy test zizmor
+.PHONY: help setup check lint format typecheck imports policy test zizmor tools tools-verify
 
 # OPA is a pinned binary, not a Python package: install the version in .github/workflows/ci.yml.
 OPA ?= $(or $(SENTINEL_OPA),opa)
@@ -39,3 +39,9 @@ test: ## Unit and contract tests
 
 zizmor: ## Static security audit of GitHub Actions workflows
 	uv run zizmor --offline --min-severity low .github/workflows
+
+tools: ## Download, hash-check and install the pinned scanners into .sentinel/tools
+	uv run sentinel tools install
+
+tools-verify: ## Fail closed unless installed scanners match tools.lock.toml (writes out/tools-manifest.json)
+	uv run sentinel tools verify --report out/tools-manifest.json
