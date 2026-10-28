@@ -19,5 +19,5 @@ def dumps_ndjson(findings: Iterable[Finding]) -> str:
 def write_ndjson(findings: Iterable[Finding], path: Path) -> None:
     """Write atomically: a partial file must never be mistaken for a complete scan."""
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(dumps_ndjson(findings), encoding="utf-8")
+    tmp.write_text(dumps_ndjson(findings), encoding="utf-8", newline="\n")  # same bytes on Windows too
     tmp.replace(path)

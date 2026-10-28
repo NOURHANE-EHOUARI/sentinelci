@@ -39,7 +39,8 @@ The repository stays private until the project is complete. Until then (see ADR-
 - Kubernetes demos use the local registry of the kind cluster.
 - GitHub Actions minutes are limited (Free plan): use path filters and caches; run the full image scan nightly on `main`.
 - `main` has no server-side protection: never commit or push to `main` directly. Always work on a task branch
-  and open a PR; the other team member reviews and merges only with a green CI.
+  and open a PR; the other team member reviews and merges only with
+  a green CI, or a local `make check` report on the PR head while Actions cannot run.
 
 ## Commands
 

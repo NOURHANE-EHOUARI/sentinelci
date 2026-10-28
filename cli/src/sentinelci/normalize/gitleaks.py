@@ -45,12 +45,21 @@ def _is_redacted(secret: str) -> bool:
     return secret == _GITLEAKS_REDACTION_MARKER or secret.endswith("...")
 
 
+def _is_line_number(value: object) -> bool:
+    # `bool` is a subclass of `int`: reject True/False explicitly.
+    return type(value) is int and value >= 1
+
+
 def _validate(item: Mapping[str, Any], index: int) -> None:
     missing = [key for key in _REQUIRED if key not in item or item[key] in (None, "")]
     if missing:
         raise NormalizationError(f"Gitleaks finding #{index} is missing {', '.join(missing)}")
-    if not isinstance(item["StartLine"], int) or item["StartLine"] < 1:
-        raise NormalizationError(f"Gitleaks finding #{index} has an invalid StartLine")
+    start = item["StartLine"]
+    if not _is_line_number(start):
+        raise NormalizationError(f"Gitleaks finding #{index} has an invalid StartLine: {start!r}")
+    end = item.get("EndLine")
+    if end is not None and (not _is_line_number(end) or end < start):
+        raise NormalizationError(f"Gitleaks finding #{index} has an invalid EndLine: {end!r}")
     if _is_redacted(str(item["Secret"])):
         raise NormalizationError(
             "Gitleaks report is redacted: run Gitleaks without --redact inside the scan job "
@@ -76,7 +85,7 @@ def normalize_gitleaks(
         _validate(item, index)
         path = to_repo_relative(str(item["File"]), repo_root)
         start = int(item["StartLine"])
-        end = max(start, int(item.get("EndLine") or start))
+        end = int(item.get("EndLine") or start)
         fingerprint = secret_fingerprint(str(item["RuleID"]), str(item["Secret"]))
         occurrences[fingerprint].append((path, start, end, item))
 

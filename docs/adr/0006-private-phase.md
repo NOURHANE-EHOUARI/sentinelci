@@ -25,11 +25,13 @@ Until the repository goes public:
 3. Report results through PR comments, workflow artifacts and the SentinelCI dashboard.
 4. Push CI images to a private GHCR package; Kubernetes demos use the kind cluster's local registry.
 5. Budget Actions minutes: path filters, cached vulnerability databases, full image scans nightly on `main`.
-6. Protect `main` by convention: changes only through reviewed PRs merged with a green CI, and a local
-   pre-commit hook that refuses commits on `main`.
+6. Protect `main` by convention: changes only through reviewed PRs merged with a green CI (or, while Actions
+   cannot run, a local `make check` report on the PR head), and a local pre-commit hook that refuses commits
+   on `main`.
 
-When the repository goes public, enable branch protection on `main` and switch to GitHub mode: keyless signing via GitHub OIDC, GitHub artifact
-attestations in a reusable workflow (SLSA Build L3 target), SARIF upload to code scanning, public GHCR images.
+When the repository goes public, enable branch protection on `main` and switch to GitHub mode: keyless signing
+via GitHub OIDC, GitHub artifact attestations in a reusable workflow (SLSA Build L3 target), SARIF upload to
+code scanning, public GHCR images.
 
 ## Consequences
 

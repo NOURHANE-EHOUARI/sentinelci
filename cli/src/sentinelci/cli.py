@@ -89,6 +89,7 @@ def normalize_gitleaks_cmd(
     repo_root: Annotated[Path, typer.Option(help="Repository root used to relativize paths.")] = Path("."),
 ) -> None:
     """Normalize a Gitleaks report. Secrets are hashed and redacted; nothing raw is written."""
+    out.unlink(missing_ok=True)  # a failed run must never leave an older findings file behind
     try:
         run = Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id)
         findings = normalize_gitleaks(
@@ -123,7 +124,7 @@ def _write_manifest(report: VerificationReport, lock_path: Path, destination: Pa
     }
     destination.parent.mkdir(parents=True, exist_ok=True)
     tmp = destination.with_suffix(destination.suffix + ".tmp")
-    tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     tmp.replace(destination)
 
 
@@ -165,6 +166,8 @@ def tools_verify(
     ] = None,
 ) -> None:
     """Fail closed unless every installed binary is exactly the one pinned in the lock."""
+    if report is not None:
+        report.unlink(missing_ok=True)  # an older manifest must never vouch for a failing toolchain
     try:
         result = verify_tools(load_lock(lock), dest, platform=platform, only=tools)
     except ToolIntegrityError as exc:
