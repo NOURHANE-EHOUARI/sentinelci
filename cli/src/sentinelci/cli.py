@@ -54,6 +54,7 @@ def normalize_gitleaks_cmd(
     repo_root: Annotated[Path, typer.Option(help="Repository root used to relativize paths.")] = Path("."),
 ) -> None:
     """Normalize a Gitleaks report. Secrets are hashed and redacted; nothing raw is written."""
+    out.unlink(missing_ok=True)  # a failed run must never leave an older findings file behind
     try:
         run = Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id)
         findings = normalize_gitleaks(
