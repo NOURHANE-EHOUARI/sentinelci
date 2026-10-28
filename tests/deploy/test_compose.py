@@ -135,6 +135,26 @@ def test_seaweedfs_exposes_only_the_authenticated_s3_gateway(services: dict[str,
         assert flag in command, flag
 
 
+def test_api_runs_unprivileged_on_a_read_only_root(services: dict[str, Any]) -> None:
+    api = services["api"]
+    assert api.get("read_only") is True, "api: root filesystem must be read-only"
+    dockerfile = (ROOT / "platform" / "api" / "Dockerfile").read_text(encoding="utf-8")
+    users = re.findall(r"^USER\s+(\S+)", dockerfile, flags=re.MULTILINE)
+    assert users, "the API image must set a USER"
+    assert users[-1] not in {"root", "0", "0:0"}, "the API image must end with a non-root USER"
+
+
+@pytest.mark.parametrize("name", ["api", "prometheus", "grafana"])
+def test_capabilities_are_dropped(services: dict[str, Any], name: str) -> None:
+    assert services[name].get("cap_drop") == ["ALL"], name
+
+
+def test_grafana_has_no_anonymous_access_and_no_sign_up(services: dict[str, Any]) -> None:
+    env = services["grafana"]["environment"]
+    assert env.get("GF_AUTH_ANONYMOUS_ENABLED") == "false"
+    assert env.get("GF_USERS_ALLOW_SIGN_UP") == "false"
+
+
 # ---------------------------------------------------------------- make_env.py
 
 
