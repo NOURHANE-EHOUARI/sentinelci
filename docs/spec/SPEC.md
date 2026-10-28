@@ -11,6 +11,7 @@
 | Version | Change |
 |---|---|
 | 1.0 | Initial specification (PDF shared with the team). |
+| 1.1.3 | Scanner hardening (§5): verify-before-exec, minimal child environment, scanner configuration owned by SentinelCI; repository-controlled suppressions are neutralized or refused (Gitleaks: `.gitleaks.toml`, `gitleaks:allow`, `.gitleaksignore`). |
 | 1.1.2 | Tool lock is `tools.lock.toml` (read with the standard library: no extra dependency). A1 split: A1a = lock + `sentinel tools install/verify` (done), A1b = scanner adapters + Opengrep pinning via signature verification. |
 | 1.1.1 | No GitHub Pro: `main` protected by convention + local guard until the repository goes public. |
 | 1.1 | **Single private repository**: the demo target lives in `demo-shop/` instead of a second repo. **Private-phase adaptations** (§4.3, ADR-0006): Cosign key-pair signing without public transparency log, provenance as a Cosign attestation, no code-scanning upload, local registry for Kubernetes demos, Actions-minutes budget. Dependabot (with cooldown) replaces Renovate. |
@@ -159,6 +160,13 @@ Local CLI runs can **push** to the same ingestion API. No self-hosted runners (a
 | 10 | Sign + attest | Cosign (sign, attest SBOM / vuln / decision / provenance) | registry | only if ≠ BLOCK |
 | 11 | Report | PR comment, evidence artifact | comment, artifact | — |
 | 12 | Deploy | GitOps digest bump → Argo CD → Kyverno | pods | admission deny |
+
+**Scanner hardening (A1).** Every scanner run (1) re-verifies the binary against `tools.lock.toml` right
+before execution, (2) gets a minimal environment (no CI tokens, keys or proxy variables), (3) uses a configuration
+owned by SentinelCI, never one from the scanned repository, and (4) treats crashes, timeouts and missing reports as
+SC-010. Suppression mechanisms that live in the scanned repository are written by the change author, so they are
+neutralized (`--config`, `--ignore-gitleaks-allow`) or refused when the tool offers no way to disable them
+(Gitleaks always loads `<source>/.gitleaksignore`). Legitimate exceptions go through waivers (§6.4).
 
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
