@@ -16,7 +16,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from pydantic import ValidationError
+
 from sentinelci import __version__
+from sentinelci.contracts.finding import Finding
 from sentinelci.policy.bundle import PolicyBundle
 from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaRunner
@@ -105,8 +108,14 @@ def load_findings(data: bytes) -> list[dict[str, Any]]:
             raise EvaluationError(f"findings line {lineno}: expected a JSON object")
         if not isinstance(finding.get("id"), str) or not _SHA256_HEX.match(finding["id"]):
             raise EvaluationError(f"findings line {lineno}: 'id' must be a sha256 fingerprint")
-        if not isinstance(finding.get("category"), str):
-            raise EvaluationError(f"findings line {lineno}: 'category' is required")
+        try:
+            # Every field and enum of Finding v1: a `"category": "secret"` would otherwise reach the policy,
+            # miss `== "SECRET"` and pass. The raw object, not the model, goes to OPA (it was digested).
+            Finding.model_validate(finding)
+        except ValidationError as exc:
+            raise EvaluationError(
+                f"findings line {lineno}: not a Finding v1 ({exc.error_count()} error(s))"
+            ) from exc
         findings.append(finding)
     return findings
 

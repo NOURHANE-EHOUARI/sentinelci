@@ -334,3 +334,51 @@ def test_policy_that_does_not_compile_is_an_error(tmp_path: Path, opa_binary: Pa
 def test_slow_opa_times_out(opa_binary: Path) -> None:
     with pytest.raises(OpaError, match="timed out"):
         OpaRunner(binary=opa_binary, timeout_s=1e-6).eval("data", [POLICIES / "gate.rego"], {})
+
+
+# ---------------------------------------------------------------- input that is not Finding v1
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"category": "secret"},
+        {"category": "Secret"},
+        {"category": "CREDENTIAL"},
+        {"severity": "high"},
+        {"tool": None},
+        {"unexpected": "field"},
+    ],
+    ids=[
+        "lowercase-category",
+        "mixed-case-category",
+        "unknown-category",
+        "lowercase-severity",
+        "no-tool",
+        "extra",
+    ],
+)
+def test_findings_outside_finding_v1_are_rejected(change: dict[str, Any]) -> None:
+    finding = {k: v for k, v in {**SECRET, **change}.items() if v is not None}
+    with pytest.raises(EvaluationError, match="not a Finding v1"):
+        load_findings(ndjson(finding))
+
+
+def test_lowercase_secret_category_is_no_decision_not_pass(tmp_path: Path, opa_binary: Path) -> None:
+    # Reported in review: `"category": "secret"` used to slip past `== "SECRET"` and PASS.
+    code, out, output = run_evaluate(
+        tmp_path, ndjson({**SECRET, "category": "secret"}), "--opa", str(opa_binary)
+    )
+    assert code == 3, out
+    assert not output.exists()
+
+
+def test_opa_runs_without_the_callers_environment(
+    tmp_path: Path, opa_binary: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SENTINEL_TEST_JOB_SECRET", "must-not-leak")
+    probe = tmp_path / "probe.rego"
+    probe.write_text("package probe\n\nenv := opa.runtime().env\n", encoding="utf-8")
+    env = OpaRunner(binary=opa_binary).eval("data.probe.env", [probe], {})
+    assert "SENTINEL_TEST_JOB_SECRET" not in env
+    assert env == {}

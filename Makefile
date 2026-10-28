@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help setup check lint format typecheck imports policy test zizmor tools tools-verify
 
-# OPA is a pinned binary, not a Python package: install the version in .github/workflows/ci.yml.
+# OPA is a pinned binary, not a Python package: `uv run sentinel tools install opa` (tools.lock.toml).
 OPA ?= $(or $(SENTINEL_OPA),opa)
 
 help: ## Show available targets

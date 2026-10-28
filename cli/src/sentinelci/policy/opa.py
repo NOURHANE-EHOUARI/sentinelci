@@ -46,10 +46,12 @@ class OpaRunner:
     def _run(self, args: Sequence[str], stdin: str | None = None) -> str:
         try:
             # The binary is chosen by the operator (flag, env or PATH) and arguments are never
-            # passed through a shell.
+            # passed through a shell. An empty environment: policies cannot read the job's variables
+            # (opa.runtime().env), which may hold tokens.
             proc = subprocess.run(  # noqa: S603
                 [str(self.binary), *args],
                 input=stdin,
+                env={},
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
