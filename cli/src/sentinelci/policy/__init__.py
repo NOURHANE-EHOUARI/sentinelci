@@ -2,3 +2,17 @@
 
 Must never import sentinel_ai: deterministic decides, AI advises.
 """
+
+from sentinelci.policy.bundle import PolicyBundle
+from sentinelci.policy.decision import EvaluationError, Subject, evaluate, load_findings
+from sentinelci.policy.opa import OpaError, OpaRunner
+
+__all__ = [
+    "EvaluationError",
+    "OpaError",
+    "OpaRunner",
+    "PolicyBundle",
+    "Subject",
+    "evaluate",
+    "load_findings",
+]

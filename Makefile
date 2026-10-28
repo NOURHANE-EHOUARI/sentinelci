@@ -1,5 +1,8 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup check lint format typecheck imports test zizmor
+.PHONY: help setup check lint format typecheck imports policy test zizmor
+
+# OPA is a pinned binary, not a Python package: install the version in .github/workflows/ci.yml.
+OPA ?= $(or $(SENTINEL_OPA),opa)
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -8,7 +11,7 @@ setup: ## Install the locked workspace and git hooks
 	uv sync --locked
 	uv run pre-commit install
 
-check: lint typecheck imports test zizmor ## Everything CI runs
+check: lint typecheck imports policy test zizmor ## Everything CI runs
 
 lint: ## Ruff lint + format check
 	uv run ruff check .
@@ -17,12 +20,19 @@ lint: ## Ruff lint + format check
 format: ## Auto-format and auto-fix
 	uv run ruff format .
 	uv run ruff check --fix .
+	$(OPA) fmt --write policies
 
 typecheck: ## mypy (strict)
 	uv run mypy
 
 imports: ## Architecture contract: the decision path never imports sentinel_ai
 	uv run lint-imports
+
+policy: ## Rego format, strict compile, unit tests with coverage >= 90%
+	$(OPA) fmt --list --fail policies
+	$(OPA) check --strict policies
+	$(OPA) test policies
+	$(OPA) test --coverage --threshold 90 policies > /dev/null
 
 test: ## Unit and contract tests
 	uv run pytest

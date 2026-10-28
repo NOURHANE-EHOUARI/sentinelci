@@ -20,6 +20,7 @@ dev = [
     "httpx2>=2.16",
     "zizmor>=1.30",
     "pre-commit>=4.0",
+    "types-pyyaml>=6.0.12",
 ]
 
 [tool.uv]

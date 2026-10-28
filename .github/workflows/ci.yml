@@ -44,7 +44,26 @@ jobs:
       - name: Architecture contract (deterministic decides, AI advises)
         run: uv run lint-imports
 
+      # Pinned and checksum-verified before use: a mismatch fails the job (principle P2).
+      # Keep in sync with tools.lock.yaml once it exists (task A1).
+      - name: Install OPA (pinned, verified)
+        env:
+          OPA_VERSION: 1.21.4
+          OPA_SHA256: 2ab571f367f293bb19523b76f92f1945bbf245003392c7f392903f95c2b9b630
+        run: |
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --output "$RUNNER_TEMP/opa" \
+            "https://github.com/open-policy-agent/opa/releases/download/v${OPA_VERSION}/opa_linux_amd64_static"
+          echo "${OPA_SHA256}  $RUNNER_TEMP/opa" | sha256sum --check --strict -
+          chmod +x "$RUNNER_TEMP/opa"
+          echo "SENTINEL_OPA=$RUNNER_TEMP/opa" >> "$GITHUB_ENV"
+
+      - name: Policies (format, strict compile, unit tests, coverage >= 90%)
+        run: make policy
+
       - name: Tests (including JSON Schema contracts)
+        env:
+          SENTINEL_REQUIRE_OPA: "1"
         run: uv run pytest
 
   workflow-security:

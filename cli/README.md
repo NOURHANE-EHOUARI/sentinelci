@@ -13,3 +13,27 @@ The deterministic core of SentinelCI. It runs inside CI and locally with the sam
 | `report/` | PR comment, SARIF export | A | A3 |
 
 `risk/`, `policy/`, `enrich/` and `normalize/` must never import `sentinel_ai` (enforced by import-linter).
+
+## `sentinel evaluate` (release gate, B4)
+
+```bash
+sentinel evaluate --findings out/findings.v1.ndjson \
+  --repo NOURHANE-EHOUARI/sentinelci --commit "$(git rev-parse HEAD)" --context pr \
+  --tool-version gitleaks=8.24.0 -o out/decision.v1.json
+```
+
+Runs the OPA policies in `policies/` and writes a Decision v1 record (`schemas/decision.v1.json`).
+
+- Exit code: `0` PASS or WARN, `1` BLOCK, `2` no decision could be made (bad input, OPA missing,
+  failing or timing out). Treat `2` as blocked: the gate fails closed, and an older decision file at the
+  output path is deleted before evaluation starts.
+- OPA is a pinned binary (version and SHA-256 in `.github/workflows/ci.yml`): pass `--opa`, set
+  `SENTINEL_OPA`, or put `opa` on `PATH`.
+- `--evaluated-at` (RFC 3339, default now) is the only time the policy sees, so a decision can be replayed.
+  Same inputs give a byte-identical file, including `decision_id`, which is a UUIDv5 of the subject,
+  time, input digests and engine version.
+- Recorded evidence: digests of the findings file, policy bundle (all files in `policies/` except
+  `*_test.rego`), enrichment snapshot (the empty snapshot `{}` until B2 lands) and optional SBOM; the risk
+  model version; versions of every tool that reported a finding, given with `--tool-version`, and OPA.
+- Rules implemented so far: SC-001 (secret, not waived) and SC-010 for malformed gate input. Waivers are
+  evaluated by the policy but not yet loaded from `.sentinel/waivers.yaml`.
