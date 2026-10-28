@@ -61,7 +61,9 @@ make format     # auto-format
 | `ai/src/sentinel_ai/*` (rest) | Track B | B5, B6 |
 | `platform/web` | B core, pages per owner | B7, A8 |
 | `policies/` | Track B | Rego + tests + risk model |
-| `deploy/`, `.github/workflows/sentinel-*.yml` | Track A | A3, A4, A5, A8 |
+| `deploy/compose/` (platform services) | Track B | B1 |
+| `deploy/compose/{prometheus,grafana}/` | Track A | A8 |
+| `deploy/{kind,helm,kyverno,argocd}/`, `.github/workflows/sentinel-*.yml` | Track A | A3, A4, A5 |
 | `eval/` | Track B | B8 |
 | `demo-shop/` | A (infra, deps, secrets) + B (app code) | INTENTIONALLY VULNERABLE |
 | `schemas/`, `docs/` | Shared | |

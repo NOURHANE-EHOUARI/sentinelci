@@ -44,7 +44,9 @@ jobs:
       - name: Architecture contract (deterministic decides, AI advises)
         run: uv run lint-imports
 
-      - name: Tests (including JSON Schema contracts)
+      - name: Tests (including JSON Schema contracts and Compose invariants)
+        env:
+          SENTINEL_REQUIRE_DOCKER: "1"
         run: uv run pytest
 
   workflow-security:

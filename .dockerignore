@@ -1,0 +1,15 @@
+# Allow-list: image builds only see the Python workspace. Never the git history, local secrets (.env),
+# virtualenvs, pipeline outputs, or the intentionally vulnerable demo-shop/.
+*
+!pyproject.toml
+!uv.lock
+!cli
+!platform
+!ai
+**/tests
+**/__pycache__
+**/*.py[cod]
+**/.venv
+**/node_modules
+**/.env
+**/.env.*
