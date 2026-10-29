@@ -19,7 +19,7 @@ from sentinelci.scanners.installer import verify_tools
 from sentinelci.scanners.lock import ToolLock
 
 DEFAULT_TIMEOUT_S = 900
-_SAFE_PATH = "/usr/local/bin:/usr/bin:/bin"
+SAFE_PATH = "/usr/local/bin:/usr/bin:/bin"
 _STDERR_TAIL = 2000
 
 
@@ -49,7 +49,7 @@ class ToolRun:
 def minimal_env(home: Path) -> dict[str, str]:
     """A clean environment: no tokens, keys or proxy settings from the CI job are inherited."""
     return {
-        "PATH": _SAFE_PATH,
+        "PATH": SAFE_PATH,
         "HOME": str(home),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
