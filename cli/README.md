@@ -33,8 +33,15 @@ uv run sentinel snapshot --findings out/findings.ndjson --out out/enrichment-sna
 - The snapshot is validated against `schemas/enrichment-snapshot.v1.json` and written canonically (sorted keys),
   so the same feed answers give the same bytes and digest. An unreadable findings file, or a snapshot that
   fails its contract, writes nothing and exits 3.
-- `--record DIR` saves every response; `--offline DIR` answers from those files only (a request never recorded
-  counts as an outage). This gives the offline fixtures for demos, evaluation and tests.
+- `--record DIR` saves every response (raw bytes in base64, with their sha256); `--offline DIR` answers from
+  those files only, after checking the digest (a request never recorded, or an altered recording, counts as an
+  outage). This gives the offline fixtures for demos, evaluation and tests. Recordings are inputs like the
+  policies: in CI, use them only from the base commit or a trusted store, since a change that edits them could
+  forge EPSS or KEV answers.
+- KEV is read before EPSS, and EPSS is left out when KEV could not be read: EPSS alone would lower the risk of a
+  KEV-listed vulnerability. The KEV catalogue is trusted whole or not at all (every entry, its `count`, at least
+  1,000 entries). Redirects are never followed; each request has one overall deadline and is retried once on a
+  transient failure; `--timeout` must be in (0, 300]. Anything unexpected exits 3 with nothing written.
 
 ## `sentinel enrich` (enrichment, B2)
 
