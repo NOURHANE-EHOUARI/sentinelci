@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.1",
+  "id": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+  "tool": {
+    "name": "grype",
+    "version": "0.92.0"
+  },
+  "rule_id": "CVE-2099-0001",
+  "category": "SCA",
+  "title": "example-lib: remote code execution in parser",
+  "message": "example-lib 1.2.0 is affected; fixed in 1.2.4.",
+  "severity": "CRITICAL",
+  "cve": [
+    "CVE-2099-0001"
+  ],
+  "aliases": [
+    "GHSA-xxxx-yyyy-zzzz"
+  ],
+  "package": {
+    "purl": "pkg:pypi/example-lib@1.2.0",
+    "name": "example-lib",
+    "version": "1.2.0",
+    "ecosystem": "pypi",
+    "fixed_versions": [
+      "1.2.4"
+    ]
+  },
+  "run": {
+    "repo": "NOURHANE-EHOUARI/sentinelci",
+    "commit": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    "context": "release"
+  },
+  "enrichment": {
+    "cvss": {
+      "version": "3.1",
+      "score": 9.8,
+      "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    },
+    "epss": {
+      "score": 0.41,
+      "percentile": 0.95,
+      "date": "2026-11-10"
+    },
+    "kev": {
+      "listed": false
+    },
+    "fix_available": true,
+    "reachability": "imported",
+    "exposure": "internet-facing"
+  },
+  "risk": {
+    "score": 87.3,
+    "priority": "P0",
+    "factors": {
+      "S": 1.0,
+      "E": 0.97,
+      "X": 1.0,
+      "R": 0.9
+    },
+    "model_version": "1.0.0"
+  },
+  "other_locations": [
+    {
+      "path": "demo-shop/services/shop-api/requirements.txt",
+      "start_line": 3
+    }
+  ]
+}
