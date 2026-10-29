@@ -182,7 +182,9 @@ exceptions go through waivers (§6.4).
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
 (no repo code; signing key / OIDC only here) · `report` (`pull-requests: write`).
 
-**PR mode (diff-aware):** only findings new to the PR (fingerprints not in the base-branch baseline) can block.
+**PR mode (diff-aware):** only findings new to the PR (fingerprints not in the base-branch baseline) can block. A known
+secret also counts as new in a file where the base did not have it (every place counts: `location` plus
+`other_locations`, Finding 1.1).
 **Release mode:** full evaluation, then signing. In this single repo, `demo-shop/` is scanned by its own workflow
 calling `./.github/workflows/sentinel-scan.yml`; the self-scan of SentinelCI excludes `demo-shop/`.
 
@@ -234,20 +236,33 @@ priority_bands: {P0: 70, P1: 50, P2: 30, P3: 10}   # below 10 -> P4
 | Internal service importing it | 0.7 | 0.9 | 61 | P1 |
 | Offline batch job never importing it | 0.5 | 0.4 | 19 | P3 |
 
+Implementation (`sentinel score`, B3): the score is rounded to 0.1 and banded from the rounded value; `factors`
+records S, E, X and R. Missing enrichment never lowers a score (E < 1 only when KEV was read and the CVE is not
+listed, so a KEV outage next to a working EPSS feed cannot lower E; no exposure: X = 1.0; no
+reachability analysis: R = 1.0, while `unknown` is for an analysis that ran and could not decide), so every score
+stays at most `100 × severity_weight`, the bound the gate uses for unscored findings, and a finding with no
+enrichment scores exactly that bound. Every priority band floor lies in (0, 100]. R applies to SCA and CONTAINER only; SAST counts as `SAST_TAINT` until findings carry the
+analysis kind; a category without a `non_cve` weight counts as E = 1.0.
+
 ### 6.3 Rule catalogue
 
 | Rule | Verdict | Condition |
 |---|---|---|
 | SC-001 | BLOCK | Secret detected (new in PR, or anywhere in a release image), not waived |
 | SC-002 | BLOCK | Any P0 finding without valid waiver |
-| SC-003 | BLOCK | KEV-listed vulnerability with a fix, internet-facing service |
+| SC-003 | BLOCK | KEV-listed vulnerability with a fix, internet-facing service (an unknown exposure counts as internet-facing) |
 | SC-004 | BLOCK | Release image missing signature, SBOM or provenance |
 | SC-005 | BLOCK | Invalid waiver (no owner / justification / expiry, or expiry > 90 days) |
 | SC-006 | WARN | P1 findings (BLOCK above threshold in strict profile) |
 | SC-007 | WARN | Base image not pinned by digest, or container runs as root |
 | SC-008 | WARN | Copyleft licence in a distributed component |
 | SC-009 | BLOCK | High-severity CI workflow issue introduced by the PR |
-| SC-010 | BLOCK | Scanner failure, timeout or tool-integrity mismatch |
+| SC-010 | BLOCK | Scanner failure, timeout or tool-integrity mismatch; a required scanner (`policies/required_tools.rego`) missing from the tool status, or no tool status where one is required (`pr`, `release`); malformed gate input |
+
+Priority-based rules (SC-002, SC-006) read `risk.priority` (B3); an unscored finding counts at its worst case,
+`100 × severity_weight` banded, so CRITICAL and HIGH are P0 until scored. Each finding is reported under its most
+specific rule (SC-001, SC-003 or SC-009 before SC-002/SC-006). Waivers and diff-aware PR mode apply to every finding
+rule. Not yet implemented: SC-004 (A4 attestations), SC-007, SC-008, the strict profile and VEX.
 
 Policy rules use `input.evaluated_at`, never `time.now_ns()`. Reference implementation of the verdict logic
 (verified with OPA 1.21):
@@ -287,11 +302,32 @@ draft a waiver PR; only a human approval makes it effective.
 
 Schema: `schemas/decision.v1.json`. Fields: `decision_id`, `evaluated_at`, `subject` (repo, ref, commit, image
 digest, context), `verdict`, `violations` (rule, effect, finding ids, message), `waivers_applied`, `inputs`
-(digests of findings, SBOM, enrichment snapshot, policy bundle; risk model version; tool versions),
+(digests of findings, SBOM, enrichment snapshot, policy bundle, waivers file (since 1.1), base-branch findings
+baseline and tool status (since 1.2, when given); risk model version;
+tool versions),
 `engine_version`. The schema enforces verdict consistency (BLOCK ⇒ at least one BLOCK violation; PASS ⇒ none).
 Attached to the image as an in-toto attestation, predicate type
 `https://github.com/NOURHANE-EHOUARI/sentinelci/specs/release-decision/v1`. `sentinel replay` re-evaluates from
 digests and must be identical; checked nightly.
+
+**Evidence store (replay input).** Content-addressed: `sha256/<hex>` holds every input exactly as digested
+(findings, waivers, baseline, tool status, enrichment snapshot, SBOM, each policy file) and each policy bundle
+manifest (`<sha256>  <path>` per file, sorted; its digest is `policy_bundle_digest`); `decisions/<id>.json` holds
+decisions. Written by `sentinel evaluate --store`; every read is checked against its digest. `sentinel replay
+<id | file>` takes all inputs from the store, policy included, and compares the whole record (exit 0 identical,
+1 differs, 3 missing or tampered evidence). Recorded scanner versions are passed back as evidence; the OPA and
+engine versions are the running ones, so an upgrade shows up as a difference. Proposed: the evidence bundle
+(A4) and the platform evidence store (SeaweedFS, ADR-0007) carry the same `sha256/<hex>` layout, so replay works
+on either.
+
+**Nightly replay** (`.github/workflows/replay-nightly.yml`): replays the last successful night's corpus with
+today's engine (`sentinel replay --all`), then records a fresh corpus (`eval/replay/corpus.py`: fixed gate cases
+covering PASS, SC-001, SC-005 and SC-010), replays it in a fresh process and uploads it. `--all` skips decisions
+recorded with another engine or OPA version (after checking that the record's `decision_id` matches its own
+subject, time, inputs and engine version, so an edited version cannot turn a difference into a skip) and fails
+on any difference, on missing evidence, on an empty
+store and when nothing was compared (every decision skipped; the previous-night step accepts that with
+`--allow-all-skipped`, so an engine bump night says so in its summary). Consequence: a change to what the engine decides for the same inputs must come with an engine version bump.
 
 ## 7. Supply-chain integrity and deploy-time enforcement
 
@@ -317,7 +353,8 @@ AI runs after the decision is stored, writes only advisory tables, and every out
 | Patch | finding + file + explanation (+ CI logs) | PatchProposal (`schemas/patch-proposal.v1.json`) | B | verified fix rate |
 
 - **Provider interface** `sentinel_ai.providers.LLMProvider` (`complete(system, user, schema)`, `embed(texts)`).
-  Default: local code model via Ollama (7–14B class, quantized). No multi-provider gateway dependency.
+  Default: local models via Ollama, `gemma4:12b-it-qat` for generation and `qwen3-embedding:0.6b` for
+  embeddings, pinned by digest (ADR-0009, measured in `eval/model-selection/`). No multi-provider gateway dependency.
 - **Grounding:** offline CWE catalogue, OSV advisory text, code window; references must come from the context.
 - **Guardrails:** import contract; untrusted text in delimited data blocks; schema validation with one repair
   retry, else "unavailable"; secret redaction before any prompt; model/prompt/input hash logged; injection
@@ -404,6 +441,12 @@ LICENSE), `title`, `severity` (CRITICAL | HIGH | MEDIUM | LOW | INFO), `run`. Co
 CONTAINER ⇒ `package` + `image`. Optional blocks `enrichment` (B2) and `risk` (B3). Paths must be relative and
 cannot contain `..`.
 
+**Several locations (1.1, additive).** One finding (one `id`) can be seen in several places, e.g. the same secret
+in two files. `location` is the first one by (path, start line); `other_locations` lists every other one, sorted
+the same way, without duplicates and never truncated. It is only allowed in a `schema_version` 1.1 finding and
+only next to `location`. A finding seen in one place may stay 1.0. Consumers that compare locations (diff-aware PR
+mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
+
 **Fingerprint rules:**
 - SCA / CONTAINER: `sha256(category | vuln id | purl base)` where *purl base* = the purl without version,
   qualifiers or subpath (same definition as `purl_base` in `policies/gate.rego`). After a bump the finding disappears; base-image point releases, other
@@ -417,6 +460,7 @@ cannot contain `..`.
 | Contract | Producer → consumer | Content |
 |---|---|---|
 | `decision.v1.json` | B4 → A4, A5, B1 | §6.5 |
+| `tool-status.v1.json` | A3 → B4 | per tool: version, hashes, status (`ok` … `not_run`), detail; any non-`ok` status → SC-010; required in `pr`/`release`, and must list every required scanner |
 | `patch-proposal.v1.json` | B6 / A6 fixers → A6 | finding ids, strategy, diff, files, rationale, model (required for `llm:code`) |
 | `verification-result.v1.json` | A6 → B1, B8 | gate outcome; VERIFIED only if every condition holds |
 | evidence bundle layout | A4 → B1 | `manifest.json` (sha256 of each file, signed) + decision, findings, snapshot, SBOMs, raw outputs |
@@ -557,7 +601,7 @@ schema-constrained outputs and injection isolation (0 verdict changes across [X]
 | 7 | Compose skeleton (postgres+pgvector, redis, seaweedfs, ollama, api, prometheus, grafana; worker with B1, web with B7) | B |
 | 8 | `demo-shop/` skeleton + ground-truth format; first seeds | A9 first seeds done (draft format v1); B9 to do |
 | 9 | GitHub Project board: one issue per task id | both |
-| 10 | Choose the local model and measure tokens/second | B |
+| 10 | Choose the local model and measure tokens/second | done (ADR-0009; re-run the benchmark on each laptop) |
 
 ## Appendix — Glossary
 
