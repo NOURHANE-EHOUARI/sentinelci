@@ -119,7 +119,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/out"
           git -C target diff --name-only "$BASE_SHA...$HEAD_SHA" -- \
             .github/workflows .github/actions tools.lock.toml policies cli .sentinel pyproject.toml uv.lock \
-            ':(glob)**/sentinel.yaml' \
+            eval/feeds ':(glob)**/sentinel.yaml' \
             > "$RUNNER_TEMP/out/pipeline-changes.txt"
           echo "pipeline files changed: $(wc -l < "$RUNNER_TEMP/out/pipeline-changes.txt")"
 
@@ -279,7 +279,9 @@ jobs:
         # GitHub runs this with `bash -e`: the exit code is captured with `|| status=$?` so that a BLOCK (1) or
         # no decision (3) is recorded and the decision is still uploaded; the last step fails the job.
         # The tool status and the baseline are passed only when the scan job produced them: without a tool
-        # status the gate blocks (SC-010), without a baseline every finding counts.
+        # status the gate blocks (SC-010), without a baseline every finding counts. Findings are scored first
+        # with the base commit's risk model (SPEC 6.2); scoring that fails means no decision (exit 3). The
+        # scored findings are what the decision records and what the report shows.
         run: |
           set -uo pipefail
           in="$RUNNER_TEMP/in"
@@ -299,8 +301,15 @@ jobs:
           # pull request cannot waive its own findings (a waiver applies once it is reviewed and merged).
           cd pipeline
           status=0
+          "$SENTINEL" score --findings "$in/findings.ndjson" --policy-dir policies \
+            --out "$RUNNER_TEMP/decision/findings.ndjson" || status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "status=$status" >> "$GITHUB_OUTPUT"
+            echo "sentinel score exited with $status: no decision (SC-010)"
+            exit 0
+          fi
           "$SENTINEL" evaluate \
-            --findings "$in/findings.ndjson" \
+            --findings "$RUNNER_TEMP/decision/findings.ndjson" \
             --repo "$REPO" --commit "$HEAD_SHA" --context "$CONTEXT" --ref "$REF" \
             --policy-dir policies \
             --opa "$RUNNER_TEMP/sentinel-tools/bin/opa" \
@@ -393,7 +402,7 @@ jobs:
           status=0
           "$SENTINEL" report pr-comment \
             --decision "$in/sentinel-decision/decision.v1.json" \
-            --findings "$in/sentinel-scan/findings.ndjson" \
+            --findings "$in/sentinel-decision/findings.ndjson" \
             "${extra[@]}" \
             --out "$RUNNER_TEMP/comment.md" || status=$?
           echo "status=$status" >> "$GITHUB_OUTPUT"

@@ -115,6 +115,7 @@ def test_the_pipeline_change_warning_covers_every_input_read_from_the_base_commi
         "cli",
         ".sentinel",
         "uv.lock",
+        "eval/feeds",
         "':(glob)**/sentinel.yaml'",
     ):
         assert f" {pathspec} " in step.replace("\\\n", " ").replace("\n", " "), pathspec

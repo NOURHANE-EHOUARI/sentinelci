@@ -12,6 +12,7 @@ sca := {
 	"id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 	"category": "SCA",
 	"rule_id": "GHSA-aaaa-bbbb-cccc",
+	"severity": "LOW",
 	"cve": ["CVE-2026-12345"],
 	"aliases": ["PYSEC-2026-1"],
 	"package": {"purl": "pkg:pypi/example-lib@1.2.0?arch=x86_64"},
@@ -52,7 +53,8 @@ test_no_findings_pass if {
 	d == {"verdict": "PASS", "violations": [], "waivers_applied": []}
 }
 
-test_non_secret_findings_pass if {
+# A LOW finding is P3 at worst: no rule applies to it.
+test_low_priority_non_secret_findings_pass if {
 	gate.decision.verdict == "PASS" with input as with_findings([sca])
 }
 
@@ -400,4 +402,135 @@ test_malformed_tool_status_blocks_with_sc010 if {
 		d := gate.decision with input as object.union(without_tool_status, {"tool_status": ts})
 		contains(d.violations[0].message, "tool_status must hold a non-empty tools object")
 	}
+}
+
+# ---------------------------------------------------------------- rule catalogue (SPEC section 6.3)
+
+vuln(id, severity) := object.union(sca, {"id": id, "severity": severity})
+
+scored(f, priority) := object.union(f, {"risk": {"score": 50, "priority": priority, "model_version": "1.0.0"}})
+
+# A 64-character id made of one repeated character.
+h(c) := concat("", [c | some _ in numbers.range(1, 64)])
+
+pipeline_issue(id, severity) := {"id": id, "category": "PIPELINE", "rule_id": "zizmor/template-injection", "severity": severity}
+
+kev(f, fix, exposure) := object.union(f, {"enrichment": {"kev": {"listed": true}, "fix_available": fix, "exposure": exposure}})
+
+test_scored_p0_finding_blocks_with_sc002 if {
+	f := scored(vuln(h("d"), "MEDIUM"), "P0")
+	d := gate.decision with input as with_findings([f])
+	d.verdict == "BLOCK"
+	d.violations == [{"rule": "SC-002", "effect": "BLOCK", "finding_ids": [f.id], "message": "P0 finding not waived"}]
+}
+
+test_scored_p1_finding_warns_with_sc006 if {
+	f := scored(vuln(h("d"), "CRITICAL"), "P1")
+	d := gate.decision with input as with_findings([f])
+	d.verdict == "WARN"
+	d.violations == [{"rule": "SC-006", "effect": "WARN", "finding_ids": [f.id], "message": "P1 finding"}]
+}
+
+test_scored_p2_and_lower_pass if {
+	every p in ["P2", "P3", "P4"] {
+		gate.decision.verdict == "PASS" with input as with_findings([scored(vuln(h("d"), "CRITICAL"), p)])
+	}
+}
+
+test_the_recorded_priority_wins_over_severity if {
+	gate.decision.verdict == "PASS" with input as with_findings([scored(vuln(h("d"), "CRITICAL"), "P3")])
+}
+
+# Unscored (no B3 risk yet): the worst case. risk = 100 x S x E x X x R with E, X, R <= 1, so 100 x S bounds it.
+test_unscored_findings_count_at_their_worst_case_priority if {
+	every sev, want in {"CRITICAL": "BLOCK", "HIGH": "BLOCK", "MEDIUM": "PASS", "LOW": "PASS", "INFO": "PASS"} {
+		gate.decision.verdict == want with input as with_findings([vuln(h("d"), sev)])
+	}
+}
+
+test_an_unscored_p0_says_so if {
+	[v] := gate.decision.violations with input as with_findings([vuln(h("d"), "HIGH")])
+	v.message == "P0 finding not waived (unscored findings count at their worst-case priority)"
+}
+
+test_a_finding_without_severity_or_priority_counts_as_p0 if {
+	[v] := gate.decision.violations with input as with_findings([object.remove(sca, ["severity"])])
+	v.rule == "SC-002"
+}
+
+test_kev_with_fix_on_internet_facing_service_blocks_with_sc003 if {
+	f := kev(scored(vuln(h("d"), "HIGH"), "P1"), true, "internet-facing")
+	[v] := gate.decision.violations with input as with_findings([f])
+	v == {"rule": "SC-003", "effect": "BLOCK", "finding_ids": [f.id], "message": "Known exploited vulnerability with a fix, internet-facing"}
+}
+
+test_kev_with_fix_and_unknown_exposure_blocks_with_sc003 if {
+	# Found by Nourhane in the review of #17: without sentinel.yaml, SC-003 could never fire.
+	f := object.union(scored(vuln(h("d"), "HIGH"), "P1"), {"enrichment": {"kev": {"listed": true}, "fix_available": true}})
+	[v] := gate.decision.violations with input as with_findings([f])
+	v.rule == "SC-003"
+}
+
+test_kev_fix_can_come_from_fixed_versions if {
+	f := object.union(kev(scored(vuln(h("d"), "HIGH"), "P2"), false, "internet-facing"), {"package": {"fixed_versions": ["1.2.4"]}})
+	[v] := gate.decision.violations with input as with_findings([f])
+	v.rule == "SC-003"
+}
+
+test_kev_without_fix_or_not_internet_facing_is_left_to_its_priority if {
+	every f in [
+		kev(scored(vuln(h("d"), "HIGH"), "P2"), false, "internet-facing"),
+		kev(scored(vuln(h("d"), "HIGH"), "P2"), true, "internal"),
+		kev(scored(vuln(h("d"), "HIGH"), "P2"), true, "offline"),
+		object.union(scored(vuln(h("d"), "HIGH"), "P2"), {"enrichment": {"kev": {"listed": false}, "fix_available": true, "exposure": "internet-facing"}}),
+	] {
+		gate.decision.verdict == "PASS" with input as with_findings([f])
+	}
+}
+
+test_high_severity_pipeline_issue_blocks_with_sc009 if {
+	every sev in ["HIGH", "CRITICAL"] {
+		f := pipeline_issue(h("e"), sev)
+		d := gate.decision with input as with_findings([f])
+		d.violations == [{"rule": "SC-009", "effect": "BLOCK", "finding_ids": [f.id], "message": "High-severity CI workflow issue"}]
+	}
+}
+
+test_medium_pipeline_issue_does_not_block if {
+	gate.decision.verdict == "PASS" with input as with_findings([pipeline_issue(h("e"), "MEDIUM")])
+}
+
+test_each_finding_is_reported_under_its_most_specific_rule if {
+	# A P0 secret, a P0 KEV and a P0 pipeline issue: SC-001, SC-003 and SC-009, never SC-002 as well.
+	s := scored(secret, "P0")
+	k := kev(scored(vuln(h("d"), "CRITICAL"), "P0"), true, "internet-facing")
+	p := scored(pipeline_issue(h("e"), "HIGH"), "P0")
+	d := gate.decision with input as with_findings([s, k, p])
+	[v.rule | some v in d.violations] == ["SC-001", "SC-003", "SC-009"]
+}
+
+test_block_and_warn_together_give_block if {
+	d := gate.decision with input as with_findings([scored(vuln(h("d"), "HIGH"), "P0"), scored(vuln(h("f"), "HIGH"), "P1")])
+	d.verdict == "BLOCK"
+	[v.effect | some v in d.violations] == ["BLOCK", "WARN"]
+}
+
+test_waivers_apply_to_every_rule if {
+	findings := [
+		scored(vuln(h("d"), "HIGH"), "P0"),
+		scored(vuln(h("f"), "HIGH"), "P1"),
+		kev(scored(vuln(h("1"), "HIGH"), "P1"), true, "internet-facing"),
+		pipeline_issue(h("e"), "HIGH"),
+	]
+	ws := [waiver(sprintf("w-%d", [i]), f) | some i, f in findings]
+	d := gate.decision with input as with_waivers(findings, ws)
+	d.verdict == "PASS"
+	count(d.waivers_applied) == 4
+}
+
+test_pr_mode_only_blocks_what_the_change_introduces if {
+	old := scored(vuln(h("d"), "HIGH"), "P0")
+	new := scored(vuln(h("f"), "HIGH"), "P0")
+	[v] := gate.decision.violations with input as pr_with([old, new], [old])
+	v.finding_ids == [new.id]
 }

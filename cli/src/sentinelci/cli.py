@@ -27,7 +27,7 @@ from sentinelci import __version__
 from sentinelci.contracts.finding import Finding, Run, RunContext, Tool
 from sentinelci.normalize.errors import NormalizationError
 from sentinelci.normalize.gitleaks import load_gitleaks_report, normalize_gitleaks
-from sentinelci.normalize.ndjson import write_ndjson
+from sentinelci.normalize.ndjson import dumps_ndjson, write_ndjson
 from sentinelci.normalize.trivy import normalize_trivy_config
 from sentinelci.policy.bundle import BundleError, PolicyBundle
 from sentinelci.policy.decision import (
@@ -36,14 +36,16 @@ from sentinelci.policy.decision import (
     Subject,
     dumps_decision,
     evaluate,
+    load_findings,
     now_utc,
 )
 from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaError, OpaRunner
-from sentinelci.policy.replay import ReplayResult, replay, skip_reason
+from sentinelci.policy.replay import ReplayResult, check_identity, replay, skip_reason
 from sentinelci.policy.store import EvidenceStore, StoreError
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
 from sentinelci.report.pr_comment import ReportError, load_inputs, render_no_decision, render_pr_comment
+from sentinelci.risk import RiskModel, RiskModelError, score_finding
 from sentinelci.scanners.combine import CombineError, combine_findings, combine_tool_statuses
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
@@ -135,6 +137,36 @@ def _write_atomically(path: Path, text: str) -> None:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+@app.command("score")
+def score_command(
+    findings: Annotated[Path, typer.Option(help="Findings NDJSON (Finding v1), enriched or not.")],
+    out: Annotated[Path, typer.Option(help="Scored findings NDJSON to write.")],
+    policy_dir: Annotated[Path, typer.Option(help="Policy bundle holding risk-model.yaml.")] = Path(
+        "policies"
+    ),
+) -> None:
+    """Set `risk` (score, priority P0-P4, factors, model version) on every finding (SPEC section 6.2).
+
+    Exit code 0 on success, 3 when the findings or the risk model cannot be read (nothing is written).
+    """
+    # Fail closed before anything is deleted: --out must not be the findings file, nor a directory.
+    if out.is_dir() or (out.exists() and findings.exists() and out.resolve() == findings.resolve()):
+        typer.echo(f"sentinel score: --out {out} is the input or a directory; nothing was written", err=True)
+        raise typer.Exit(EXIT_NO_DECISION)
+    # A stale file from an earlier run must never be read as this run's scores.
+    out.unlink(missing_ok=True)
+    try:
+        model = RiskModel.load(policy_dir / "risk-model.yaml")
+        scored = [
+            Finding.model_validate(score_finding(f, model)) for f in load_findings(findings.read_bytes())
+        ]
+    except (EvaluationError, RiskModelError, OSError, ValueError) as exc:
+        typer.echo(f"sentinel score: {exc}", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    _write_atomically(out, dumps_ndjson(scored))
+    typer.echo(f"{len(scored)} finding(s) scored with risk model {model.version} -> {out}")
 
 
 @app.command("evaluate")
@@ -376,6 +408,7 @@ def _replay_all(evidence: EvidenceStore, opa: Path | None, *, allow_all_skipped:
         try:
             evidence.decision_path(decision_id)  # the file name must be a decision id
             recorded = _load_record(path, decision_id)
+            check_identity(recorded)  # before skipping: a skip must not hide an edited record
             reason = skip_reason(recorded, opa_version)
             result = None if reason else _replay_record(recorded, evidence, runner)
         except _REPLAY_ERRORS as exc:
@@ -509,6 +542,23 @@ def tools_verify(
         _write_manifest(result, lock, report)
     for entry in result.entries:
         typer.echo(f"verified {entry.name} {entry.version} sha256={entry.binary_sha256}")
+
+
+@policy_app.command("capabilities")
+def policy_capabilities(
+    out: Annotated[Path, typer.Option("--out", "-o", help="Where to write the capabilities document.")],
+    opa: Annotated[
+        Path | None, typer.Option(help="OPA binary. Default: $SENTINEL_OPA, then opa on PATH.")
+    ] = None,
+) -> None:
+    """Write OPA's capabilities minus non-deterministic built-ins (what `evaluate` runs policies with)."""
+    try:
+        capabilities = OpaRunner.locate(opa).restricted_capabilities()
+    except OpaError as exc:
+        typer.echo(f"sentinel policy capabilities: {exc}", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    _write_atomically(out, json.dumps(capabilities, indent=2, sort_keys=True) + "\n")
+    typer.echo(f"{len(capabilities['builtins'])} built-ins allowed; written to {out}")
 
 
 # ---------------------------------------------------------------- scan
@@ -733,23 +783,6 @@ def report_pr_comment(
         raise typer.Exit(EXIT_UNTRUSTED_INPUT) from exc
     out.write_text(render_pr_comment(inputs), encoding="utf-8", newline="\n")
     typer.echo(f"verdict {inputs.decision.verdict}: comment written to {out}")
-
-
-@policy_app.command("capabilities")
-def policy_capabilities(
-    out: Annotated[Path, typer.Option("--out", "-o", help="Where to write the capabilities document.")],
-    opa: Annotated[
-        Path | None, typer.Option(help="OPA binary. Default: $SENTINEL_OPA, then opa on PATH.")
-    ] = None,
-) -> None:
-    """Write OPA's capabilities minus non-deterministic built-ins (what `evaluate` runs policies with)."""
-    try:
-        capabilities = OpaRunner.locate(opa).restricted_capabilities()
-    except OpaError as exc:
-        typer.echo(f"sentinel policy capabilities: {exc}", err=True)
-        raise typer.Exit(EXIT_NO_DECISION) from exc
-    _write_atomically(out, json.dumps(capabilities, indent=2, sort_keys=True) + "\n")
-    typer.echo(f"{len(capabilities['builtins'])} built-ins allowed; written to {out}")
 
 
 if __name__ == "__main__":
