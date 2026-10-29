@@ -307,19 +307,29 @@ def replay_command(
     opa: Annotated[
         Path | None, typer.Option(help="OPA binary. Default: $SENTINEL_OPA, then opa on PATH.")
     ] = None,
+    allow_all_skipped: Annotated[
+        bool,
+        typer.Option(
+            "--allow-all-skipped",
+            help="With --all: exit 0 when every decision was skipped (e.g. after an engine version bump).",
+        ),
+    ] = False,
 ) -> None:
     """Re-evaluate a decision from the inputs it recorded and check that the result is identical.
 
     Every input, the policy bundle included, comes from the store by digest. Exit code 0 when identical,
     1 when the replayed decision differs, 3 when the decision cannot be replayed (missing or tampered
     evidence). With --all, decisions recorded with another engine or OPA version are skipped; the exit code
-    is 3 if any decision cannot be replayed or the store holds none, else 1 if any differs.
+    is 3 if any decision cannot be replayed, the store holds none or none was compared (all skipped, unless
+    --allow-all-skipped), else 1 if any differs.
     """
     if (decision is None) != all_decisions:
         raise typer.BadParameter("give either a decision (id or file) or --all")
+    if allow_all_skipped and not all_decisions:
+        raise typer.BadParameter("--allow-all-skipped only applies to --all")
     evidence = EvidenceStore(store)
     if decision is None:
-        _replay_all(evidence, opa)
+        _replay_all(evidence, opa, allow_all_skipped=allow_all_skipped)
         return
     try:
         by_id = _DECISION_ID_ARGUMENT.fullmatch(decision) is not None
@@ -341,7 +351,7 @@ def replay_command(
     raise typer.Exit(EXIT_REPLAY_DIFFERS)
 
 
-def _replay_all(evidence: EvidenceStore, opa: Path | None) -> None:
+def _replay_all(evidence: EvidenceStore, opa: Path | None, *, allow_all_skipped: bool) -> None:
     try:
         runner = OpaRunner.locate(opa)
         opa_version = runner.version()
@@ -383,6 +393,12 @@ def _replay_all(evidence: EvidenceStore, opa: Path | None) -> None:
         raise typer.Exit(EXIT_NO_DECISION)
     if counts["differ"]:
         raise typer.Exit(EXIT_REPLAY_DIFFERS)
+    if counts["identical"] == 0:  # every decision skipped: nothing was compared, which is not "all identical"
+        if allow_all_skipped:
+            typer.echo("nothing compared: every decision was skipped (allowed by --allow-all-skipped)")
+            return
+        typer.echo("sentinel replay: nothing compared, every decision was skipped", err=True)
+        raise typer.Exit(EXIT_NO_DECISION)
 
 
 # ---------------------------------------------------------------- normalize
