@@ -225,7 +225,7 @@ priority_bands: {P0: 70, P1: 50, P2: 30, P3: 10}   # below 10 -> P4
 |---|---|---|
 | SC-001 | BLOCK | Secret detected (new in PR, or anywhere in a release image), not waived |
 | SC-002 | BLOCK | Any P0 finding without valid waiver |
-| SC-003 | BLOCK | KEV-listed vulnerability with a fix, internet-facing service |
+| SC-003 | BLOCK | KEV-listed vulnerability with a fix, internet-facing service (an unknown exposure counts as internet-facing) |
 | SC-004 | BLOCK | Release image missing signature, SBOM or provenance |
 | SC-005 | BLOCK | Invalid waiver (no owner / justification / expiry, or expiry > 90 days) |
 | SC-006 | WARN | P1 findings (BLOCK above threshold in strict profile) |

@@ -454,6 +454,13 @@ test_kev_with_fix_on_internet_facing_service_blocks_with_sc003 if {
 	v == {"rule": "SC-003", "effect": "BLOCK", "finding_ids": [f.id], "message": "Known exploited vulnerability with a fix, internet-facing"}
 }
 
+test_kev_with_fix_and_unknown_exposure_blocks_with_sc003 if {
+	# Found by Nourhane in the review of #17: without sentinel.yaml, SC-003 could never fire.
+	f := object.union(scored(vuln(h("d"), "HIGH"), "P1"), {"enrichment": {"kev": {"listed": true}, "fix_available": true}})
+	[v] := gate.decision.violations with input as with_findings([f])
+	v.rule == "SC-003"
+}
+
 test_kev_fix_can_come_from_fixed_versions if {
 	f := object.union(kev(scored(vuln(h("d"), "HIGH"), "P2"), false, "internet-facing"), {"package": {"fixed_versions": ["1.2.4"]}})
 	[v] := gate.decision.violations with input as with_findings([f])
@@ -464,6 +471,7 @@ test_kev_without_fix_or_not_internet_facing_is_left_to_its_priority if {
 	every f in [
 		kev(scored(vuln(h("d"), "HIGH"), "P2"), false, "internet-facing"),
 		kev(scored(vuln(h("d"), "HIGH"), "P2"), true, "internal"),
+		kev(scored(vuln(h("d"), "HIGH"), "P2"), true, "offline"),
 		object.union(scored(vuln(h("d"), "HIGH"), "P2"), {"enrichment": {"kev": {"listed": false}, "fix_available": true, "exposure": "internet-facing"}}),
 	] {
 		gate.decision.verdict == "PASS" with input as with_findings([f])

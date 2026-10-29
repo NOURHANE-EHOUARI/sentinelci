@@ -261,6 +261,7 @@ priority(f) := scored_priority(f)
 priority(f) := object.get(worst_case_priority, object.get(f, "severity", ""), "P0") if not scored_priority(f)
 
 # SC-003: a known exploited vulnerability that can be fixed, in an internet-facing service.
+# Fail closed: an unknown exposure (no sentinel.yaml) counts as internet-facing, as in the risk model (X = 1.0).
 fix_available(f) if f.enrichment.fix_available == true
 
 fix_available(f) if count(object.get(f, ["package", "fixed_versions"], [])) > 0
@@ -270,7 +271,7 @@ kev_ids contains f.id if {
 	f.category in {"SCA", "CONTAINER"}
 	f.enrichment.kev.listed == true
 	fix_available(f)
-	f.enrichment.exposure == "internet-facing"
+	not object.get(f, ["enrichment", "exposure"], "internet-facing") in {"internal", "offline"}
 	counts(f)
 }
 
