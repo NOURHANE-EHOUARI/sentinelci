@@ -7,6 +7,8 @@ The comment is a view of a Decision v1 record, never a second decision:
   findings than the ones the gate evaluated;
 - anything else (missing, malformed or mismatched files) produces a "no decision" comment that says the change
   is treated as blocked (rule SC-010), and the command exits 3;
+- "N new" is shown only when the gate itself used a baseline (a `pr` decision with `inputs.baseline_digest`)
+  and the baseline file matches that digest; "new" means what gate.rego calls `introduced`;
 - the same inputs give the same bytes: rows are sorted, nothing reads the clock, and the only time shown is
   the decision's own `evaluated_at`;
 - every value that comes from the scanned change is rendered through `report.markdown.code`.
@@ -22,12 +24,14 @@ from pathlib import Path, PurePosixPath
 from pydantic import ValidationError
 
 from sentinelci.contracts.decision import Decision, Violation
-from sentinelci.contracts.finding import Finding
+from sentinelci.contracts.finding import Finding, Location
 from sentinelci.report.markdown import code
 
 MARKER = "<!-- sentinelci:pr-comment -->"
 MAX_ROWS = 50
 MAX_PIPELINE_CHANGES = 20
+MAX_OTHER_LOCATIONS = 3
+EVIDENCE_ARTIFACT = "sentinel-evidence"  # the workflow artifact holding the run's evidence store
 WAIVER_FILES = frozenset({"waivers.yaml", "waivers.yml"})
 SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")
 PRIORITIES = ("P0", "P1", "P2", "P3", "P4")
@@ -44,7 +48,8 @@ class ReportError(Exception):
 class ReportInputs:
     decision: Decision
     findings: dict[str, Finding]
-    baseline_ids: frozenset[str] | None = None
+    # Base-branch finding id -> the files it was seen in; only when the gate used this very baseline.
+    baseline: dict[str, frozenset[str]] | None = None
     pipeline_changes: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -96,28 +101,59 @@ def load_inputs(
         raise ReportError(
             "the findings file is not the one the decision was made on (findings_digest mismatch)"
         )
+    # A baseline the gate did not use (release context, or a decision without baseline_digest) is ignored: the
+    # gate counted every finding, and "N new" would contradict it.
+    gate_baseline = decision.inputs.baseline_digest if decision.subject.context == "pr" else None
+    if (
+        baseline_bytes is not None
+        and gate_baseline is not None
+        and sha256_digest(baseline_bytes) != gate_baseline
+    ):
+        raise ReportError(
+            "the baseline file is not the one the decision was made on (baseline_digest mismatch)"
+        )
     try:
         findings = parse_findings(findings_bytes, source="findings")
         baseline = (
-            frozenset(parse_findings(baseline_bytes, source="baseline"))
-            if baseline_bytes is not None
+            {fid: _paths(f) for fid, f in parse_findings(baseline_bytes, source="baseline").items()}
+            if baseline_bytes is not None and gate_baseline is not None
             else None
         )
     except UnicodeDecodeError as exc:
         raise ReportError(f"findings are not UTF-8: {exc}") from exc
     changes = tuple(sorted({line.strip() for line in changes_text.split("\n") if line.strip()}))
-    return ReportInputs(decision=decision, findings=findings, baseline_ids=baseline, pipeline_changes=changes)
+    return ReportInputs(decision=decision, findings=findings, baseline=baseline, pipeline_changes=changes)
+
+
+def _paths(finding: Finding) -> frozenset[str]:
+    """Every file a finding was seen in (gate.rego `finding_paths`)."""
+    return frozenset(place.path for place in (finding.location, *(finding.other_locations or ())) if place)
+
+
+def introduced(finding: Finding, baseline: dict[str, frozenset[str]]) -> bool:
+    """gate.rego `introduced` (diff-aware): unknown to the base branch, or a known secret in a new file."""
+    known = baseline.get(finding.id)
+    if known is None:
+        return True
+    return finding.category == "SECRET" and not _paths(finding) <= known
 
 
 # ---------------------------------------------------------------- rendering
+
+
+def _place(location: Location) -> str:
+    line = f":{location.start_line}" if location.start_line else ""
+    return code(f"{location.path}{line}")
 
 
 def _location(finding: Finding | None) -> str:
     if finding is None:
         return "—"
     if finding.location is not None:
-        line = f":{finding.location.start_line}" if finding.location.start_line else ""
-        return code(f"{finding.location.path}{line}")
+        others = finding.other_locations or []
+        cell = " · ".join(_place(place) for place in [finding.location, *others[:MAX_OTHER_LOCATIONS]])
+        hidden = len(others) - MAX_OTHER_LOCATIONS
+        return cell + (f" and {hidden} more" if hidden > 0 else "")
     if finding.package is not None:
         return code(f"{finding.package.name} {finding.package.version}")
     return "—"
@@ -212,9 +248,9 @@ def render_pr_comment(inputs: ReportInputs) -> str:
 
     if findings:
         total = f"{len(findings)} total"
-        if inputs.baseline_ids is not None:
-            new = sum(1 for finding_id in findings if finding_id not in inputs.baseline_ids)
-            total += f", {new} new"
+        if inputs.baseline is not None:
+            baseline = inputs.baseline
+            total += f", {sum(1 for finding in findings.values() if introduced(finding, baseline))} new"
         lines.append(f"**Findings:** {_counts(findings.values())} ({total})")
     else:
         lines.append("**Findings:** none")
@@ -238,14 +274,27 @@ def render_pr_comment(inputs: ReportInputs) -> str:
         f"- Policy bundle {code(decision_inputs.policy_bundle_digest, in_table=False)} · risk model "
         f"{code(decision_inputs.risk_model_version, in_table=False)} · engine "
         f"{code(decision.engine_version, in_table=False)}",
+        *_digest_lines(decision, baseline_verified=inputs.baseline is not None),
         f"- Tools: {tools}",
-        f"- Replay: {code(f'sentinel replay {decision.decision_id}', in_table=False)}",
+        f"- Replay: download this run's {code(EVIDENCE_ARTIFACT, in_table=False)} artifact into "
+        f"{code(EVIDENCE_ARTIFACT + '/', in_table=False)}, then "
+        f"{code(f'sentinel replay {decision.decision_id} --store {EVIDENCE_ARTIFACT}', in_table=False)}",
         "",
         "</details>",
         "",
         "_AI advisory is in the dashboard. It is advisory only and never changes the verdict._",
     ]
     return "\n".join(lines) + "\n"
+
+
+def _digest_lines(decision: Decision, *, baseline_verified: bool) -> list[str]:
+    lines = []
+    if decision.inputs.baseline_digest is not None:
+        checked = " (verified against this report)" if baseline_verified else ""
+        lines.append(f"- Baseline {code(decision.inputs.baseline_digest, in_table=False)}{checked}")
+    if decision.inputs.tool_status_digest is not None:
+        lines.append(f"- Tool status {code(decision.inputs.tool_status_digest, in_table=False)}")
+    return lines
 
 
 def render_no_decision(reason: str) -> str:
