@@ -28,6 +28,7 @@ from sentinelci.enrich.transport import (
     ReplayTransport,
     TransportError,
 )
+from sentinelci.risk.model import RiskModel, score_finding
 
 ROOT = Path(__file__).resolve().parents[3]
 FIXTURES = ROOT / "schemas" / "fixtures"
@@ -473,7 +474,8 @@ def kev_with(entries: list[Any], **fields: Any) -> dict[str, Any]:
         kev_with([*KEV_ENTRIES, {"cveID": "CVE-2099-1002", "dateAdded": "20261001"}]),
         kev_with([*KEV_ENTRIES, {"cveID": "CVE-2099-1002"}]),
         kev_with([]),
-        kev_with(KEV_ENTRIES[: MIN_KEV_ENTRIES - 1]),
+        kev_with(KEV_ENTRIES[:2] + [{"cveID": f"CVE-2000-{n:05d}", "dateAdded": "2020-01-01"}
+                                    for n in range(997)]),
         {**KEV, "count": len(KEV_ENTRIES) + 1},
         {**KEV, "count": str(len(KEV_ENTRIES))},
         {k: v for k, v in KEV.items() if k != "count"},
@@ -488,6 +490,23 @@ def test_a_kev_catalogue_is_trusted_whole_or_not_at_all(catalogue: dict[str, Any
     result, warnings = build_snapshot([FINDING], feeds(kev=(200, catalogue)))
     assert "kev" not in result["sources"] and "epss" not in result["sources"]
     assert any(w.startswith("KEV left out") for w in warnings)
+
+
+def test_a_catalogue_of_exactly_1000_entries_is_trusted() -> None:
+    """The bound is pinned by literals (999 refused above, 1,000 here), not derived from MIN_KEV_ENTRIES."""
+    filler = [{"cveID": f"CVE-2000-{n:05d}", "dateAdded": "2020-01-01"} for n in range(999)]
+    result, warnings = build_snapshot([FINDING], feeds(kev=(200, kev_with([KEV_ENTRIES[0], *filler]))))
+    assert "kev" in result["sources"], warnings
+    assert MIN_KEV_ENTRIES == 1000
+
+
+def test_kev_covers_a_cve_it_does_not_list() -> None:
+    """A covered, unlisted CVE is the one case where the snapshot says "not listed" (E < 1 is allowed)."""
+    unlisted = {**SCA, "rule_id": "CVE-2099-5555", "cve": ["CVE-2099-5555"], "aliases": []}
+    result, warnings = build_snapshot([unlisted], feeds())
+    assert "CVE-2099-5555" in result["sources"]["kev"]["cves"], warnings
+    enriched = enrich_finding(unlisted, load_snapshot(dumps_snapshot(result)), None)["enrichment"]
+    assert enriched["kev"] == {"listed": False}
 
 
 @pytest.mark.parametrize(
@@ -532,18 +551,22 @@ def test_a_body_nested_too_deep_is_a_feed_failure() -> None:
     assert any("did not answer JSON" in w for w in warnings)
 
 
-def test_any_other_error_while_reading_a_feed_leaves_only_that_feed_out(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_any_other_error_while_reading_a_feed_is_a_feed_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     import sentinelci.enrich.fetch as fetch
 
-    def broken(record: Any, requested: str) -> Any:
+    def broken(*args: Any) -> Any:
         raise KeyError("an unforeseen shape")
 
     monkeypatch.setattr(fetch, "_osv_entry", broken)
     result, warnings = build_snapshot([{**FINDING, "cve": ["CVE-2099-1001"]}], feeds())
-    assert "osv" not in result["sources"] and {"kev", "epss"} <= set(result["sources"])
+    assert result["sources"] == {}  # OSV out, so KEV and EPSS too (an alias may be the listed CVE)
     assert any(w.startswith("OSV left out") for w in warnings)
+
+    monkeypatch.undo()
+    monkeypatch.setattr(fetch, "_number", broken)
+    result, warnings = build_snapshot([FINDING], feeds())
+    assert set(result["sources"]) == {"osv", "kev"}  # EPSS alone is left out
+    assert any(w.startswith("EPSS left out") for w in warnings)
 
 
 def test_epss_answers_from_two_days_are_refused() -> None:
@@ -650,3 +673,97 @@ def test_a_fix_that_cannot_be_tied_to_a_version_keeps_fix_availability_unknown(a
     record = {**OSV_GHSA, "affected": [*OSV_GHSA["affected"], *affected]}
     result = snapshot(feeds(osv=(200, record)))
     assert "fixed_versions" not in result["vulnerabilities"].get("GHSA-aaaa-bbbb-cccc", {})
+
+
+# ---------------------------------------------------------------- an OSV outage never lowers risk (#18)
+
+OUTAGE_FINDING = {**SCA, "rule_id": "GHSA-aaaa-bbbb-cccc", "cve": ["CVE-2099-0001"], "aliases": []}
+
+
+def outage_feeds(osv: tuple[int, Any]) -> FakeTransport:
+    """Nourhane's repro: KEV lists only CVE-2099-0002, which only OSV links to the finding."""
+    both = "CVE-2099-0001,CVE-2099-0002"
+    rows = [
+        {"cve": "CVE-2099-0001", "epss": "0.01", "percentile": "0.10", "date": "2026-11-10"},
+        {"cve": "CVE-2099-0002", "epss": "0.90", "percentile": "0.99", "date": "2026-11-10"},
+    ]
+    entries = [{"cveID": "CVE-2099-0002", "dateAdded": "2026-10-01"}, *KEV_ENTRIES[2:]]
+    return FakeTransport(
+        {
+            ("GET", f"{OSV_URL}/GHSA-aaaa-bbbb-cccc", None): osv,
+            ("GET", f"{EPSS_URL}?cve={both}", None): (200, {**EPSS, "total": 2, "data": rows}),
+            ("GET", f"{EPSS_URL}?cve=CVE-2099-0001", None): (200, {**EPSS, "data": rows[:1]}),
+            ("GET", KEV_URL, None): (200, {**KEV, "count": len(entries), "vulnerabilities": entries}),
+        }
+    )
+
+
+def scored(transport: FakeTransport) -> tuple[dict[str, Any], list[str]]:
+    result, warnings = build_snapshot([OUTAGE_FINDING], transport)
+    enriched = enrich_finding(OUTAGE_FINDING, load_snapshot(dumps_snapshot(result)), None)
+    return score_finding(enriched, RiskModel.load(ROOT / "policies" / "risk-model.yaml")), warnings
+
+
+def test_with_osv_the_listed_alias_is_found() -> None:
+    record = {**OSV_GHSA, "aliases": ["CVE-2099-0001", "CVE-2099-0002"]}
+    finding, warnings = scored(outage_feeds((200, record)))
+    assert warnings == []
+    assert finding["enrichment"]["kev"] == {"listed": True, "date_added": "2026-10-01"}
+    assert finding["risk"]["factors"]["E"] == 1.0
+
+
+@pytest.mark.parametrize("osv", [(503, b""), (200, TransportError("timed out"))], ids=["503", "timeout"])
+def test_without_osv_kev_and_epss_are_left_out_too(osv: tuple[int, Any]) -> None:
+    """KEV covered the finding's own CVE, but the listed one was only reachable through OSV: without OSV,
+    `listed: false` and EPSS 0.10 would score 46 P2 instead of the worst case."""
+    finding, warnings = scored(outage_feeds(osv))
+    assert "kev" not in finding.get("enrichment", {}) and "epss" not in finding.get("enrichment", {})
+    assert finding["risk"]["factors"]["E"] == 1.0
+    assert any(w.startswith("KEV and EPSS left out") and "OSV" in w for w in warnings)
+
+
+# ---------------------------------------------------------------- a bad --out exits 3, no traceback (#18)
+
+
+def command_line(command: str, tmp_path: Path, out: Path) -> list[str]:
+    findings = tmp_path / "findings.ndjson"
+    findings.write_text(json.dumps(FINDING) + "\n", encoding="utf-8")
+    extra = ["--offline", str(tmp_path)] if command == "snapshot" else []  # no recordings: an outage
+    if command == "score":
+        extra = ["--policy-dir", str(ROOT / "policies")]
+    return [command, "--findings", str(findings), "--out", str(out), *extra]
+
+
+@pytest.mark.parametrize("command", ["snapshot", "enrich", "score"])
+def test_an_out_path_below_a_file_exits_3(tmp_path: Path, command: str) -> None:
+    (tmp_path / "afile").write_text("not a directory", encoding="utf-8")
+    result = CliRunner().invoke(app, command_line(command, tmp_path, tmp_path / "afile" / "out.json"))
+    assert result.exit_code == 3, result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "--out" in result.output
+
+
+@pytest.mark.parametrize("command", ["snapshot", "enrich", "score"])
+def test_a_failed_write_exits_3_and_leaves_nothing(
+    tmp_path: Path, command: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sentinelci.cli as cli
+
+    def no_space(*args: Any) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(cli.os, "replace", no_space)
+    out = tmp_path / "out.json"
+    result = CliRunner().invoke(app, command_line(command, tmp_path, out))
+    assert result.exit_code == 3, result.output
+    assert "No space left" in result.output
+    assert not out.exists() and not list(tmp_path.glob(".out.json.*"))
+
+
+@pytest.mark.parametrize("value", [10**400, "1" + "0" * 400], ids=["json-integer", "string"])
+def test_an_epss_number_too_large_for_a_float_leaves_only_epss_out(value: Any) -> None:
+    """#18 nit: float(10**400) raises OverflowError, which lost the whole snapshot."""
+    row = {"cve": "CVE-2099-1001", "epss": value, "percentile": "0.95", "date": "2026-11-10"}
+    result, warnings = build_snapshot([FINDING], feeds(epss=(200, {**EPSS, "data": [row]})))
+    assert set(result["sources"]) == {"osv", "kev"}
+    assert any(w.startswith("EPSS left out") for w in warnings)

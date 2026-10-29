@@ -7,7 +7,10 @@
   "additionalProperties": false,
   "required": ["schema_version", "id", "tool", "rule_id", "category", "title", "severity", "run"],
   "properties": {
-    "schema_version": { "const": "1.0" },
+    "schema_version": {
+      "description": "1.1 adds other_locations (additive). A 1.0 document keeps its meaning.",
+      "enum": ["1.0", "1.1"]
+    },
     "id": {
       "description": "Stable fingerprint (sha256 hex). Rules per category are defined in SPEC section 13.1.",
       "$ref": "#/$defs/sha256_hex"
@@ -36,14 +39,15 @@
       "uniqueItems": true
     },
     "location": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["path"],
-      "properties": {
-        "path": { "$ref": "#/$defs/relative_path" },
-        "start_line": { "type": "integer", "minimum": 1 },
-        "end_line": { "type": "integer", "minimum": 1 }
-      }
+      "description": "Primary location: the first occurrence by (path, start_line).",
+      "$ref": "#/$defs/location"
+    },
+    "other_locations": {
+      "description": "Since 1.1. Every other place the same finding (same id) was seen in this run, sorted by (path, start_line). Never truncated: a consumer that compares locations (diff-aware PR mode) must see them all.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/location" }
     },
     "package": {
       "type": "object",
@@ -142,6 +146,14 @@
   },
   "allOf": [
     {
+      "if": { "properties": { "schema_version": { "const": "1.0" } } },
+      "then": { "not": { "required": ["other_locations"] } }
+    },
+    {
+      "if": { "required": ["other_locations"] },
+      "then": { "required": ["location"] }
+    },
+    {
       "if": { "properties": { "category": { "const": "SECRET" } } },
       "then": {
         "required": ["location", "evidence"],
@@ -165,6 +177,16 @@
     "severity": { "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"] },
     "sha256_hex": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "oci_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relative_path" },
+        "start_line": { "type": "integer", "minimum": 1 },
+        "end_line": { "type": "integer", "minimum": 1 }
+      }
+    },
     "relative_path": {
       "type": "string",
       "minLength": 1,

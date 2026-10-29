@@ -29,11 +29,12 @@ typecheck: ## mypy (strict)
 imports: ## Architecture contract: the decision path never imports sentinel_ai
 	uv run lint-imports
 
-policy: ## Rego format, strict compile, unit tests with coverage >= 90%
+policy: ## Rego format, strict compile and unit tests (deterministic built-ins only), coverage >= 90%
 	$(OPA) fmt --list --fail policies
-	$(OPA) check --strict policies
-	$(OPA) test policies
-	$(OPA) test --coverage --threshold 90 policies > /dev/null
+	uv run sentinel policy capabilities --opa "$$(command -v $(OPA))" --out out/opa-capabilities.json
+	$(OPA) check --strict --capabilities out/opa-capabilities.json policies
+	$(OPA) test --capabilities out/opa-capabilities.json policies
+	$(OPA) test --capabilities out/opa-capabilities.json --coverage --threshold 90 policies > /dev/null
 
 test: ## Unit and contract tests
 	uv run pytest
