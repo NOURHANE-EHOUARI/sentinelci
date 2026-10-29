@@ -31,6 +31,7 @@ def test_the_corpus_covers_pass_and_every_implemented_block_rule() -> None:
         "release-secret",
         "release-waiver-without-owner",
         "release-scanner-timeout",
+        "release-without-tool-status",
     } <= names  # SC-001/5/10
     assert {case.expected for case in corpus.CASES} == {"PASS", "BLOCK"}
     assert len(names) == len(corpus.CASES)

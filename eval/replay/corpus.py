@@ -58,25 +58,36 @@ class Case:
     tool_status: str | None = None
 
 
+# Every case but the last two models a complete pipeline: all required scanners reported ok.
 CASES = (
-    Case("release-secret", "BLOCK", findings=(IN_CONFIG,)),
-    Case("pr-secret-already-on-base", "PASS", context="pr", findings=(IN_CONFIG,), baseline=(IN_CONFIG,)),
+    Case("release-secret", "BLOCK", findings=(IN_CONFIG,), tool_status="all-ok"),
+    Case(
+        "pr-secret-already-on-base",
+        "PASS",
+        context="pr",
+        findings=(IN_CONFIG,),
+        baseline=(IN_CONFIG,),
+        tool_status="all-ok",
+    ),
     Case(
         "pr-secret-copied-to-new-file",
         "BLOCK",
         context="pr",
         findings=(IN_TWO_FILES,),
         baseline=(IN_CONFIG,),
+        tool_status="all-ok",
     ),
-    Case("release-waived-secret", "PASS", findings=(IN_CONFIG,), waivers=WAIVER),
+    Case("release-waived-secret", "PASS", findings=(IN_CONFIG,), waivers=WAIVER, tool_status="all-ok"),
     Case(
         "release-waiver-without-owner",
         "BLOCK",
         findings=(IN_CONFIG,),
         waivers=WAIVER.replace("    owner:", "    #"),
+        tool_status="all-ok",
     ),
-    Case("release-scanner-timeout", "BLOCK", tool_status="one-timeout"),
     Case("release-clean", "PASS", tool_status="all-ok"),
+    Case("release-scanner-timeout", "BLOCK", tool_status="one-timeout"),
+    Case("release-without-tool-status", "BLOCK"),
 )
 
 

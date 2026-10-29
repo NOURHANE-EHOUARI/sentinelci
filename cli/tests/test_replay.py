@@ -24,6 +24,7 @@ POLICIES = ROOT / "policies"
 FIXTURES = ROOT / "schemas" / "fixtures"
 SECRET = json.loads((FIXTURES / "finding" / "valid" / "secret-in-config.json").read_text(encoding="utf-8"))
 TOOLS_TIMEOUT = (FIXTURES / "tool-status" / "valid" / "one-timeout.json").read_bytes()
+TOOLS_OK = (FIXTURES / "tool-status" / "valid" / "all-ok.json").read_bytes()
 COMMIT = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 WAIVERS_YAML = f"""\
 version: 1
@@ -355,7 +356,9 @@ def edit_stored(path: Path, edit: Any) -> None:
 
 def record_two(tmp_path: Path, opa_binary: Path) -> tuple[str, str]:
     _, _, blocked = evaluate(tmp_path / "a", opa_binary, ndjson(SECRET), "--store", str(tmp_path / "store"))
-    _, _, passed = evaluate(tmp_path / "b", opa_binary, b"", "--store", str(tmp_path / "store"))
+    _, _, passed = evaluate(
+        tmp_path / "b", opa_binary, b"", "--store", str(tmp_path / "store"), tool_status=TOOLS_OK
+    )
     return blocked["decision_id"], passed["decision_id"]
 
 
