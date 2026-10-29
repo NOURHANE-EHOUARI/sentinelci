@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "waivers": [
+    {
+      "id": "waiver-2026-009",
+      "owner": "@Hiba-elouazi",
+      "justification": "Accepted for the demo.",
+      "expires_at": "2026-12-31T00:00:00Z",
+      "vulnerability": "CVE-2026-12345",
+      "purl": "pkg:pypi/requests@2.31.0"
+    }
+  ]
+}

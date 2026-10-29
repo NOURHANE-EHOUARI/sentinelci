@@ -1,0 +1,11 @@
+# Risk model weights (SPEC section 6.2). Owned by Track B (B3); versioned with the policy bundle.
+# The version is recorded in every decision (inputs.risk_model_version). Bump it on any weight change.
+version: 1.0.0
+severity_weight: {CRITICAL: 1.0, HIGH: 0.75, MEDIUM: 0.45, LOW: 0.2, INFO: 0.05}
+exploitability:
+  kev: 1.0
+  epss_floor: 0.4
+  non_cve: {SECRET: 1.0, SAST_TAINT: 0.8, SAST_PATTERN: 0.5, IAC: 0.5, PIPELINE: 0.7}
+exposure: {internet-facing: 1.0, internal: 0.7, offline: 0.5}
+reachability: {reachable: 1.0, imported: 0.9, unknown: 0.8, not_imported: 0.4}
+priority_bands: {P0: 70, P1: 50, P2: 30, P3: 10}   # below 10 -> P4

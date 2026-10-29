@@ -1,6 +1,8 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup check lint format typecheck imports test zizmor tools tools-verify compose-env up down
+.PHONY: help setup check lint format typecheck imports policy test zizmor tools tools-verify compose-env up down
 
+# OPA is a pinned binary, not a Python package: `uv run sentinel tools install opa` (tools.lock.toml).
+OPA ?= $(or $(SENTINEL_OPA),opa)
 COMPOSE := docker compose -f deploy/compose/compose.yaml
 
 help: ## Show available targets
@@ -10,7 +12,7 @@ setup: ## Install the locked workspace and git hooks
 	uv sync --locked
 	uv run pre-commit install
 
-check: lint typecheck imports test zizmor ## Everything CI runs
+check: lint typecheck imports policy test zizmor ## Everything CI runs
 
 lint: ## Ruff lint + format check
 	uv run ruff check .
@@ -19,12 +21,19 @@ lint: ## Ruff lint + format check
 format: ## Auto-format and auto-fix
 	uv run ruff format .
 	uv run ruff check --fix .
+	$(OPA) fmt --write policies
 
 typecheck: ## mypy (strict)
 	uv run mypy
 
 imports: ## Architecture contract: the decision path never imports sentinel_ai
 	uv run lint-imports
+
+policy: ## Rego format, strict compile, unit tests with coverage >= 90%
+	$(OPA) fmt --list --fail policies
+	$(OPA) check --strict policies
+	$(OPA) test policies
+	$(OPA) test --coverage --threshold 90 policies > /dev/null
 
 test: ## Unit and contract tests
 	uv run pytest
