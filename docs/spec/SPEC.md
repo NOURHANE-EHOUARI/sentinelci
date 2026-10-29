@@ -202,6 +202,13 @@ gives every finding the exposure of its `sentinel.yaml` component (longest match
 the risk engine counts it as the worst case. `sentinel.yaml` (`schemas/sentinel-config.v1.json`) is read from the
 base branch, like the policies and waivers, so a change cannot lower its own exposure.
 
+Fetchers (B2, `sentinel snapshot`): OSV by id (one extra round for the aliases it reveals), EPSS in batches of
+100 CVEs, and the KEV catalogue filtered to those CVEs; HTTPS to those three hosts only. The CVSS 3.0/3.1 base
+score is computed from the OSV vector (highest vector wins). Each feed is all or nothing: a failure leaves the
+feed out with a warning, never a partial feed. `--record` / `--offline` capture and replay the feed answers as
+offline fixtures. The NVD fallback for CVSS is not implemented yet: an id without a 3.x vector in OSV keeps an
+unknown CVSS, which the risk engine counts as the worst case.
+
 ### 6.2 Risk model
 
 `risk = 100 × S × E × X × R` clamped to [0, 100]. For CVEs: `E = 1.0` if KEV-listed else

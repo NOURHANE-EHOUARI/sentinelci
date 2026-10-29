@@ -14,6 +14,28 @@ The deterministic core of SentinelCI. It runs inside CI and locally with the sam
 
 `risk/`, `policy/`, `enrich/` and `normalize/` must never import `sentinel_ai` (enforced by import-linter).
 
+## `sentinel snapshot` (enrichment fetchers, B2)
+
+```bash
+uv run sentinel snapshot --findings out/findings.ndjson --out out/enrichment-snapshot.json
+uv run sentinel snapshot --findings out/findings.ndjson --out out/enrichment-snapshot.json --record fixtures/feeds
+uv run sentinel snapshot --findings out/findings.ndjson --out out/enrichment-snapshot.json --offline fixtures/feeds
+```
+
+- The only command that uses the network: OSV (`GET /v1/vulns/{id}` for the ids of package findings, then once
+  more for the aliases they reveal), FIRST EPSS (100 CVEs per request) and the CISA KEV catalogue. HTTPS to those
+  three hosts only, no credentials, `--timeout` seconds per request (default 30), 32 MB per response.
+- CVSS comes from the OSV vector: the 3.0/3.1 base score is computed (`enrich/cvss.py`), the highest vector wins;
+  CVSS 2.0 and 4.0 vectors are not scored, so the score stays unknown. Fixed versions come from ECOSYSTEM and
+  SEMVER ranges only (GIT ranges name commits).
+- Each feed is all or nothing: a failed request or an answer the API does not document leaves that feed out, with
+  a warning on stderr; its values stay unknown (worst case for the risk engine). Exit 0 with the partial snapshot.
+- The snapshot is validated against `schemas/enrichment-snapshot.v1.json` and written canonically (sorted keys),
+  so the same feed answers give the same bytes and digest. An unreadable findings file, or a snapshot that
+  fails its contract, writes nothing and exits 3.
+- `--record DIR` saves every response; `--offline DIR` answers from those files only (a request never recorded
+  counts as an outage). This gives the offline fixtures for demos, evaluation and tests.
+
 ## `sentinel enrich` (enrichment, B2)
 
 ```bash

@@ -22,6 +22,14 @@ import typer
 from sentinelci import __version__
 from sentinelci.contracts.finding import Finding, Run, RunContext, Tool
 from sentinelci.enrich import EnrichmentError, enrich_finding, load_service_context, load_snapshot
+from sentinelci.enrich.fetch import build_snapshot, dumps_snapshot
+from sentinelci.enrich.transport import (
+    DEFAULT_TIMEOUT_S,
+    HttpTransport,
+    RecordingTransport,
+    ReplayTransport,
+    Transport,
+)
 from sentinelci.normalize.errors import NormalizationError
 from sentinelci.normalize.gitleaks import load_gitleaks_report, normalize_gitleaks
 from sentinelci.normalize.ndjson import dumps_ndjson, write_ndjson
@@ -103,6 +111,54 @@ def _write_atomically(path: Path, text: str) -> None:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+@app.command("snapshot")
+def snapshot_command(
+    findings: Annotated[
+        Path, typer.Option(help="Findings NDJSON (Finding v1): their package findings are looked up.")
+    ],
+    out: Annotated[
+        Path, typer.Option(help="Enrichment snapshot to write (schemas/enrichment-snapshot.v1.json).")
+    ],
+    offline: Annotated[
+        Path | None, typer.Option(help="Answer from responses recorded with --record instead of the network.")
+    ] = None,
+    record: Annotated[
+        Path | None, typer.Option(help="Also save every response under this directory.")
+    ] = None,
+    timeout: Annotated[float, typer.Option(help="Seconds per request.")] = DEFAULT_TIMEOUT_S,
+) -> None:
+    """Fetch OSV, FIRST EPSS and CISA KEV data for the findings into a snapshot (SPEC section 6.1).
+
+    The only network step of enrichment; `sentinel enrich` then applies the snapshot offline. A feed that
+    fails is left out (its values stay unknown, scored as the worst case) and named on stderr; exit code 0.
+    Exit code 3 when the findings cannot be read (nothing is written).
+    """
+    out.unlink(missing_ok=True)
+    try:
+        loaded = load_findings(findings.read_bytes())
+    except (EvaluationError, OSError) as exc:
+        typer.echo(f"sentinel snapshot: {exc}", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    transport: Transport = ReplayTransport(offline) if offline else HttpTransport(timeout=timeout)
+    if record is not None:
+        transport = RecordingTransport(transport, record)
+    try:
+        document, warnings = build_snapshot(loaded, transport)
+    except EnrichmentError as exc:  # a feed answer that passed parsing but not the contract
+        typer.echo(f"sentinel snapshot: {exc}", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    for warning in warnings:
+        typer.echo(f"warning: {warning}", err=True)
+    data = dumps_snapshot(document)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _write_atomically(out, data.decode("utf-8"))
+    sources = ", ".join(document["sources"]) or "none"
+    typer.echo(
+        f"Snapshot of {len(document['vulnerabilities'])} vulnerability id(s) (sources: {sources}) -> {out}  "
+        f"sha256:{hashlib.sha256(data).hexdigest()}"
+    )
 
 
 @app.command("enrich")
