@@ -21,9 +21,12 @@ parents: an evil merge is scanned, an honest merge of the base branch adds nothi
 `first-parent`, which would report every secret the base branch already had). Options that hide commits or
 merges from the walk (`--no-merges`, `--first-parent`) are refused. git only re-creates two-parent merges,
 so `remerge` prints nothing for an octopus merge (3+ parents): a second Gitleaks pass covers exactly those
-commits with `--min-parents=3 --diff-merges=first-parent`. For a conflicted file, Gitleaks reads the remerge
-header as `b/<path>`; the prefix is removed only when git confirms that the finding's commit has `<path>` and
-no `b/<path>` in its tree.
+commits with `--min-parents=3 --diff-merges=first-parent`. That pass also reports what the other parents
+already had (an honest `git merge main side` blames the merge for main's secrets): it over-reports, never
+hides, and the PR baseline drops what the base branch already has. Each pass gets the full scanner time limit,
+so a git-mode scan can take twice `timeout_s`. For a conflicted file, Gitleaks reads the remerge header as
+`b/<path>`; the prefix is removed only when git confirms that the finding's commit has `<path>` and no
+`b/<path>` in its tree.
 
 In dir mode, archives are opened up to `MAX_ARCHIVE_DEPTH` levels, so a token inside a committed `.zip` is
 found. Git patches of binary files are never decompressed, so this applies to dir mode only.
@@ -68,6 +71,7 @@ _SAFE_LOG_PREFIXES = ("--since=", "--until=", "--max-count=")
 # Second pass: only octopus merges, which remerge does not diff. The last --diff-merges wins.
 GIT_LOG_OCTOPUS = ("--min-parents=3", "--diff-merges=first-parent")
 _COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+GIT_TIMEOUT_S = 30
 
 
 def git_log_opts(log_opts: str | None, *, octopus: bool = False) -> str:
@@ -218,12 +222,17 @@ def _in_tree(repo_root: Path, commit: str, path: str) -> bool:
     if git is None or not _COMMIT.fullmatch(commit):
         return False
     with tempfile.TemporaryDirectory(prefix="sentinel-git-") as home:
-        # Fixed git binary from a fixed PATH, no shell; the argument is `<hex sha>:<path>`, never an option.
-        proc = subprocess.run(  # noqa: S603
-            [git, "-C", str(repo_root), "cat-file", "-e", f"{commit}:{path}"],
-            env=minimal_env(Path(home)),
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
+        try:
+            # Fixed git binary from a fixed PATH, no shell; the argument is `<sha>:<path>`, never an option.
+            proc = subprocess.run(  # noqa: S603
+                [git, "-C", str(repo_root), "cat-file", "-e", f"{commit}:{path}"],
+                env=minimal_env(Path(home)),
+                capture_output=True,
+                timeout=GIT_TIMEOUT_S,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:  # fail closed (SC-010), like every scanner error
+            raise ScannerError(
+                f"git could not check a finding's path in commit {commit[:12]}: {exc}"
+            ) from exc
     return proc.returncode == 0
