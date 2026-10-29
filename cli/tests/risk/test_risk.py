@@ -148,15 +148,26 @@ def test_missing_exploitability_and_exposure_count_as_the_worst() -> None:
     assert (unknown["E"], unknown["X"]) == (1.0, 1.0)
 
 
-def test_missing_reachability_is_the_models_unknown() -> None:
-    assert risk(vuln(reachability=None))["factors"]["R"] == MODEL.reachability["unknown"]
+def test_reachability_not_analysed_counts_as_the_worst_and_unknown_as_the_model_says() -> None:
+    assert risk(vuln(reachability=None))["factors"]["R"] == 1.0
+    assert risk(vuln(reachability="unknown"))["factors"]["R"] == MODEL.reachability["unknown"] < 1.0
+
+
+@pytest.mark.parametrize("severity", SEVERITIES)
+def test_with_no_enrichment_a_package_finding_scores_the_gates_unscored_bound(severity: str) -> None:
+    # The gate counts an unscored finding at 100 x S (#15): scoring must never relax it.
+    bare = {k: v for k, v in SCA.items() if k not in ("risk", "enrichment")}
+    result = risk({**bare, "severity": severity})
+    bound = round(100 * MODEL.severity_weight[severity], 1)
+    assert result["score"] == bound
+    assert result["priority"] == MODEL.priority(bound)
 
 
 def test_a_finding_with_no_enrichment_at_all_is_scored() -> None:
     bare = {k: v for k, v in SCA.items() if k not in ("risk", "enrichment")}
     result = risk(bare)
-    assert result["factors"] == {"S": 1.0, "E": 1.0, "X": 1.0, "R": 0.8}
-    assert (result["score"], result["priority"]) == (80.0, "P0")
+    assert result["factors"] == {"S": 1.0, "E": 1.0, "X": 1.0, "R": 1.0}
+    assert (result["score"], result["priority"]) == (100.0, "P0")
 
 
 def test_kev_wins_over_epss() -> None:
@@ -230,6 +241,7 @@ def test_cvss_baseline_for_the_evaluation() -> None:
         lambda m: m["exposure"].update(dmz=0.9),
         lambda m: m["reachability"].pop("unknown"),
         lambda m: m["priority_bands"].update(P1=80),
+        lambda m: m["priority_bands"].update(P0=150),
         lambda m: m["exploitability"].update(epss_floor=-0.1),
         lambda m: m.update(extra=1),
     ],
@@ -240,6 +252,7 @@ def test_cvss_baseline_for_the_evaluation() -> None:
         "unknown-exposure",
         "missing-reachability",
         "bands-not-descending",
+        "band-above-100",
         "negative-floor",
         "unknown-key",
     ],

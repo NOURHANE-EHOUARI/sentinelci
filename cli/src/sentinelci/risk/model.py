@@ -7,9 +7,10 @@ E  exploitability. SCA/CONTAINER: 1.0 if KEV-listed, else epss_floor + (1 - epss
 X  exposure of the service (`enrichment.exposure`).
 R  reachability (`enrichment.reachability`), for SCA/CONTAINER only; 1.0 for every other category.
 
-Missing enrichment never lowers a score: no EPSS/KEV data means E = 1.0 and no exposure means X = 1.0.
-Missing reachability is the model's own `unknown`. So until enrichment (B2) runs, scores lean high, and every
-score stays at most 100 x S, the bound the gate uses for findings that were never scored.
+Missing enrichment never lowers a score: no EPSS/KEV data means E = 1.0, no exposure means X = 1.0 and no
+reachability analysis means R = 1.0 (the model's `unknown` is for an analysis that ran and could not decide).
+So until enrichment (B2) runs, a score is exactly 100 x S, the bound the gate uses for unscored findings:
+adding `sentinel score` to a pipeline never relaxes the gate.
 
 The score is rounded to 0.1 and the priority is banded from the rounded score. The weights live in
 policies/risk-model.yaml, part of the policy bundle; its version is recorded in each finding's `risk`.
@@ -82,9 +83,9 @@ class RiskModel(_Strict):
         if (
             floors != sorted(floors, reverse=True)
             or len(set(floors)) != len(floors)
-            or not 0 < floors[-1] <= 100
-        ):
-            raise ValueError("priority_bands must be strictly descending from P0 to P3, within (0, 100]")
+            or not all(0 < floor <= 100 for floor in floors)
+        ):  # a floor above 100 would make its band, and every rule on it, unreachable
+            raise ValueError("priority_bands must be strictly descending from P0 to P3, each within (0, 100]")
         return self
 
     @classmethod
@@ -121,9 +122,8 @@ def factors(finding: Mapping[str, Any], model: RiskModel) -> dict[str, float]:
             exploitability = floor + (1 - floor) * min(max(float(percentile), 0.0), 1.0)
         else:
             exploitability = 1.0
-        reachability = model.reachability.get(
-            _get(finding, "enrichment", "reachability"), model.reachability["unknown"]
-        )
+        # Not analysed (absent) is the worst case; `unknown` means the analysis ran and could not decide.
+        reachability = model.reachability.get(_get(finding, "enrichment", "reachability"), 1.0)
     else:
         weight_key = _CATEGORY_WEIGHT.get(category, category)
         exploitability = model.exploitability.non_cve.get(weight_key, 1.0)
