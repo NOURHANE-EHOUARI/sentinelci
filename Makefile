@@ -31,7 +31,7 @@ imports: ## Architecture contract: the decision path never imports sentinel_ai
 
 policy: ## Rego format, strict compile and unit tests (deterministic built-ins only), coverage >= 90%
 	$(OPA) fmt --list --fail policies
-	uv run sentinel policy capabilities --out out/opa-capabilities.json
+	uv run sentinel policy capabilities --opa "$$(command -v $(OPA))" --out out/opa-capabilities.json
 	$(OPA) check --strict --capabilities out/opa-capabilities.json policies
 	$(OPA) test --capabilities out/opa-capabilities.json policies
 	$(OPA) test --capabilities out/opa-capabilities.json --coverage --threshold 90 policies > /dev/null
