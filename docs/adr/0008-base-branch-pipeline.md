@@ -32,8 +32,8 @@ reusable workflows called with `./` or `$/`. A pull request can therefore always
 3. Waivers come from the base commit. A waiver added by a pull request applies once it is reviewed and merged,
    never to the pull request that adds it.
 4. The PR comment warns when the pull request changes pipeline files (`.github/workflows`, `tools.lock.toml`,
-   `policies/`, `cli/`, `.sentinel/`, `pyproject.toml`, `uv.lock`, any `sentinel.yaml`), because those changes
-   are not what judged it.
+   `policies/`, `cli/`, `.sentinel/`, `pyproject.toml`, `uv.lock`, any `sentinel.yaml`, `eval/feeds/`), because
+   those changes are not what judged it.
 5. Least privilege per job: `scan` and `gate` read only. `report` may write one PR comment. No job gets a
    secret.
 
@@ -58,6 +58,10 @@ reusable workflows called with `./` or `$/`. A pull request can therefore always
   follows where a change puts its files (a file under an `offline` component is scored as offline), so new
   top-level directories and moves into lower-exposure components deserve the reviewer's eye (text proposed
   by Hiba in the review of #17).
+- Vulnerability feeds (OSV, EPSS, KEV) also lower or raise scores. The gate fetches them live, or reads an
+  enrichment snapshot from the evidence store; it never uses `--offline` recordings from the pull request
+  checkout. `eval/feeds/` holds recordings for tests, demos and the evaluation only, and a pull request that
+  changes them gets the warning (raised in the review of #21).
 - Public phase: for pull requests from forks, `github.token` is read-only under `pull_request`, so posting the
   comment fails. The report job should then skip the post and keep the step summary, never move to
   `pull_request_target` (suggested by Hiba in the review of #6).
