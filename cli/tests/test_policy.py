@@ -3,6 +3,7 @@
 Tests that need the real OPA binary skip when it is absent, unless SENTINEL_REQUIRE_OPA is set (CI).
 """
 
+import hashlib
 import json
 import shutil
 import sys
@@ -438,3 +439,22 @@ def test_subject_identifiers_cannot_end_with_a_newline(field: dict[str, str]) ->
     values = {"repo": "NOURHANE-EHOUARI/sentinelci", "commit": "4b825dc642cb6eb9a060e54bf8d69288fbee4904"}
     with pytest.raises(EvaluationError):
         Subject(**{**values, "context": "pr", **field})
+
+
+def test_an_invalid_enrichment_snapshot_is_never_recorded(tmp_path: Path, opa_binary: Path) -> None:
+    (tmp_path / "snapshot.json").write_text("not a snapshot", encoding="utf-8")
+    code, out, decision = run_evaluate(
+        tmp_path, b"", "--enrichment-snapshot", str(tmp_path / "snapshot.json"), "--opa", str(opa_binary)
+    )
+    assert code == 3, out
+    assert not decision.exists()
+
+
+def test_no_snapshot_has_one_digest_in_evaluate_and_enrich(tmp_path: Path, opa_binary: Path) -> None:
+    from sentinelci.enrich import EMPTY_SNAPSHOT, load_snapshot
+
+    load_snapshot(EMPTY_SNAPSHOT)  # a valid snapshot, unlike b"{}"
+    code, out, decision = run_evaluate(tmp_path, b"", "--opa", str(opa_binary))
+    assert code == 0, out
+    recorded = json.loads(decision.read_text(encoding="utf-8"))["inputs"]["enrichment_snapshot_digest"]
+    assert recorded == "sha256:" + hashlib.sha256(EMPTY_SNAPSHOT).hexdigest()

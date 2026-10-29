@@ -23,10 +23,17 @@ from typing import Annotated, Any
 import typer
 
 from sentinelci import __version__
-from sentinelci.contracts.finding import Run, RunContext, Tool
+from sentinelci.contracts.finding import Finding, Run, RunContext, Tool
+from sentinelci.enrich import (
+    EMPTY_SNAPSHOT,
+    EnrichmentError,
+    enrich_finding,
+    load_service_context,
+    load_snapshot,
+)
 from sentinelci.normalize.errors import NormalizationError
 from sentinelci.normalize.gitleaks import load_gitleaks_report, normalize_gitleaks
-from sentinelci.normalize.ndjson import write_ndjson
+from sentinelci.normalize.ndjson import dumps_ndjson, write_ndjson
 from sentinelci.policy.bundle import BundleError, PolicyBundle
 from sentinelci.policy.decision import (
     CONTEXTS,
@@ -34,6 +41,7 @@ from sentinelci.policy.decision import (
     Subject,
     dumps_decision,
     evaluate,
+    load_findings,
     now_utc,
 )
 from sentinelci.policy.errors import EvaluationError
@@ -116,6 +124,58 @@ def _write_atomically(path: Path, text: str) -> None:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+def _refuse_output(out: Path, source: Path, command: str) -> None:
+    """Fail closed before anything is deleted: --out must not be the input file, nor a directory."""
+    if out.is_dir() or (out.exists() and source.exists() and out.resolve() == source.resolve()):
+        what = "a directory" if out.is_dir() else f"the input file {source}"
+        typer.echo(f"{command}: --out {out} is {what}; nothing was written", err=True)
+        raise typer.Exit(EXIT_NO_DECISION)
+
+
+@app.command("enrich")
+def enrich_command(
+    findings: Annotated[Path, typer.Option(help="Findings NDJSON (Finding v1).")],
+    out: Annotated[Path, typer.Option(help="Enriched findings NDJSON to write.")],
+    snapshot: Annotated[
+        Path | None,
+        typer.Option(
+            help="Enrichment snapshot (schemas/enrichment-snapshot.v1.json). Without it: no feed data."
+        ),
+    ] = None,
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            help="Service context, sentinel.yaml (schemas/sentinel-config.v1.json), from the base branch."
+        ),
+    ] = None,
+) -> None:
+    """Add CVSS, EPSS, KEV, fix availability and exposure to findings, offline (SPEC section 6.1).
+
+    Only what the snapshot and sentinel.yaml say is added; unknown stays absent (the risk engine treats it as
+    the worst case). Pass the same snapshot to `sentinel evaluate --enrichment-snapshot`, so the decision
+    records its digest. Exit code 0 on success, 3 when an input cannot be read (nothing is written).
+    """
+    _refuse_output(out, findings, "sentinel enrich")
+    # A stale file from an earlier run must never be read as this run's findings.
+    out.unlink(missing_ok=True)
+    try:
+        data = load_snapshot(snapshot.read_bytes()) if snapshot else load_snapshot(EMPTY_SNAPSHOT)
+        context = load_service_context(config.read_bytes()) if config else None
+        enriched = [
+            Finding.model_validate(enrich_finding(f, data, context))
+            for f in load_findings(findings.read_bytes())
+        ]
+    except (EnrichmentError, EvaluationError, OSError, ValueError) as exc:
+        typer.echo(f"sentinel enrich: {exc}", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    _write_atomically(out, dumps_ndjson(enriched))
+    sources = sorted(k for k, v in data.sources.model_dump().items() if v is not None) or ["none"]
+    typer.echo(
+        f"{len(enriched)} finding(s) enriched (sources: {', '.join(sources)}; "
+        f"service context: {'yes' if context else 'no'}) -> {out}"
+    )
 
 
 @app.command("evaluate")

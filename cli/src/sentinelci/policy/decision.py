@@ -20,6 +20,7 @@ from pydantic import ValidationError
 
 from sentinelci import __version__
 from sentinelci.contracts.finding import Finding
+from sentinelci.enrich.models import EMPTY_SNAPSHOT, EnrichmentError, load_snapshot
 from sentinelci.policy.bundle import PolicyBundle
 from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaRunner
@@ -35,7 +36,7 @@ CONTEXTS = ("pr", "release", "local")
 VERDICTS = ("PASS", "WARN", "BLOCK")
 
 # Recorded when no enrichment ran yet (S1 walking skeleton): the digest of an empty snapshot object.
-EMPTY_ENRICHMENT_SNAPSHOT = b"{}"
+EMPTY_ENRICHMENT_SNAPSHOT = EMPTY_SNAPSHOT  # one "no snapshot" value for evaluate and enrich, so one digest
 
 # Fixed namespace for content-derived decision ids. Never change it: old ids would stop replaying.
 _DECISION_ID_NAMESPACE = uuid.UUID("5b1c6a0e-3f0d-4c8e-9a51-8d3e2f6b7c40")
@@ -189,6 +190,11 @@ def evaluate(
 ) -> dict[str, Any]:
     """Run the release gate and return a Decision v1 record."""
     findings = load_findings(findings_data)
+    if enrichment_snapshot is not None:  # a digest is recorded only for a snapshot that is one
+        try:
+            load_snapshot(enrichment_snapshot)
+        except EnrichmentError as exc:
+            raise EvaluationError(f"--enrichment-snapshot: {exc}") from exc
     # Each input is parsed from the same bytes that are digested: the record names exactly what was evaluated.
     waivers_data = b"" if waivers_data is None else waivers_data
     waivers = load_waivers(waivers_data)

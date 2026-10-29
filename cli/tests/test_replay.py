@@ -15,6 +15,7 @@ import pytest
 from typer.testing import CliRunner
 
 from sentinelci.cli import app
+from sentinelci.enrich import EMPTY_SNAPSHOT
 from sentinelci.policy.bundle import PolicyBundle
 from sentinelci.policy.replay import differences
 from sentinelci.policy.store import EvidenceStore, StoreError
@@ -35,6 +36,10 @@ waivers:
     justification: Fake demo credential listed in the ground truth.
     expires_at: 2026-12-31T00:00:00Z
 """
+
+VALID_SNAPSHOT = (
+    Path(__file__).resolve().parents[2] / "schemas/fixtures/enrichment-snapshot/valid/all-sources.json"
+).read_bytes()
 
 
 def ndjson(*findings: dict[str, Any]) -> bytes:
@@ -219,7 +224,7 @@ def test_evaluate_stores_every_input_and_the_decision(tmp_path: Path, opa_binary
     inputs = decision["inputs"]
     assert store.get(inputs["findings_digest"]) == ndjson(SECRET)
     assert store.get(inputs["waivers_digest"]) == b""
-    assert store.get(inputs["enrichment_snapshot_digest"]) == b"{}"
+    assert store.get(inputs["enrichment_snapshot_digest"]) == EMPTY_SNAPSHOT  # "no snapshot" (#17)
     assert store.get(inputs["policy_bundle_digest"])  # the bundle manifest
     stored = store.decision_path(decision["decision_id"]).read_text(encoding="utf-8")
     assert stored == (tmp_path / "decision.json").read_text(encoding="utf-8")
@@ -249,7 +254,7 @@ def test_replay_covers_waivers_baseline_tool_status_and_sbom(tmp_path: Path, opa
         baseline=ndjson(SECRET),
         tool_status=TOOLS_TIMEOUT,
         sbom=b'{"bomFormat": "CycloneDX"}',
-        enrichment_snapshot=b'{"epss": {}}',
+        enrichment_snapshot=VALID_SNAPSHOT,
     )  # fmt: skip
     assert code == 1  # the scanner timeout blocks
     assert decision["schema_version"] == "1.2"

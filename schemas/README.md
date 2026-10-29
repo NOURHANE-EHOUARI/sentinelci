@@ -10,6 +10,8 @@ JSON Schemas (draft 2020-12) shared by both tracks. See `docs/spec/SPEC.md` sect
 | `verification-result.v1.json` | A6 → platform, B8 |
 | `waivers.v1.json` | people via reviewed PRs (AI drafts only) → B4 gate, platform |
 | `tool-status.v1.json` | A3 pipeline (superset of the `tools verify --report` manifest) → B4 gate (SC-010) |
+| `enrichment-snapshot.v1.json` | B2 fetchers (EPSS, KEV, OSV) → `sentinel enrich`, evidence store, replay |
+| `sentinel-config.v1.json` | `sentinel.yaml` of a scan target, read from the base branch → B2 (exposure), B4 (profile) |
 
 Rules:
 

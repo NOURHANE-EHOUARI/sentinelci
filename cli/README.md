@@ -14,6 +14,33 @@ The deterministic core of SentinelCI. It runs inside CI and locally with the sam
 
 `risk/`, `policy/`, `enrich/` and `normalize/` must never import `sentinel_ai` (enforced by import-linter).
 
+## `sentinel enrich` (enrichment, B2)
+
+```bash
+uv run sentinel enrich --findings out/findings.ndjson --snapshot out/enrichment-snapshot.json \
+  --config sentinel.yaml --out out/findings.enriched.ndjson
+```
+
+- Offline: applies an enrichment snapshot (`schemas/enrichment-snapshot.v1.json`) and the service context
+  (`sentinel.yaml`, `schemas/sentinel-config.v1.json`) to findings. Pass the same snapshot to
+  `sentinel evaluate --enrichment-snapshot` so the decision records its digest.
+- Package findings (SCA, CONTAINER): `cvss` and `epss` (highest among the finding's ids and their aliases), `kev`
+  (only when the KEV feed was read), `fix_available` (true from the finding or OSV, false only when OSV knew the
+  vulnerability and fixes none of the package). Every finding: `exposure` of its `sentinel.yaml` component
+  (longest matching path), else the top-level exposure.
+- Unknown stays absent; the risk engine treats absent as the worst case. Without `--snapshot` or `--config`,
+  nothing from that source is added.
+- Read `sentinel.yaml` from the base branch in PR mode: a change must not lower its own exposure.
+- `kev: {listed: false}` only for CVEs the snapshot's KEV lookup covered (`sources.kev.cves`); otherwise KEV
+  stays unknown. Package URLs are compared in canonical form (PyPI names per PEP 503).
+- `sentinel.yaml` is read with a restricted YAML loader: no duplicate keys, anchors, aliases, dates, binary or
+  set values; at most 64 KiB. Component paths must be canonical (`services/web`, not `./services/web/`) and
+  unique.
+- Fail closed: an invalid snapshot, `sentinel.yaml` or findings file (including enrichment outside the Finding
+  contract), or `--out` naming the input or a directory, writes nothing and exits 3. `sentinel evaluate`
+  refuses an `--enrichment-snapshot` that is not a valid snapshot; with none, both commands use the same empty
+  snapshot, so "no snapshot" has a single digest.
+
 ## `sentinel evaluate` (release gate, B4)
 
 ```bash
