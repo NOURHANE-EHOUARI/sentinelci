@@ -81,3 +81,5 @@ make format     # auto-format
 - Run code from `demo-shop/` outside a container, or expose it beyond localhost.
 - Use `pull_request_target`, or give a job that executes repository code access to secrets or write tokens.
 - Let any AI output change a verdict, create a waiver, or merge a PR.
+- Let the scanned repository configure or silence a scanner (config files, ignore files, inline allow
+  comments). Scanner configuration belongs to SentinelCI; exceptions are waivers.

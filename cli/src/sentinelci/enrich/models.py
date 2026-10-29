@@ -16,12 +16,12 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date
+from datetime import date, datetime
+from pathlib import Path
 from typing import Any, Literal
 
 import yaml
 from pydantic import (
-    AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
@@ -31,6 +31,9 @@ from pydantic import (
 )
 
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:+-]{0,63}")
+_RFC3339 = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:[Zz]|[+-][0-9]{2}:[0-9]{2})"
+)
 _VULN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{1,63}")
 _PURL_BASE = re.compile(r"pkg:[a-z0-9.+-]+/[^?#@\r\n\u2028\u2029]+")
 _NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
@@ -58,17 +61,21 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
-def _no_null_or_bool(value: Any, path: str = "") -> None:
+def _no_null_or_bool(document: Any) -> None:
     """Neither contract has a null or a boolean anywhere: an optional field is left out, never null, and
-    `version: yes` in YAML (a boolean) must not pass for 1, as Python's True == 1 would let it."""
-    if value is None or isinstance(value, bool):
-        raise EnrichmentError(f"{path or 'document'}: {json.dumps(value)} is not allowed here")
-    if isinstance(value, dict):
-        for key, item in value.items():
-            _no_null_or_bool(item, f"{path}.{key}" if path else str(key))
-    elif isinstance(value, list):
-        for index, item in enumerate(value):
-            _no_null_or_bool(item, f"{path}[{index}]")
+    `version: yes` in YAML (a boolean) must not pass for 1, as Python's True == 1 would let it.
+
+    Iterative, so a deeply nested document is refused by the validation that follows, never by a crash here.
+    """
+    pending: list[tuple[Any, str]] = [(document, "")]
+    while pending:
+        value, path = pending.pop()
+        if value is None or isinstance(value, bool):
+            raise EnrichmentError(f"{path or 'document'}: {json.dumps(value)} is not allowed here")
+        if isinstance(value, dict):
+            pending.extend((item, f"{path}.{key}" if path else str(key)) for key, item in value.items())
+        elif isinstance(value, list):
+            pending.extend((item, f"{path}[{index}]") for index, item in enumerate(value))
 
 
 def _check(pattern: re.Pattern[str], value: str, what: str) -> str:
@@ -90,7 +97,17 @@ class EpssSource(_Strict):
 class KevSource(_Strict):
     catalog_version: str
     cves: list[str]
-    date_released: AwareDatetime | None = None
+    date_released: str | None = None
+
+    @field_validator("date_released")
+    @classmethod
+    def _rfc3339(cls, v: str | None) -> str | None:
+        """The schema's `date-time`: RFC 3339 with seconds and an offset, a real date and time."""
+        if v is None:
+            return None
+        _check(_RFC3339, v, "kev.date_released (RFC 3339 date-time)")
+        datetime.fromisoformat(v.upper().replace("Z", "+00:00"))  # month 13 or hour 25: ValueError
+        return v
 
     @field_validator("catalog_version")
     @classmethod
@@ -249,7 +266,8 @@ def load_snapshot(data: bytes) -> Snapshot:
 
 
 class _ConfigLoader(yaml.SafeLoader):
-    """SafeLoader without duplicate keys, anchors, aliases or tags beyond str, int, bool, float, list, map."""
+    """SafeLoader without duplicate keys, merge keys, anchors, aliases, or tags beyond str, int, bool,
+    float, list and map."""
 
     def compose_node(self, parent: Any, index: Any) -> Any:
         event = self.peek_event()  # type: ignore[no-untyped-call]
@@ -260,6 +278,10 @@ class _ConfigLoader(yaml.SafeLoader):
     def construct_mapping(self, node: Any, deep: bool = False) -> Any:
         seen: set[Any] = set()
         for key_node, _ in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                raise yaml.YAMLError(
+                    f"merge keys (<<) are not allowed in sentinel.yaml (line {key_node.start_mark.line + 1})"
+                )
             key = self.construct_object(key_node, deep=deep)
             if key in seen:
                 raise yaml.YAMLError(
@@ -286,3 +308,10 @@ def load_service_context(data: bytes) -> ServiceContext:
         raise EnrichmentError(f"sentinel.yaml cannot be read: {exc}") from exc
     context: ServiceContext = _validate(ServiceContext, document, "sentinel.yaml")
     return context
+
+
+def read_service_context(path: Path) -> ServiceContext:
+    """Read and load `sentinel.yaml`, reading at most one byte past the size limit (a FIFO or a huge file
+    is refused, never read whole)."""
+    with path.open("rb") as file:
+        return load_service_context(file.read(MAX_CONFIG_BYTES + 1))

@@ -48,7 +48,8 @@ def _render(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
         k: v for k, v in os.environ.items() if k not in MAKE_ENV.VARIABLES and not k.startswith("COMPOSE_")
     }
     # --env-file /dev/null: never read the developer's real deploy/compose/.env in tests.
-    return subprocess.run(  # noqa: S603 - fixed arguments, docker resolved from PATH
+    # Fixed arguments, docker resolved from PATH (S603 is ignored for tests in pyproject.toml).
+    return subprocess.run(
         [docker, "compose", "-f", str(COMPOSE_FILE), "--env-file", os.devnull, "config", "--format", "json"],
         env={**clean, **env, "COMPOSE_PROFILES": PROFILES},
         capture_output=True,

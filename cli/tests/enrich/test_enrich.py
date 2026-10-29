@@ -159,6 +159,34 @@ def test_components_override_the_exposure_by_path(path: str, exposure: str) -> N
     assert enrichment(finding, context=context)["exposure"] == exposure
 
 
+@pytest.mark.parametrize(
+    ("top", "components", "exposure"),
+    [
+        ("internal", [{"path": "web", "exposure": "internet-facing"}], "internet-facing"),
+        (
+            "offline",
+            [{"path": "a", "exposure": "internal"}, {"path": "b", "exposure": "offline"}],
+            "internal",
+        ),
+        ("internet-facing", [{"path": "a", "exposure": "offline"}], "internet-facing"),
+        ("internal", [{"path": "a", "data_classification": "confidential"}], "internal"),
+    ],
+)
+def test_a_finding_without_a_path_gets_the_highest_exposure_of_the_service(
+    top: str, components: list[dict[str, str]], exposure: str
+) -> None:
+    """A container image finding may belong to any component: never assume the least exposed (#17 nit)."""
+    image = {k: v for k, v in SCA.items() if k != "location"}
+    assert enrichment(image, context=config(exposure=top, components=components))["exposure"] == exposure
+
+
+def test_a_null_enrichment_field_is_dropped_not_kept_as_an_empty_object(tmp_path: Path) -> None:
+    """#17 nit: `{"reachability": null}` must not come out as `"enrichment": {}`."""
+    code, out, path = run_enrich(tmp_path, [{**SECRET, "enrichment": {"reachability": None}}])
+    assert code == 0, out
+    assert "enrichment" not in json.loads(path.read_text(encoding="utf-8"))
+
+
 def test_other_enrichment_is_kept_and_enriching_twice_changes_nothing() -> None:
     finding = {**SCA, "enrichment": {"reachability": "not_imported", "exposure": "offline"}}
     once = enrich_finding(finding, load_snapshot(FULL), SITE)
@@ -280,6 +308,85 @@ def test_one_uncovered_cve_keeps_kev_unknown() -> None:
     assert "kev" not in enrichment(two)
 
 
+def chain(last_alias: str = "CVE-2099-0102") -> bytes:
+    """GHSA -> CVE-2099-0101 -> CVE-2099-0102 (listed): the shape two OSV rounds produce (#18)."""
+    return json.dumps(
+        {
+            "schema_version": "1.0",
+            "sources": {
+                "kev": {"catalog_version": "2026.11.09", "cves": ["CVE-2099-0101", "CVE-2099-0102"]},
+                "epss": {"date": "2026-11-10"},
+            },
+            "vulnerabilities": {
+                "GHSA-aaaa-bbbb-cccc": {"aliases": ["CVE-2099-0101"]},
+                "CVE-2099-0101": {"aliases": [last_alias], "epss": {"score": 0.01, "percentile": 0.10}},
+                "CVE-2099-0102": {
+                    "epss": {"score": 0.90, "percentile": 0.99},
+                    "kev": {"date_added": "2026-10-01"},
+                },
+            },
+        }
+    ).encode("utf-8")
+
+
+GHSA_ONLY = {**SCA, "rule_id": "GHSA-aaaa-bbbb-cccc", "cve": [], "aliases": []}
+
+
+@pytest.mark.parametrize("last_alias", ["CVE-2099-0102", "cve-2099-0102"])
+def test_aliases_are_followed_to_the_end_of_the_chain(last_alias: str) -> None:
+    """Two hops away is still the same vulnerability: its KEV listing and EPSS apply (#17 N1)."""
+    result = enrichment(GHSA_ONLY, chain(last_alias))
+    assert result["kev"] == {"listed": True, "date_added": "2026-10-01"}
+    assert result["epss"]["percentile"] == 0.99
+
+
+def test_a_lowercase_cve_alias_on_the_finding_counts() -> None:
+    """finding.v1 allows `cve-...` in aliases: it must neither be ignored nor read as "not listed"."""
+    listed_by_alias = {**SCA, "aliases": ["cve-2099-0002"]}  # 0001 covered, not listed; 0002 listed
+    assert enrichment(listed_by_alias)["kev"] == {"listed": True, "date_added": "2026-10-01"}
+    uncovered = {**SCA, "aliases": ["cve-2099-0999"]}
+    assert "kev" not in enrichment(uncovered)
+
+
+@pytest.mark.parametrize("alias", ["CVE-2099-0999", "cve-2099-0999"])
+def test_an_uncovered_alias_without_an_entry_keeps_kev_unknown(alias: str) -> None:
+    """The entry names a CVE the snapshot has no record of and KEV never covered: it may be listed."""
+    document = json.loads(FULL)
+    document["vulnerabilities"]["CVE-2099-0001"]["aliases"].append(alias)
+    assert "kev" not in enrichment(SCA, json.dumps(document).encode("utf-8"))
+
+
+def kev_released(value: str) -> bytes:
+    document = json.loads(FULL)
+    document["sources"]["kev"]["date_released"] = value
+    return json.dumps(document).encode("utf-8")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2026-11-09 18:00:00Z",
+        "2026-11-09T18:00Z",
+        "2026-11-09T18:00:00",
+        "2026-13-09T18:00:00Z",
+        "2026-11-09",
+    ],
+    ids=["space", "no-seconds", "no-offset", "month-13", "date-only"],
+)
+def test_kev_date_released_is_what_the_schema_calls_a_date_time(
+    value: str, snapshot_validator: Draft202012Validator
+) -> None:
+    """The model refuses exactly what the schema refuses (#17 nit)."""
+    assert list(snapshot_validator.iter_errors(json.loads(kev_released(value))))
+    with pytest.raises(EnrichmentError):
+        load_snapshot(kev_released(value))
+
+
+@pytest.mark.parametrize("value", ["2026-11-09T18:00:00Z", "2026-11-09t18:00:00.5+01:00"])
+def test_rfc3339_date_released_forms_load(value: str) -> None:
+    assert load_snapshot(kev_released(value)).sources.kev is not None
+
+
 def test_a_kev_entry_outside_the_covered_cves_is_refused() -> None:
     with pytest.raises(EnrichmentError, match="did not cover"):
         load_snapshot(snapshot_with(kev_cves=["CVE-2099-0001"]))
@@ -289,6 +396,27 @@ def test_package_names_are_compared_in_canonical_form() -> None:
     package = {**SCA["package"], "purl": "pkg:pypi/Example_Lib@1.2.3"}
     package.pop("fixed_versions", None)
     assert enrichment({**SCA, "package": package})["fix_available"] is True
+
+
+def with_fixes(fixed_versions: dict[str, list[str]]) -> bytes:
+    document = json.loads(FULL)
+    for vuln_id in ("CVE-2099-0001", "GHSA-xxxx-yyyy-zzzz"):
+        document["vulnerabilities"][vuln_id]["fixed_versions"] = fixed_versions
+    return json.dumps(document).encode("utf-8")
+
+
+NO_FIX_ON_FINDING = {**SCA, "package": {k: v for k, v in SCA["package"].items() if k != "fixed_versions"}}
+
+
+def test_an_empty_fixed_versions_list_is_no_fix() -> None:
+    """OSV knows the package and fixes none of its versions (#17 N4)."""
+    assert enrichment(NO_FIX_ON_FINDING, with_fixes({"pkg:pypi/example-lib": []}))["fix_available"] is False
+
+
+@pytest.mark.parametrize("key", ["pkg:pypi/Example.Lib", "pkg:pypi/example__lib", "pkg:pypi/EXAMPLE-LIB"])
+def test_snapshot_package_names_are_compared_in_canonical_form(key: str) -> None:
+    """The snapshot side is canonicalized too, dots folded like - and _ (#17 N4)."""
+    assert enrichment(NO_FIX_ON_FINDING, with_fixes({key: ["1.2.4"]}))["fix_available"] is True
 
 
 def test_without_a_snapshot_no_source_is_claimed(tmp_path: Path) -> None:
@@ -337,6 +465,47 @@ def test_out_may_not_be_the_findings_file(tmp_path: Path) -> None:
     assert json.loads(findings.read_text(encoding="utf-8")) == SECRET, "the input is never deleted"
 
 
+@pytest.mark.parametrize("option", ["--snapshot", "--config"])
+def test_out_may_not_be_any_other_input(tmp_path: Path, option: str) -> None:
+    """#17 N3: --out naming the snapshot or sentinel.yaml would delete it before reading it."""
+    data = FULL if option == "--snapshot" else b"version: 1\nservice: demo-shop\nexposure: internal\n"
+    target = tmp_path / "out.ndjson"
+    target.write_bytes(data)
+    code, out, _ = run_enrich(tmp_path, [SECRET], option, str(target))
+    assert code == 3, out
+    assert target.read_bytes() == data, "the input is never deleted"
+
+
+def test_merge_keys_are_refused_by_name() -> None:
+    """`<<:` lets one mapping fill another: refused on purpose, not by a missing constructor (#17 nit)."""
+    with pytest.raises(EnrichmentError, match=r"merge keys \(<<\)"):
+        load_service_context(b"version: 1\nservice: s\nexposure: internal\n<<: {owners: ['@a']}\n")
+    with pytest.raises(EnrichmentError, match="Extra inputs"):  # a quoted "<<" is just an unknown key
+        load_service_context(b"version: 1\nservice: s\nexposure: internal\n'<<': x\n")
+
+
+def test_a_null_inside_a_list_item_is_refused() -> None:
+    """`exposure: null` would read as "no override"; the guard looks inside list items too (#17 N4)."""
+    text = b"version: 1\nservice: s\nexposure: internal\ncomponents:\n  - {path: web, exposure: null}\n"
+    with pytest.raises(EnrichmentError, match=r"components\[0\]\.exposure"):
+        load_service_context(text)
+
+
+@pytest.mark.parametrize("depth", [2_000, 30_000])
+def test_a_deeply_nested_sentinel_yaml_fails_closed(depth: int) -> None:
+    text = b"version: 1\nservice: s\nexposure: internal\nx: " + b"[" * depth + b"]" * depth + b"\n"
+    with pytest.raises(EnrichmentError):
+        load_service_context(text)
+
+
+@pytest.mark.skipif(not Path("/dev/zero").exists(), reason="needs /dev/zero")
+def test_sentinel_yaml_is_never_read_past_the_size_limit(tmp_path: Path) -> None:
+    """An endless input is refused after 64 KiB + 1 bytes instead of being read whole (#17 nit)."""
+    code, out, _ = run_enrich(tmp_path, [SECRET], "--config", "/dev/zero")
+    assert code == 3
+    assert "larger than" in out
+
+
 def test_out_may_not_be_a_directory(tmp_path: Path) -> None:
     (tmp_path / "out.ndjson").mkdir()
     code, out, _ = run_enrich(tmp_path, [SECRET])
@@ -374,6 +543,16 @@ def test_a_document_that_is_not_json_shaped_fails_closed() -> None:
         _validate(Context, {"version": 1, "service": {"a", "b"}, "exposure": "internal"}, "sentinel.yaml")
 
 
-def test_a_deeply_nested_snapshot_fails_closed() -> None:
+@pytest.mark.parametrize("depth", [2_000, 10_000, 200_000])
+def test_a_deeply_nested_snapshot_fails_closed(depth: int) -> None:
+    """Deep enough for Python's recursion limit, still within json.loads' own (#17 N2)."""
+    nested = b'{"schema_version": "1.0", "sources": {}, "vulnerabilities": {}, "x": ' + b"[" * depth
     with pytest.raises(EnrichmentError):
-        load_snapshot(b"[" * 200_000 + b"]" * 200_000)
+        load_snapshot(nested + b"]" * depth + b"}")
+
+
+@pytest.mark.parametrize("depth", [2_000, 10_000])
+def test_enrich_exits_3_on_a_deeply_nested_snapshot(tmp_path: Path, depth: int) -> None:
+    snapshot = write(tmp_path, "deep.json", b'{"x": ' + b"[" * depth + b"]" * depth + b"}")
+    code, out, path = run_enrich(tmp_path, [SECRET], "--snapshot", snapshot)
+    assert (code, path.exists()) == (3, False), out
