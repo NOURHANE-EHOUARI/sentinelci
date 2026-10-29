@@ -20,7 +20,7 @@ from pydantic import ValidationError
 
 from sentinelci import __version__
 from sentinelci.contracts.finding import Finding
-from sentinelci.enrich.models import EMPTY_SNAPSHOT, EnrichmentError, load_snapshot
+from sentinelci.enrich.models import EMPTY_SNAPSHOT, EnrichmentError, load_service_context, load_snapshot
 from sentinelci.policy.bundle import PolicyBundle
 from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaRunner
@@ -31,6 +31,7 @@ from sentinelci.policy.waivers import load_waivers
 # consumers that know 1.1, and both versions mean the same thing for it.
 SCHEMA_VERSION = "1.1"
 SCHEMA_VERSION_WITH_NEW_INPUTS = "1.2"
+SCHEMA_VERSION_WITH_SERVICE_CONTEXT = "1.3"
 GATE_QUERY = "data.sentinel.gate.decision"
 CONTEXTS = ("pr", "release", "local")
 VERDICTS = ("PASS", "WARN", "BLOCK")
@@ -187,14 +188,24 @@ def evaluate(
     tool_status_data: bytes | None = None,
     enrichment_snapshot: bytes | None = None,
     sbom: bytes | None = None,
+    service_context: bytes | None = None,
 ) -> dict[str, Any]:
-    """Run the release gate and return a Decision v1 record."""
+    """Run the release gate and return a Decision v1 record.
+
+    `service_context` is the sentinel.yaml enrichment used (from the base branch): its exposure lowered or
+    kept the findings' scores, so its digest is evidence like the snapshot's (Decision 1.3).
+    """
     findings = load_findings(findings_data)
     if enrichment_snapshot is not None:  # a digest is recorded only for a snapshot that is one
         try:
             load_snapshot(enrichment_snapshot)
         except EnrichmentError as exc:
             raise EvaluationError(f"--enrichment-snapshot: {exc}") from exc
+    if service_context is not None:  # likewise: only a valid sentinel.yaml is recorded
+        try:
+            load_service_context(service_context)
+        except EnrichmentError as exc:
+            raise EvaluationError(f"--service-context: {exc}") from exc
     # Each input is parsed from the same bytes that are digested: the record names exactly what was evaluated.
     waivers_data = b"" if waivers_data is None else waivers_data
     waivers = load_waivers(waivers_data)
@@ -222,6 +233,8 @@ def evaluate(
         inputs["baseline_digest"] = sha256_digest(baseline_data)
     if tool_status_data is not None:
         inputs["tool_status_digest"] = sha256_digest(tool_status_data)
+    if service_context is not None:
+        inputs["service_context_digest"] = sha256_digest(service_context)
 
     gate_input: dict[str, Any] = {
         "evaluated_at": timestamp,
@@ -250,7 +263,9 @@ def evaluate(
     }
     decision_id = uuid.uuid5(_DECISION_ID_NAMESPACE, json.dumps(identity, sort_keys=True))
     return {
-        "schema_version": SCHEMA_VERSION_WITH_NEW_INPUTS
+        "schema_version": SCHEMA_VERSION_WITH_SERVICE_CONTEXT
+        if service_context is not None
+        else SCHEMA_VERSION_WITH_NEW_INPUTS
         if baseline is not None or tool_status is not None
         else SCHEMA_VERSION,
         "decision_id": str(decision_id),

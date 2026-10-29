@@ -458,3 +458,22 @@ def test_no_snapshot_has_one_digest_in_evaluate_and_enrich(tmp_path: Path, opa_b
     assert code == 0, out
     recorded = json.loads(decision.read_text(encoding="utf-8"))["inputs"]["enrichment_snapshot_digest"]
     assert recorded == "sha256:" + hashlib.sha256(EMPTY_SNAPSHOT).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        b"version: 1\nservice: demo\nexposure: dmz\n",
+        b"version: 1\nservice: demo\nexposure: a\nexposure: b\n",
+        b"\xff",
+    ],
+    ids=["unknown-exposure", "duplicate-key", "not-utf8"],
+)
+def test_an_invalid_service_context_is_never_recorded(tmp_path: Path, opa_binary: Path, text: bytes) -> None:
+    (tmp_path / "sentinel.yaml").write_bytes(text)
+    code, out, decision = run_evaluate(
+        tmp_path, b"", "--service-context", str(tmp_path / "sentinel.yaml"), "--opa", str(opa_binary)
+    )
+    assert code == 3, out
+    assert "--service-context" in out
+    assert not decision.exists()

@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.5 | Decision 1.3: `inputs.service_context_digest`, the `sentinel.yaml` enrichment used (from the base branch), recorded by `sentinel evaluate --service-context`, stored with `--store` and given back on replay; an invalid `sentinel.yaml` is never recorded (exit 3). |
 | 1.1.4 | Enrichment (B2, §6.1): `schemas/enrichment-snapshot.v1.json` (`schema_version` "1.0", `sources.kev.cves`: the CVEs the KEV lookup covered) and `schemas/sentinel-config.v1.json` (`sentinel.yaml`, canonical component paths); `sentinel enrich`. "Not listed in KEV" only for covered CVEs; `sentinel.yaml` read with a restricted YAML loader. |
 | 1.1.2 | Tool lock is `tools.lock.toml` (read with the standard library: no extra dependency). A1 split: A1a = lock + `sentinel tools install/verify` (done), A1b = scanner adapters + Opengrep pinning via signature verification. |
 | 1.1.1a | Package fingerprints use the purl base (no version, qualifiers or subpath — same as the gate's waiver matching), agreed in the review of PR #1. "Green CI" may be a local `make check` report while Actions minutes are exhausted. |
@@ -291,7 +292,8 @@ draft a waiver PR; only a human approval makes it effective.
 Schema: `schemas/decision.v1.json`. Fields: `decision_id`, `evaluated_at`, `subject` (repo, ref, commit, image
 digest, context), `verdict`, `violations` (rule, effect, finding ids, message), `waivers_applied`, `inputs`
 (digests of findings, SBOM, enrichment snapshot, policy bundle, waivers file (since 1.1), base-branch findings
-baseline and tool status (since 1.2, when given); risk model version;
+baseline and tool status (since 1.2, when given), service context `sentinel.yaml` (since 1.3, when given); risk
+model version;
 tool versions),
 `engine_version`. The schema enforces verdict consistency (BLOCK ⇒ at least one BLOCK violation; PASS ⇒ none).
 Attached to the image as an in-toto attestation, predicate type
