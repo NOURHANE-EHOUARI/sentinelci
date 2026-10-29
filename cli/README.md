@@ -44,6 +44,10 @@ Runs the OPA policies in `policies/` and writes a Decision record (`schemas/deci
   `other_locations`). Release ignores the baseline.
 - `--tool-status <json>` (`schemas/tool-status.v1.json`): every tool that is not `ok` becomes an SC-010 BLOCK in
   the decision, so a failed scan still produces a record.
+- Required scanners (`policies/required_tools.rego`, part of the policy bundle, so read from the base branch):
+  gitleaks in `pr` and `release`, none in `local`. A required tool left out of the tool status, or no tool
+  status at all in a context that requires tools, is an SC-010 BLOCK (`Scanner missing` /
+  `Tool status missing`): a workflow that drops a scanner cannot turn its silence into a pass.
 - The decision is `schema_version` 1.2 (with `baseline_digest` / `tool_status_digest`) when either option is
   given, 1.1 otherwise.
 - Rules implemented so far: SC-001 (secret introduced by the change, not waived), SC-005 (invalid waiver) and

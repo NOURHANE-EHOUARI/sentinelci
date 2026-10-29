@@ -142,7 +142,9 @@ def test_all_tools_ok_pass_as_decision_1_2(tmp_path: Path, opa_binary: Path) -> 
 
 
 def test_secret_already_on_the_base_branch_does_not_block_a_pr(tmp_path: Path, opa_binary: Path) -> None:
-    code, out, output = run(tmp_path, ndjson(SECRET), "--opa", str(opa_binary), baseline=ndjson(SECRET))
+    code, out, output = run(
+        tmp_path, ndjson(SECRET), "--opa", str(opa_binary), baseline=ndjson(SECRET), tool_status=TOOLS_OK
+    )
     assert code == 0, out
     decision = decision_at(output)
     assert schema_errors(decision) == []
@@ -160,7 +162,12 @@ def test_copy_listed_in_other_locations_blocks_a_pr(tmp_path: Path, opa_binary: 
     # Finding 1.1 fixture: the same secret in config.py (twice) and in web/settings.py, one finding.
     assert SECRET_IN_TWO_FILES["id"] == SECRET["id"]
     code, out, output = run(
-        tmp_path, ndjson(SECRET_IN_TWO_FILES), "--opa", str(opa_binary), baseline=ndjson(SECRET)
+        tmp_path,
+        ndjson(SECRET_IN_TWO_FILES),
+        "--opa",
+        str(opa_binary),
+        baseline=ndjson(SECRET),
+        tool_status=TOOLS_OK,
     )
     assert code == 1, out
     assert [v["rule"] for v in decision_at(output)["violations"]] == ["SC-001"]
@@ -168,7 +175,7 @@ def test_copy_listed_in_other_locations_blocks_a_pr(tmp_path: Path, opa_binary: 
 
 def test_every_place_already_on_the_base_branch_passes_a_pr(tmp_path: Path, opa_binary: Path) -> None:
     both = ndjson(SECRET_IN_TWO_FILES)
-    code, out, _ = run(tmp_path, both, "--opa", str(opa_binary), baseline=both)
+    code, out, _ = run(tmp_path, both, "--opa", str(opa_binary), baseline=both, tool_status=TOOLS_OK)
     assert code == 0, out
 
 
@@ -215,3 +222,38 @@ def test_decision_id_covers_the_new_inputs(tmp_path: Path, opa_binary: Path) -> 
         _, _, output = run(tmp_path / name, b"", "--opa", str(opa_binary), **files)
         ids.add(decision_at(output)["decision_id"])
     assert len(ids) == 3
+
+
+# ---------------------------------------------------------------- required tools (required_tools.rego)
+
+
+def test_release_without_tool_status_is_a_recorded_sc010_block(tmp_path: Path, opa_binary: Path) -> None:
+    code, out, output = run(tmp_path, b"", "--opa", str(opa_binary), context="release")
+    assert code == 1, out
+    decision = decision_at(output)
+    assert schema_errors(decision) == []
+    assert decision["violations"] == [
+        {
+            "rule": "SC-010",
+            "effect": "BLOCK",
+            "finding_ids": [],
+            "message": "Tool status missing: release requires gitleaks",
+        }
+    ]
+
+
+def test_a_required_scanner_left_out_of_the_tool_status_blocks(tmp_path: Path, opa_binary: Path) -> None:
+    without_gitleaks = json.loads(TOOLS_OK)
+    del without_gitleaks["tools"]["gitleaks"]
+    code, out, output = run(
+        tmp_path, b"", "--opa", str(opa_binary), tool_status=json.dumps(without_gitleaks).encode("utf-8")
+    )
+    assert code == 1, out
+    assert [v["message"] for v in decision_at(output)["violations"]] == [
+        "Scanner missing: gitleaks (required in pr)"
+    ]
+
+
+def test_local_runs_need_no_tool_status(tmp_path: Path, opa_binary: Path) -> None:
+    code, out, _ = run(tmp_path, b"", "--opa", str(opa_binary), context="local")
+    assert code == 0, out

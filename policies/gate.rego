@@ -5,7 +5,9 @@
 #   context       pr | release | local (the decision's subject.context)
 #   baseline      optional: Finding v1 objects of the base branch; in pr context only what the change
 #                 introduces can block (diff-aware), elsewhere it is ignored
-#   tool_status   optional: schemas/tool-status.v1.json; any tool that is not ok blocks (SC-010)
+#   tool_status   schemas/tool-status.v1.json; any tool that is not ok blocks (SC-010), and so does a tool
+#                 that policies/required_tools.rego requires in this context but the status leaves out;
+#                 no tool status at all blocks wherever a tool is required (pr, release)
 #   findings      array of Finding v1 objects (schemas/finding.v1.json)
 #   waivers       entries of .sentinel/waivers.yaml (schemas/waivers.v1.json), unvalidated:
 #                 checking them is this policy's job (SC-005)
@@ -17,6 +19,8 @@
 package sentinel.gate
 
 import rego.v1
+
+import data.sentinel.config
 
 now := time.parse_rfc3339_ns(input.evaluated_at)
 
@@ -247,6 +251,33 @@ block contains v if {
 		"effect": "BLOCK",
 		"finding_ids": [],
 		"message": sprintf("Scanner failure: %s %s%s", [name, status, detail_suffix(tool)]),
+	}
+}
+
+# SC-010: a required scanner did not report. A workflow that drops a scanner, or drops the tool status
+# altogether, must not turn its silence into a pass.
+required_tools := object.get(config.required_tools, input.context, set())
+
+block contains v if {
+	tool_status == null
+	count(required_tools) > 0
+	v := {
+		"rule": "SC-010",
+		"effect": "BLOCK",
+		"finding_ids": [],
+		"message": sprintf("Tool status missing: %s requires %s", [input.context, concat(", ", sort(required_tools))]),
+	}
+}
+
+block contains v if {
+	valid_tool_status
+	some name in required_tools
+	object.get(tool_status.tools, name, null) == null
+	v := {
+		"rule": "SC-010",
+		"effect": "BLOCK",
+		"finding_ids": [],
+		"message": sprintf("Scanner missing: %s (required in %s)", [name, input.context]),
 	}
 }
 
