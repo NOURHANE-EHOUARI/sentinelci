@@ -112,6 +112,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/out"
           git -C target diff --name-only "$BASE_SHA...$HEAD_SHA" -- \
             .github/workflows .github/actions tools.lock.toml policies cli .sentinel pyproject.toml uv.lock \
+            ':(glob)**/sentinel.yaml' \
             > "$RUNNER_TEMP/out/pipeline-changes.txt"
           echo "pipeline files changed: $(wc -l < "$RUNNER_TEMP/out/pipeline-changes.txt")"
 
