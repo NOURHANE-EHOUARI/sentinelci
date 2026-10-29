@@ -255,7 +255,9 @@ def _store_evidence(
 
 # ---------------------------------------------------------------- replay
 
-_DECISION_ID_ARGUMENT = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_DECISION_ID_ARGUMENT = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)  # fullmatch
 
 
 _REPLAY_ERRORS = (BundleError, EvaluationError, OpaError, StoreError, OSError, ValueError)
@@ -306,7 +308,7 @@ def replay_command(
         _replay_all(evidence, opa)
         return
     try:
-        by_id = _DECISION_ID_ARGUMENT.match(decision) is not None
+        by_id = _DECISION_ID_ARGUMENT.fullmatch(decision) is not None
         path = evidence.decision_path(decision) if by_id else Path(decision)
         recorded = _load_record(path, decision if by_id else None)
         result = _replay_record(recorded, evidence, OpaRunner.locate(opa))

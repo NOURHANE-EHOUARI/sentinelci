@@ -143,6 +143,28 @@ def test_differences_are_listed_by_field(recorded: Any, replayed: Any, expected:
     assert differences(recorded, replayed) == expected
 
 
+def test_a_digest_with_a_trailing_newline_is_not_a_digest(tmp_path: Path) -> None:
+    store = EvidenceStore(tmp_path)
+    digest = store.put(b"findings")
+    with pytest.raises(StoreError, match="not a sha256"):
+        store.get(digest + "\n")
+
+
+def test_a_decision_id_with_a_trailing_newline_is_not_an_id(tmp_path: Path) -> None:
+    with pytest.raises(StoreError, match="decision id"):
+        EvidenceStore(tmp_path).decision_path("5b1c6a0e-3f0d-4c8e-9a51-8d3e2f6b7c40\n")
+
+
+def test_a_bundle_file_name_with_an_unusual_separator_round_trips(tmp_path: Path) -> None:
+    # str.splitlines() also splits on \v, \f, \x1c-\x1e, \x85, U+2028/9; the manifest is "\n"-separated only.
+    policies = Path(shutil.copytree(POLICIES, tmp_path / "policies"))
+    (policies / "odd\x0bname.rego").write_text("package odd\n", encoding="utf-8")
+    bundle = PolicyBundle.load(policies)
+    store = EvidenceStore(tmp_path / "store")
+    store.put_bundle(bundle)
+    assert store.extract_bundle(bundle.digest, tmp_path / "restored").digest == bundle.digest
+
+
 # ---------------------------------------------------------------- sentinel evaluate --store, sentinel replay
 
 

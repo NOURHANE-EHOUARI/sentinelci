@@ -20,9 +20,10 @@ from pathlib import Path, PurePosixPath
 
 from sentinelci.policy.bundle import BundleError, PolicyBundle
 
-_DIGEST = re.compile(r"^sha256:([a-f0-9]{64})$")
-_MANIFEST_LINE = re.compile(r"^([a-f0-9]{64})  (.+)$")
-_DECISION_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+# All checked with fullmatch: Python's `$` also matches before a final newline.
+_DIGEST = re.compile(r"sha256:([a-f0-9]{64})")
+_MANIFEST_LINE = re.compile(r"([a-f0-9]{64})  (.+)")
+_DECISION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
 class StoreError(Exception):
@@ -53,7 +54,7 @@ class EvidenceStore:
         self.root = root
 
     def _blob_path(self, digest: str) -> Path:
-        match = _DIGEST.match(digest)
+        match = _DIGEST.fullmatch(digest)
         if not match:
             raise StoreError(f"not a sha256:<64 lowercase hex> digest: {digest!r}")
         return self.root / "sha256" / match.group(1)
@@ -81,7 +82,7 @@ class EvidenceStore:
     def put_bundle(self, bundle: PolicyBundle) -> str:
         """Store every bundle file and the manifest; return the manifest digest (the bundle digest)."""
         manifest = bundle.manifest
-        for line in manifest.splitlines():
+        for line in manifest.removesuffix("\n").split("\n"):
             hex_digest, _, path = line.partition("  ")
             if self.put((bundle.root / path).read_bytes()) != "sha256:" + hex_digest:
                 raise StoreError(f"policy file {path} changed while the bundle was being stored")
@@ -93,11 +94,12 @@ class EvidenceStore:
             manifest = self.get(digest).decode("utf-8")
         except UnicodeDecodeError as exc:
             raise StoreError(f"{digest} is not a policy bundle manifest") from exc
-        lines = manifest.splitlines()
-        if not lines or not manifest.endswith("\n"):
+        # Split on "\n" only, as the manifest is written: splitlines() would also split on \v, \x1c, U+2028...
+        lines = manifest.removesuffix("\n").split("\n")
+        if not manifest.endswith("\n") or manifest == "\n":
             raise StoreError(f"{digest} is not a policy bundle manifest")
         for line in lines:
-            match = _MANIFEST_LINE.match(line)
+            match = _MANIFEST_LINE.fullmatch(line)
             if not match:
                 raise StoreError(f"{digest} is not a policy bundle manifest (line {line[:80]!r})")
             target = dest / _safe_relative(match.group(2))
@@ -116,7 +118,7 @@ class EvidenceStore:
         return bundle
 
     def decision_path(self, decision_id: str) -> Path:
-        if not _DECISION_ID.match(decision_id):
+        if not _DECISION_ID.fullmatch(decision_id):
             raise StoreError(f"not a decision id (lowercase UUID): {decision_id!r}")
         return self.root / "decisions" / f"{decision_id}.json"
 
