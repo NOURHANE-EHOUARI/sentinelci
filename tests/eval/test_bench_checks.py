@@ -115,13 +115,13 @@ def _docker_problem() -> str | None:
     if docker is None or shutil.which("git") is None:
         return "docker and git are needed to run patched code"
     try:
-        info = subprocess.run([docker, "info"], capture_output=True, timeout=30, check=False)  # noqa: S603
+        info = subprocess.run([docker, "info"], capture_output=True, timeout=30, check=False)
         if info.returncode != 0:
             return "no Docker daemon answers"
         image = [docker, "image", "inspect", BENCH.SANDBOX_IMAGE]
-        if subprocess.run(image, capture_output=True, timeout=30, check=False).returncode != 0:  # noqa: S603
+        if subprocess.run(image, capture_output=True, timeout=30, check=False).returncode != 0:
             pull = [docker, "pull", "-q", BENCH.SANDBOX_IMAGE]
-            if subprocess.run(pull, capture_output=True, timeout=600, check=False).returncode:  # noqa: S603
+            if subprocess.run(pull, capture_output=True, timeout=600, check=False).returncode:
                 return "the sandbox image is neither present nor pullable"
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"docker did not answer: {exc}"
@@ -230,7 +230,7 @@ def test_a_patch_that_never_ends_is_stopped_and_its_container_removed(
     assert any("did not finish within 3 s" in p for p in problems), problems
     docker = shutil.which("docker")
     assert docker is not None
-    left = subprocess.run(  # noqa: S603
+    left = subprocess.run(
         [docker, "ps", "-aq", "--filter", "name=sentinel-bench-"], capture_output=True, text=True, check=True
     )
     assert left.stdout.strip() == "", "no sandbox container may outlive the check"
