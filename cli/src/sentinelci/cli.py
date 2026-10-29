@@ -44,8 +44,14 @@ from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
 from sentinelci.report.pr_comment import ReportError, load_inputs, render_no_decision, render_pr_comment
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
-from sentinelci.scanners.installer import VerificationReport, install_tools, verify_tools
-from sentinelci.scanners.lock import LOCK_FILE_NAME, load_lock
+from sentinelci.scanners.installer import VerificationReport, detect_platform, install_tools, verify_tools
+from sentinelci.scanners.lock import LOCK_FILE_NAME, ToolLock, load_lock
+from sentinelci.scanners.status import (
+    outcome_from_error,
+    outcome_from_run,
+    tool_status_document,
+    write_tool_status,
+)
 
 EXIT_UNTRUSTED_INPUT = 3
 DEFAULT_TOOLS_DIR = Path(".sentinel/tools")
@@ -509,13 +515,23 @@ def scan_secrets_cmd(
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
     ] = (DEFAULT_TOOLS_DIR),
     platform: PlatformOption = None,
+    tool_status_out: Annotated[
+        Path | None,
+        typer.Option(
+            help="Also write a tool status (schemas/tool-status.v1.json), on success and on failure, so the "
+            "gate can record a failed scan as SC-010."
+        ),
+    ] = None,
 ) -> None:
     """Scan for secrets with the verified Gitleaks binary; raw secrets never leave memory."""
     out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
+    if tool_status_out is not None:
+        tool_status_out.unlink(missing_ok=True)  # nor an older status vouching for it
     if mode not in ("dir", "git"):
         raise typer.BadParameter("mode must be 'dir' or 'git'")
     scan_mode: GitleaksMode = "git" if mode == "git" else "dir"
     root = repo_root or target
+    tool_lock: ToolLock | None = None
     try:
         tool_lock = load_lock(lock)
         raw, tool_run = scan_secrets_with_run(
@@ -534,10 +550,31 @@ def scan_secrets_cmd(
             repo_root=root,
         )
     except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
+        if tool_status_out is not None and tool_lock is not None:  # no lock: no status, the gate blocks
+            outcome = outcome_from_error("gitleaks", exc, lock=tool_lock)
+            _write_status(tool_status_out, lock, platform or _host_platform(), {"gitleaks": outcome})
         raise _fail_closed(exc) from exc
     out.parent.mkdir(parents=True, exist_ok=True)
     write_ndjson(findings, out)
+    if tool_status_out is not None:  # last: an `ok` status never vouches for a findings file not yet written
+        host = platform or _host_platform()
+        outcome = outcome_from_run(tool_run, lock=tool_lock, platform=host)
+        _write_status(tool_status_out, lock, host, {"gitleaks": outcome})
     typer.echo(f"gitleaks {tool_run.version}: {len(findings)} finding(s) written to {out}")
+
+
+def _host_platform() -> str | None:
+    try:
+        return detect_platform()
+    except ToolIntegrityError:
+        return None
+
+
+def _write_status(
+    destination: Path, lock: Path, platform: str | None, outcomes: dict[str, dict[str, Any]]
+) -> None:
+    write_tool_status(tool_status_document(lock.read_bytes(), platform, outcomes), destination)
+    typer.echo(f"tool status written to {destination}", err=True)
 
 
 # ---------------------------------------------------------------- report
