@@ -55,7 +55,8 @@ def sha256_digest(data: bytes) -> str:
 def parse_findings(data: bytes, *, source: str) -> dict[str, Finding]:
     """Finding v1 NDJSON -> {fingerprint: finding}. Any malformed line or duplicate id is an error."""
     findings: dict[str, Finding] = {}
-    for lineno, line in enumerate(data.decode("utf-8").splitlines(), start=1):
+    # Only "\n" separates records: JSON strings may hold raw U+2028/U+2029, which str.splitlines() splits on.
+    for lineno, line in enumerate(data.decode("utf-8").split("\n"), start=1):
         if not line.strip():
             continue
         try:
@@ -64,7 +65,7 @@ def parse_findings(data: bytes, *, source: str) -> dict[str, Finding]:
             raise ReportError(
                 f"{source} line {lineno} is not a Finding v1: {exc.error_count()} error(s)"
             ) from exc
-        if not _FINGERPRINT.match(finding.id):
+        if not _FINGERPRINT.fullmatch(finding.id):
             raise ReportError(f"{source} line {lineno}: id is not a sha256 fingerprint")
         if finding.id in findings:
             raise ReportError(f"{source} line {lineno}: duplicate finding id {finding.id[:12]}")
@@ -104,7 +105,7 @@ def load_inputs(
         )
     except UnicodeDecodeError as exc:
         raise ReportError(f"findings are not UTF-8: {exc}") from exc
-    changes = tuple(sorted({line.strip() for line in changes_text.splitlines() if line.strip()}))
+    changes = tuple(sorted({line.strip() for line in changes_text.split("\n") if line.strip()}))
     return ReportInputs(decision=decision, findings=findings, baseline_ids=baseline, pipeline_changes=changes)
 
 

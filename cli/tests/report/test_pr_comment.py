@@ -305,3 +305,28 @@ def test_cli_crash_never_leaves_an_older_comment_to_post(
     result = _invoke("--decision", str(decision), "--findings", str(findings), "--out", str(out))
     assert result.exit_code != 0
     assert not out.exists()
+
+
+# ---------------------------------------------------------------- line terminators (same class as #14)
+
+
+def test_a_raw_line_separator_inside_a_finding_does_not_split_its_line(tmp_path: Path) -> None:
+    # The normalizer writes ensure_ascii=False, so U+2028 / U+2029 from a scanned file stay raw inside JSON
+    # strings. Only "\n" separates NDJSON records; str.splitlines() would cut the record in two.
+    finding = secret("ls", "app/settings.py", 1).model_copy(update={"title": "token \u2028 next \u2029 end"})
+    decision, findings, _ = write_case(tmp_path, [finding])
+    assert "\u2028" in findings.read_text(encoding="utf-8")
+    inputs = load_inputs(decision, findings)
+    assert list(inputs.findings) == [finding.id]
+
+
+def test_a_finding_id_with_a_trailing_newline_is_refused(tmp_path: Path) -> None:
+    line = dumps_ndjson([secret("a", "a.py", 1)]).replace('"id":"', '"id":"', 1)
+    record = json.loads(line)
+    record["id"] = record["id"] + "\n"
+    findings = tmp_path / "findings.ndjson"
+    findings.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    decision = tmp_path / "decision.json"
+    decision.write_text(json.dumps(decision_for(findings.read_bytes())), encoding="utf-8")
+    with pytest.raises(ReportError, match="not a sha256 fingerprint"):
+        load_inputs(decision, findings)

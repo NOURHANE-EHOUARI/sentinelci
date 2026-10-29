@@ -50,6 +50,7 @@ def _variant(**changes: object) -> bytes:
         ({"decision_id": "not-a-uuid"}, "decision_id must be a UUID"),
         ({"evaluated_at": "2026-13-01T00:00:00Z"}, "month must be in 1..12"),
         ({"evaluated_at": "yesterday"}, "RFC 3339"),
+        ({"evaluated_at": "2026-11-10T10:00:00Z\n"}, "RFC 3339"),
         ({"waivers_applied": ["w1", "w1"]}, "unique"),
         ({"extra": True}, "Extra inputs are not permitted"),
     ],

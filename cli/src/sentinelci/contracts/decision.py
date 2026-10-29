@@ -89,7 +89,7 @@ class Decision(_Contract):
     @field_validator("evaluated_at")
     @classmethod
     def _time(cls, value: str) -> str:
-        if not _RFC3339.match(value):
+        if not _RFC3339.fullmatch(value):  # fullmatch: Python's `$` also matches before a final newline
             raise ValueError(f"evaluated_at must be an RFC 3339 date-time, got {value!r}")
         datetime.fromisoformat(value.replace("Z", "+00:00"))  # rejects impossible dates such as month 13
         return value
