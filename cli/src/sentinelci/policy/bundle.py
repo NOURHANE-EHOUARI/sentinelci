@@ -53,13 +53,17 @@ class PolicyBundle:
         return tuple(self.root / p for p in self.files if p.suffix == ".rego")
 
     @property
-    def digest(self) -> str:
-        """`sha256:` of a sha256sum-style manifest (`<hex>  <posix path>` per line, sorted)."""
-        manifest = "".join(
+    def manifest(self) -> str:
+        """sha256sum-style manifest: `<hex>  <posix path>` per file, sorted by path."""
+        return "".join(
             f"{hashlib.sha256((self.root / p).read_bytes()).hexdigest()}  {p.as_posix()}\n"
             for p in self.files
         )
-        return "sha256:" + hashlib.sha256(manifest.encode("utf-8")).hexdigest()
+
+    @property
+    def digest(self) -> str:
+        """`sha256:` of the manifest."""
+        return "sha256:" + hashlib.sha256(self.manifest.encode("utf-8")).hexdigest()
 
     @property
     def risk_model_version(self) -> str:

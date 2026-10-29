@@ -3,19 +3,22 @@
 Sub-commands are added task by task (see docs/spec/SPEC.md, section 15).
 
 Exit codes:
-    0  success (`evaluate`: PASS or WARN)
-    1  `evaluate`: BLOCK
+    0  success (`evaluate`: PASS or WARN; `replay`: identical)
+    1  `evaluate`: BLOCK; `replay`: the replayed decision differs from the record
     2  usage error (Typer)
     3  untrusted input, untrusted toolchain (tool missing or tampered), or no decision could be made
+       (`replay`: missing, malformed or tampered evidence)
        -> callers must fail closed (rule SC-010)
 """
 
 import hashlib
 import json
 import os
+import re
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -25,9 +28,18 @@ from sentinelci.normalize.errors import NormalizationError
 from sentinelci.normalize.gitleaks import load_gitleaks_report, normalize_gitleaks
 from sentinelci.normalize.ndjson import write_ndjson
 from sentinelci.policy.bundle import BundleError, PolicyBundle
-from sentinelci.policy.decision import CONTEXTS, Subject, dumps_decision, evaluate, now_utc
+from sentinelci.policy.decision import (
+    CONTEXTS,
+    EMPTY_ENRICHMENT_SNAPSHOT,
+    Subject,
+    dumps_decision,
+    evaluate,
+    now_utc,
+)
 from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaError, OpaRunner
+from sentinelci.policy.replay import replay
+from sentinelci.policy.store import EvidenceStore, StoreError
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
 from sentinelci.scanners.errors import ToolIntegrityError
 from sentinelci.scanners.installer import VerificationReport, install_tools, verify_tools
@@ -68,7 +80,9 @@ def _fail_closed(exc: Exception) -> typer.Exit:
 
 
 EXIT_BLOCK = 1
+EXIT_REPLAY_DIFFERS = 1
 EXIT_NO_DECISION = 3
+DEFAULT_STORE = Path("out/evidence")
 
 
 @app.callback()
@@ -146,30 +160,47 @@ def evaluate_command(
     opa: Annotated[
         Path | None, typer.Option(help="OPA binary. Default: $SENTINEL_OPA, then opa on PATH.")
     ] = None,
+    store: Annotated[
+        Path | None,
+        typer.Option(help="Evidence store: keep every input and the decision there, for `sentinel replay`."),
+    ] = None,
 ) -> None:
     """Run the release gate and write a Decision v1 record.
 
-    Exit code 0 for PASS or WARN, 1 for BLOCK, 3 when no decision could be made (fail closed).
+    Exit code 0 for PASS or WARN, 1 for BLOCK, 3 when no decision could be made (fail closed). With
+    --store, a decision whose evidence cannot be stored is not written either (exit 3).
     """
     # A stale decision from an earlier run must never be mistaken for this run's result.
     output.unlink(missing_ok=True)
     if waivers is None and Path(DEFAULT_WAIVERS_PATH).is_file():
         waivers = Path(DEFAULT_WAIVERS_PATH)
     try:
-        decision = evaluate(
-            findings_data=findings.read_bytes(),
-            subject=Subject(repo=repo, commit=commit, context=context, ref=ref, image_digest=image_digest),
-            evaluated_at=evaluated_at or now_utc(),
-            bundle=PolicyBundle.load(policy_dir),
-            opa=OpaRunner.locate(opa),
-            tool_versions=_parse_tool_versions(tool_version or []),
-            waivers_data=waivers.read_bytes() if waivers else None,
-            baseline_data=baseline.read_bytes() if baseline else None,
-            tool_status_data=tool_status.read_bytes() if tool_status else None,
+        # Each input is read once: the same bytes are evaluated, digested and stored.
+        data = _Inputs(
+            findings=findings.read_bytes(),
+            waivers=waivers.read_bytes() if waivers else None,
+            baseline=baseline.read_bytes() if baseline else None,
+            tool_status=tool_status.read_bytes() if tool_status else None,
             enrichment_snapshot=enrichment_snapshot.read_bytes() if enrichment_snapshot else None,
             sbom=sbom.read_bytes() if sbom else None,
         )
-    except (BundleError, EvaluationError, OpaError, OSError) as exc:
+        bundle = PolicyBundle.load(policy_dir)
+        decision = evaluate(
+            findings_data=data.findings,
+            subject=Subject(repo=repo, commit=commit, context=context, ref=ref, image_digest=image_digest),
+            evaluated_at=evaluated_at or now_utc(),
+            bundle=bundle,
+            opa=OpaRunner.locate(opa),
+            tool_versions=_parse_tool_versions(tool_version or []),
+            waivers_data=data.waivers,
+            baseline_data=data.baseline,
+            tool_status_data=data.tool_status,
+            enrichment_snapshot=data.enrichment_snapshot,
+            sbom=data.sbom,
+        )
+        if store is not None:
+            _store_evidence(EvidenceStore(store), decision, bundle, data)
+    except (BundleError, EvaluationError, OpaError, StoreError, OSError) as exc:
         typer.echo(f"sentinel evaluate: {exc}", err=True)
         typer.echo("sentinel evaluate: no decision was made; treat this change as blocked.", err=True)
         raise typer.Exit(EXIT_NO_DECISION) from exc
@@ -187,6 +218,85 @@ def evaluate_command(
     typer.echo(f"Decision written to {output}")
     if decision["verdict"] == "BLOCK":
         raise typer.Exit(EXIT_BLOCK)
+
+
+@dataclass(frozen=True)
+class _Inputs:
+    findings: bytes
+    waivers: bytes | None
+    baseline: bytes | None
+    tool_status: bytes | None
+    enrichment_snapshot: bytes | None
+    sbom: bytes | None
+
+
+def _store_evidence(
+    store: EvidenceStore, decision: dict[str, Any], bundle: PolicyBundle, data: _Inputs
+) -> None:
+    """Keep what `replay` needs: every input by the digest the decision recorded, then the decision."""
+    inputs = decision["inputs"]
+    stored = {
+        "findings_digest": data.findings,
+        "waivers_digest": data.waivers or b"",
+        "baseline_digest": data.baseline,
+        "tool_status_digest": data.tool_status,
+        "enrichment_snapshot_digest": (
+            EMPTY_ENRICHMENT_SNAPSHOT if data.enrichment_snapshot is None else data.enrichment_snapshot
+        ),
+        "sbom_digest": data.sbom,
+    }
+    for key, blob in stored.items():
+        if blob is not None and store.put(blob) != inputs[key]:
+            raise StoreError(f"stored {key} does not match the decision")
+    if store.put_bundle(bundle) != inputs["policy_bundle_digest"]:
+        raise StoreError("the policy bundle changed between evaluation and storage")
+    store.put_decision(decision["decision_id"], dumps_decision(decision))
+
+
+# ---------------------------------------------------------------- replay
+
+_DECISION_ID_ARGUMENT = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+@app.command("replay")
+def replay_command(
+    decision: Annotated[
+        str, typer.Argument(help="Decision id (looked up in the store) or path to a decision file.")
+    ],
+    store: Annotated[
+        Path, typer.Option(help="Evidence store written by `sentinel evaluate --store`.")
+    ] = DEFAULT_STORE,
+    opa: Annotated[
+        Path | None, typer.Option(help="OPA binary. Default: $SENTINEL_OPA, then opa on PATH.")
+    ] = None,
+) -> None:
+    """Re-evaluate a decision from the inputs it recorded and check that the result is identical.
+
+    Every input, the policy bundle included, comes from the store by digest. Exit code 0 when identical,
+    1 when the replayed decision differs, 3 when the decision cannot be replayed (missing or tampered
+    evidence).
+    """
+    evidence = EvidenceStore(store)
+    try:
+        path = evidence.decision_path(decision) if _DECISION_ID_ARGUMENT.match(decision) else Path(decision)
+        recorded = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(recorded, dict):
+            raise EvaluationError(f"{path} is not a decision record")
+        with tempfile.TemporaryDirectory(prefix="sentinel-replay-") as work:
+            result = replay(recorded, store=evidence, opa=OpaRunner.locate(opa), work_dir=Path(work))
+    except (BundleError, EvaluationError, OpaError, StoreError, OSError, ValueError) as exc:
+        typer.echo(f"sentinel replay: {exc}", err=True)
+        typer.echo("sentinel replay: the decision could not be replayed.", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+
+    decision_id = recorded.get("decision_id")
+    if result.identical:
+        typer.echo(f"Replay identical: decision {decision_id} ({recorded.get('verdict')})")
+        return
+    typer.echo(f"Replay differs: decision {decision_id} (field: recorded -> replayed)")
+    for line in result.differences:
+        typer.echo(f"  {line}")
+    raise typer.Exit(EXIT_REPLAY_DIFFERS)
 
 
 # ---------------------------------------------------------------- normalize
