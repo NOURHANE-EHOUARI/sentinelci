@@ -28,6 +28,7 @@ from sentinelci.policy.opa import OpaError, OpaRunner, parse_eval_output
 
 ROOT = Path(__file__).resolve().parents[2]
 POLICIES = ROOT / "policies"
+TOOLS_OK = ROOT / "schemas" / "fixtures" / "tool-status" / "valid" / "all-ok.json"
 FINDING_FIXTURES = ROOT / "schemas" / "fixtures" / "finding" / "valid"
 SECRET = json.loads((FINDING_FIXTURES / "secret-in-config.json").read_text(encoding="utf-8"))
 CONTAINER = json.loads((FINDING_FIXTURES / "container-os-package.json").read_text(encoding="utf-8"))
@@ -73,6 +74,7 @@ def test_bundle_excludes_rego_tests_and_reads_risk_model_version() -> None:
     names = [p.as_posix() for p in bundle.files]
     assert "gate.rego" in names
     assert "risk-model.yaml" in names
+    assert "required_tools.rego" in names  # the required scanners are part of the recorded bundle
     assert not [n for n in names if n.endswith("_test.rego")]
     assert bundle.risk_model_version == "1.0.0"
 
@@ -275,6 +277,9 @@ def run_evaluate(tmp_path: Path, findings: bytes, *extra: str) -> tuple[int, str
         str(POLICIES),
         "--output",
         str(output),
+        # A complete PR pipeline: every required scanner reported ok (policies/required_tools.rego).
+        "--tool-status",
+        str(TOOLS_OK),
         *extra,
     ]
     result = CliRunner().invoke(app, args)

@@ -17,7 +17,16 @@ sca := {
 	"package": {"purl": "pkg:pypi/example-lib@1.2.0?arch=x86_64"},
 }
 
-base := {"evaluated_at": "2026-11-10T10:00:00Z", "context": "release", "findings": [], "waivers": []}
+# Every required scanner reported ok (policies/required_tools.rego): tests start from a complete pipeline.
+base := {
+	"evaluated_at": "2026-11-10T10:00:00Z",
+	"context": "release",
+	"findings": [],
+	"waivers": [],
+	"tool_status": {"schema_version": 1, "lock_sha256": "x", "tools": {"gitleaks": ok_tool}},
+}
+
+without_tool_status := object.remove(base, ["tool_status"])
 
 with_findings(fs) := object.union(base, {"findings": fs})
 
@@ -299,7 +308,7 @@ test_empty_baseline_means_everything_is_new if {
 
 # ---------------------------------------------------------------- tool status (input.tool_status)
 
-tools(entries) := object.union(base, {"tool_status": {"schema_version": 1, "lock_sha256": "x", "tools": entries}})
+tools(entries) := object.union(without_tool_status, {"tool_status": {"schema_version": 1, "lock_sha256": "x", "tools": entries}})
 
 ok_tool := {"version": "8.30.1", "binary_sha256": "abc", "status": "ok"}
 
@@ -325,8 +334,41 @@ test_tool_without_status_is_not_ok if {
 	v.message == "Scanner failure: gitleaks unknown"
 }
 
-test_no_tool_status_adds_no_violation if {
-	gate.decision.verdict == "PASS" with input as base
+test_local_without_tool_status_passes if {
+	gate.decision.verdict == "PASS" with input as object.union(without_tool_status, {"context": "local"})
+}
+
+test_pr_and_release_without_tool_status_block_with_sc010 if {
+	every context in ["pr", "release"] {
+		d := gate.decision with input as object.union(without_tool_status, {"context": context})
+		d.violations == [{
+			"rule": "SC-010",
+			"effect": "BLOCK",
+			"finding_ids": [],
+			"message": sprintf("Tool status missing: %s requires gitleaks", [context]),
+		}]
+	}
+}
+
+test_required_tool_absent_from_the_status_blocks_with_sc010 if {
+	[v] := gate.decision.violations with input as tools({"opa": ok_tool})
+	v == {"rule": "SC-010", "effect": "BLOCK", "finding_ids": [], "message": "Scanner missing: gitleaks (required in release)"}
+}
+
+test_local_requires_no_tool if {
+	gate.decision.verdict == "PASS" with input as object.union(tools({"opa": ok_tool}), {"context": "local"})
+}
+
+test_a_failed_required_tool_is_one_violation_not_two if {
+	[v] := gate.decision.violations with input as tools({"gitleaks": {"version": "8.30.1", "status": "failed", "detail": "exit 2"}})
+	v.message == "Scanner failure: gitleaks failed (exit 2)"
+}
+
+test_a_malformed_tool_status_is_not_also_reported_missing if {
+	every ts in [[], {"tools": {}}] {
+		[v] := gate.decision.violations with input as object.union(without_tool_status, {"tool_status": ts})
+		contains(v.message, "tool_status must hold a non-empty tools object")
+	}
 }
 
 # ---------------------------------------------------------------- SC-010 for the new inputs
@@ -345,7 +387,7 @@ test_malformed_baseline_blocks_with_sc010 if {
 
 test_malformed_tool_status_blocks_with_sc010 if {
 	every ts in [[], {"tools": {}}, {"tools": []}] {
-		d := gate.decision with input as object.union(base, {"tool_status": ts})
+		d := gate.decision with input as object.union(without_tool_status, {"tool_status": ts})
 		contains(d.violations[0].message, "tool_status must hold a non-empty tools object")
 	}
 }
