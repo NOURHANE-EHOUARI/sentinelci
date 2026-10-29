@@ -93,7 +93,11 @@ def test_bundle_without_rego_is_rejected(tmp_path: Path) -> None:
         PolicyBundle.load(tmp_path / "missing")
 
 
-@pytest.mark.parametrize("content", ["version: latest\n", "version: 1\n", "- a list\n"])
+@pytest.mark.parametrize(
+    "content",
+    ["version: latest\n", "version: 1\n", "- a list\n", 'version: "1.0.0\\n"\n', "version: |\n  1.0.0\n"],
+    ids=["word", "int", "list", "trailing-newline", "block-scalar"],
+)
 def test_bundle_rejects_bad_risk_model_version(bundle_copy: Path, content: str) -> None:
     (bundle_copy / "risk-model.yaml").write_text(content, encoding="utf-8")
     with pytest.raises(BundleError):
@@ -116,8 +120,9 @@ def test_load_findings_skips_blank_lines() -> None:
         b'{"id": "../../etc", "category": "SECRET"}\n',
         b'{"id": "' + b"a" * 64 + b'"}\n',
         b"\xff\xfe",
+        ndjson({**SECRET, "id": SECRET["id"] + "\n"}),
     ],
-    ids=["invalid-json", "not-object", "no-id", "bad-id", "no-category", "not-utf8"],
+    ids=["invalid-json", "not-object", "no-id", "bad-id", "no-category", "not-utf8", "id-trailing-newline"],
 )
 def test_load_findings_rejects_malformed_input(data: bytes) -> None:
     with pytest.raises(EvaluationError):
@@ -403,3 +408,19 @@ def test_policy_capabilities_command_writes_the_document(tmp_path: Path, opa_bin
     names = {b["name"] for b in json.loads(out.read_text(encoding="utf-8"))["builtins"]}
     assert "time.now_ns" not in names
     assert "time.parse_rfc3339_ns" in names
+
+
+# Python's `$` also matches before a final newline: every identifier check must match the whole string.
+@pytest.mark.parametrize(
+    "field",
+    [
+        {"repo": "NOURHANE-EHOUARI/sentinelci\n"},
+        {"commit": "4b825dc642cb6eb9a060e54bf8d69288fbee4904\n"},
+        {"image_digest": "sha256:" + "a" * 64 + "\n"},
+    ],
+    ids=["repo", "commit", "image-digest"],
+)
+def test_subject_identifiers_cannot_end_with_a_newline(field: dict[str, str]) -> None:
+    values = {"repo": "NOURHANE-EHOUARI/sentinelci", "commit": "4b825dc642cb6eb9a060e54bf8d69288fbee4904"}
+    with pytest.raises(EvaluationError):
+        Subject(**{**values, "context": "pr", **field})

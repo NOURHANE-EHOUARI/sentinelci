@@ -40,10 +40,12 @@ EMPTY_ENRICHMENT_SNAPSHOT = b"{}"
 # Fixed namespace for content-derived decision ids. Never change it: old ids would stop replaying.
 _DECISION_ID_NAMESPACE = uuid.UUID("5b1c6a0e-3f0d-4c8e-9a51-8d3e2f6b7c40")
 
-_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-_COMMIT = re.compile(r"^[a-f0-9]{40}$")
-_OCI_DIGEST = re.compile(r"^sha256:[a-f0-9]{64}$")
-_SHA256_HEX = re.compile(r"^[a-f0-9]{64}$")
+# Checked with fullmatch: Python's `$` also matches before a final newline, so `match` with `^...$` accepted
+# "<40 hex>\n" as a commit.
+_REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+_COMMIT = re.compile(r"[a-f0-9]{40}")
+_OCI_DIGEST = re.compile(r"sha256:[a-f0-9]{64}")
+_SHA256_HEX = re.compile(r"[a-f0-9]{64}")
 _VERSION_SEPARATOR = ", "
 
 
@@ -58,13 +60,13 @@ class Subject:
     image_digest: str | None = None
 
     def __post_init__(self) -> None:
-        if not _REPO.match(self.repo):
+        if not _REPO.fullmatch(self.repo):
             raise EvaluationError(f"repo must look like owner/name, got {self.repo!r}")
-        if not _COMMIT.match(self.commit):
+        if not _COMMIT.fullmatch(self.commit):
             raise EvaluationError(f"commit must be a full 40-character lowercase SHA, got {self.commit!r}")
         if self.context not in CONTEXTS:
             raise EvaluationError(f"context must be one of {', '.join(CONTEXTS)}, got {self.context!r}")
-        if self.image_digest is not None and not _OCI_DIGEST.match(self.image_digest):
+        if self.image_digest is not None and not _OCI_DIGEST.fullmatch(self.image_digest):
             raise EvaluationError(f"image digest must be sha256:<64 hex>, got {self.image_digest!r}")
 
     def to_json(self) -> dict[str, str]:
@@ -116,7 +118,7 @@ def load_findings(data: bytes) -> list[dict[str, Any]]:
             raise EvaluationError(f"findings line {lineno}: invalid JSON") from exc
         if not isinstance(finding, dict):
             raise EvaluationError(f"findings line {lineno}: expected a JSON object")
-        if not isinstance(finding.get("id"), str) or not _SHA256_HEX.match(finding["id"]):
+        if not isinstance(finding.get("id"), str) or not _SHA256_HEX.fullmatch(finding["id"]):
             raise EvaluationError(f"findings line {lineno}: 'id' must be a sha256 fingerprint")
         try:
             # Every field and enum of Finding v1: a `"category": "secret"` would otherwise reach the policy,

@@ -15,7 +15,7 @@ from pathlib import Path
 import yaml
 
 RISK_MODEL_FILE = "risk-model.yaml"
-_SEMVER = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+_SEMVER = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")  # fullmatch: no trailing newline
 
 
 class BundleError(Exception):
@@ -72,6 +72,6 @@ class PolicyBundle:
             raise BundleError(f"risk model not found: {path}")
         model = yaml.safe_load(path.read_text(encoding="utf-8"))
         version = model.get("version") if isinstance(model, dict) else None
-        if not isinstance(version, str) or not _SEMVER.match(version):
+        if not isinstance(version, str) or not _SEMVER.fullmatch(version):
             raise BundleError(f"{path}: 'version' must be a semantic version string, got {version!r}")
         return version

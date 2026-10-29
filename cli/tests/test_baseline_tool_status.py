@@ -65,8 +65,12 @@ def test_schema_invalid_tool_status_is_no_decision(path: Path) -> None:
         b"not json",
         b"\xff",
         b'{"schema_version": true, "lock_sha256": "' + b"a" * 64 + b'", "tools": {}}',
+        TOOLS_OK.replace(
+            json.loads(TOOLS_OK)["lock_sha256"].encode(),
+            json.loads(TOOLS_OK)["lock_sha256"].encode() + b"\\n",
+        ),
     ],
-    ids=["empty", "not-json", "not-utf8", "bool-version"],
+    ids=["empty", "not-json", "not-utf8", "bool-version", "lock-hash-trailing-newline"],
 )
 def test_unreadable_tool_status_is_no_decision(data: bytes) -> None:
     with pytest.raises(EvaluationError):
