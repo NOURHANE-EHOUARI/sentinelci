@@ -75,3 +75,47 @@ def test_schema_1_1_with_waivers_digest_is_accepted() -> None:
     data["inputs"] = inputs
     decision = Decision.model_validate_json(json.dumps(data))
     assert decision.inputs.waivers_digest == "sha256:" + "5" * 64
+
+
+def _with_inputs(version: str, **extra: str) -> bytes:
+    data = _load(FIXTURES / "valid" / "pass-pr.json")
+    data["schema_version"] = version
+    inputs = dict(data["inputs"])  # type: ignore[call-overload]
+    inputs.update(extra)
+    data["inputs"] = inputs
+    return json.dumps(data).encode()
+
+
+DIGEST = "sha256:" + "6" * 64
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"waivers_digest": DIGEST},
+        {"waivers_digest": DIGEST, "baseline_digest": DIGEST},
+        {"waivers_digest": DIGEST, "tool_status_digest": DIGEST},
+        {"waivers_digest": DIGEST, "baseline_digest": DIGEST, "tool_status_digest": DIGEST},
+    ],
+)
+def test_decision_1_2_accepts_the_new_input_digests(extra: dict[str, str]) -> None:
+    decision = Decision.model_validate_json(_with_inputs("1.2", **extra))
+    assert decision.inputs.baseline_digest == extra.get("baseline_digest")
+    assert decision.inputs.tool_status_digest == extra.get("tool_status_digest")
+
+
+@pytest.mark.parametrize(
+    ("version", "extra", "message"),
+    [
+        ("1.2", {}, "waivers_digest is required"),
+        ("1.2", {"waivers_digest": DIGEST, "baseline_digest": "6" * 64}, "String should match pattern"),
+        ("1.1", {"waivers_digest": DIGEST, "baseline_digest": DIGEST}, "only from schema 1.2"),
+        ("1.1", {"waivers_digest": DIGEST, "tool_status_digest": DIGEST}, "only from schema 1.2"),
+        ("1.0", {"tool_status_digest": DIGEST}, "only from schema 1.2"),
+    ],
+)
+def test_decision_minor_versions_keep_their_meaning(
+    version: str, extra: dict[str, str], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        Decision.model_validate_json(_with_inputs(version, **extra))
