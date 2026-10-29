@@ -325,3 +325,18 @@ def test_cli_fails_closed_on_unreadable_findings(tmp_path: Path, data: bytes) ->
     code, _, path = run_score(tmp_path, data)
     assert code == 3
     assert not path.exists()
+
+
+def test_cli_score_never_deletes_its_input(tmp_path: Path) -> None:
+    # Same bug as `enrich` in the review of #17 (S4): --out was deleted before --findings was read.
+    findings = tmp_path / "f.ndjson"
+    findings.write_text(json.dumps(SECRET) + "\n", encoding="utf-8")
+    result = CliRunner().invoke(app, ["score", "--findings", str(findings), "--out", str(findings)])
+    assert result.exit_code == 3, result.output
+    assert json.loads(findings.read_text(encoding="utf-8")) == SECRET
+
+
+def test_cli_score_refuses_a_directory_as_out(tmp_path: Path) -> None:
+    (tmp_path / "out.ndjson").mkdir()  # the --out run_score passes
+    code, _, _ = run_score(tmp_path, (json.dumps(SECRET) + "\n").encode())
+    assert code == 3
