@@ -29,7 +29,8 @@ from sentinelci.policy.decision import CONTEXTS, Subject, dumps_decision, evalua
 from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaError, OpaRunner
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
-from sentinelci.scanners.errors import ToolIntegrityError
+from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
+from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
 from sentinelci.scanners.installer import VerificationReport, install_tools, verify_tools
 from sentinelci.scanners.lock import LOCK_FILE_NAME, load_lock
 
@@ -45,8 +46,12 @@ normalize_app = typer.Typer(help="Convert raw scanner output into Finding v1 NDJ
 tools_app = typer.Typer(
     help="Install and verify the pinned security tools (tools.lock.toml).", no_args_is_help=True
 )
+scan_app = typer.Typer(
+    help="Run a verified scanner and write normalized Finding v1 NDJSON.", no_args_is_help=True
+)
 app.add_typer(normalize_app, name="normalize")
 app.add_typer(tools_app, name="tools")
+app.add_typer(scan_app, name="scan")
 
 LockOption = Annotated[Path, typer.Option("--lock", help="Path to the tool lock file.")]
 DestOption = Annotated[Path, typer.Option("--dest", help="Installation directory (bin/ and cache/).")]
@@ -276,6 +281,62 @@ def tools_verify(
         _write_manifest(result, lock, report)
     for entry in result.entries:
         typer.echo(f"verified {entry.name} {entry.version} sha256={entry.binary_sha256}")
+
+
+# ---------------------------------------------------------------- scan
+
+
+@scan_app.command("secrets")
+def scan_secrets_cmd(
+    target: Annotated[Path, typer.Argument(help="Directory (or git repository with --mode git) to scan.")],
+    out: Annotated[Path, typer.Option(help="Destination NDJSON file.")],
+    repo: Annotated[str, typer.Option(help="Repository as owner/name.")],
+    commit: Annotated[str, typer.Option(help="Commit SHA that was scanned.")],
+    context: Annotated[RunContext, typer.Option(help="Run context.")],
+    ref: Annotated[str | None, typer.Option(help="Git ref that was scanned.")] = None,
+    run_id: Annotated[str | None, typer.Option(help="CI run identifier.")] = None,
+    repo_root: Annotated[
+        Path | None, typer.Option(help="Repository root (default: the target itself).")
+    ] = None,
+    mode: Annotated[str, typer.Option(help="dir (working tree) or git (history).")] = "dir",
+    log_opts: Annotated[
+        str | None,
+        typer.Option(help="git mode only: commit range and pathspecs, e.g. 'origin/main..HEAD -- src'."),
+    ] = None,
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    tools_dir: Annotated[
+        Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
+    ] = (DEFAULT_TOOLS_DIR),
+    platform: PlatformOption = None,
+) -> None:
+    """Scan for secrets with the verified Gitleaks binary; raw secrets never leave memory."""
+    out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
+    if mode not in ("dir", "git"):
+        raise typer.BadParameter("mode must be 'dir' or 'git'")
+    scan_mode: GitleaksMode = "git" if mode == "git" else "dir"
+    root = repo_root or target
+    try:
+        tool_lock = load_lock(lock)
+        raw, tool_run = scan_secrets_with_run(
+            target,
+            lock=tool_lock,
+            tools_dir=tools_dir,
+            repo_root=root,
+            platform=platform,
+            mode=scan_mode,
+            log_opts=log_opts,
+        )
+        findings = normalize_gitleaks(
+            raw,
+            run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
+            tool=Tool(name="gitleaks", version=tool_run.version),
+            repo_root=root,
+        )
+    except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
+        raise _fail_closed(exc) from exc
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_ndjson(findings, out)
+    typer.echo(f"gitleaks {tool_run.version}: {len(findings)} finding(s) written to {out}")
 
 
 if __name__ == "__main__":
