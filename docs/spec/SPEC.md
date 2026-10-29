@@ -209,7 +209,9 @@ score is computed from the OSV vector (highest vector wins). Each feed is all or
 feed out with a warning, never a partial feed; KEV is read before EPSS, and EPSS is left out when KEV could not
 be read (EPSS alone would lower the risk of a listed vulnerability); the KEV catalogue is trusted whole or not at
 all; redirects are never followed. `--record` / `--offline` capture and replay the feed answers (raw bytes and
-their sha256) as offline fixtures; in CI they come from the base commit or a trusted store, like the policies. The NVD fallback for CVSS is not implemented yet: an id without a 3.x vector in OSV keeps an
+their sha256, gzip-compressed) as offline fixtures; in CI they come from the base commit or a trusted store, like the
+policies. `eval/feeds/` holds committed fixtures: 7 real vulnerable packages (Maven, PyPI, npm; KEV-listed and not;
+alias chains), their recordings and the snapshot they give, checked offline by the tests. The NVD fallback for CVSS is not implemented yet: an id without a 3.x vector in OSV keeps an
 unknown CVSS, which the risk engine counts as the worst case.
 
 "Known no" is written only for what was checked: `kev: {listed: false}` only when the KEV lookup covered every
