@@ -511,3 +511,33 @@ def test_a_service_context_missing_from_the_store_cannot_be_replayed(
     blob.unlink()
     code, out = replay(tmp_path, opa_binary, decision["decision_id"])
     assert code == 3, out
+
+
+# ---------------------------------------------------------------- policy profiles (policy_profile)
+
+SCORED_SCA = json.loads((FIXTURES / "finding" / "valid" / "sca-enriched-and-scored.json").read_text("utf-8"))
+P1_RISK = {
+    "score": 55.0,
+    "priority": "P1",
+    "factors": {"S": 1.0, "E": 1.0, "X": 0.55, "R": 1.0},
+    "model_version": "1.0.0",
+}
+P1_SCA = {**SCORED_SCA, "risk": P1_RISK}
+
+
+@pytest.mark.parametrize(
+    ("profile", "effect", "code"), [(None, "WARN", 0), ("default", "WARN", 0), ("strict", "BLOCK", 1)]
+)
+def test_the_strict_profile_of_the_base_sentinel_yaml_blocks_p1(
+    tmp_path: Path, opa_binary: Path, profile: str | None, effect: str, code: int
+) -> None:
+    yaml_text = b"version: 1\nservice: demo-shop\nexposure: internal\n"
+    if profile is not None:
+        yaml_text += f"policy_profile: {profile}\n".encode()
+    got, _, decision = evaluate(
+        tmp_path, opa_binary, ndjson(P1_SCA), service_context=yaml_text, tool_status=TOOLS_OK
+    )
+    assert got == code
+    assert [(v["rule"], v["effect"]) for v in decision["violations"]] == [("SC-006", effect)]
+    replayed, out = replay(tmp_path, opa_binary, decision["decision_id"])
+    assert replayed == 0, out

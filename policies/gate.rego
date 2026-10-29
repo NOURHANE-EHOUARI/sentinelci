@@ -11,6 +11,8 @@
 #   findings      array of Finding v1 objects (schemas/finding.v1.json)
 #   waivers       entries of .sentinel/waivers.yaml (schemas/waivers.v1.json), unvalidated:
 #                 checking them is this policy's job (SC-005)
+#   policy_profile optional: `policy_profile` of the base-branch sentinel.yaml (policies/profiles.rego);
+#                 absent: default. An unknown profile is malformed input (SC-010).
 #
 # Output: data.sentinel.gate.decision = {verdict, violations, waivers_applied}, in the shape of
 # schemas/decision.v1.json. One violation per rule, listing every finding id that triggered it.
@@ -325,9 +327,30 @@ block contains v if {
 	}
 }
 
+# SC-006 is a WARN, or a BLOCK in a profile that sets p1_block_above (strict: any P1 blocks).
+profile_name := object.get(input, "policy_profile", "default")
+
+profile := config.profiles[profile_name]
+
+input_errors contains sprintf("unknown policy profile %v", [profile_name]) if not config.profiles[profile_name]
+
+p1_blocks if count(priority_ids.P1) > profile.p1_block_above
+
 warn contains v if {
+	not p1_blocks
 	found := priority_ids.P1
 	v := {"rule": "SC-006", "effect": "WARN", "finding_ids": sort(found), "message": sprintf("P1 finding%s", [unscored_note(found)])}
+}
+
+block contains v if {
+	p1_blocks
+	found := priority_ids.P1
+	v := {
+		"rule": "SC-006",
+		"effect": "BLOCK",
+		"finding_ids": sort(found),
+		"message": sprintf("P1 finding, %s profile%s", [profile_name, unscored_note(found)]),
+	}
 }
 
 # SC-010: a scanner failed, timed out, did not match its pin or did not run. Its silence is not a pass.

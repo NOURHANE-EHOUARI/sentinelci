@@ -524,3 +524,54 @@ test_pr_mode_only_blocks_what_the_change_introduces if {
 	[v] := gate.decision.violations with input as pr_with([old, new], [old])
 	v.finding_ids == [new.id]
 }
+
+# ---------------------------------------------------------------- policy profiles (policies/profiles.rego)
+
+with_profile(fs, name) := object.union(with_findings(fs), {"policy_profile": name})
+
+test_p1_is_a_warning_in_the_default_profile if {
+	f := scored(vuln(h("6"), "HIGH"), "P1")
+	every input_doc in [with_findings([f]), with_profile([f], "default")] {
+		d := gate.decision with input as input_doc
+		d.verdict == "WARN"
+		d.violations == [{"rule": "SC-006", "effect": "WARN", "finding_ids": [f.id], "message": "P1 finding"}]
+	}
+}
+
+test_any_p1_blocks_in_the_strict_profile if {
+	f := scored(vuln(h("6"), "HIGH"), "P1")
+	d := gate.decision with input as with_profile([f], "strict")
+	d.verdict == "BLOCK"
+	d.violations == [{"rule": "SC-006", "effect": "BLOCK", "finding_ids": [f.id], "message": "P1 finding, strict profile"}]
+}
+
+test_the_strict_profile_changes_nothing_without_p1 if {
+	f := scored(vuln(h("7"), "MEDIUM"), "P2")
+	gate.decision.verdict == "PASS" with input as with_profile([f], "strict")
+}
+
+test_the_threshold_comes_from_the_profile if {
+	fs := [scored(vuln(h("6"), "HIGH"), "P1"), scored(vuln(h("7"), "HIGH"), "P1")]
+	lenient := {"default": {}, "strict": {"p1_block_above": 2}}
+	d := gate.decision with input as with_profile(fs, "strict") with data.sentinel.config.profiles as lenient
+	d.verdict == "WARN"
+}
+
+test_a_waived_p1_does_not_block_in_strict if {
+	f := scored(vuln(h("6"), "HIGH"), "P1")
+	w := {
+		"id": "w-1", "finding_id": f.id, "owner": "@Hiba-elouazi", "justification": "accepted",
+		"expires_at": "2026-12-01T00:00:00Z",
+	}
+	gate.decision.verdict == "PASS" with input as object.union(with_profile([f], "strict"), {"waivers": [w]})
+}
+
+test_an_unknown_profile_fails_closed if {
+	every name in ["lenient", 7, null] {
+		d := gate.decision with input as with_profile([], name)
+		d.verdict == "BLOCK"
+		some v in d.violations
+		v.rule == "SC-010"
+		contains(v.message, "unknown policy profile")
+	}
+}

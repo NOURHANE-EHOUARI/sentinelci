@@ -201,9 +201,10 @@ def evaluate(
             load_snapshot(enrichment_snapshot)
         except EnrichmentError as exc:
             raise EvaluationError(f"--enrichment-snapshot: {exc}") from exc
+    profile = None
     if service_context is not None:  # likewise: only a valid sentinel.yaml is recorded
         try:
-            load_service_context(service_context)
+            profile = load_service_context(service_context).policy_profile
         except EnrichmentError as exc:
             raise EvaluationError(f"--service-context: {exc}") from exc
     # Each input is parsed from the same bytes that are digested: the record names exactly what was evaluated.
@@ -246,6 +247,8 @@ def evaluate(
         gate_input["baseline"] = baseline
     if tool_status is not None:
         gate_input["tool_status"] = tool_status
+    if profile is not None:  # from the base-branch sentinel.yaml; absent: the default profile
+        gate_input["policy_profile"] = profile
 
     result = _check_policy_result(
         opa.eval(
