@@ -300,7 +300,8 @@ AI runs after the decision is stored, writes only advisory tables, and every out
 | Patch | finding + file + explanation (+ CI logs) | PatchProposal (`schemas/patch-proposal.v1.json`) | B | verified fix rate |
 
 - **Provider interface** `sentinel_ai.providers.LLMProvider` (`complete(system, user, schema)`, `embed(texts)`).
-  Default: local code model via Ollama (7–14B class, quantized). No multi-provider gateway dependency.
+  Default: local models via Ollama, `gemma4:12b-it-qat` for generation and `qwen3-embedding:0.6b` for
+  embeddings, pinned by digest (ADR-0009, measured in `eval/model-selection/`). No multi-provider gateway dependency.
 - **Grounding:** offline CWE catalogue, OSV advisory text, code window; references must come from the context.
 - **Guardrails:** import contract; untrusted text in delimited data blocks; schema validation with one repair
   retry, else "unavailable"; secret redaction before any prompt; model/prompt/input hash logged; injection
@@ -540,7 +541,7 @@ schema-constrained outputs and injection isolation (0 verdict changes across [X]
 | 7 | Compose skeleton (postgres+pgvector, redis, seaweedfs, ollama, api, prometheus, grafana; worker with B1, web with B7) | B |
 | 8 | `demo-shop/` skeleton + ground-truth format; first seeds | A9 + B9 |
 | 9 | GitHub Project board: one issue per task id | both |
-| 10 | Choose the local model and measure tokens/second | B |
+| 10 | Choose the local model and measure tokens/second | done (ADR-0009; re-run the benchmark on each laptop) |
 
 ## Appendix — Glossary
 
