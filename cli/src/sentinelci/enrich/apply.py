@@ -5,6 +5,7 @@ treats absent as the worst case. Package findings (SCA, CONTAINER) get CVSS, EPS
 from the snapshot entries of their ids (rule_id, cve, aliases, and the aliases of those entries); every
 finding gets the exposure of its component from `sentinel.yaml`.
 
+- matched entries: the finding's ids and every alias reachable from them in the snapshot (the alias closure).
 - cvss / epss: the highest score / percentile among the matched entries (ties: the smallest id), so the result
   never depends on dictionary order.
 - kev: listed if any matched id is in the catalogue; `listed: false` only when the KEV source was read and
@@ -30,16 +31,21 @@ _CVE = re.compile(r"CVE-[0-9]{4}-[0-9]{4,}")
 MANAGED = ("cvss", "epss", "kev", "fix_available", "exposure")
 
 
-def _matched(finding: Mapping[str, Any], snapshot: Snapshot) -> dict[str, Vulnerability]:
-    """Snapshot entries for the finding's ids, following one level of aliases (GHSA -> CVE for EPSS)."""
+def finding_ids(finding: Mapping[str, Any]) -> set[str]:
+    """The finding's vulnerability ids (rule_id, cve, aliases), CVE ids in their canonical upper case."""
     ids = {finding.get("rule_id"), *finding.get("cve", []), *finding.get("aliases", [])}
-    entries = {
-        i: snapshot.vulnerabilities[i] for i in ids if isinstance(i, str) and i in snapshot.vulnerabilities
-    }
-    for entry in list(entries.values()):
-        for alias in entry.aliases or []:
-            if alias in snapshot.vulnerabilities:
-                entries.setdefault(alias, snapshot.vulnerabilities[alias])
+    return {i.upper() if _CVE.fullmatch(i.upper()) else i for i in ids if isinstance(i, str)}
+
+
+def _matched(finding: Mapping[str, Any], snapshot: Snapshot) -> dict[str, Vulnerability]:
+    """Snapshot entries for the finding's ids and every alias reachable from them (PYSEC -> GHSA -> CVE)."""
+    entries = {i: snapshot.vulnerabilities[i] for i in finding_ids(finding) if i in snapshot.vulnerabilities}
+    pending = list(entries.values())
+    while pending:  # the alias closure: the fetchers follow aliases more than one level deep
+        for alias in pending.pop().aliases or []:
+            if alias in snapshot.vulnerabilities and alias not in entries:
+                entries[alias] = snapshot.vulnerabilities[alias]
+                pending.append(entries[alias])
     return dict(sorted(entries.items()))
 
 
@@ -52,7 +58,7 @@ def canonical_purl(base: str) -> str:
 
 
 def _cve_ids(finding: Mapping[str, Any], entries: Mapping[str, Vulnerability]) -> set[str]:
-    ids = {finding.get("rule_id"), *finding.get("cve", []), *finding.get("aliases", []), *entries}
+    ids = finding_ids(finding) | set(entries)
     ids.update(alias for entry in entries.values() for alias in entry.aliases or [])
     return {i for i in ids if isinstance(i, str) and _CVE.fullmatch(i)}
 

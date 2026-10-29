@@ -206,8 +206,10 @@ base branch, like the policies and waivers, so a change cannot lower its own exp
 Fetchers (B2, `sentinel snapshot`): OSV by id (one extra round for the aliases it reveals), EPSS in batches of
 100 CVEs, and the KEV catalogue filtered to those CVEs; HTTPS to those three hosts only. The CVSS 3.0/3.1 base
 score is computed from the OSV vector (highest vector wins). Each feed is all or nothing: a failure leaves the
-feed out with a warning, never a partial feed. `--record` / `--offline` capture and replay the feed answers as
-offline fixtures. The NVD fallback for CVSS is not implemented yet: an id without a 3.x vector in OSV keeps an
+feed out with a warning, never a partial feed; KEV is read before EPSS, and EPSS is left out when KEV could not
+be read (EPSS alone would lower the risk of a listed vulnerability); the KEV catalogue is trusted whole or not at
+all; redirects are never followed. `--record` / `--offline` capture and replay the feed answers (raw bytes and
+their sha256) as offline fixtures; in CI they come from the base commit or a trusted store, like the policies. The NVD fallback for CVSS is not implemented yet: an id without a 3.x vector in OSV keeps an
 unknown CVSS, which the risk engine counts as the worst case.
 
 "Known no" is written only for what was checked: `kev: {listed: false}` only when the KEV lookup covered every

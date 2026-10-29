@@ -31,10 +31,12 @@ from sentinelci.enrich import (
 from sentinelci.enrich.fetch import build_snapshot, dumps_snapshot
 from sentinelci.enrich.transport import (
     DEFAULT_TIMEOUT_S,
+    MAX_TIMEOUT_S,
     HttpTransport,
     RecordingTransport,
     ReplayTransport,
     Transport,
+    TransportError,
 )
 from sentinelci.normalize.errors import NormalizationError
 from sentinelci.normalize.gitleaks import load_gitleaks_report, normalize_gitleaks
@@ -132,28 +134,32 @@ def snapshot_command(
     record: Annotated[
         Path | None, typer.Option(help="Also save every response under this directory.")
     ] = None,
-    timeout: Annotated[float, typer.Option(help="Seconds per request.")] = DEFAULT_TIMEOUT_S,
+    timeout: Annotated[
+        float, typer.Option(help=f"Seconds per request, in (0, {MAX_TIMEOUT_S:g}].")
+    ] = DEFAULT_TIMEOUT_S,
 ) -> None:
     """Fetch OSV, FIRST EPSS and CISA KEV data for the findings into a snapshot (SPEC section 6.1).
 
     The only network step of enrichment; `sentinel enrich` then applies the snapshot offline. A feed that
     fails is left out (its values stay unknown, scored as the worst case) and named on stderr; exit code 0.
-    Exit code 3 when the findings cannot be read (nothing is written).
+    Exit code 3 when the findings cannot be read, or anything else goes wrong (nothing is written).
+    `--offline` recordings are inputs like the policies: use them from the base commit or a trusted store.
     """
+    if not 0 < timeout <= MAX_TIMEOUT_S:
+        raise typer.BadParameter(f"--timeout must be in (0, {MAX_TIMEOUT_S:g}] seconds")
     _refuse_output(out, findings, "sentinel snapshot")
     out.unlink(missing_ok=True)
     try:
         loaded = load_findings(findings.read_bytes())
-    except (EvaluationError, OSError) as exc:
+        transport: Transport = ReplayTransport(offline) if offline else HttpTransport(timeout=timeout)
+        if record is not None:
+            transport = RecordingTransport(transport, record)
+        document, warnings = build_snapshot(loaded, transport)
+    except (EvaluationError, EnrichmentError, TransportError, OSError) as exc:
         typer.echo(f"sentinel snapshot: {exc}", err=True)
         raise typer.Exit(EXIT_NO_DECISION) from exc
-    transport: Transport = ReplayTransport(offline) if offline else HttpTransport(timeout=timeout)
-    if record is not None:
-        transport = RecordingTransport(transport, record)
-    try:
-        document, warnings = build_snapshot(loaded, transport)
-    except EnrichmentError as exc:  # a feed answer that passed parsing but not the contract
-        typer.echo(f"sentinel snapshot: {exc}", err=True)
+    except Exception as exc:  # fail closed: no traceback, no partial snapshot, no exit 0 or 1
+        typer.echo(f"sentinel snapshot: unexpected {type(exc).__name__}: {exc}", err=True)
         raise typer.Exit(EXIT_NO_DECISION) from exc
     for warning in warnings:
         typer.echo(f"warning: {warning}", err=True)

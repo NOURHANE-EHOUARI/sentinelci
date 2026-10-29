@@ -14,7 +14,14 @@ from typer.testing import CliRunner
 from sentinelci.cli import app
 from sentinelci.enrich import EnrichmentError, enrich_finding, load_snapshot
 from sentinelci.enrich.cvss import base_score
-from sentinelci.enrich.fetch import EPSS_URL, KEV_URL, OSV_URL, build_snapshot, dumps_snapshot
+from sentinelci.enrich.fetch import (
+    EPSS_URL,
+    KEV_URL,
+    MIN_KEV_ENTRIES,
+    OSV_URL,
+    build_snapshot,
+    dumps_snapshot,
+)
 from sentinelci.enrich.transport import (
     HttpTransport,
     RecordingTransport,
@@ -81,15 +88,18 @@ EPSS = {
         {"cve": "CVE-2099-1001", "epss": "0.410000000", "percentile": "0.950000000", "date": "2026-11-10"},
     ],
 }  # fmt: skip
+# The real catalogue holds well over MIN_KEV_ENTRIES entries; filler entries make the fixture that size.
+KEV_ENTRIES = [
+    {"cveID": "CVE-2099-1001", "dateAdded": "2026-10-01"},
+    {"cveID": "CVE-2099-9999", "dateAdded": "2026-10-02"},
+    *({"cveID": f"CVE-2000-{n:05d}", "dateAdded": "2020-01-01"} for n in range(MIN_KEV_ENTRIES)),
+]
 KEV = {
     "title": "CISA Catalog of Known Exploited Vulnerabilities",
     "catalogVersion": "2026.11.09",
     "dateReleased": "2026-11-09T19:00:04.8077Z",
-    "count": 2,
-    "vulnerabilities": [
-        {"cveID": "CVE-2099-1001", "dateAdded": "2026-10-01"},
-        {"cveID": "CVE-2099-9999", "dateAdded": "2026-10-02"},
-    ],
+    "count": len(KEV_ENTRIES),
+    "vulnerabilities": KEV_ENTRIES,
 }
 
 
@@ -250,7 +260,7 @@ def test_epss_is_asked_in_batches_of_100_in_a_stable_order() -> None:
                 return 200, json.dumps({"status": "OK", "data": []}).encode()
             return super().request(method, url, body)
 
-    transport = AnswersEveryEpssBatch({})
+    transport = AnswersEveryEpssBatch({("GET", KEV_URL, None): (200, KEV)})
     snapshot(transport, [many])
     epss_urls = [url for _, url, _ in transport.requests if url.startswith(EPSS_URL)]
     assert [len(url.split("=", 1)[1].split(",")) for url in epss_urls] == [100, 50]
@@ -281,6 +291,8 @@ def test_a_failed_feed_is_left_out_with_a_warning(feed: str, response: tuple[int
     others = {"epss", "kev", "osv"} - {feed}
     if feed == "osv":
         others -= {"epss", "kev"}  # without OSV the CVE alias is never learnt
+    if feed == "kev":
+        others -= {"epss"}  # EPSS without KEV would lower the risk of a listed vulnerability
     assert others <= set(result["sources"])
 
 
@@ -431,3 +443,210 @@ def test_cli_snapshot_refuses_to_overwrite_its_input(tmp_path: Path) -> None:
     args = ["snapshot", "--findings", str(findings), "--out", str(findings), "--offline", str(tmp_path)]
     assert CliRunner().invoke(app, args).exit_code == 3
     assert json.loads(findings.read_text(encoding="utf-8")) == FINDING
+
+
+# ---------------------------------------------------------------- a feed problem never lowers risk (#18)
+
+
+def test_without_kev_epss_is_left_out_too_and_the_finding_keeps_the_worst_case() -> None:
+    # Nourhane's repro: KEV answers 403 while EPSS is up. EPSS alone would give E = 0.46 instead of 1.0 (#16).
+    result, warnings = build_snapshot([FINDING], feeds(kev=(403, b"Forbidden")))
+    assert set(result["sources"]) == {"osv"}
+    assert any(w.startswith("EPSS left out") and "KEV" in w for w in warnings)
+    enriched = enrich_finding(FINDING, load_snapshot(dumps_snapshot(result)), None)["enrichment"]
+    assert "epss" not in enriched and "kev" not in enriched  # E = 1.0 in the risk engine
+
+
+def kev_with(entries: list[Any], **fields: Any) -> dict[str, Any]:
+    return {**KEV, "vulnerabilities": entries, "count": len(entries), **fields}
+
+
+@pytest.mark.parametrize(
+    "catalogue",
+    [
+        kev_with([*KEV_ENTRIES, "not an object"]),
+        kev_with([*KEV_ENTRIES, {"cveId": "CVE-2099-1001", "dateAdded": "2026-10-01"}]),
+        kev_with([*KEV_ENTRIES, {"cveID": "cve-2099-1002", "dateAdded": "2026-10-01"}]),
+        kev_with([*KEV_ENTRIES, {"cveID": "CVE-2099-1002 ", "dateAdded": "2026-10-01"}]),
+        kev_with([*KEV_ENTRIES, {"cveID": "CVE-2099-1002\n", "dateAdded": "2026-10-01"}]),
+        kev_with([*KEV_ENTRIES, {"cveID": ["CVE-2099-1002"], "dateAdded": "2026-10-01"}]),
+        kev_with([*KEV_ENTRIES, {"cveID": "CVE-2099-1002", "dateAdded": "20261001"}]),
+        kev_with([*KEV_ENTRIES, {"cveID": "CVE-2099-1002"}]),
+        kev_with([]),
+        kev_with(KEV_ENTRIES[: MIN_KEV_ENTRIES - 1]),
+        {**KEV, "count": len(KEV_ENTRIES) + 1},
+        {**KEV, "count": str(len(KEV_ENTRIES))},
+        {k: v for k, v in KEV.items() if k != "count"},
+        {**KEV, "catalogVersion": ""},
+        {**KEV, "catalogVersion": 2026},
+    ],
+    ids=["entry-not-object", "renamed-cveID", "lowercase-cve", "trailing-space", "trailing-newline",
+         "cveID-list", "basic-date", "no-dateAdded", "empty", "too-small", "count-mismatch",
+         "count-string", "no-count", "empty-catalogVersion", "numeric-catalogVersion"],
+)  # fmt: skip
+def test_a_kev_catalogue_is_trusted_whole_or_not_at_all(catalogue: dict[str, Any]) -> None:
+    result, warnings = build_snapshot([FINDING], feeds(kev=(200, catalogue)))
+    assert "kev" not in result["sources"] and "epss" not in result["sources"]
+    assert any(w.startswith("KEV left out") for w in warnings)
+
+
+@pytest.mark.parametrize(
+    ("released", "kept"),
+    [
+        ("2026-11-09T19:00:04.8077Z", True),
+        ("2026-11-09T19:00:04+02:00", True),
+        ("2026-11-09T19:00:04", False),
+        ("2026-11-09", False),
+        ("2026-W45", False),
+        ("2026-11-09T25:00:04Z", False),
+        (20261109, False),
+    ],
+)
+def test_kev_release_time_is_kept_only_as_rfc3339_with_an_offset(released: Any, kept: bool) -> None:
+    result = snapshot(feeds(kev=(200, {**KEV, "dateReleased": released})))
+    assert ("date_released" in result["sources"]["kev"]) is kept
+
+
+@pytest.mark.parametrize(
+    "osv",
+    [
+        {**OSV_GHSA, "aliases": 7},
+        {**OSV_GHSA, "severity": 7},
+        {**OSV_GHSA, "affected": [{"package": {"ecosystem": "PyPI", "name": "x"}, "ranges": 7}]},
+        {**OSV_GHSA, "affected": ["not an object"]},
+        {**OSV_GHSA, "affected": [{"ranges": [{"type": "ECOSYSTEM", "events": [7]}]}]},
+        {**OSV_GHSA, "id": "GHSA-zzzz-zzzz-zzzz"},
+    ],
+    ids=["aliases-int", "severity-int", "ranges-int", "affected-entry-str", "event-int", "another-id"],
+)
+def test_malformed_osv_data_leaves_osv_out_instead_of_crashing(osv: dict[str, Any]) -> None:
+    result, warnings = build_snapshot([FINDING], feeds(osv=(200, osv)))
+    assert "osv" not in result["sources"]
+    [warning] = [w for w in warnings if w.startswith("OSV left out")]
+    assert any(word in warning for word in ("is not a list", "is not an object", "another record")), warning
+
+
+def test_a_body_nested_too_deep_is_a_feed_failure() -> None:
+    result, warnings = build_snapshot([FINDING], feeds(osv=(200, b"[" * 100_000 + b"]" * 100_000)))
+    assert "osv" not in result["sources"]
+    assert any("did not answer JSON" in w for w in warnings)
+
+
+def test_any_other_error_while_reading_a_feed_leaves_only_that_feed_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sentinelci.enrich.fetch as fetch
+
+    def broken(record: Any, requested: str) -> Any:
+        raise KeyError("an unforeseen shape")
+
+    monkeypatch.setattr(fetch, "_osv_entry", broken)
+    result, warnings = build_snapshot([{**FINDING, "cve": ["CVE-2099-1001"]}], feeds())
+    assert "osv" not in result["sources"] and {"kev", "epss"} <= set(result["sources"])
+    assert any(w.startswith("OSV left out") for w in warnings)
+
+
+def test_epss_answers_from_two_days_are_refused() -> None:
+    two = {**SCA, "rule_id": "CVE-2099-1001", "cve": ["CVE-2099-1001", "CVE-2099-1002"], "aliases": []}
+    rows = [{**EPSS["data"][0]}, {**EPSS["data"][0], "cve": "CVE-2099-1002", "date": "2026-11-09"}]
+    transport = feeds()
+    transport.table[("GET", f"{EPSS_URL}?cve=CVE-2099-1001,CVE-2099-1002", None)] = (
+        200,
+        {**EPSS, "data": rows},
+    )
+    result, warnings = build_snapshot([two], transport)
+    assert "epss" not in result["sources"]
+    assert any("several days" in w for w in warnings)
+
+
+@pytest.mark.parametrize("status", [401, 403, 410, 429, 500])
+def test_an_error_status_is_a_feed_failure_even_with_a_valid_body(status: int) -> None:
+    for feed, body in (("osv", OSV_GHSA), ("kev", KEV), ("epss", EPSS)):
+        result, warnings = build_snapshot([FINDING], feeds(**{feed: (status, body)}))
+        assert feed not in result["sources"], (feed, status)
+        assert any(f"HTTP {status}" in w for w in warnings)
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"cve": "CVE-2099-1001", "epss": True, "percentile": "0.5", "date": "2026-11-10"},
+        {"cve": "CVE-2099-1001", "epss": " 0.5 ", "percentile": "0.5", "date": "2026-11-10"},
+        {"cve": "CVE-2099-1001", "epss": "0.0_1", "percentile": "0.5", "date": "2026-11-10"},
+        {"cve": "CVE-2099-1001", "epss": "1.5", "percentile": "0.5", "date": "2026-11-10"},
+        {"cve": "CVE-2099-1001", "epss": "0.5", "percentile": "-0.1", "date": "2026-11-10"},
+        {"cve": "CVE-2099-1001", "epss": "nan", "percentile": "0.5", "date": "2026-11-10"},
+        {"cve": "CVE-2099-1001", "epss": "0.5", "percentile": "0.5", "date": "20261110"},
+        {"cve": "CVE-2099-1001", "epss": -0.1, "percentile": 0.5, "date": "2026-11-10"},
+        {"cve": "CVE-2099-1001", "epss": float("nan"), "percentile": 0.5, "date": "2026-11-10"},
+        {"cve": "CVE-2099-1001", "epss": 0.5, "percentile": float("inf"), "date": "2026-11-10"},
+    ],
+    ids=[
+        "bool",
+        "padded",
+        "underscore",
+        "above-one",
+        "negative",
+        "nan",
+        "basic-date",
+        "json-negative",
+        "json-NaN",
+        "json-Infinity",
+    ],
+)
+def test_epss_values_are_read_strictly(row: dict[str, Any]) -> None:
+    result, warnings = build_snapshot([FINDING], feeds(epss=(200, {**EPSS, "data": [row]})))
+    assert "epss" not in result["sources"]
+    assert any(w.startswith("EPSS left out") for w in warnings)
+
+
+def test_conflicting_epss_rows_are_refused_and_identical_ones_accepted() -> None:
+    row = EPSS["data"][0]
+    same = snapshot(feeds(epss=(200, {**EPSS, "data": [row, dict(row)]})))
+    assert "epss" in same["sources"]
+    other = {**row, "epss": "0.9"}
+    result, _ = build_snapshot([FINDING], feeds(epss=(200, {**EPSS, "data": [row, other]})))
+    assert "epss" not in result["sources"]
+
+
+def test_a_withdrawn_osv_record_gives_nothing() -> None:
+    result = snapshot(feeds(osv=(200, {**OSV_GHSA, "withdrawn": "2026-11-01T00:00:00Z"})))
+    assert "GHSA-aaaa-bbbb-cccc" not in result["vulnerabilities"]
+
+
+def test_a_lowercase_cve_rule_id_still_reaches_epss_and_kev() -> None:
+    lower = {**SCA, "rule_id": "cve-2099-1001", "cve": [], "aliases": []}
+    result = snapshot(feeds(), [lower])
+    assert result["vulnerabilities"]["CVE-2099-1001"]["epss"]["percentile"] == 0.95
+    assert enrich_finding(lower, load_snapshot(dumps_snapshot(result)), None)["enrichment"]["kev"]["listed"]
+
+
+def test_the_alias_closure_reaches_a_kev_listed_cve_two_levels_away() -> None:
+    # PYSEC -> GHSA -> CVE (Nourhane's S4): apply follows the closure the fetcher resolved.
+    pysec_only = {**SCA, "rule_id": "PYSEC-2099-7", "cve": [], "aliases": []}
+    transport = feeds()
+    transport.table[("GET", f"{OSV_URL}/PYSEC-2099-7", None)] = (
+        200,
+        {**OSV_PYSEC, "aliases": ["GHSA-aaaa-bbbb-cccc"]},
+    )
+    result = snapshot(transport, [pysec_only])
+    assert result["vulnerabilities"]["PYSEC-2099-7"]["aliases"] == ["GHSA-aaaa-bbbb-cccc"]  # two levels
+    enriched = enrich_finding(pysec_only, load_snapshot(dumps_snapshot(result)), None)["enrichment"]
+    assert enriched["kev"] == {"listed": True, "date_added": "2026-10-01"}
+    assert enriched["epss"]["percentile"] == 0.95
+
+
+@pytest.mark.parametrize(
+    "affected",
+    [
+        [{"package": {"ecosystem": "Maven", "name": "org.example:lib"},
+          "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "2.0"}]}]}],
+        [{"package": {"purl": "pkg:pypi/example-lib"},
+          "ranges": [{"type": "GIT", "repo": "https://example.invalid/r", "events": [{"fixed": "abc123"}]}]}],
+    ],
+    ids=["fix-on-an-unmapped-package", "fix-only-as-a-commit"],
+)  # fmt: skip
+def test_a_fix_that_cannot_be_tied_to_a_version_keeps_fix_availability_unknown(affected: list[Any]) -> None:
+    record = {**OSV_GHSA, "affected": [*OSV_GHSA["affected"], *affected]}
+    result = snapshot(feeds(osv=(200, record)))
+    assert "fixed_versions" not in result["vulnerabilities"].get("GHSA-aaaa-bbbb-cccc", {})

@@ -5,15 +5,17 @@ offline and what decisions record by digest, so replay never calls a feed again.
 
 1. OSV (`GET /v1/vulns/{id}`) for every vulnerability id of the package findings (rule_id, cve, aliases), then
    once more for the aliases those records reveal: aliases, CVSS (3.x base score computed from the vector) and
-   fixed versions per package. An id OSV does not know (404) is simply absent.
-2. EPSS for every CVE id now known, 100 per request.
-3. The KEV catalogue, filtered to those CVE ids; `sources.kev.cves` records them, so "not listed" is known
-   only for CVEs that were looked up.
+   fixed versions per package. An id OSV does not know (404) is simply absent; a withdrawn record gives
+   nothing.
+2. The KEV catalogue, filtered to the CVE ids now known; `sources.kev.cves` records them, so "not listed" is
+   known only for CVEs that were looked up. The catalogue is checked whole: every entry, its count, its size.
+3. EPSS for those CVE ids, 100 per request, only when KEV was read: EPSS alone would lower the risk of a
+   vulnerability KEV lists (E = 1.0 for a listed one).
 
 Each feed is all or nothing: if any of its requests fails, or any answer is not what the API documents, that
 feed is left out of the snapshot (its values stay unknown, which the risk engine counts as the worst case)
-and a warning names it. Responses are untrusted data: they are parsed into fixed fields and the whole
-snapshot is validated against its contract before it is written.
+and a warning names it. Responses are untrusted data: they are parsed into fixed fields, every container is
+type-checked, and the whole snapshot is validated against its contract before it is written.
 """
 
 from __future__ import annotations
@@ -34,8 +36,15 @@ OSV_URL = "https://api.osv.dev/v1/vulns"
 EPSS_URL = "https://api.first.org/data/v1/epss"
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 EPSS_BATCH = 100
+# The catalogue passed 1,000 entries in 2023 and only grows: fewer means a broken or substituted answer.
+MIN_KEV_ENTRIES = 1000
 PACKAGE_CATEGORIES = frozenset({"SCA", "CONTAINER"})
 _CVE = re.compile(r"CVE-[0-9]{4}-[0-9]{4,}")
+_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_RFC3339 = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:[Zz]|[+-][0-9]{2}:[0-9]{2})"
+)
+_DECIMAL = re.compile(r"[0-9]+(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?")
 # OSV ecosystem -> purl type, for affected packages without a purl (OSV names, purl-spec types).
 _PURL_TYPES = {"PyPI": "pypi", "npm": "npm", "crates.io": "cargo", "RubyGems": "gem", "Go": "golang",
                "NuGet": "nuget", "Packagist": "composer", "Pub": "pub", "Hex": "hex"}  # fmt: skip
@@ -45,16 +54,40 @@ class FeedError(Exception):
     """A feed answered something its API does not document."""
 
 
-def _json(transport: Transport, url: str, missing_ok: bool = False) -> Any:
+# What a failed feed looks like: transport errors, undocumented answers, and data of the wrong shape.
+FEED_FAILURES = (FeedError, TransportError, ValueError, TypeError, KeyError, AttributeError, RecursionError)
+
+
+def _json(transport: Transport, url: str) -> Any:
+    """The JSON answer, or None for a 404 (an id OSV does not know; for KEV and EPSS, not an object)."""
     status, body = transport.request("GET", url)
-    if missing_ok and status == 404:
+    if status == 404:
         return None
     if status != 200:
         raise FeedError(f"HTTP {status} for {url}")
     try:
         return json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise FeedError(f"{url} did not answer JSON") from exc
+
+
+def _list(value: Any, what: str) -> list[Any]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise FeedError(f"{what} is not a list")
+    return value
+
+
+def _dict(value: Any, what: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise FeedError(f"{what} is not an object")
+    return value
+
+
+def canonical_id(value: str) -> str:
+    """CVE ids in their canonical upper case (a `cve-...` rule id still reaches EPSS and KEV)."""
+    return value.upper() if _CVE.fullmatch(value.upper()) else value
 
 
 def _ids(findings: Iterable[Mapping[str, Any]]) -> set[str]:
@@ -63,8 +96,8 @@ def _ids(findings: Iterable[Mapping[str, Any]]) -> set[str]:
         if f.get("category") not in PACKAGE_CATEGORIES:
             continue
         for value in [f.get("rule_id"), *f.get("cve", []), *f.get("aliases", [])]:
-            if isinstance(value, str) and _VULN_ID.fullmatch(value):
-                ids.add(value)
+            if isinstance(value, str) and _VULN_ID.fullmatch(canonical_id(value)):
+                ids.add(canonical_id(value))
     return ids
 
 
@@ -82,6 +115,41 @@ def _purl_of(package: Mapping[str, Any]) -> str | None:
     return base if _PURL_BASE.fullmatch(base) else None
 
 
+def _fixed_versions(record: Mapping[str, Any]) -> dict[str, list[str]] | None:
+    """Fixed versions per package, or None when a fix exists that cannot be tied to a package version.
+
+    A fix on a package without a purl (Maven without one, say), or only as a commit (GIT ranges), would make
+    every other package of the record look unfixed; leaving the whole map out keeps fix availability unknown.
+    """
+    fixed: dict[str, set[str]] = {}
+    for affected in _list(record.get("affected"), "affected"):
+        affected = _dict(affected, "affected entry")
+        package = affected.get("package")
+        purl = _purl_of(package) if isinstance(package, dict) else None
+        versions: set[str] = set()
+        unmapped = False
+        for rng in _list(affected.get("ranges"), "ranges"):
+            rng = _dict(rng, "range")
+            for event in _list(rng.get("events"), "events"):
+                event = _dict(event, "range event")
+                if "fixed" not in event:
+                    continue
+                version = event["fixed"]
+                if (
+                    rng.get("type") in ("ECOSYSTEM", "SEMVER")
+                    and isinstance(version, str)
+                    and _TOKEN.fullmatch(version)
+                ):
+                    versions.add(version)
+                else:
+                    unmapped = True  # a commit, or a version this contract cannot hold
+        if (versions or unmapped) and (purl is None or not versions):
+            return None
+        if versions and purl is not None:
+            fixed.setdefault(purl, set()).update(versions)
+    return {purl: sorted(versions) for purl, versions in sorted(fixed.items())}
+
+
 def _osv_entry(record: Any, requested: str) -> tuple[dict[str, Any], date]:
     if not isinstance(record, dict) or record.get("id") != requested:
         raise FeedError(f"OSV answered another record for {requested}")
@@ -90,36 +158,27 @@ def _osv_entry(record: Any, requested: str) -> tuple[dict[str, Any], date]:
     except (KeyError, ValueError) as exc:
         raise FeedError(f"OSV record {requested} has no valid 'modified'") from exc
     entry: dict[str, Any] = {}
-    aliases = sorted({a for a in record.get("aliases") or [] if isinstance(a, str) and _VULN_ID.fullmatch(a)})
-    if aliases:
+    if record.get("withdrawn"):
+        return entry, modified  # withdrawn: neither its aliases, CVSS nor fixes count
+    named = {canonical_id(a) for a in _list(record.get("aliases"), "aliases") if isinstance(a, str)}
+    if aliases := sorted(a for a in named if _VULN_ID.fullmatch(a)):
         entry["aliases"] = aliases
-    scored = [
-        (score, version, s["score"])
-        for s in record.get("severity") or []
-        if isinstance(s, dict)
-        and s.get("type") in ("CVSS_V3", "CVSS_V3.1")
-        and isinstance(s.get("score"), str)
-        for version, score in [base_score(s["score"]) or (None, None)]
-        if score is not None
-    ]
+    scored = []
+    for severity in _list(record.get("severity"), "severity"):
+        severity = _dict(severity, "severity entry")
+        vector = severity.get("score")
+        if (
+            severity.get("type") in ("CVSS_V3", "CVSS_V3.1")
+            and isinstance(vector, str)
+            and (result := base_score(vector))
+        ):
+            scored.append((result[1], result[0], vector))
     if scored:
         score, version, vector = max(scored)
         entry["cvss"] = {"version": version, "score": score, "vector": vector}
-    fixed: dict[str, set[str]] = {}
-    for affected in record.get("affected") or []:
-        package = affected.get("package") if isinstance(affected, dict) else None
-        purl = _purl_of(package) if isinstance(package, dict) else None
-        if purl is None:
-            continue
-        for rng in affected.get("ranges") or []:
-            if not isinstance(rng, dict) or rng.get("type") not in ("ECOSYSTEM", "SEMVER"):
-                continue  # GIT ranges name commits, not versions
-            for event in rng.get("events") or []:
-                version = event.get("fixed") if isinstance(event, dict) else None
-                if isinstance(version, str) and _TOKEN.fullmatch(version):
-                    fixed.setdefault(purl, set()).add(version)
+    fixed = _fixed_versions(record)
     if fixed:
-        entry["fixed_versions"] = {purl: sorted(versions) for purl, versions in sorted(fixed.items())}
+        entry["fixed_versions"] = fixed
     return entry, modified
 
 
@@ -132,7 +191,7 @@ def _osv(ids: set[str], transport: Transport) -> tuple[dict[str, dict[str, Any]]
                         {a for e in entries.values() for a in e.get("aliases", [])} - asked)  # fmt: skip
         for vuln_id in wanted:
             asked.add(vuln_id)
-            record = _json(transport, f"{OSV_URL}/{quote(vuln_id, safe='')}", missing_ok=True)
+            record = _json(transport, f"{OSV_URL}/{quote(vuln_id, safe='')}")
             if record is None:
                 continue
             entry, modified = _osv_entry(record, vuln_id)
@@ -143,11 +202,14 @@ def _osv(ids: set[str], transport: Transport) -> tuple[dict[str, dict[str, Any]]
 
 
 def _number(value: Any, what: str) -> float:
-    try:
+    """A JSON number, or a plain decimal string as EPSS sends them; never a boolean, padding or '_'."""
+    if (isinstance(value, int | float) and not isinstance(value, bool)) or (
+        isinstance(value, str) and _DECIMAL.fullmatch(value)
+    ):
         number = float(value)
-    except (TypeError, ValueError) as exc:
-        raise FeedError(f"EPSS {what} is not a number: {value!r}") from exc
-    if not 0 <= number <= 1:
+    else:
+        raise FeedError(f"EPSS {what} is not a number: {value!r}"[:200])
+    if not 0 <= number <= 1:  # also refuses NaN and infinity
         raise FeedError(f"EPSS {what} out of range: {number}")
     return number
 
@@ -158,47 +220,64 @@ def _epss(cves: list[str], transport: Transport) -> tuple[dict[str, dict[str, fl
     versions: set[str] = set()
     for start in range(0, len(cves), EPSS_BATCH):
         batch = cves[start : start + EPSS_BATCH]
-        answer = _json(transport, f"{EPSS_URL}?cve={','.join(batch)}")
-        if not isinstance(answer, dict) or not isinstance(answer.get("data"), list):
-            raise FeedError("EPSS answer has no data list")
+        answer = _dict(_json(transport, f"{EPSS_URL}?cve={','.join(batch)}"), "EPSS answer")
         if isinstance(answer.get("model_version"), str):
             versions.add(answer["model_version"])
-        for row in answer["data"]:
+        for row in _list(answer.get("data"), "EPSS data"):
             if not isinstance(row, dict) or row.get("cve") not in batch:
                 raise FeedError(f"EPSS answered for a CVE it was not asked about: {row!r}"[:200])
-            scores[row["cve"]] = {"score": _number(row.get("epss"), "score"),
-                                  "percentile": _number(row.get("percentile"), "percentile")}  # fmt: skip
-            days.add(str(row.get("date")))
+            value = {"score": _number(row.get("epss"), "score"),
+                     "percentile": _number(row.get("percentile"), "percentile")}  # fmt: skip
+            if scores.setdefault(row["cve"], value) != value:
+                raise FeedError(f"EPSS gave two different answers for {row['cve']}")
+            day = row.get("date")
+            if not isinstance(day, str) or not _DATE.fullmatch(day):
+                raise FeedError(f"EPSS date is not YYYY-MM-DD: {day!r}"[:200])
+            days.add(date.fromisoformat(day).isoformat())
     if len(days) > 1:
         raise FeedError(f"EPSS answers mix several days: {sorted(days)}")
     source: dict[str, str] = {}
     if days:
-        source["date"] = date.fromisoformat(days.pop()).isoformat()
+        source["date"] = days.pop()
     if len(versions) == 1 and _TOKEN.fullmatch(next(iter(versions))):
         source["model_version"] = versions.pop()
     return scores, source
 
 
 def _kev(cves: set[str], transport: Transport) -> tuple[dict[str, str], dict[str, Any]]:
-    catalogue = _json(transport, KEV_URL)
-    if not isinstance(catalogue, dict) or not isinstance(catalogue.get("vulnerabilities"), list):
+    catalogue = _dict(_json(transport, KEV_URL), "KEV catalogue")
+    entries = catalogue.get("vulnerabilities")
+    if not isinstance(entries, list):
         raise FeedError("KEV catalogue has no vulnerabilities list")
     version = catalogue.get("catalogVersion")
     if not isinstance(version, str) or not _TOKEN.fullmatch(version):
         raise FeedError("KEV catalogue has no valid catalogVersion")
+    count = catalogue.get("count")
+    if not isinstance(count, int) or isinstance(count, bool) or count != len(entries):
+        raise FeedError(f"KEV catalogue count {count!r} does not match its {len(entries)} entries")
+    if len(entries) < MIN_KEV_ENTRIES:
+        raise FeedError(
+            f"KEV catalogue has only {len(entries)} entries (at least {MIN_KEV_ENTRIES} expected)"
+        )
+    listed: dict[str, str] = {}
+    for entry in entries:  # all or nothing: one malformed entry and nothing in the catalogue is trusted
+        entry = _dict(entry, "KEV entry")
+        cve, added = entry.get("cveID"), entry.get("dateAdded")
+        if not isinstance(cve, str) or not _CVE.fullmatch(cve):
+            raise FeedError(f"KEV entry with an invalid cveID: {cve!r}"[:200])
+        if not isinstance(added, str) or not _DATE.fullmatch(added):
+            raise FeedError(f"KEV entry {cve} with an invalid dateAdded: {added!r}"[:200])
+        added = date.fromisoformat(added).isoformat()
+        if cve in cves:
+            listed[cve] = added
     source: dict[str, Any] = {"catalog_version": version, "cves": sorted(cves)}  # what KEV now covers
     released = catalogue.get("dateReleased")
-    if isinstance(released, str):  # optional: kept only as an RFC 3339 time with an offset
+    if isinstance(released, str) and _RFC3339.fullmatch(released):  # optional: RFC 3339 with an offset only
         try:
-            if datetime.fromisoformat(released.replace("Z", "+00:00")).tzinfo is not None:
-                source["date_released"] = released
+            datetime.fromisoformat(re.sub(r"[Zz]$", "+00:00", released))
+            source["date_released"] = released
         except ValueError:
             pass
-    listed: dict[str, str] = {}
-    for entry in catalogue["vulnerabilities"]:
-        cve = entry.get("cveID") if isinstance(entry, dict) else None
-        if cve in cves:
-            listed[cve] = date.fromisoformat(str(entry.get("dateAdded"))).isoformat()
     return listed, source
 
 
@@ -217,27 +296,34 @@ def build_snapshot(
         vulnerabilities.update(osv_entries)
         if osv_date is not None:
             sources["osv"] = {"date": osv_date.isoformat()}
-    except (FeedError, TransportError, ValueError) as exc:
+    except FEED_FAILURES as exc:
         warnings.append(f"OSV left out: {exc}")
 
     cves = sorted({i for i in ids | {a for e in vulnerabilities.values() for a in e.get("aliases", [])}
                    if _CVE.fullmatch(i)})  # fmt: skip
     if cves:
-        try:
-            scores, epss_source = _epss(cves, transport)
-            if scores and "date" in epss_source:
-                sources["epss"] = epss_source
-                for cve, value in scores.items():
-                    vulnerabilities.setdefault(cve, {})["epss"] = value
-        except (FeedError, TransportError, ValueError) as exc:
-            warnings.append(f"EPSS left out: {exc}")
+        kev_read = False
         try:
             listed, kev_source = _kev(set(cves), transport)
             sources["kev"] = kev_source
             for cve, added in listed.items():
                 vulnerabilities.setdefault(cve, {})["kev"] = {"date_added": added}
-        except (FeedError, TransportError, ValueError) as exc:
+            kev_read = True
+        except FEED_FAILURES as exc:
             warnings.append(f"KEV left out: {exc}")
+        if not kev_read:
+            warnings.append(
+                "EPSS left out: without KEV, EPSS alone would lower the risk of a listed vulnerability"
+            )
+        else:
+            try:
+                scores, epss_source = _epss(cves, transport)
+                if scores and "date" in epss_source:
+                    sources["epss"] = epss_source
+                    for cve, value in scores.items():
+                        vulnerabilities.setdefault(cve, {})["epss"] = value
+            except FEED_FAILURES as exc:
+                warnings.append(f"EPSS left out: {exc}")
 
     document = {
         "schema_version": "1.0",
