@@ -11,7 +11,7 @@ from jsonschema import Draft202012Validator
 from typer.testing import CliRunner
 
 from sentinelci.cli import app
-from sentinelci.contracts.finding import Run, Tool
+from sentinelci.contracts.finding import Location, Run, Tool
 from sentinelci.normalize.errors import NormalizationError
 from sentinelci.normalize.fingerprint import secret_fingerprint
 from sentinelci.normalize.gitleaks import load_gitleaks_report, normalize_gitleaks
@@ -61,6 +61,47 @@ def test_same_secret_in_two_files_is_one_finding() -> None:
     # Canonical location is the first one in a stable (path, line) order.
     assert api_key.location is not None
     assert api_key.location.path == "demo-shop/services/shop-api/app/config.py"
+
+
+def test_other_places_of_the_same_secret_are_listed_as_other_locations() -> None:
+    findings = normalize_gitleaks(_report(), run=RUN, tool=TOOL)
+    api_key = next(f for f in findings if f.rule_id == "generic-api-key")
+    assert api_key.schema_version == "1.1"
+    assert api_key.other_locations == [
+        Location(path="demo-shop/services/web/.env.example", start_line=3, end_line=3)
+    ]
+
+
+def test_secret_seen_in_one_place_stays_finding_1_0() -> None:
+    findings = normalize_gitleaks(_report(), run=RUN, tool=TOOL)
+    key = next(f for f in findings if f.rule_id == "private-key")
+    assert (key.schema_version, key.other_locations) == ("1.0", None)
+
+
+def test_same_place_in_several_commits_is_one_location() -> None:
+    # Git mode reports a secret once per commit that touches it; the place is still one place.
+    first = _report()[0]
+    report = [{**first, "Commit": c} for c in ("a" * 40, "b" * 40, "")]
+    (finding,) = normalize_gitleaks(report, run=RUN, tool=TOOL)
+    assert (finding.schema_version, finding.other_locations) == ("1.0", None)
+
+
+def test_every_other_location_is_kept_sorted_and_unique() -> None:
+    first = _report()[0]
+    places = [("b.py", 9), ("a.py", 30), ("b.py", 2), ("a.py", 30), ("a.py", 4)] + [
+        (f"many/{i:03}.py", 1) for i in range(200)
+    ]
+    report = [{**first, "File": p, "StartLine": n, "EndLine": n} for p, n in places]
+    random.Random(3).shuffle(report)
+    (finding,) = normalize_gitleaks(report, run=RUN, tool=TOOL)
+    assert finding.location == Location(path="a.py", start_line=4, end_line=4)
+    assert finding.other_locations is not None
+    assert [(o.path, o.start_line) for o in finding.other_locations] == [
+        ("a.py", 30),
+        ("b.py", 2),
+        ("b.py", 9),
+        *[(f"many/{i:03}.py", 1) for i in range(200)],
+    ]
 
 
 def test_raw_secret_and_author_data_never_leave_the_normalizer() -> None:

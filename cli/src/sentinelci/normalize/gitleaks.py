@@ -79,7 +79,11 @@ def normalize_gitleaks(
     tool: Tool,
     repo_root: Path | None = None,
 ) -> list[Finding]:
-    """Convert a Gitleaks report into one Finding per distinct (rule, secret) pair."""
+    """Convert a Gitleaks report into one Finding per distinct (rule, secret) pair.
+
+    The first place by (path, line) is `location`; every other distinct place goes to `other_locations`
+    (Finding 1.1), so diff-aware PR mode can see a known secret copied to a new file.
+    """
     occurrences: dict[str, list[tuple[str, int, int, Mapping[str, Any]]]] = defaultdict(list)
     for index, item in enumerate(report):
         _validate(item, index)
@@ -91,8 +95,11 @@ def normalize_gitleaks(
 
     findings: list[Finding] = []
     for fingerprint, hits in occurrences.items():
-        hits.sort(key=lambda hit: (hit[0], hit[1], str(hit[3].get("Commit") or "")))
+        hits.sort(key=lambda hit: (hit[0], hit[1], hit[2], str(hit[3].get("Commit") or "")))
         path, start, end, item = hits[0]
+        # Git mode reports a place once per commit that touches it: keep each place once, in order.
+        distinct = list(dict.fromkeys((p, s, e) for p, s, e, _ in hits))
+        others = [Location(path=p, start_line=s, end_line=e) for p, s, e in distinct[1:]]
         secret = str(item["Secret"])
         rule_id = str(item["RuleID"])
 
@@ -106,6 +113,7 @@ def normalize_gitleaks(
 
         findings.append(
             Finding(
+                schema_version="1.1" if others else "1.0",
                 id=fingerprint,
                 tool=tool,
                 rule_id=rule_id,
@@ -116,6 +124,7 @@ def normalize_gitleaks(
                 severity_source="none",
                 cwe=[HARDCODED_CREDENTIALS_CWE],
                 location=Location(path=path, start_line=start, end_line=end),
+                other_locations=others or None,
                 evidence=Evidence(
                     snippet=_redact(str(item.get("Match") or ""), secret) or None,
                     secret_hash=sha256_hex(secret),
