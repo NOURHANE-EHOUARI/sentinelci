@@ -11,9 +11,11 @@ from sentinelci.enrich.models import (
     load_service_context,
     load_snapshot,
 )
+from sentinelci.enrich.reachability import Reachability
 
 __all__ = [
     "EnrichmentError",
+    "Reachability",
     "ServiceContext",
     "Snapshot",
     "enrich_finding",

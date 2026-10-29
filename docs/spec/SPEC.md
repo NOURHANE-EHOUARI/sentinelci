@@ -209,6 +209,15 @@ feed out with a warning, never a partial feed. `--record` / `--offline` capture 
 offline fixtures. The NVD fallback for CVSS is not implemented yet: an id without a 3.x vector in OSV keeps an
 unknown CVSS, which the risk engine counts as the worst case.
 
+Reachability (B2, `sentinel enrich --source`): static import analysis of the scanned tree for PyPI and npm
+packages, never executing it. `imported` when first-party code imports the package; `not_imported` only with
+every proof (a direct runtime dependency that a lockfile shows no other package depends on, a reviewed import
+name, not a package used without an import, named nowhere but in dependency declarations, and a complete
+analysis of that language); `unknown` otherwise; absent for other ecosystems. In PR mode the base and the head
+are both analysed and the most reachable answer wins, so a change cannot lower its own reachability.
+`reachable` would need call-graph analysis, a stretch goal (§16). Residual risk: static analysis can be evaded by
+deliberately obfuscated code; the proofs make an honest mistake unlikely, not a determined author impossible.
+
 ### 6.2 Risk model
 
 `risk = 100 × S × E × X × R` clamped to [0, 100]. For CVEs: `E = 1.0` if KEV-listed else

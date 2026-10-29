@@ -40,7 +40,8 @@ uv run sentinel snapshot --findings out/findings.ndjson --out out/enrichment-sna
 
 ```bash
 uv run sentinel enrich --findings out/findings.ndjson --snapshot out/enrichment-snapshot.json \
-  --config sentinel.yaml --out out/findings.enriched.ndjson
+  --config sentinel.yaml --source . --out out/findings.enriched.ndjson
+# PR mode: --source <base checkout> --source <head checkout>
 ```
 
 - Offline: applies an enrichment snapshot (`schemas/enrichment-snapshot.v1.json`) and the service context
@@ -53,6 +54,19 @@ uv run sentinel enrich --findings out/findings.ndjson --snapshot out/enrichment-
 - Unknown stays absent; the risk engine treats absent as the worst case. Without `--snapshot` or `--config`,
   nothing from that source is added.
 - Read `sentinel.yaml` from the base branch in PR mode: a change must not lower its own exposure.
+- `--source DIR` (repeatable) adds `reachability` to PyPI and npm package findings by static import analysis
+  (`enrich/reachability.py`). The tree is only read: nothing in it is run, imported or installed, and symlinks
+  are never followed.
+  - `imported`: first-party code imports the package (Python AST; JS/TS `import`, `export ... from`,
+    literal `require()` and `import()`).
+  - `not_imported` only with proof: a direct runtime dependency, locked (package-lock.json v2/v3, uv.lock,
+    poetry.lock or a pip-compile annotated requirements.txt) with no other locked package depending on it, a
+    certain import name (PyPI: `enrich/import_names.py`, reviewed), not a package used without an import, its
+    names absent from every file but the dependency declarations, and a complete analysis (no computed import,
+    exec/eval, createRequire, entry-point plugins, symlink, unparsable file or limit reached).
+  - `unknown` otherwise; other ecosystems and OS packages stay absent (worst case).
+  - With several trees the most reachable answer wins: in PR mode pass the base and the head, so a change
+    cannot lower the reachability of its own dependencies.
 - Fail closed: an invalid snapshot, `sentinel.yaml` or findings file writes nothing and exits 3.
 
 ## `sentinel evaluate` (release gate, B4)

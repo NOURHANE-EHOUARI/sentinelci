@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import tempfile
+from collections import Counter
 from pathlib import Path
 from typing import Annotated
 
@@ -21,7 +22,13 @@ import typer
 
 from sentinelci import __version__
 from sentinelci.contracts.finding import Finding, Run, RunContext, Tool
-from sentinelci.enrich import EnrichmentError, enrich_finding, load_service_context, load_snapshot
+from sentinelci.enrich import (
+    EnrichmentError,
+    Reachability,
+    enrich_finding,
+    load_service_context,
+    load_snapshot,
+)
 from sentinelci.enrich.fetch import build_snapshot, dumps_snapshot
 from sentinelci.enrich.transport import (
     DEFAULT_TIMEOUT_S,
@@ -177,6 +184,13 @@ def enrich_command(
             help="Service context, sentinel.yaml (schemas/sentinel-config.v1.json), from the base branch."
         ),
     ] = None,
+    source: Annotated[
+        list[Path] | None,
+        typer.Option(
+            help="Source tree for reachability (repeatable; PR mode: the base and the head checkouts). "
+            "Never run, only read."
+        ),
+    ] = None,
 ) -> None:
     """Add CVSS, EPSS, KEV, fix availability and exposure to findings, offline (SPEC section 6.1).
 
@@ -189,8 +203,9 @@ def enrich_command(
     try:
         data = load_snapshot(snapshot.read_bytes()) if snapshot else load_snapshot(EMPTY_SNAPSHOT)
         context = load_service_context(config.read_bytes()) if config else None
+        reachability = Reachability.of_trees(source) if source else None
         enriched = [
-            Finding.model_validate(enrich_finding(f, data, context))
+            Finding.model_validate(enrich_finding(f, data, context, reachability))
             for f in load_findings(findings.read_bytes())
         ]
     except (EnrichmentError, EvaluationError, OSError, ValueError) as exc:
@@ -202,6 +217,11 @@ def enrich_command(
         f"{len(enriched)} finding(s) enriched (sources: {', '.join(sources)}; "
         f"service context: {'yes' if context else 'no'}) -> {out}"
     )
+    if reachability is not None:
+        counts = Counter((f.enrichment or {}).get("reachability") for f in enriched)
+        typer.echo(
+            "reachability: " + ", ".join(f"{counts[v]} {v}" for v in ("imported", "unknown", "not_imported"))
+        )
 
 
 @app.command("evaluate")

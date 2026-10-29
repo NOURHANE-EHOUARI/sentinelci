@@ -159,10 +159,10 @@ def test_components_override_the_exposure_by_path(path: str, exposure: str) -> N
     assert enrichment(finding, context=context)["exposure"] == exposure
 
 
-def test_other_enrichment_is_kept_and_enriching_twice_changes_nothing() -> None:
+def test_earlier_enrichment_is_replaced_and_enriching_twice_changes_nothing() -> None:
     finding = {**SCA, "enrichment": {"reachability": "not_imported", "exposure": "offline"}}
     once = enrich_finding(finding, load_snapshot(FULL), SITE)
-    assert once["enrichment"]["reachability"] == "not_imported"
+    assert "reachability" not in once["enrichment"]  # no source tree given: a stale value is never kept
     assert once["enrichment"]["exposure"] == "internet-facing"  # the service context wins
     assert enrich_finding(once, load_snapshot(FULL), SITE) == once
     assert {k: v for k, v in once.items() if k != "enrichment"} == {
