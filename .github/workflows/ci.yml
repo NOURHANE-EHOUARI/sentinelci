@@ -54,9 +54,10 @@ jobs:
       - name: Policies (format, strict compile, unit tests, coverage >= 90%)
         run: make policy
 
-      - name: Tests (including JSON Schema contracts)
+      - name: Tests (including JSON Schema contracts and Compose invariants)
         env:
           SENTINEL_REQUIRE_OPA: "1"
+          SENTINEL_REQUIRE_DOCKER: "1"
         run: uv run pytest
 
   workflow-security:
