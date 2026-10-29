@@ -3,7 +3,8 @@
 The policy engine (B4) produces decisions; this model is how the rest of the pipeline reads them (PR comment,
 attestation, verification). It mirrors every rule of the JSON Schema, including verdict consistency, so a
 malformed or tampered record is rejected instead of being reported as a PASS. Minor versions only add fields:
-1.1 requires `inputs.waivers_digest`, 1.0 must not have it.
+1.1 requires `inputs.waivers_digest`; 1.2 may also record `baseline_digest` and `tool_status_digest`; an older
+version must not carry a field a later one introduced.
 """
 
 import re
@@ -57,6 +58,8 @@ class Inputs(_Contract):
     tool_versions: dict[str, str] = Field(min_length=1)
     sbom_digest: str | None = Field(default=None, pattern=_PREFIXED_SHA256)
     waivers_digest: str | None = Field(default=None, pattern=_PREFIXED_SHA256)
+    baseline_digest: str | None = Field(default=None, pattern=_PREFIXED_SHA256)
+    tool_status_digest: str | None = Field(default=None, pattern=_PREFIXED_SHA256)
 
     @field_validator("tool_versions")
     @classmethod
@@ -67,7 +70,7 @@ class Inputs(_Contract):
 
 
 class Decision(_Contract):
-    schema_version: Literal["1.0", "1.1"]
+    schema_version: Literal["1.0", "1.1", "1.2"]
     decision_id: str
     evaluated_at: str
     subject: Subject
@@ -111,6 +114,11 @@ class Decision(_Contract):
         if self.verdict == "PASS" and self.violations:
             raise ValueError("a PASS verdict cannot have violations")
         has_waivers_digest = self.inputs.waivers_digest is not None
-        if (self.schema_version == "1.1") != has_waivers_digest:
+        if (self.schema_version != "1.0") != has_waivers_digest:
             raise ValueError("inputs.waivers_digest is required from schema 1.1 and absent in 1.0")
+        new_inputs = (self.inputs.baseline_digest, self.inputs.tool_status_digest)
+        if self.schema_version != "1.2" and any(digest is not None for digest in new_inputs):
+            raise ValueError(
+                "inputs.baseline_digest and inputs.tool_status_digest exist only from schema 1.2"
+            )
         return self
