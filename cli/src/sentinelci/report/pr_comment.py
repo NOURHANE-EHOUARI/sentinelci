@@ -17,7 +17,7 @@ import re
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from pydantic import ValidationError
 
@@ -28,6 +28,7 @@ from sentinelci.report.markdown import code
 MARKER = "<!-- sentinelci:pr-comment -->"
 MAX_ROWS = 50
 MAX_PIPELINE_CHANGES = 20
+WAIVER_FILES = frozenset({"waivers.yaml", "waivers.yml"})
 SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")
 PRIORITIES = ("P0", "P1", "P2", "P3", "P4")
 _VERDICT_BADGE = {"BLOCK": "🛑 BLOCK", "WARN": "⚠️ WARN", "PASS": "✅ PASS"}
@@ -184,8 +185,14 @@ def render_pr_comment(inputs: ReportInputs) -> str:
             "> "
             + " · ".join(code(path, in_table=False) for path in shown)
             + (f" and {more} more" if more else ""),
-            "",
         ]
+        if any(PurePosixPath(path).name in WAIVER_FILES for path in inputs.pipeline_changes):
+            lines += [
+                ">",
+                "> Waiver changes also take effect only after merge: a pull request cannot waive its own",
+                "> findings. Merge the waiver on its own first, then re-run this check.",
+            ]
+        lines.append("")
 
     rows = _rows(decision.violations, findings)
     if rows:

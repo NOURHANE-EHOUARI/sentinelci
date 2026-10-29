@@ -4,7 +4,10 @@
 > [!WARNING]
 > This pull request changes SentinelCI's own pipeline. This run used the pipeline of the base
 > branch: the changes below take effect only after merge, so review them with care.
-> `policies/gate.rego` · `tools.lock.toml`
+> `.sentinel/waivers.yaml` · `policies/gate.rego` · `tools.lock.toml`
+>
+> Waiver changes also take effect only after merge: a pull request cannot waive its own
+> findings. Merge the waiver on its own first, then re-run this check.
 
 | Rule | Effect | Issue | Finding | Location | Severity |
 |---|---|---|---|---|---|

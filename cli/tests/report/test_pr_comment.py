@@ -122,7 +122,9 @@ def block_case(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     baseline = tmp_path / "baseline.ndjson"
     baseline.write_text(dumps_ndjson([findings[2]]), encoding="utf-8", newline="\n")
     changes = tmp_path / "changes.txt"
-    changes.write_text("tools.lock.toml\npolicies/gate.rego\n\ntools.lock.toml\n", encoding="utf-8")
+    changes.write_text(
+        "tools.lock.toml\npolicies/gate.rego\n\ntools.lock.toml\n.sentinel/waivers.yaml\n", encoding="utf-8"
+    )
     return decision_path, findings_path, baseline, changes
 
 
@@ -130,6 +132,17 @@ def test_golden_block(tmp_path: Path) -> None:
     decision, findings, baseline, changes = block_case(tmp_path)
     inputs = load_inputs(decision, findings, baseline_path=baseline, pipeline_changes_path=changes)
     check_golden("block.md", render_pr_comment(inputs))
+
+
+def test_waiver_warning_appears_only_when_the_waivers_file_changes(tmp_path: Path) -> None:
+    decision, findings, _ = write_case(tmp_path, [])
+    changes = tmp_path / "changes.txt"
+    changes.write_text("policies/gate.rego\n", encoding="utf-8")
+    without = render_pr_comment(load_inputs(decision, findings, pipeline_changes_path=changes))
+    changes.write_text("policies/gate.rego\n.sentinel/waivers.yaml\n", encoding="utf-8")
+    with_waivers = render_pr_comment(load_inputs(decision, findings, pipeline_changes_path=changes))
+    assert "cannot waive its own" not in without
+    assert "cannot waive its own" in with_waivers
 
 
 def test_golden_pass_without_findings(tmp_path: Path) -> None:
