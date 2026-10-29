@@ -241,7 +241,7 @@ priority_bands: {P0: 70, P1: 50, P2: 30, P3: 10}   # below 10 -> P4
 |---|---|---|
 | SC-001 | BLOCK | Secret detected (new in PR, or anywhere in a release image), not waived |
 | SC-002 | BLOCK | Any P0 finding without valid waiver |
-| SC-003 | BLOCK | KEV-listed vulnerability with a fix, internet-facing service |
+| SC-003 | BLOCK | KEV-listed vulnerability with a fix, internet-facing service (an unknown exposure counts as internet-facing) |
 | SC-004 | BLOCK | Release image missing signature, SBOM or provenance |
 | SC-005 | BLOCK | Invalid waiver (no owner / justification / expiry, or expiry > 90 days) |
 | SC-006 | WARN | P1 findings (BLOCK above threshold in strict profile) |
@@ -249,6 +249,11 @@ priority_bands: {P0: 70, P1: 50, P2: 30, P3: 10}   # below 10 -> P4
 | SC-008 | WARN | Copyleft licence in a distributed component |
 | SC-009 | BLOCK | High-severity CI workflow issue introduced by the PR |
 | SC-010 | BLOCK | Scanner failure, timeout or tool-integrity mismatch; a required scanner (`policies/required_tools.rego`) missing from the tool status, or no tool status where one is required (`pr`, `release`); malformed gate input |
+
+Priority-based rules (SC-002, SC-006) read `risk.priority` (B3); an unscored finding counts at its worst case,
+`100 × severity_weight` banded, so CRITICAL and HIGH are P0 until scored. Each finding is reported under its most
+specific rule (SC-001, SC-003 or SC-009 before SC-002/SC-006). Waivers and diff-aware PR mode apply to every finding
+rule. Not yet implemented: SC-004 (A4 attestations), SC-007, SC-008, the strict profile and VEX.
 
 Policy rules use `input.evaluated_at`, never `time.now_ns()`. Reference implementation of the verdict logic
 (verified with OPA 1.21):
