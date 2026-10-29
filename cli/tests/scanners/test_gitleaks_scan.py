@@ -32,7 +32,7 @@ REPO_LOCK = Path(__file__).resolve().parents[3] / "tools.lock.toml"
 
 # A fake gitleaks that records its argv and writes a fixed report to --report-path.
 FAKE_GITLEAKS = r"""
-printf '%s\n' "$@" > "$SENTINEL_ARGV_FILE_PLACEHOLDER"
+printf '%s\n' "$@" "--END-OF-CALL--" >> "$SENTINEL_ARGV_FILE_PLACEHOLDER"
 while [ $# -gt 0 ]; do
   if [ "$1" = "--report-path" ]; then shift; REPORT="$1"; fi
   shift
@@ -44,6 +44,18 @@ cat > "$REPORT" <<'JSON'
   "File": "app/settings.py", "Commit": "", "Tags": []}]
 JSON
 """
+
+
+def _calls(argv_file: Path) -> list[list[str]]:
+    """Every invocation of the fake gitleaks, in order (one argv per call)."""
+    calls, current = [], []
+    for line in argv_file.read_text().splitlines():
+        if line == "--END-OF-CALL--":
+            calls.append(current)
+            current = []
+        else:
+            current.append(line)
+    return calls
 
 
 def fake_gitleaks(
@@ -69,7 +81,7 @@ def test_hardened_flags_are_always_passed(
 
     scan_secrets(repo, lock=lock, tools_dir=dest, platform=PLATFORM)
 
-    argv = argv_file.read_text().splitlines()
+    argv = _calls(argv_file)[0]
     assert argv[0] == "dir"
     config = Path(argv[argv.index("--config") + 1])
     assert not config.is_relative_to(repo), "the scanned repository must not choose the scanner config"
@@ -148,8 +160,8 @@ def test_target_outside_repo_root_is_refused(
 HARDENING = "--text --no-textconv --no-ext-diff --diff-merges=remerge"
 
 
-def _log_opts_passed(argv_file: Path) -> str:
-    argv = argv_file.read_text().splitlines()
+def _log_opts_passed(argv_file: Path, call: int = 0) -> str:
+    argv = _calls(argv_file)[call]
     return argv[argv.index("--log-opts") + 1]
 
 
@@ -179,7 +191,7 @@ def test_git_mode_always_forces_text_patches(
 
     scan_secrets(repo, lock=lock, tools_dir=dest, platform=PLATFORM, mode="git", log_opts=log_opts)
 
-    assert argv_file.read_text().splitlines()[0] == "git"
+    assert [call[0] for call in _calls(argv_file)] == ["git", "git"]
     assert _log_opts_passed(argv_file) == expected
 
 
@@ -228,33 +240,60 @@ def test_archives_are_opened_in_dir_mode_only(
     repo.mkdir()
 
     scan_secrets(repo, lock=lock, tools_dir=dest, platform=PLATFORM)
-    dir_argv = argv_file.read_text().splitlines()
+    dir_argv = _calls(argv_file)[-1]
     scan_secrets(repo, lock=lock, tools_dir=dest, platform=PLATFORM, mode="git")
-    git_argv = argv_file.read_text().splitlines()
+    git_argv = _calls(argv_file)[-1]
 
     assert dir_argv[dir_argv.index("--max-archive-depth") + 1] == str(MAX_ARCHIVE_DEPTH)
     assert "--max-archive-depth" not in git_argv
 
 
 @pytest.mark.parametrize(
-    ("existing", "reported", "expected"),
+    ("tree", "reported", "expected"),
     [
         (["settings.py"], "b/settings.py", "settings.py"),  # conflicted file of a remerge diff
-        (["b/settings.py", "settings.py"], "b/settings.py", "b/settings.py"),  # a real b/ directory wins
-        ([], "b/settings.py", "b/settings.py"),  # nothing to map it to: left as reported
+        (["b/settings.py", "settings.py"], "b/settings.py", "b/settings.py"),  # a real b/ file wins
+        (["b/settings.py"], "b/settings.py", "b/settings.py"),  # a real b/ file, nothing else
+        (["other.py"], "b/settings.py", "b/settings.py"),  # nothing to map it to: left as reported
         (["app/b/x.py", "app/x.py"], "app/b/x.py", "app/b/x.py"),  # only a leading b/ is considered
         (["x.py"], "x.py", "x.py"),
     ],
 )
-def test_remerge_paths_are_repaired_only_when_unambiguous(
-    tmp_path: Path, existing: list[str], reported: str, expected: str
+def test_remerge_paths_are_repaired_only_when_the_commit_tree_says_so(
+    tmp_path: Path, tree: list[str], reported: str, expected: str
 ) -> None:
-    for name in existing:
-        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
-        (tmp_path / name).write_text("x\n")
-    findings: list[dict[str, Any]] = [{"File": reported}]
-    _repair_remerge_paths(findings, tmp_path)
+    repo = _Repo(tmp_path / "repo")
+    commit = repo.commit(dict.fromkeys(tree, "x\n"), "tree")
+    findings: list[dict[str, Any]] = [{"File": reported, "Commit": commit}]
+    _repair_remerge_paths(findings, repo.path)
     assert findings[0]["File"] == expected
+
+
+@pytest.mark.parametrize("commit", [None, "", "not-a-sha", "a" * 39, "-x"])
+def test_remerge_paths_without_a_valid_commit_are_left_alone(tmp_path: Path, commit: str | None) -> None:
+    repo = _Repo(tmp_path / "repo")
+    repo.commit({"settings.py": "x\n"}, "tree")
+    findings: list[dict[str, Any]] = [{"File": "b/settings.py", "Commit": commit}]
+    _repair_remerge_paths(findings, repo.path)
+    assert findings[0]["File"] == "b/settings.py"
+
+
+def test_git_mode_runs_a_second_pass_for_octopus_merges(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
+) -> None:
+    # git's remerge mode only re-creates two-parent merges; merges with 3+ parents get their own pass.
+    lock, dest, argv_file, _ = fake_gitleaks(tmp_path, releases, write_lock)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    raw = scan_secrets(repo, lock=lock, tools_dir=dest, platform=PLATFORM, mode="git", log_opts="a..b -- src")
+
+    first, second = _log_opts_passed(argv_file, 0), _log_opts_passed(argv_file, 1)
+    assert "--min-parents" not in first
+    assert second == f"{HARDENING} --min-parents=3 --diff-merges=first-parent --diff-filter=tuxdb a..b -- src"
+    report_paths = [call[call.index("--report-path") + 1] for call in _calls(argv_file)]
+    assert len(set(report_paths)) == 2, "each pass writes its own report"
+    assert len(raw) == 2, "findings of both passes are kept (the normalizer folds duplicates)"
 
 
 def test_log_options_are_refused_in_dir_mode(
@@ -474,6 +513,7 @@ class _Repo:
 
     def commit(self, files: dict[str, str], message: str) -> str:
         for name, content in files.items():
+            (self.path / name).parent.mkdir(parents=True, exist_ok=True)
             (self.path / name).write_text(content)
         self.git("add", ".")
         self.git("commit", "-qm", message)
@@ -565,3 +605,35 @@ def test_real_gitleaks_opens_archives_in_dir_mode(tmp_path: Path) -> None:
     )
     assert findings[0].location is not None
     assert findings[0].location.path == "backup.zip!old/config.py"
+
+
+@real
+@pytest.mark.integration
+def test_real_gitleaks_scans_secrets_added_in_an_octopus_merge(tmp_path: Path) -> None:
+    # Found by Hiba in the review of #4: remerge prints no patch for a merge with 3+ parents.
+    repo = _Repo(tmp_path / "repo")
+    base = repo.commit({"app.py": "a\n"}, "base")
+    for branch in ("x", "y"):
+        repo.git("checkout", "-q", "-b", branch, base)
+        repo.commit({f"{branch}.py": f"{branch}\n"}, branch)
+    repo.git("checkout", "-q", "-b", "feature", base)
+    repo.commit({"feature.py": "f\n"}, "feature")
+    repo.git("merge", "-q", "--no-ff", "--no-commit", "x", "y")
+    repo.commit({"config.py": f'TOKEN = "{_fake_github_token(9)}"\n'}, "octopus")
+    assert len(repo.git("log", "-1", "--format=%P").split()) == 3
+
+    assert _real_scan(repo, f"{base}..HEAD") == [("config.py", 1)]
+    assert _real_scan(repo) == [("config.py", 1)]
+
+
+@real
+@pytest.mark.integration
+def test_real_gitleaks_keeps_the_name_of_a_real_b_directory(tmp_path: Path) -> None:
+    # A real b/settings.py with a secret, deleted later, while settings.py exists: not renamed (Hiba, #4).
+    repo = _Repo(tmp_path / "repo")
+    base = repo.commit({"settings.py": "value = 1\n"}, "base")
+    repo.commit({"b/settings.py": f'TOKEN = "{_fake_github_token(10)}"\n'}, "add b/")
+    repo.git("rm", "-q", "b/settings.py")
+    repo.git("commit", "-qm", "remove b/")
+
+    assert _real_scan(repo, f"{base}..HEAD") == [("b/settings.py", 1)]
