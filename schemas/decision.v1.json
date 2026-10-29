@@ -10,7 +10,10 @@
     "violations", "waivers_applied", "inputs", "engine_version"
   ],
   "properties": {
-    "schema_version": { "const": "1.0" },
+    "schema_version": {
+      "description": "Minor versions only add; older documents stay valid. 1.1 adds inputs.waivers_digest (required from 1.1). 1.2 adds inputs.baseline_digest and inputs.tool_status_digest (each present when that input was given).",
+      "enum": ["1.0", "1.1", "1.2"]
+    },
     "decision_id": { "type": "string", "format": "uuid" },
     "evaluated_at": {
       "description": "Passed into the policy as input.evaluated_at. Policies never read the clock, so replay is exact.",
@@ -58,6 +61,18 @@
         "sbom_digest": { "$ref": "#/$defs/prefixed_sha256" },
         "enrichment_snapshot_digest": { "$ref": "#/$defs/prefixed_sha256" },
         "policy_bundle_digest": { "$ref": "#/$defs/prefixed_sha256" },
+        "baseline_digest": {
+          "description": "Digest of the base-branch findings (Finding v1 NDJSON) used for diff-aware PR mode, as read. Since 1.2.",
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "tool_status_digest": {
+          "description": "Digest of the tool status document (schemas/tool-status.v1.json), as read. Since 1.2.",
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "waivers_digest": {
+          "description": "Digest of the waivers file as read (schemas/waivers.v1.json); sha256 of empty content when there is none. Since 1.1.",
+          "$ref": "#/$defs/prefixed_sha256"
+        },
         "risk_model_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
         "tool_versions": {
           "type": "object",
@@ -69,6 +84,33 @@
     "engine_version": { "type": "string", "minLength": 1 }
   },
   "allOf": [
+    {
+      "if": { "properties": { "schema_version": { "const": "1.0" } } },
+      "then": {
+        "properties": {
+          "inputs": {
+            "not": { "anyOf": [
+              { "required": ["waivers_digest"] }, { "required": ["baseline_digest"] }, { "required": ["tool_status_digest"] }
+            ] }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "schema_version": { "const": "1.1" } } },
+      "then": {
+        "properties": {
+          "inputs": {
+            "required": ["waivers_digest"],
+            "not": { "anyOf": [{ "required": ["baseline_digest"] }, { "required": ["tool_status_digest"] }] }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "schema_version": { "const": "1.2" } } },
+      "then": { "properties": { "inputs": { "required": ["waivers_digest"] } } }
+    },
     {
       "if": { "properties": { "verdict": { "const": "BLOCK" } } },
       "then": { "properties": { "violations": { "contains": { "properties": { "effect": { "const": "BLOCK" } } } } } }

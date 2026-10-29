@@ -44,8 +44,19 @@ jobs:
       - name: Architecture contract (deterministic decides, AI advises)
         run: uv run lint-imports
 
+      # OPA comes from tools.lock.toml like every security tool: `sentinel tools install` checks the release
+      # asset's SHA-256 before installing it and fails closed on a mismatch (principle P2, rule SC-010).
+      - name: Install OPA (tools.lock.toml, hash-verified)
+        run: |
+          uv run sentinel tools install opa --dest "$RUNNER_TEMP/sentinel-tools"
+          echo "SENTINEL_OPA=$RUNNER_TEMP/sentinel-tools/bin/opa" >> "$GITHUB_ENV"
+
+      - name: Policies (format, strict compile, unit tests, coverage >= 90%)
+        run: make policy
+
       - name: Tests (including JSON Schema contracts and Compose invariants)
         env:
+          SENTINEL_REQUIRE_OPA: "1"
           SENTINEL_REQUIRE_DOCKER: "1"
         run: uv run pytest
 

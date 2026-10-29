@@ -182,7 +182,9 @@ remerge does not diff, get a second `first-parent` pass. Dir mode opens archives
 the pipeline (CLI, `tools.lock.toml`, policies, waivers) at the **base** commit and the change only as data to
 scan; tools live in `$RUNNER_TEMP` (ADR-0008).
 
-**PR mode (diff-aware):** only findings new to the PR (fingerprints not in the base-branch baseline) can block.
+**PR mode (diff-aware):** only findings new to the PR (fingerprints not in the base-branch baseline) can block. A known
+secret also counts as new in a file where the base did not have it (every place counts: `location` plus
+`other_locations`, Finding 1.1).
 **Release mode:** full evaluation, then signing. In this single repo, `demo-shop/` is scanned by its own workflow
 calling `./.github/workflows/sentinel-scan.yml`; the self-scan of SentinelCI excludes `demo-shop/`.
 
@@ -247,7 +249,7 @@ priority_bands: {P0: 70, P1: 50, P2: 30, P3: 10}   # below 10 -> P4
 | SC-007 | WARN | Base image not pinned by digest, or container runs as root |
 | SC-008 | WARN | Copyleft licence in a distributed component |
 | SC-009 | BLOCK | High-severity CI workflow issue introduced by the PR |
-| SC-010 | BLOCK | Scanner failure, timeout or tool-integrity mismatch |
+| SC-010 | BLOCK | Scanner failure, timeout or tool-integrity mismatch; a required scanner (`policies/required_tools.rego`) missing from the tool status, or no tool status where one is required (`pr`, `release`); malformed gate input |
 
 Policy rules use `input.evaluated_at`, never `time.now_ns()`. Reference implementation of the verdict logic
 (verified with OPA 1.21):
@@ -287,11 +289,29 @@ draft a waiver PR; only a human approval makes it effective.
 
 Schema: `schemas/decision.v1.json`. Fields: `decision_id`, `evaluated_at`, `subject` (repo, ref, commit, image
 digest, context), `verdict`, `violations` (rule, effect, finding ids, message), `waivers_applied`, `inputs`
-(digests of findings, SBOM, enrichment snapshot, policy bundle; risk model version; tool versions),
+(digests of findings, SBOM, enrichment snapshot, policy bundle, waivers file (since 1.1), base-branch findings
+baseline and tool status (since 1.2, when given); risk model version;
+tool versions),
 `engine_version`. The schema enforces verdict consistency (BLOCK ⇒ at least one BLOCK violation; PASS ⇒ none).
 Attached to the image as an in-toto attestation, predicate type
 `https://github.com/NOURHANE-EHOUARI/sentinelci/specs/release-decision/v1`. `sentinel replay` re-evaluates from
 digests and must be identical; checked nightly.
+
+**Evidence store (replay input).** Content-addressed: `sha256/<hex>` holds every input exactly as digested
+(findings, waivers, baseline, tool status, enrichment snapshot, SBOM, each policy file) and each policy bundle
+manifest (`<sha256>  <path>` per file, sorted; its digest is `policy_bundle_digest`); `decisions/<id>.json` holds
+decisions. Written by `sentinel evaluate --store`; every read is checked against its digest. `sentinel replay
+<id | file>` takes all inputs from the store, policy included, and compares the whole record (exit 0 identical,
+1 differs, 3 missing or tampered evidence). Recorded scanner versions are passed back as evidence; the OPA and
+engine versions are the running ones, so an upgrade shows up as a difference. Proposed: the evidence bundle
+(A4) and the platform evidence store (SeaweedFS, ADR-0007) carry the same `sha256/<hex>` layout, so replay works
+on either.
+
+**Nightly replay** (`.github/workflows/replay-nightly.yml`): replays the last successful night's corpus with
+today's engine (`sentinel replay --all`), then records a fresh corpus (`eval/replay/corpus.py`: fixed gate cases
+covering PASS, SC-001, SC-005 and SC-010), replays it in a fresh process and uploads it. `--all` skips decisions
+recorded with another engine or OPA version and fails on any difference, on missing evidence and on an empty
+store. Consequence: a change to what the engine decides for the same inputs must come with an engine version bump.
 
 ## 7. Supply-chain integrity and deploy-time enforcement
 
@@ -404,6 +424,12 @@ LICENSE), `title`, `severity` (CRITICAL | HIGH | MEDIUM | LOW | INFO), `run`. Co
 CONTAINER ⇒ `package` + `image`. Optional blocks `enrichment` (B2) and `risk` (B3). Paths must be relative and
 cannot contain `..`.
 
+**Several locations (1.1, additive).** One finding (one `id`) can be seen in several places, e.g. the same secret
+in two files. `location` is the first one by (path, start line); `other_locations` lists every other one, sorted
+the same way, without duplicates and never truncated. It is only allowed in a `schema_version` 1.1 finding and
+only next to `location`. A finding seen in one place may stay 1.0. Consumers that compare locations (diff-aware PR
+mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
+
 **Fingerprint rules:**
 - SCA / CONTAINER: `sha256(category | vuln id | purl base)` where *purl base* = the purl without version,
   qualifiers or subpath (same definition as `purl_base` in `policies/gate.rego`). After a bump the finding disappears; base-image point releases, other
@@ -417,6 +443,7 @@ cannot contain `..`.
 | Contract | Producer → consumer | Content |
 |---|---|---|
 | `decision.v1.json` | B4 → A4, A5, B1 | §6.5 |
+| `tool-status.v1.json` | A3 → B4 | per tool: version, hashes, status (`ok` … `not_run`), detail; any non-`ok` status → SC-010; required in `pr`/`release`, and must list every required scanner |
 | `patch-proposal.v1.json` | B6 / A6 fixers → A6 | finding ids, strategy, diff, files, rationale, model (required for `llm:code`) |
 | `verification-result.v1.json` | A6 → B1, B8 | gate outcome; VERIFIED only if every condition holds |
 | evidence bundle layout | A4 → B1 | `manifest.json` (sha256 of each file, signed) + decision, findings, snapshot, SBOMs, raw outputs |
