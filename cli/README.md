@@ -71,6 +71,9 @@ uv run sentinel replay --all --store out/evidence                # every stored 
   replay (missing or tampered evidence, malformed record, Decision 1.0).
 - Scanner versions are passed back as recorded (scanners do not run again); the OPA version is the running
   binary's, so an OPA or engine upgrade shows up as a difference.
+- Before anything else, a record's `decision_id` must be the one its own subject, `evaluated_at`, inputs and
+  `engine_version` give; an edited record cannot be replayed (exit 3), so editing a version can never turn
+  "differs" into "skipped". (A record edited *and* re-identified is caught only once decisions are signed, A4.)
 - `--all` replays every decision in the store and skips those recorded with another engine or OPA version
   (listed as `skipped`). Exit 3 if any cannot be replayed, the store holds none or nothing was compared (every
   decision skipped; `--allow-all-skipped` accepts that, as after an engine bump), else 1 if any differs.

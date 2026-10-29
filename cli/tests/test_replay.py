@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 
 from sentinelci.cli import app
 from sentinelci.policy.bundle import PolicyBundle
+from sentinelci.policy.decision import decision_id_of
 from sentinelci.policy.replay import differences
 from sentinelci.policy.store import EvidenceStore, StoreError
 
@@ -349,9 +350,23 @@ def stored(tmp_path: Path, decision_id: str) -> Path:
 
 
 def edit_stored(path: Path, edit: Any) -> None:
+    """Edit a stored decision after the fact (its decision_id no longer matches what it holds)."""
     record = json.loads(path.read_text(encoding="utf-8"))
     edit(record)
     path.write_text(json.dumps(record), encoding="utf-8")
+
+
+def as_recorded_by(tmp_path: Path, decision_id: str, edit: Any) -> str:
+    """A consistent record of another run (e.g. another engine): edited, then given its new id and file."""
+    old = stored(tmp_path, decision_id)
+    record = json.loads(old.read_text(encoding="utf-8"))
+    edit(record)
+    record["decision_id"] = decision_id_of(
+        record["subject"], record["evaluated_at"], record["inputs"], record["engine_version"]
+    )
+    old.unlink()
+    stored(tmp_path, record["decision_id"]).write_text(json.dumps(record), encoding="utf-8")
+    return str(record["decision_id"])
 
 
 def record_two(tmp_path: Path, opa_binary: Path) -> tuple[str, str]:
@@ -383,10 +398,11 @@ def test_replay_all_fails_when_one_decision_differs(tmp_path: Path, opa_binary: 
 
 def test_replay_all_fails_closed_when_evidence_is_missing(tmp_path: Path, opa_binary: Path) -> None:
     first, _ = record_two(tmp_path, opa_binary)
-    edit_stored(stored(tmp_path, first), lambda d: d["inputs"].update(sbom_digest=sha256(b"never stored")))
+    first = as_recorded_by(tmp_path, first, lambda d: d["inputs"].update(sbom_digest=sha256(b"never stored")))
     code, out = replay_all(tmp_path, opa_binary)
     assert code == 3, out
     assert f"cannot replay {first}" in out
+    assert "decision_id does not match" not in out, "a consistent record fails on the missing blob"
 
 
 @pytest.mark.parametrize(
@@ -401,18 +417,42 @@ def test_replay_all_skips_decisions_of_another_engine_or_opa(
     tmp_path: Path, opa_binary: Path, edit: Any, reason: str
 ) -> None:
     first, _ = record_two(tmp_path, opa_binary)
-    edit_stored(stored(tmp_path, first), edit)
+    first = as_recorded_by(tmp_path, first, edit)
     code, out = replay_all(tmp_path, opa_binary)
     assert code == 0, out
     assert f"skipped    {first} ({reason})" in out
     assert "1 identical, 1 skipped" in out
 
 
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda d: d.update(engine_version="0.0.1"),
+        lambda d: d["inputs"]["tool_versions"].update(opa="0.1.0"),
+        lambda d: d["inputs"].update(findings_digest=sha256(b"other findings")),
+        lambda d: d["subject"].update(commit="f" * 40),
+        lambda d: d.update(evaluated_at="2027-01-01T00:00:00Z"),
+        lambda d: d.pop("engine_version"),
+    ],
+    ids=["engine", "opa", "inputs", "subject", "time", "no-engine-version"],
+)
+def test_an_edited_record_cannot_be_skipped_nor_replayed(tmp_path: Path, opa_binary: Path, edit: Any) -> None:
+    # Nourhane's idea in the review of #13: editing engine_version turned "differs" into "skipped".
+    first, _ = record_two(tmp_path, opa_binary)
+    edit_stored(stored(tmp_path, first), edit)
+    for extra in ((), ("--allow-all-skipped",)):
+        code, out = replay_all(tmp_path, opa_binary, *extra)
+        assert code == 3, out
+        assert f"cannot replay {first}: " in out and ("does not match" in out or "lacks" in out), out
+    code, out = replay(tmp_path, opa_binary, first)
+    assert code == 3, out
+
+
 def test_replay_all_that_compared_nothing_is_not_a_success(tmp_path: Path, opa_binary: Path) -> None:
     # Found by Nourhane in the review of #13: after an engine bump, every decision is skipped.
     first, second = record_two(tmp_path, opa_binary)
     for decision_id in (first, second):
-        edit_stored(stored(tmp_path, decision_id), lambda d: d.update(engine_version="0.0.1"))
+        as_recorded_by(tmp_path, decision_id, lambda d: d.update(engine_version="0.0.1"))
 
     code, out = replay_all(tmp_path, opa_binary)
     assert code == 3, out
@@ -426,7 +466,7 @@ def test_replay_all_that_compared_nothing_is_not_a_success(tmp_path: Path, opa_b
 
 def test_allow_all_skipped_never_hides_a_difference(tmp_path: Path, opa_binary: Path) -> None:
     first, second = record_two(tmp_path, opa_binary)
-    edit_stored(stored(tmp_path, first), lambda d: d.update(engine_version="0.0.1"))
+    as_recorded_by(tmp_path, first, lambda d: d.update(engine_version="0.0.1"))
     edit_stored(stored(tmp_path, second), lambda d: d.update(verdict="BLOCK"))
     code, out = replay_all(tmp_path, opa_binary, "--allow-all-skipped")
     assert code == 1, out

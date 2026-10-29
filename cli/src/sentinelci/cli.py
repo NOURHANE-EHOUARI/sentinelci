@@ -38,7 +38,7 @@ from sentinelci.policy.decision import (
 )
 from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaError, OpaRunner
-from sentinelci.policy.replay import ReplayResult, replay, skip_reason
+from sentinelci.policy.replay import ReplayResult, check_identity, replay, skip_reason
 from sentinelci.policy.store import EvidenceStore, StoreError
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
@@ -362,6 +362,7 @@ def _replay_all(evidence: EvidenceStore, opa: Path | None, *, allow_all_skipped:
         try:
             evidence.decision_path(decision_id)  # the file name must be a decision id
             recorded = _load_record(path, decision_id)
+            check_identity(recorded)  # before skipping: a skip must not hide an edited record
             reason = skip_reason(recorded, opa_version)
             result = None if reason else _replay_record(recorded, evidence, runner)
         except _REPLAY_ERRORS as exc:
