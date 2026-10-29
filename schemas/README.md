@@ -14,5 +14,7 @@ Rules:
 - Every schema has `fixtures/<name>/valid/` and `fixtures/<name>/invalid/` examples; `tests/contracts` checks
   that valid ones pass and invalid ones fail. Add a fixture for every new rule you encode.
 - A breaking change creates a new version (`finding.v2.json`) — never edit a released version's meaning.
+- An additive change bumps the minor `schema_version` inside the same file (Finding 1.1 adds
+  `other_locations`); the schema forbids the new fields in older minor versions, so a 1.0 document keeps its meaning.
 - Schemas encode safety rules where possible (no raw secrets, no path traversal, VERIFIED only when every
   verification condition holds, verdict consistent with violations).
