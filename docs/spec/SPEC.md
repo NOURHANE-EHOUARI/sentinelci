@@ -165,7 +165,9 @@ Local CLI runs can **push** to the same ingestion API. No self-hosted runners (a
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
 (no repo code; signing key / OIDC only here) · `report` (`pull-requests: write`).
 
-**PR mode (diff-aware):** only findings new to the PR (fingerprints not in the base-branch baseline) can block.
+**PR mode (diff-aware):** only findings new to the PR (fingerprints not in the base-branch baseline) can block. A known
+secret also counts as new in a file where the base did not have it (every place counts: `location` plus
+`other_locations`, Finding 1.1).
 **Release mode:** full evaluation, then signing. In this single repo, `demo-shop/` is scanned by its own workflow
 calling `./.github/workflows/sentinel-scan.yml`; the self-scan of SentinelCI excludes `demo-shop/`.
 

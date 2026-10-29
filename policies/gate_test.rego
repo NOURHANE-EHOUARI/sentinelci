@@ -249,6 +249,40 @@ test_pr_known_secret_copied_to_another_file_blocks if {
 	v.rule == "SC-001"
 }
 
+# Finding 1.1: the same secret in several places is one finding, `location` plus `other_locations`.
+spread(f, path, others) := object.union(
+	located(f, path),
+	{"schema_version": "1.1", "other_locations": [{"path": p, "start_line": 1} | some p in others]},
+)
+
+test_pr_copy_listed_in_other_locations_blocks if {
+	head := spread(secret, "app/config.py", ["web/settings.py"])
+	d := gate.decision with input as pr_with([head], [located(secret, "app/config.py")])
+	[v] := d.violations
+	v.finding_ids == [secret.id]
+}
+
+test_pr_every_place_already_on_the_base_branch_does_not_block if {
+	both := spread(secret, "app/config.py", ["web/settings.py"])
+	gate.decision.verdict == "PASS" with input as pr_with([both], [both])
+}
+
+test_pr_place_known_only_from_base_other_locations_does_not_block if {
+	base_finding := spread(secret, "app/config.py", ["web/settings.py"])
+	head := located(secret, "web/settings.py")
+	gate.decision.verdict == "PASS" with input as pr_with([head], [base_finding])
+}
+
+test_pr_removing_a_copy_does_not_block if {
+	base_finding := spread(secret, "app/config.py", ["web/settings.py"])
+	gate.decision.verdict == "PASS" with input as pr_with([located(secret, "app/config.py")], [base_finding])
+}
+
+test_pr_new_copy_that_becomes_the_primary_location_blocks if {
+	head := spread(secret, "a/first.py", ["app/config.py"])
+	gate.decision.verdict == "BLOCK" with input as pr_with([head], [located(secret, "app/config.py")])
+}
+
 test_pr_without_baseline_counts_every_finding if {
 	i := object.union(with_findings([secret]), {"context": "pr"})
 	gate.decision.verdict == "BLOCK" with input as i

@@ -40,7 +40,8 @@ Runs the OPA policies in `policies/` and writes a Decision record (`schemas/deci
   snapshot `{}` until B2 lands) and optional SBOM; the risk
   model version; versions of every tool that reported a finding, given with `--tool-version`, and OPA.
 - `--baseline <findings.ndjson>` (base-branch findings): in `pr` context only findings the change introduces
-  can block; a known secret counts as new when it appears in another file. Release ignores the baseline.
+  can block; a known secret counts as new when it appears in another file (`location` or any of its
+  `other_locations`). Release ignores the baseline.
 - `--tool-status <json>` (`schemas/tool-status.v1.json`): every tool that is not `ok` becomes an SC-010 BLOCK in
   the decision, so a failed scan still produces a record.
 - The decision is `schema_version` 1.2 (with `baseline_digest` / `tool_status_digest`) when either option is

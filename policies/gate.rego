@@ -192,9 +192,15 @@ diff_aware if {
 	is_array(baseline)
 }
 
-baseline_paths[b.id] contains object.get(b, ["location", "path"], "") if {
+# Every file a finding was seen in: `location` plus, since Finding 1.1, `other_locations`.
+finding_paths(f) := {object.get(f, ["location", "path"], "")} | {object.get(l, "path", "") |
+	some l in object.get(f, "other_locations", [])
+}
+
+baseline_paths[b.id] contains path if {
 	diff_aware
 	some b in baseline
+	some path in finding_paths(b)
 }
 
 # What the change introduces. Without a PR baseline every finding counts (fail safe).
@@ -206,13 +212,13 @@ introduced(f) if {
 }
 
 # A known secret in a file where the base branch did not have it is a new copy. Paths, not lines, so a secret
-# that only moved down its file does not count. Finding v1 keeps one location per secret (the others are only
-# listed in `message`), so with full-tree scans a copy is seen only when it becomes the primary location; scans
-# of the change's commits (A3's PR mode) see every copy.
+# that only moved down its file does not count. Every place counts: a 1.0 finding names one, a 1.1 finding lists
+# the others in `other_locations`, so full-tree scans see a copy wherever it sorts.
 introduced(f) if {
 	diff_aware
 	f.category == "SECRET"
-	not object.get(f, ["location", "path"], "") in baseline_paths[f.id]
+	some path in finding_paths(f)
+	not path in baseline_paths[f.id]
 }
 
 # SC-001: a secret the change introduces (anywhere in release context), not waived.

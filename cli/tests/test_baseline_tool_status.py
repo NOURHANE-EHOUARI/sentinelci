@@ -17,6 +17,9 @@ ROOT = Path(__file__).resolve().parents[2]
 POLICIES = ROOT / "policies"
 FIXTURES = ROOT / "schemas" / "fixtures"
 SECRET = json.loads((FIXTURES / "finding" / "valid" / "secret-in-config.json").read_text(encoding="utf-8"))
+SECRET_IN_TWO_FILES = json.loads(
+    (FIXTURES / "finding" / "valid" / "secret-in-two-files-v1.1.json").read_text(encoding="utf-8")
+)
 TOOLS_OK = (FIXTURES / "tool-status" / "valid" / "all-ok.json").read_bytes()
 TOOLS_TIMEOUT = (FIXTURES / "tool-status" / "valid" / "one-timeout.json").read_bytes()
 COMMIT = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -147,6 +150,22 @@ def test_secret_copied_to_another_file_blocks_a_pr(tmp_path: Path, opa_binary: P
     code, out, _ = run(tmp_path, ndjson(copy), "--opa", str(opa_binary), baseline=ndjson(SECRET))
     assert code == 1, out
     assert "SC-001" in out
+
+
+def test_copy_listed_in_other_locations_blocks_a_pr(tmp_path: Path, opa_binary: Path) -> None:
+    # Finding 1.1 fixture: the same secret in config.py (twice) and in web/settings.py, one finding.
+    assert SECRET_IN_TWO_FILES["id"] == SECRET["id"]
+    code, out, output = run(
+        tmp_path, ndjson(SECRET_IN_TWO_FILES), "--opa", str(opa_binary), baseline=ndjson(SECRET)
+    )
+    assert code == 1, out
+    assert [v["rule"] for v in decision_at(output)["violations"]] == ["SC-001"]
+
+
+def test_every_place_already_on_the_base_branch_passes_a_pr(tmp_path: Path, opa_binary: Path) -> None:
+    both = ndjson(SECRET_IN_TWO_FILES)
+    code, out, _ = run(tmp_path, both, "--opa", str(opa_binary), baseline=both)
+    assert code == 0, out
 
 
 def test_release_ignores_the_baseline(tmp_path: Path, opa_binary: Path) -> None:
