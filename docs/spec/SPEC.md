@@ -171,9 +171,11 @@ neutralized (`--config`, `--ignore-gitleaks-allow`) or refused when the tool off
 `.gitattributes`, where a `-diff` or `binary` attribute would hide a file's patch, so patches are forced to text
 (`--text`, no textconv or external diff) and caller `--log-opts` are restricted to revisions, pathspecs and a few
 harmless options. Merge commits are scanned with `--diff-merges=remerge`, so a secret slipped into a merge
-(an "evil merge") is found while an honest merge of the base branch blames nobody; octopus merges, which
-remerge does not diff, get a second `first-parent` pass. Dir mode opens archives
-(`.zip`, nested up to 3 levels). Legitimate exceptions go through waivers (§6.4).
+(an "evil merge") is found while an honest merge of the base branch blames nobody (octopus merges excepted:
+remerge does not diff them, so they get a second `first-parent` pass, which also reports what the other parents
+already had; the PR baseline drops what the base branch has). Each Gitleaks pass gets the full scanner time
+limit, so git mode can take twice as long. Dir mode opens archives (`.zip`, nested up to 3 levels). Legitimate
+exceptions go through waivers (§6.4).
 
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
