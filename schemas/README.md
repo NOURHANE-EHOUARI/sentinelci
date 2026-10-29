@@ -16,5 +16,8 @@ Rules:
 - A breaking change creates a new version (`finding.v2.json`) — never edit a released version's meaning.
 - An additive change bumps the minor `schema_version` inside the same file (Finding 1.1 adds
   `other_locations`); the schema forbids the new fields in older minor versions, so a 1.0 document keeps its meaning.
+- Every `pattern` starts with `^(?![^\r\n\u2028\u2029]*[\r\n\u2028\u2029])`: no line break anywhere. Without it,
+  Python (`$` also matches before a final newline; `.` matches `\r`, U+2028, U+2029) and ECMA-262 validators (ajv)
+  disagree, e.g. on `"<64 hex>\n"`. `tests/contracts/test_patterns.py` enforces it and compares both engines.
 - Schemas encode safety rules where possible (no raw secrets, no path traversal, VERIFIED only when every
   verification condition holds, verdict consistent with violations).

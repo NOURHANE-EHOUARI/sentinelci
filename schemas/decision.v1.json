@@ -22,9 +22,9 @@
       "additionalProperties": false,
       "required": ["repo", "commit", "context"],
       "properties": {
-        "repo": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "repo": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
         "ref": { "type": "string" },
-        "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "commit": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[a-f0-9]{40}$" },
         "image_digest": { "$ref": "#/$defs/oci_digest" },
         "context": { "enum": ["pr", "release", "local"] }
       }
@@ -37,7 +37,7 @@
         "additionalProperties": false,
         "required": ["rule", "effect", "finding_ids", "message"],
         "properties": {
-          "rule": { "type": "string", "pattern": "^SC-[0-9]{3}$" },
+          "rule": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])SC-[0-9]{3}$" },
           "effect": { "enum": ["WARN", "BLOCK"] },
           "finding_ids": { "type": "array", "items": { "$ref": "#/$defs/sha256_hex" } },
           "message": { "type": "string", "minLength": 1 }
@@ -58,7 +58,7 @@
         "sbom_digest": { "$ref": "#/$defs/prefixed_sha256" },
         "enrichment_snapshot_digest": { "$ref": "#/$defs/prefixed_sha256" },
         "policy_bundle_digest": { "$ref": "#/$defs/prefixed_sha256" },
-        "risk_model_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "risk_model_version": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[0-9]+\\.[0-9]+\\.[0-9]+$" },
         "tool_versions": {
           "type": "object",
           "minProperties": 1,
@@ -90,8 +90,8 @@
     }
   ],
   "$defs": {
-    "sha256_hex": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-    "prefixed_sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
-    "oci_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+    "sha256_hex": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[a-f0-9]{64}$" },
+    "prefixed_sha256": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])sha256:[a-f0-9]{64}$" },
+    "oci_digest": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])sha256:[a-f0-9]{64}$" }
   }
 }
