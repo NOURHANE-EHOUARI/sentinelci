@@ -50,6 +50,8 @@ scan_app = typer.Typer(
     help="Run a verified scanner and write normalized Finding v1 NDJSON.", no_args_is_help=True
 )
 app.add_typer(normalize_app, name="normalize")
+policy_app = typer.Typer(help="Release-gate policy tools.", no_args_is_help=True)
+app.add_typer(policy_app, name="policy")
 app.add_typer(tools_app, name="tools")
 app.add_typer(scan_app, name="scan")
 
@@ -132,6 +134,18 @@ def evaluate_command(
             help=f"Waivers file (schemas/waivers.v1.json). Default: {DEFAULT_WAIVERS_PATH} if present."
         ),
     ] = None,
+    baseline: Annotated[
+        Path | None,
+        typer.Option(
+            help="Base-branch findings (Finding v1 NDJSON): in pr context only new findings can block."
+        ),
+    ] = None,
+    tool_status: Annotated[
+        Path | None,
+        typer.Option(
+            help="Tool status (schemas/tool-status.v1.json): any tool that is not ok blocks (SC-010)."
+        ),
+    ] = None,
     enrichment_snapshot: Annotated[Path | None, typer.Option(help="Enrichment snapshot file.")] = None,
     sbom: Annotated[Path | None, typer.Option(help="SBOM file to record by digest.")] = None,
     opa: Annotated[
@@ -155,6 +169,8 @@ def evaluate_command(
             opa=OpaRunner.locate(opa),
             tool_versions=_parse_tool_versions(tool_version or []),
             waivers_data=waivers.read_bytes() if waivers else None,
+            baseline_data=baseline.read_bytes() if baseline else None,
+            tool_status_data=tool_status.read_bytes() if tool_status else None,
             enrichment_snapshot=enrichment_snapshot.read_bytes() if enrichment_snapshot else None,
             sbom=sbom.read_bytes() if sbom else None,
         )
@@ -281,6 +297,23 @@ def tools_verify(
         _write_manifest(result, lock, report)
     for entry in result.entries:
         typer.echo(f"verified {entry.name} {entry.version} sha256={entry.binary_sha256}")
+
+
+@policy_app.command("capabilities")
+def policy_capabilities(
+    out: Annotated[Path, typer.Option("--out", "-o", help="Where to write the capabilities document.")],
+    opa: Annotated[
+        Path | None, typer.Option(help="OPA binary. Default: $SENTINEL_OPA, then opa on PATH.")
+    ] = None,
+) -> None:
+    """Write OPA's capabilities minus non-deterministic built-ins (what `evaluate` runs policies with)."""
+    try:
+        capabilities = OpaRunner.locate(opa).restricted_capabilities()
+    except OpaError as exc:
+        typer.echo(f"sentinel policy capabilities: {exc}", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    _write_atomically(out, json.dumps(capabilities, indent=2, sort_keys=True) + "\n")
+    typer.echo(f"{len(capabilities['builtins'])} built-ins allowed; written to {out}")
 
 
 # ---------------------------------------------------------------- scan

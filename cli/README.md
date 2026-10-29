@@ -28,8 +28,10 @@ Runs the OPA policies in `policies/` and writes a Decision record (`schemas/deci
   OPA missing, failing or timing out; same code as `sentinel normalize` for untrusted input). Treat `3`
   as blocked: the gate fails closed, and an older decision file at the
   output path is deleted before evaluation starts.
-- OPA is a pinned binary (version and SHA-256 in `.github/workflows/ci.yml`): pass `--opa`, set
-  `SENTINEL_OPA`, or put `opa` on `PATH`.
+- OPA is a pinned binary (`uv run sentinel tools install opa`, from `tools.lock.toml`): pass `--opa`, set
+  `SENTINEL_OPA`, or put `opa` on `PATH`. It runs with an empty environment and without non-deterministic
+  built-ins (clock, network, randomness, `opa.runtime`): a policy using one fails to compile.
+  `sentinel policy capabilities -o <file>` writes the same restriction for `opa check/test` (`make policy`).
 - `--evaluated-at` (RFC 3339, default now) is the only time the policy sees, so a decision can be replayed.
   Same inputs give a byte-identical file, including `decision_id`, which is a UUIDv5 of the subject,
   time, input digests and engine version.
@@ -37,8 +39,19 @@ Runs the OPA policies in `policies/` and writes a Decision record (`schemas/deci
   `*_test.rego`), waivers file as read (empty content when there is none), enrichment snapshot (the empty
   snapshot `{}` until B2 lands) and optional SBOM; the risk
   model version; versions of every tool that reported a finding, given with `--tool-version`, and OPA.
-- Rules implemented so far: SC-001 (secret, not waived), SC-005 (invalid waiver) and SC-010 for
-  malformed gate input.
+- `--baseline <findings.ndjson>` (base-branch findings): in `pr` context only findings the change introduces
+  can block; a known secret counts as new when it appears in another file (`location` or any of its
+  `other_locations`). Release ignores the baseline.
+- `--tool-status <json>` (`schemas/tool-status.v1.json`): every tool that is not `ok` becomes an SC-010 BLOCK in
+  the decision, so a failed scan still produces a record.
+- Required scanners (`policies/required_tools.rego`, part of the policy bundle, so read from the base branch):
+  gitleaks in `pr` and `release`, none in `local`. A required tool left out of the tool status, or no tool
+  status at all in a context that requires tools, is an SC-010 BLOCK (`Scanner missing` /
+  `Tool status missing`): a workflow that drops a scanner cannot turn its silence into a pass.
+- The decision is `schema_version` 1.2 (with `baseline_digest` / `tool_status_digest`) when either option is
+  given, 1.1 otherwise.
+- Rules implemented so far: SC-001 (secret introduced by the change, not waived), SC-005 (invalid waiver) and
+  SC-010 (scanner failure, malformed gate input).
 
 ### Waivers
 

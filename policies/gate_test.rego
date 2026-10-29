@@ -17,7 +17,16 @@ sca := {
 	"package": {"purl": "pkg:pypi/example-lib@1.2.0?arch=x86_64"},
 }
 
-base := {"evaluated_at": "2026-11-10T10:00:00Z", "findings": [], "waivers": []}
+# Every required scanner reported ok (policies/required_tools.rego): tests start from a complete pipeline.
+base := {
+	"evaluated_at": "2026-11-10T10:00:00Z",
+	"context": "release",
+	"findings": [],
+	"waivers": [],
+	"tool_status": {"schema_version": 1, "lock_sha256": "x", "tools": {"gitleaks": ok_tool}},
+}
+
+without_tool_status := object.remove(base, ["tool_status"])
 
 with_findings(fs) := object.union(base, {"findings": fs})
 
@@ -219,4 +228,166 @@ test_bad_evaluated_at_blocks_with_sc010 if {
 
 test_missing_evaluated_at_blocks_with_sc010 if {
 	gate.decision.violations[0].rule == "SC-010" with input as object.remove(base, ["evaluated_at"])
+}
+
+# ---------------------------------------------------------------- diff-aware PR mode (input.baseline)
+
+located(f, path) := object.union(f, {"location": {"path": path, "start_line": 1}})
+
+pr_with(fs, baseline) := object.union(with_findings(fs), {"context": "pr", "baseline": baseline})
+
+test_pr_secret_already_on_the_base_branch_does_not_block if {
+	d := gate.decision with input as pr_with([located(secret, "app/config.py")], [located(secret, "app/config.py")])
+	d.verdict == "PASS"
+}
+
+test_pr_secret_moving_lines_in_the_same_file_does_not_block if {
+	moved := object.union(secret, {"location": {"path": "app/config.py", "start_line": 40}})
+	gate.decision.verdict == "PASS" with input as pr_with([moved], [located(secret, "app/config.py")])
+}
+
+test_pr_new_secret_blocks if {
+	d := gate.decision with input as pr_with([located(secret, "app/config.py")], [located(other_secret, "app/old.py")])
+	[v] := d.violations
+	v.finding_ids == [secret.id]
+}
+
+test_pr_known_secret_copied_to_another_file_blocks if {
+	d := gate.decision with input as pr_with([located(secret, "web/settings.py")], [located(secret, "app/config.py")])
+	[v] := d.violations
+	v.rule == "SC-001"
+}
+
+# Finding 1.1: the same secret in several places is one finding, `location` plus `other_locations`.
+spread(f, path, others) := object.union(
+	located(f, path),
+	{"schema_version": "1.1", "other_locations": [{"path": p, "start_line": 1} | some p in others]},
+)
+
+test_pr_copy_listed_in_other_locations_blocks if {
+	head := spread(secret, "app/config.py", ["web/settings.py"])
+	d := gate.decision with input as pr_with([head], [located(secret, "app/config.py")])
+	[v] := d.violations
+	v.finding_ids == [secret.id]
+}
+
+test_pr_every_place_already_on_the_base_branch_does_not_block if {
+	both := spread(secret, "app/config.py", ["web/settings.py"])
+	gate.decision.verdict == "PASS" with input as pr_with([both], [both])
+}
+
+test_pr_place_known_only_from_base_other_locations_does_not_block if {
+	base_finding := spread(secret, "app/config.py", ["web/settings.py"])
+	head := located(secret, "web/settings.py")
+	gate.decision.verdict == "PASS" with input as pr_with([head], [base_finding])
+}
+
+test_pr_removing_a_copy_does_not_block if {
+	base_finding := spread(secret, "app/config.py", ["web/settings.py"])
+	gate.decision.verdict == "PASS" with input as pr_with([located(secret, "app/config.py")], [base_finding])
+}
+
+test_pr_new_copy_that_becomes_the_primary_location_blocks if {
+	head := spread(secret, "a/first.py", ["app/config.py"])
+	gate.decision.verdict == "BLOCK" with input as pr_with([head], [located(secret, "app/config.py")])
+}
+
+test_pr_without_baseline_counts_every_finding if {
+	i := object.union(with_findings([secret]), {"context": "pr"})
+	gate.decision.verdict == "BLOCK" with input as i
+}
+
+test_release_ignores_the_baseline if {
+	i := object.union(with_findings([located(secret, "app/config.py")]), {"baseline": [located(secret, "app/config.py")]})
+	gate.decision.verdict == "BLOCK" with input as i
+}
+
+test_empty_baseline_means_everything_is_new if {
+	gate.decision.verdict == "BLOCK" with input as pr_with([secret], [])
+}
+
+# ---------------------------------------------------------------- tool status (input.tool_status)
+
+tools(entries) := object.union(without_tool_status, {"tool_status": {"schema_version": 1, "lock_sha256": "x", "tools": entries}})
+
+ok_tool := {"version": "8.30.1", "binary_sha256": "abc", "status": "ok"}
+
+test_all_tools_ok_pass if {
+	gate.decision.verdict == "PASS" with input as tools({"gitleaks": ok_tool, "opa": ok_tool})
+}
+
+test_each_failed_tool_blocks_with_sc010 if {
+	d := gate.decision with input as tools({
+		"gitleaks": ok_tool,
+		"opengrep": {"version": "1.6.0", "status": "timeout", "detail": "opengrep timed out after 900 s"},
+		"trivy": {"version": "0.76.1", "status": "integrity_mismatch", "detail": "binary modified"},
+	})
+	d.verdict == "BLOCK"
+	d.violations == [
+		{"rule": "SC-010", "effect": "BLOCK", "finding_ids": [], "message": "Scanner failure: opengrep timeout (opengrep timed out after 900 s)"},
+		{"rule": "SC-010", "effect": "BLOCK", "finding_ids": [], "message": "Scanner failure: trivy integrity_mismatch (binary modified)"},
+	]
+}
+
+test_tool_without_status_is_not_ok if {
+	[v] := gate.decision.violations with input as tools({"gitleaks": {"version": "8.30.1"}})
+	v.message == "Scanner failure: gitleaks unknown"
+}
+
+test_local_without_tool_status_passes if {
+	gate.decision.verdict == "PASS" with input as object.union(without_tool_status, {"context": "local"})
+}
+
+test_pr_and_release_without_tool_status_block_with_sc010 if {
+	every context in ["pr", "release"] {
+		d := gate.decision with input as object.union(without_tool_status, {"context": context})
+		d.violations == [{
+			"rule": "SC-010",
+			"effect": "BLOCK",
+			"finding_ids": [],
+			"message": sprintf("Tool status missing: %s requires gitleaks", [context]),
+		}]
+	}
+}
+
+test_required_tool_absent_from_the_status_blocks_with_sc010 if {
+	[v] := gate.decision.violations with input as tools({"opa": ok_tool})
+	v == {"rule": "SC-010", "effect": "BLOCK", "finding_ids": [], "message": "Scanner missing: gitleaks (required in release)"}
+}
+
+test_local_requires_no_tool if {
+	gate.decision.verdict == "PASS" with input as object.union(tools({"opa": ok_tool}), {"context": "local"})
+}
+
+test_a_failed_required_tool_is_one_violation_not_two if {
+	[v] := gate.decision.violations with input as tools({"gitleaks": {"version": "8.30.1", "status": "failed", "detail": "exit 2"}})
+	v.message == "Scanner failure: gitleaks failed (exit 2)"
+}
+
+test_a_malformed_tool_status_is_not_also_reported_missing if {
+	every ts in [[], {"tools": {}}] {
+		[v] := gate.decision.violations with input as object.union(without_tool_status, {"tool_status": ts})
+		contains(v.message, "tool_status must hold a non-empty tools object")
+	}
+}
+
+# ---------------------------------------------------------------- SC-010 for the new inputs
+
+test_missing_or_unknown_context_blocks_with_sc010 if {
+	every i in [object.remove(base, ["context"]), object.union(base, {"context": "prod"})] {
+		d := gate.decision with input as i
+		contains(d.violations[0].message, "context must be one of pr, release, local")
+	}
+}
+
+test_malformed_baseline_blocks_with_sc010 if {
+	d := gate.decision with input as object.union(base, {"context": "pr", "baseline": "everything"})
+	contains(d.violations[0].message, "baseline must be an array")
+}
+
+test_malformed_tool_status_blocks_with_sc010 if {
+	every ts in [[], {"tools": {}}, {"tools": []}] {
+		d := gate.decision with input as object.union(without_tool_status, {"tool_status": ts})
+		contains(d.violations[0].message, "tool_status must hold a non-empty tools object")
+	}
 }

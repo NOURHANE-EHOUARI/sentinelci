@@ -28,6 +28,7 @@ from sentinelci.policy.opa import OpaError, OpaRunner, parse_eval_output
 
 ROOT = Path(__file__).resolve().parents[2]
 POLICIES = ROOT / "policies"
+TOOLS_OK = ROOT / "schemas" / "fixtures" / "tool-status" / "valid" / "all-ok.json"
 FINDING_FIXTURES = ROOT / "schemas" / "fixtures" / "finding" / "valid"
 SECRET = json.loads((FINDING_FIXTURES / "secret-in-config.json").read_text(encoding="utf-8"))
 CONTAINER = json.loads((FINDING_FIXTURES / "container-os-package.json").read_text(encoding="utf-8"))
@@ -73,6 +74,7 @@ def test_bundle_excludes_rego_tests_and_reads_risk_model_version() -> None:
     names = [p.as_posix() for p in bundle.files]
     assert "gate.rego" in names
     assert "risk-model.yaml" in names
+    assert "required_tools.rego" in names  # the required scanners are part of the recorded bundle
     assert not [n for n in names if n.endswith("_test.rego")]
     assert bundle.risk_model_version == "1.0.0"
 
@@ -93,7 +95,11 @@ def test_bundle_without_rego_is_rejected(tmp_path: Path) -> None:
         PolicyBundle.load(tmp_path / "missing")
 
 
-@pytest.mark.parametrize("content", ["version: latest\n", "version: 1\n", "- a list\n"])
+@pytest.mark.parametrize(
+    "content",
+    ["version: latest\n", "version: 1\n", "- a list\n", 'version: "1.0.0\\n"\n', "version: |\n  1.0.0\n"],
+    ids=["word", "int", "list", "trailing-newline", "block-scalar"],
+)
 def test_bundle_rejects_bad_risk_model_version(bundle_copy: Path, content: str) -> None:
     (bundle_copy / "risk-model.yaml").write_text(content, encoding="utf-8")
     with pytest.raises(BundleError):
@@ -107,6 +113,15 @@ def test_load_findings_skips_blank_lines() -> None:
     assert load_findings(ndjson(SECRET) + b"\n  \n" + ndjson(CONTAINER)) == [SECRET, CONTAINER]
 
 
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x85"])
+def test_load_findings_splits_on_newlines_only(separator: str) -> None:
+    # JSON allows these raw inside strings, and the normalizer writes ensure_ascii=False; str.splitlines()
+    # broke such a line in two, so one scanned file could leave the gate with no decision.
+    finding = {**SECRET, "title": f"Hard-coded key{separator}next to a separator"}
+    data = (json.dumps(finding, ensure_ascii=False) + "\n").encode("utf-8")
+    assert load_findings(data) == [finding]
+
+
 @pytest.mark.parametrize(
     "data",
     [
@@ -116,8 +131,9 @@ def test_load_findings_skips_blank_lines() -> None:
         b'{"id": "../../etc", "category": "SECRET"}\n',
         b'{"id": "' + b"a" * 64 + b'"}\n',
         b"\xff\xfe",
+        ndjson({**SECRET, "id": SECRET["id"] + "\n"}),
     ],
-    ids=["invalid-json", "not-object", "no-id", "bad-id", "no-category", "not-utf8"],
+    ids=["invalid-json", "not-object", "no-id", "bad-id", "no-category", "not-utf8", "id-trailing-newline"],
 )
 def test_load_findings_rejects_malformed_input(data: bytes) -> None:
     with pytest.raises(EvaluationError):
@@ -261,6 +277,9 @@ def run_evaluate(tmp_path: Path, findings: bytes, *extra: str) -> tuple[int, str
         str(POLICIES),
         "--output",
         str(output),
+        # A complete PR pipeline: every required scanner reported ok (policies/required_tools.rego).
+        "--tool-status",
+        str(TOOLS_OK),
         *extra,
     ]
     result = CliRunner().invoke(app, args)
@@ -373,12 +392,49 @@ def test_lowercase_secret_category_is_no_decision_not_pass(tmp_path: Path, opa_b
     assert not output.exists()
 
 
-def test_opa_runs_without_the_callers_environment(
-    tmp_path: Path, opa_binary: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "call",
+    ["time.now_ns()", "opa.runtime().env", 'rand.intn("x", 10)', 'http.send({"method": "get", "url": "x"})'],
+    ids=["clock", "environment", "randomness", "network"],
+)
+def test_policies_cannot_compile_non_deterministic_builtins(
+    tmp_path: Path, opa_binary: Path, call: str
 ) -> None:
-    monkeypatch.setenv("SENTINEL_TEST_JOB_SECRET", "must-not-leak")
+    # Enforces "policies never read the clock" (and the environment, the network, randomness) at compile time.
     probe = tmp_path / "probe.rego"
-    probe.write_text("package probe\n\nenv := opa.runtime().env\n", encoding="utf-8")
-    env = OpaRunner(binary=opa_binary).eval("data.probe.env", [probe], {})
-    assert "SENTINEL_TEST_JOB_SECRET" not in env
-    assert env == {}
+    probe.write_text(f"package probe\n\nvalue := {call}\n", encoding="utf-8")
+    with pytest.raises(OpaError, match="undefined function"):
+        OpaRunner(binary=opa_binary).eval("data.probe.value", [probe], {})
+
+
+def test_restricted_capabilities_keep_what_the_gate_uses(opa_binary: Path) -> None:
+    allowed = {b["name"] for b in OpaRunner(binary=opa_binary).restricted_capabilities()["builtins"]}
+    assert {"time.parse_rfc3339_ns", "regex.match", "sprintf", "object.get"} <= allowed
+    denied = {"time.now_ns", "opa.runtime", "http.send", "net.lookup_ip_addr", "rand.intn", "uuid.rfc4122"}
+    assert not denied & allowed
+    assert "crypto.x509.parse_and_verify_certificates" not in allowed
+
+
+def test_policy_capabilities_command_writes_the_document(tmp_path: Path, opa_binary: Path) -> None:
+    out = tmp_path / "caps.json"
+    result = CliRunner().invoke(app, ["policy", "capabilities", "--opa", str(opa_binary), "--out", str(out)])
+    assert result.exit_code == 0, result.output
+    names = {b["name"] for b in json.loads(out.read_text(encoding="utf-8"))["builtins"]}
+    assert "time.now_ns" not in names
+    assert "time.parse_rfc3339_ns" in names
+
+
+# Python's `$` also matches before a final newline: every identifier check must match the whole string.
+@pytest.mark.parametrize(
+    "field",
+    [
+        {"repo": "NOURHANE-EHOUARI/sentinelci\n"},
+        {"commit": "4b825dc642cb6eb9a060e54bf8d69288fbee4904\n"},
+        {"image_digest": "sha256:" + "a" * 64 + "\n"},
+    ],
+    ids=["repo", "commit", "image-digest"],
+)
+def test_subject_identifiers_cannot_end_with_a_newline(field: dict[str, str]) -> None:
+    values = {"repo": "NOURHANE-EHOUARI/sentinelci", "commit": "4b825dc642cb6eb9a060e54bf8d69288fbee4904"}
+    with pytest.raises(EvaluationError):
+        Subject(**{**values, "context": "pr", **field})

@@ -181,7 +181,9 @@ exceptions go through waivers (§6.4).
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
 (no repo code; signing key / OIDC only here) · `report` (`pull-requests: write`).
 
-**PR mode (diff-aware):** only findings new to the PR (fingerprints not in the base-branch baseline) can block.
+**PR mode (diff-aware):** only findings new to the PR (fingerprints not in the base-branch baseline) can block. A known
+secret also counts as new in a file where the base did not have it (every place counts: `location` plus
+`other_locations`, Finding 1.1).
 **Release mode:** full evaluation, then signing. In this single repo, `demo-shop/` is scanned by its own workflow
 calling `./.github/workflows/sentinel-scan.yml`; the self-scan of SentinelCI excludes `demo-shop/`.
 
@@ -246,7 +248,7 @@ priority_bands: {P0: 70, P1: 50, P2: 30, P3: 10}   # below 10 -> P4
 | SC-007 | WARN | Base image not pinned by digest, or container runs as root |
 | SC-008 | WARN | Copyleft licence in a distributed component |
 | SC-009 | BLOCK | High-severity CI workflow issue introduced by the PR |
-| SC-010 | BLOCK | Scanner failure, timeout or tool-integrity mismatch |
+| SC-010 | BLOCK | Scanner failure, timeout or tool-integrity mismatch; a required scanner (`policies/required_tools.rego`) missing from the tool status, or no tool status where one is required (`pr`, `release`); malformed gate input |
 
 Policy rules use `input.evaluated_at`, never `time.now_ns()`. Reference implementation of the verdict logic
 (verified with OPA 1.21):
@@ -286,7 +288,8 @@ draft a waiver PR; only a human approval makes it effective.
 
 Schema: `schemas/decision.v1.json`. Fields: `decision_id`, `evaluated_at`, `subject` (repo, ref, commit, image
 digest, context), `verdict`, `violations` (rule, effect, finding ids, message), `waivers_applied`, `inputs`
-(digests of findings, SBOM, enrichment snapshot, policy bundle, waivers file (since 1.1); risk model version;
+(digests of findings, SBOM, enrichment snapshot, policy bundle, waivers file (since 1.1), base-branch findings
+baseline and tool status (since 1.2, when given); risk model version;
 tool versions),
 `engine_version`. The schema enforces verdict consistency (BLOCK ⇒ at least one BLOCK violation; PASS ⇒ none).
 Attached to the image as an in-toto attestation, predicate type
@@ -423,6 +426,7 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
 | Contract | Producer → consumer | Content |
 |---|---|---|
 | `decision.v1.json` | B4 → A4, A5, B1 | §6.5 |
+| `tool-status.v1.json` | A3 → B4 | per tool: version, hashes, status (`ok` … `not_run`), detail; any non-`ok` status → SC-010; required in `pr`/`release`, and must list every required scanner |
 | `patch-proposal.v1.json` | B6 / A6 fixers → A6 | finding ids, strategy, diff, files, rationale, model (required for `llm:code`) |
 | `verification-result.v1.json` | A6 → B1, B8 | gate outcome; VERIFIED only if every condition holds |
 | evidence bundle layout | A4 → B1 | `manifest.json` (sha256 of each file, signed) + decision, findings, snapshot, SBOMs, raw outputs |

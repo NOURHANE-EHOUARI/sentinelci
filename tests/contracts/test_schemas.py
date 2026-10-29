@@ -19,6 +19,7 @@ CONTRACTS = {
     "patch-proposal": "patch-proposal.v1.json",
     "verification-result": "verification-result.v1.json",
     "waivers": "waivers.v1.json",
+    "tool-status": "tool-status.v1.json",
 }
 
 
