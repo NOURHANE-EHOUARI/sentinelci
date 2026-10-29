@@ -12,10 +12,10 @@
   ],
   "properties": {
     "schema_version": {
-      "const": 1
+      "const": "1.0"
     },
     "sources": {
-      "description": "Which feeds this snapshot holds. KEV absent means KEV status is unknown, not 'not listed'.",
+      "description": "Which feeds this snapshot holds. KEV absent means KEV status is unknown, not 'not listed'; with KEV present, only the CVEs in sources.kev.cves have a known status.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -39,7 +39,8 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "catalog_version"
+            "catalog_version",
+            "cves"
           ],
           "properties": {
             "catalog_version": {
@@ -47,7 +48,16 @@
             },
             "date_released": {
               "type": "string",
-              "format": "date-time"
+              "format": "date-time",
+              "description": "RFC 3339 date-time with an offset."
+            },
+            "cves": {
+              "description": "The CVE ids the KEV lookup covered. A CVE outside this list has an unknown KEV status; a covered CVE without a kev entry is not listed. (Every kev entry must be for a covered CVE: checked by the model, which JSON Schema cannot express.)",
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/cve"
+              }
             }
           }
         },
@@ -165,7 +175,7 @@
           }
         },
         "kev": {
-          "description": "Present only when listed in the KEV catalogue.",
+          "description": "Present only when listed in the KEV catalogue (and the CVE is in sources.kev.cves).",
           "type": "object",
           "additionalProperties": false,
           "required": [
@@ -179,6 +189,10 @@
           }
         }
       }
+    },
+    "cve": {
+      "type": "string",
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])CVE-[0-9]{4}-[0-9]{4,}$"
     }
   },
   "allOf": [

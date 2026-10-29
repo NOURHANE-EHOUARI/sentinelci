@@ -172,10 +172,14 @@ def test_vectors_that_cannot_be_scored_give_nothing(vector: str) -> None:
 
 def test_a_snapshot_from_every_feed() -> None:
     assert snapshot(feeds()) == {
-        "schema_version": 1,
+        "schema_version": "1.0",
         "sources": {
             "epss": {"date": "2026-11-10"},
-            "kev": {"catalog_version": "2026.11.09", "date_released": "2026-11-09T19:00:04.8077Z"},
+            "kev": {
+                "catalog_version": "2026.11.09",
+                "cves": ["CVE-2099-1001"],  # what the KEV lookup covered
+                "date_released": "2026-11-09T19:00:04.8077Z",
+            },
             "osv": {"date": "2026-11-09"},
         },
         "vulnerabilities": {
@@ -220,7 +224,7 @@ def test_the_same_feeds_give_the_same_bytes() -> None:
 
 def test_only_package_findings_are_looked_up() -> None:
     transport = feeds()
-    assert snapshot(transport, [SECRET]) == {"schema_version": 1, "sources": {}, "vulnerabilities": {}}
+    assert snapshot(transport, [SECRET]) == {"schema_version": "1.0", "sources": {}, "vulnerabilities": {}}
     assert transport.requests == []
 
 
@@ -412,3 +416,18 @@ def test_cli_writes_nothing_when_the_snapshot_breaks_the_contract(
     result = CliRunner().invoke(app, [*args, "--offline", str(tmp_path / "rec")])
     assert result.exit_code == 3
     assert not out.exists()
+
+
+def test_a_kev_release_time_without_an_offset_is_dropped_not_fatal() -> None:
+    naive = {**KEV, "dateReleased": "2026-11-09T19:00:04"}
+    result = snapshot(feeds(kev=(200, naive)))
+    assert "date_released" not in result["sources"]["kev"]
+    assert result["sources"]["kev"]["cves"] == ["CVE-2099-1001"]
+
+
+def test_cli_snapshot_refuses_to_overwrite_its_input(tmp_path: Path) -> None:
+    findings = tmp_path / "findings.ndjson"
+    findings.write_text(json.dumps(FINDING) + "\n", encoding="utf-8")
+    args = ["snapshot", "--findings", str(findings), "--out", str(findings), "--offline", str(tmp_path)]
+    assert CliRunner().invoke(app, args).exit_code == 3
+    assert json.loads(findings.read_text(encoding="utf-8")) == FINDING

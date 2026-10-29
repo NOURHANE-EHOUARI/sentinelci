@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "service": "demo-shop",
+  "exposure": "internet-facing",
+  "environment": "production",
+  "data_classification": "confidential",
+  "owners": [
+    "@Hiba-elouazi",
+    "@NOURHANE-EHOUARI"
+  ],
+  "policy_profile": "default",
+  "components": [
+    {
+      "path": "services/./web",
+      "exposure": "internal"
+    },
+    {
+      "path": "infra",
+      "exposure": "offline",
+      "data_classification": "internal"
+    }
+  ]
+}

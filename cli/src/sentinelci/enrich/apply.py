@@ -7,14 +7,18 @@ finding gets the exposure of its component from `sentinel.yaml`.
 
 - cvss / epss: the highest score / percentile among the matched entries (ties: the smallest id), so the result
   never depends on dictionary order.
-- kev: listed if any matched id is in the catalogue; `listed: false` only when the KEV source was read.
+- kev: listed if any matched id is in the catalogue; `listed: false` only when the KEV source was read and
+  covered every CVE id of the finding (sources.kev.cves). A finding with no CVE id, or a CVE the KEV lookup
+  never covered, keeps an unknown KEV status, which the risk engine counts as the worst case.
 - fix_available: true if the finding lists fixed versions or a matched OSV entry fixes its package; false only
-  when a matched OSV entry exists and fixes none of it; absent otherwise.
+  when a matched OSV entry exists and fixes none of it; absent otherwise. Package URLs are compared in their
+  canonical form (PyPI names normalized as PEP 503 says), so a spelling difference never reads as "no fix".
 """
 
 from __future__ import annotations
 
 import copy
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -22,6 +26,7 @@ from sentinelci.enrich.models import ServiceContext, Snapshot, Vulnerability
 from sentinelci.normalize.fingerprint import purl_base
 
 PACKAGE_CATEGORIES = frozenset({"SCA", "CONTAINER"})
+_CVE = re.compile(r"CVE-[0-9]{4}-[0-9]{4,}")
 MANAGED = ("cvss", "epss", "kev", "fix_available", "exposure")
 
 
@@ -36,6 +41,20 @@ def _matched(finding: Mapping[str, Any], snapshot: Snapshot) -> dict[str, Vulner
             if alias in snapshot.vulnerabilities:
                 entries.setdefault(alias, snapshot.vulnerabilities[alias])
     return dict(sorted(entries.items()))
+
+
+def canonical_purl(base: str) -> str:
+    """A purl base in canonical form: the purl spec lowercases PyPI names and folds runs of -_. into one -."""
+    kind, _, name = base.partition("/")
+    if kind == "pkg:pypi":
+        return f"{kind}/{re.sub(r'[-_.]+', '-', name).lower()}"
+    return base
+
+
+def _cve_ids(finding: Mapping[str, Any], entries: Mapping[str, Vulnerability]) -> set[str]:
+    ids = {finding.get("rule_id"), *finding.get("cve", []), *finding.get("aliases", []), *entries}
+    ids.update(alias for entry in entries.values() for alias in entry.aliases or [])
+    return {i for i in ids if isinstance(i, str) and _CVE.fullmatch(i)}
 
 
 def _package_enrichment(finding: Mapping[str, Any], snapshot: Snapshot) -> dict[str, Any]:
@@ -54,13 +73,23 @@ def _package_enrichment(finding: Mapping[str, Any], snapshot: Snapshot) -> dict[
         }
     if snapshot.sources.kev is not None:
         added = sorted(e.kev.date_added for e in entries.values() if e.kev)
-        out["kev"] = {"listed": True, "date_added": added[0].isoformat()} if added else {"listed": False}
+        cves = _cve_ids(finding, entries)
+        if added:
+            out["kev"] = {"listed": True, "date_added": added[0].isoformat()}
+        elif cves and cves <= set(snapshot.sources.kev.cves):  # "not listed" only for what KEV covered
+            out["kev"] = {"listed": False}
     raw_package = finding.get("package")
     package: Mapping[str, Any] = raw_package if isinstance(raw_package, Mapping) else {}
     purl = package.get("purl")
-    base = purl_base(purl) if isinstance(purl, str) else None
+    base = canonical_purl(purl_base(purl)) if isinstance(purl, str) else None
     osv_entries = [e for e in entries.values() if e.fixed_versions is not None]
-    if package.get("fixed_versions") or any((e.fixed_versions or {}).get(base or "") for e in osv_entries):
+    fixed = [
+        versions
+        for e in osv_entries
+        for key, versions in (e.fixed_versions or {}).items()
+        if canonical_purl(key) == base
+    ]
+    if package.get("fixed_versions") or any(fixed):
         out["fix_available"] = True
     elif osv_entries and snapshot.sources.osv is not None:
         out["fix_available"] = False

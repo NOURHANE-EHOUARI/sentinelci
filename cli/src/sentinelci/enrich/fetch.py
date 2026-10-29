@@ -7,7 +7,8 @@ offline and what decisions record by digest, so replay never calls a feed again.
    once more for the aliases those records reveal: aliases, CVSS (3.x base score computed from the vector) and
    fixed versions per package. An id OSV does not know (404) is simply absent.
 2. EPSS for every CVE id now known, 100 per request.
-3. The KEV catalogue, filtered to those CVE ids.
+3. The KEV catalogue, filtered to those CVE ids; `sources.kev.cves` records them, so "not listed" is known
+   only for CVEs that were looked up.
 
 Each feed is all or nothing: if any of its requests fails, or any answer is not what the API documents, that
 feed is left out of the snapshot (its values stay unknown, which the risk engine counts as the worst case)
@@ -178,19 +179,19 @@ def _epss(cves: list[str], transport: Transport) -> tuple[dict[str, dict[str, fl
     return scores, source
 
 
-def _kev(cves: set[str], transport: Transport) -> tuple[dict[str, str], dict[str, str]]:
+def _kev(cves: set[str], transport: Transport) -> tuple[dict[str, str], dict[str, Any]]:
     catalogue = _json(transport, KEV_URL)
     if not isinstance(catalogue, dict) or not isinstance(catalogue.get("vulnerabilities"), list):
         raise FeedError("KEV catalogue has no vulnerabilities list")
     version = catalogue.get("catalogVersion")
     if not isinstance(version, str) or not _TOKEN.fullmatch(version):
         raise FeedError("KEV catalogue has no valid catalogVersion")
-    source = {"catalog_version": version}
+    source: dict[str, Any] = {"catalog_version": version, "cves": sorted(cves)}  # what KEV now covers
     released = catalogue.get("dateReleased")
-    if isinstance(released, str):
+    if isinstance(released, str):  # optional: kept only as an RFC 3339 time with an offset
         try:
-            datetime.fromisoformat(released.replace("Z", "+00:00"))
-            source["date_released"] = released
+            if datetime.fromisoformat(released.replace("Z", "+00:00")).tzinfo is not None:
+                source["date_released"] = released
         except ValueError:
             pass
     listed: dict[str, str] = {}
@@ -239,7 +240,7 @@ def build_snapshot(
             warnings.append(f"KEV left out: {exc}")
 
     document = {
-        "schema_version": 1,
+        "schema_version": "1.0",
         "sources": dict(sorted(sources.items())),
         "vulnerabilities": {k: v for k, v in sorted(vulnerabilities.items()) if v},
     }
