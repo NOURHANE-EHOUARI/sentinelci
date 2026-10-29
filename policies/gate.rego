@@ -2,6 +2,12 @@
 #
 # Input (built by `sentinel evaluate`):
 #   evaluated_at  RFC 3339 timestamp; policies never read the clock, so replay is exact
+#   context       pr | release | local (the decision's subject.context)
+#   baseline      optional: Finding v1 objects of the base branch; in pr context only what the change
+#                 introduces can block (diff-aware), elsewhere it is ignored
+#   tool_status   schemas/tool-status.v1.json; any tool that is not ok blocks (SC-010), and so does a tool
+#                 that policies/required_tools.rego requires in this context but the status leaves out;
+#                 no tool status at all blocks wherever a tool is required (pr, release)
 #   findings      array of Finding v1 objects (schemas/finding.v1.json)
 #   waivers       entries of .sentinel/waivers.yaml (schemas/waivers.v1.json), unvalidated:
 #                 checking them is this policy's job (SC-005)
@@ -13,6 +19,8 @@
 package sentinel.gate
 
 import rego.v1
+
+import data.sentinel.config
 
 now := time.parse_rfc3339_ns(input.evaluated_at)
 
@@ -179,10 +187,49 @@ block contains v if {
 	}
 }
 
-# SC-001: a secret was detected and is not waived.
+# ---------------------------------------------------------------- diff-aware PR mode
+
+baseline := object.get(input, "baseline", null)
+
+diff_aware if {
+	input.context == "pr"
+	is_array(baseline)
+}
+
+# Every file a finding was seen in: `location` plus, since Finding 1.1, `other_locations`.
+finding_paths(f) := {object.get(f, ["location", "path"], "")} | {object.get(l, "path", "") |
+	some l in object.get(f, "other_locations", [])
+}
+
+baseline_paths[b.id] contains path if {
+	diff_aware
+	some b in baseline
+	some path in finding_paths(b)
+}
+
+# What the change introduces. Without a PR baseline every finding counts (fail safe).
+introduced(_) if not diff_aware
+
+introduced(f) if {
+	diff_aware
+	not baseline_paths[f.id]
+}
+
+# A known secret in a file where the base branch did not have it is a new copy. Paths, not lines, so a secret
+# that only moved down its file does not count. Every place counts: a 1.0 finding names one, a 1.1 finding lists
+# the others in `other_locations`, so full-tree scans see a copy wherever it sorts.
+introduced(f) if {
+	diff_aware
+	f.category == "SECRET"
+	some path in finding_paths(f)
+	not path in baseline_paths[f.id]
+}
+
+# SC-001: a secret the change introduces (anywhere in release context), not waived.
 secret_ids contains f.id if {
 	some f in input.findings
 	f.category == "SECRET"
+	introduced(f)
 	not waived(f)
 }
 
@@ -191,12 +238,172 @@ block contains v if {
 	v := {"rule": "SC-001", "effect": "BLOCK", "finding_ids": sort(secret_ids), "message": "Hard-coded secret"}
 }
 
+# ---------------------------------------------------------------- rule catalogue (SPEC section 6.3)
+
+# A finding counts for a rule when the change introduces it (any finding outside PR mode) and no waiver covers it.
+counts(f) if {
+	introduced(f)
+	not waived(f)
+}
+
+# The priority the risk engine (B3) recorded, or the worst case for an unscored finding. risk = 100 x S x E x X x R
+# with E, X and R at most 1, so 100 x severity_weight bounds it (risk-model.yaml; a test keeps them in step).
+# A finding without a usable severity is treated as the worst of all.
+worst_case_priority := {"CRITICAL": "P0", "HIGH": "P0", "MEDIUM": "P2", "LOW": "P3", "INFO": "P4"}
+
+scored_priority(f) := p if {
+	p := object.get(f, ["risk", "priority"], null)
+	p in {"P0", "P1", "P2", "P3", "P4"}
+}
+
+priority(f) := scored_priority(f)
+
+priority(f) := object.get(worst_case_priority, object.get(f, "severity", ""), "P0") if not scored_priority(f)
+
+# SC-003: a known exploited vulnerability that can be fixed, in an internet-facing service.
+# Fail closed: an unknown exposure (no sentinel.yaml) counts as internet-facing, as in the risk model (X = 1.0).
+fix_available(f) if f.enrichment.fix_available == true
+
+fix_available(f) if count(object.get(f, ["package", "fixed_versions"], [])) > 0
+
+kev_ids contains f.id if {
+	some f in input.findings
+	f.category in {"SCA", "CONTAINER"}
+	f.enrichment.kev.listed == true
+	fix_available(f)
+	not object.get(f, ["enrichment", "exposure"], "internet-facing") in {"internal", "offline"}
+	counts(f)
+}
+
+block contains v if {
+	count(kev_ids) > 0
+	v := {
+		"rule": "SC-003",
+		"effect": "BLOCK",
+		"finding_ids": sort(kev_ids),
+		"message": "Known exploited vulnerability with a fix, internet-facing",
+	}
+}
+
+# SC-009: a high-severity CI workflow issue.
+pipeline_ids contains f.id if {
+	some f in input.findings
+	f.category == "PIPELINE"
+	f.severity in {"HIGH", "CRITICAL"}
+	counts(f)
+}
+
+block contains v if {
+	count(pipeline_ids) > 0
+	v := {"rule": "SC-009", "effect": "BLOCK", "finding_ids": sort(pipeline_ids), "message": "High-severity CI workflow issue"}
+}
+
+# SC-002 (P0, BLOCK) and SC-006 (P1, WARN) for findings no more specific rule already blocks, so each finding is
+# reported once, under its most specific rule.
+specific_ids := (secret_ids | kev_ids) | pipeline_ids
+
+priority_ids[p] contains f.id if {
+	some f in input.findings
+	not f.id in specific_ids
+	counts(f)
+	p := priority(f)
+}
+
+unscored_note(found) := " (unscored findings count at their worst-case priority)" if {
+	some f in input.findings
+	f.id in found
+	not scored_priority(f)
+} else := ""
+
+block contains v if {
+	found := priority_ids.P0
+	v := {
+		"rule": "SC-002",
+		"effect": "BLOCK",
+		"finding_ids": sort(found),
+		"message": sprintf("P0 finding not waived%s", [unscored_note(found)]),
+	}
+}
+
+warn contains v if {
+	found := priority_ids.P1
+	v := {"rule": "SC-006", "effect": "WARN", "finding_ids": sort(found), "message": sprintf("P1 finding%s", [unscored_note(found)])}
+}
+
+# SC-010: a scanner failed, timed out, did not match its pin or did not run. Its silence is not a pass.
+tool_status := object.get(input, "tool_status", null)
+
+block contains v if {
+	is_object(tool_status)
+	some name, tool in object.get(tool_status, "tools", {})
+	status := object.get(tool, "status", "unknown")
+	status != "ok"
+	v := {
+		"rule": "SC-010",
+		"effect": "BLOCK",
+		"finding_ids": [],
+		"message": sprintf("Scanner failure: %s %s%s", [name, status, detail_suffix(tool)]),
+	}
+}
+
+# SC-010: a required scanner did not report. A workflow that drops a scanner, or drops the tool status
+# altogether, must not turn its silence into a pass.
+required_tools := object.get(config.required_tools, input.context, set())
+
+block contains v if {
+	tool_status == null
+	count(required_tools) > 0
+	v := {
+		"rule": "SC-010",
+		"effect": "BLOCK",
+		"finding_ids": [],
+		"message": sprintf("Tool status missing: %s requires %s", [input.context, concat(", ", sort(required_tools))]),
+	}
+}
+
+block contains v if {
+	valid_tool_status
+	some name in required_tools
+	object.get(tool_status.tools, name, null) == null
+	v := {
+		"rule": "SC-010",
+		"effect": "BLOCK",
+		"finding_ids": [],
+		"message": sprintf("Scanner missing: %s (required in %s)", [name, input.context]),
+	}
+}
+
+detail_suffix(tool) := sprintf(" (%s)", [tool.detail]) if {
+	is_string(tool.detail)
+	tool.detail != ""
+} else := ""
+
 # SC-010: the gate cannot evaluate what it was given. Silence is never a pass.
 input_errors contains "findings must be an array" if not is_array(object.get(input, "findings", null))
 
 input_errors contains "waivers must be an array" if not is_array(object.get(input, "waivers", null))
 
 input_errors contains "evaluated_at must be an RFC 3339 timestamp" if not now
+
+input_errors contains "context must be one of pr, release, local" if {
+	not object.get(input, "context", null) in {"pr", "release", "local"}
+}
+
+input_errors contains "baseline must be an array" if {
+	baseline != null
+	not is_array(baseline)
+}
+
+input_errors contains "tool_status must hold a non-empty tools object" if {
+	tool_status != null
+	not valid_tool_status
+}
+
+valid_tool_status if {
+	tools := object.get(tool_status, "tools", null)
+	is_object(tools)
+	count(tools) > 0
+}
 
 block contains v if {
 	count(input_errors) > 0
@@ -210,10 +417,12 @@ block contains v if {
 
 verdict := "BLOCK" if count(block) > 0
 
+else := "WARN" if count(warn) > 0
+
 else := "PASS"
 
 decision := {
 	"verdict": verdict,
-	"violations": sort(block),
+	"violations": array.concat(sort(block), sort(warn)),
 	"waivers_applied": sort(waivers_applied),
 }

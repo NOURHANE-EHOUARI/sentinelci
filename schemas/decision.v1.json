@@ -11,8 +11,8 @@
   ],
   "properties": {
     "schema_version": {
-      "description": "1.1 adds inputs.waivers_digest (required from 1.1, absent in 1.0). Minor versions only add; 1.0 documents stay valid.",
-      "enum": ["1.0", "1.1"]
+      "description": "Minor versions only add; older documents stay valid. 1.1 adds inputs.waivers_digest (required from 1.1). 1.2 adds inputs.baseline_digest and inputs.tool_status_digest (each present when that input was given).",
+      "enum": ["1.0", "1.1", "1.2"]
     },
     "decision_id": { "type": "string", "format": "uuid" },
     "evaluated_at": {
@@ -61,6 +61,14 @@
         "sbom_digest": { "$ref": "#/$defs/prefixed_sha256" },
         "enrichment_snapshot_digest": { "$ref": "#/$defs/prefixed_sha256" },
         "policy_bundle_digest": { "$ref": "#/$defs/prefixed_sha256" },
+        "baseline_digest": {
+          "description": "Digest of the base-branch findings (Finding v1 NDJSON) used for diff-aware PR mode, as read. Since 1.2.",
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "tool_status_digest": {
+          "description": "Digest of the tool status document (schemas/tool-status.v1.json), as read. Since 1.2.",
+          "$ref": "#/$defs/prefixed_sha256"
+        },
         "waivers_digest": {
           "description": "Digest of the waivers file as read (schemas/waivers.v1.json); sha256 of empty content when there is none. Since 1.1.",
           "$ref": "#/$defs/prefixed_sha256"
@@ -77,9 +85,31 @@
   },
   "allOf": [
     {
+      "if": { "properties": { "schema_version": { "const": "1.0" } } },
+      "then": {
+        "properties": {
+          "inputs": {
+            "not": { "anyOf": [
+              { "required": ["waivers_digest"] }, { "required": ["baseline_digest"] }, { "required": ["tool_status_digest"] }
+            ] }
+          }
+        }
+      }
+    },
+    {
       "if": { "properties": { "schema_version": { "const": "1.1" } } },
-      "then": { "properties": { "inputs": { "required": ["waivers_digest"] } } },
-      "else": { "properties": { "inputs": { "not": { "required": ["waivers_digest"] } } } }
+      "then": {
+        "properties": {
+          "inputs": {
+            "required": ["waivers_digest"],
+            "not": { "anyOf": [{ "required": ["baseline_digest"] }, { "required": ["tool_status_digest"] }] }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "schema_version": { "const": "1.2" } } },
+      "then": { "properties": { "inputs": { "required": ["waivers_digest"] } } }
     },
     {
       "if": { "properties": { "verdict": { "const": "BLOCK" } } },

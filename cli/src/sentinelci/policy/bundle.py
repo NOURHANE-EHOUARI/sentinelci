@@ -15,7 +15,7 @@ from pathlib import Path
 import yaml
 
 RISK_MODEL_FILE = "risk-model.yaml"
-_SEMVER = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+_SEMVER = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")  # fullmatch: no trailing newline
 
 
 class BundleError(Exception):
@@ -53,13 +53,17 @@ class PolicyBundle:
         return tuple(self.root / p for p in self.files if p.suffix == ".rego")
 
     @property
-    def digest(self) -> str:
-        """`sha256:` of a sha256sum-style manifest (`<hex>  <posix path>` per line, sorted)."""
-        manifest = "".join(
+    def manifest(self) -> str:
+        """sha256sum-style manifest: `<hex>  <posix path>` per file, sorted by path."""
+        return "".join(
             f"{hashlib.sha256((self.root / p).read_bytes()).hexdigest()}  {p.as_posix()}\n"
             for p in self.files
         )
-        return "sha256:" + hashlib.sha256(manifest.encode("utf-8")).hexdigest()
+
+    @property
+    def digest(self) -> str:
+        """`sha256:` of the manifest."""
+        return "sha256:" + hashlib.sha256(self.manifest.encode("utf-8")).hexdigest()
 
     @property
     def risk_model_version(self) -> str:
@@ -68,6 +72,6 @@ class PolicyBundle:
             raise BundleError(f"risk model not found: {path}")
         model = yaml.safe_load(path.read_text(encoding="utf-8"))
         version = model.get("version") if isinstance(model, dict) else None
-        if not isinstance(version, str) or not _SEMVER.match(version):
+        if not isinstance(version, str) or not _SEMVER.fullmatch(version):
             raise BundleError(f"{path}: 'version' must be a semantic version string, got {version!r}")
         return version
