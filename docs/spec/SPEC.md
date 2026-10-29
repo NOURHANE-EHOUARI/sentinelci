@@ -290,6 +290,12 @@ engine versions are the running ones, so an upgrade shows up as a difference. Pr
 (A4) and the platform evidence store (SeaweedFS, ADR-0007) carry the same `sha256/<hex>` layout, so replay works
 on either.
 
+**Nightly replay** (`.github/workflows/replay-nightly.yml`): replays the last successful night's corpus with
+today's engine (`sentinel replay --all`), then records a fresh corpus (`eval/replay/corpus.py`: fixed gate cases
+covering PASS, SC-001, SC-005 and SC-010), replays it in a fresh process and uploads it. `--all` skips decisions
+recorded with another engine or OPA version and fails on any difference, on missing evidence and on an empty
+store. Consequence: a change to what the engine decides for the same inputs must come with an engine version bump.
+
 ## 7. Supply-chain integrity and deploy-time enforcement
 
 - **SBOM:** Syft → CycloneDX JSON (primary) + SPDX JSON, for source and image.

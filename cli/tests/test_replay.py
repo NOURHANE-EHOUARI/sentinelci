@@ -155,6 +155,7 @@ def evaluate(
     context: str = "pr",
     **files: bytes,
 ) -> tuple[int, str, dict[str, Any]]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "findings.ndjson").write_bytes(findings)
     args = []
     for option, data in files.items():
@@ -308,3 +309,98 @@ def test_a_record_that_cannot_be_replayed_means_no_replay(
     path.write_text(json.dumps(recorded), encoding="utf-8")
     code, out = replay(tmp_path, opa_binary, str(path))
     assert code == 3, out
+
+
+# ---------------------------------------------------------------- sentinel replay --all (the nightly job)
+
+
+def replay_all(tmp_path: Path, opa_binary: Path) -> tuple[int, str]:
+    result = CliRunner().invoke(
+        app, ["replay", "--all", "--store", str(tmp_path / "store"), "--opa", str(opa_binary)]
+    )
+    return result.exit_code, result.output
+
+
+def stored(tmp_path: Path, decision_id: str) -> Path:
+    return EvidenceStore(tmp_path / "store").decision_path(decision_id)
+
+
+def edit_stored(path: Path, edit: Any) -> None:
+    record = json.loads(path.read_text(encoding="utf-8"))
+    edit(record)
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+
+def record_two(tmp_path: Path, opa_binary: Path) -> tuple[str, str]:
+    _, _, blocked = evaluate(tmp_path / "a", opa_binary, ndjson(SECRET), "--store", str(tmp_path / "store"))
+    _, _, passed = evaluate(tmp_path / "b", opa_binary, b"", "--store", str(tmp_path / "store"))
+    return blocked["decision_id"], passed["decision_id"]
+
+
+def test_replay_all_replays_every_stored_decision(tmp_path: Path, opa_binary: Path) -> None:
+    first, second = record_two(tmp_path, opa_binary)
+    code, out = replay_all(tmp_path, opa_binary)
+    assert code == 0, out
+    assert f"identical  {first} (BLOCK)" in out
+    assert f"identical  {second} (PASS)" in out
+    assert "2 identical, 0 skipped, 0 differ, 0 cannot replay" in out
+
+
+def test_replay_all_fails_when_one_decision_differs(tmp_path: Path, opa_binary: Path) -> None:
+    first, second = record_two(tmp_path, opa_binary)
+    edit_stored(stored(tmp_path, first), lambda d: d.update(verdict="PASS"))
+    code, out = replay_all(tmp_path, opa_binary)
+    assert code == 1, out
+    assert f"differs    {first}" in out
+    assert 'verdict: "PASS" -> "BLOCK"' in out
+    assert f"identical  {second} (PASS)" in out
+
+
+def test_replay_all_fails_closed_when_evidence_is_missing(tmp_path: Path, opa_binary: Path) -> None:
+    first, _ = record_two(tmp_path, opa_binary)
+    edit_stored(stored(tmp_path, first), lambda d: d["inputs"].update(sbom_digest=sha256(b"never stored")))
+    code, out = replay_all(tmp_path, opa_binary)
+    assert code == 3, out
+    assert f"cannot replay {first}" in out
+
+
+@pytest.mark.parametrize(
+    ("edit", "reason"),
+    [
+        (lambda d: d.update(engine_version="0.0.1"), "recorded with engine 0.0.1"),
+        (lambda d: d["inputs"]["tool_versions"].update(opa="0.1.0"), "recorded with OPA 0.1.0"),
+    ],
+    ids=["other-engine", "other-opa"],
+)
+def test_replay_all_skips_decisions_of_another_engine_or_opa(
+    tmp_path: Path, opa_binary: Path, edit: Any, reason: str
+) -> None:
+    first, _ = record_two(tmp_path, opa_binary)
+    edit_stored(stored(tmp_path, first), edit)
+    code, out = replay_all(tmp_path, opa_binary)
+    assert code == 0, out
+    assert f"skipped    {first} ({reason})" in out
+    assert "1 identical, 1 skipped" in out
+
+
+def test_replay_all_with_nothing_to_replay_fails_closed(tmp_path: Path, opa_binary: Path) -> None:
+    (tmp_path / "store").mkdir()
+    code, out = replay_all(tmp_path, opa_binary)
+    assert code == 3, out
+    assert "no decision" in out
+
+
+def test_a_decision_file_that_is_not_its_id_is_refused(tmp_path: Path, opa_binary: Path) -> None:
+    first, second = record_two(tmp_path, opa_binary)
+    shutil.copy(stored(tmp_path, first), stored(tmp_path, second))
+    code, out = replay_all(tmp_path, opa_binary)
+    assert code == 3, out
+    assert f"cannot replay {second}" in out
+
+
+@pytest.mark.parametrize(
+    "args", [[], ["--all", "5b1c6a0e-3f0d-4c8e-9a51-8d3e2f6b7c40"]], ids=["none", "both"]
+)
+def test_replay_needs_exactly_one_of_a_decision_or_all(args: list[str]) -> None:
+    result = CliRunner().invoke(app, ["replay", *args])
+    assert result.exit_code == 2, result.output

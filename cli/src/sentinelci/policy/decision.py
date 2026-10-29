@@ -91,6 +91,11 @@ def canonical_time(value: str) -> str:
     return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
+def engine_version() -> str:
+    """The `engine_version` this engine records."""
+    return __version__
+
+
 def now_utc() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 

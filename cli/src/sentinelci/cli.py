@@ -38,7 +38,7 @@ from sentinelci.policy.decision import (
 )
 from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaError, OpaRunner
-from sentinelci.policy.replay import replay
+from sentinelci.policy.replay import ReplayResult, replay, skip_reason
 from sentinelci.policy.store import EvidenceStore, StoreError
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
 from sentinelci.scanners.errors import ToolIntegrityError
@@ -258,11 +258,33 @@ def _store_evidence(
 _DECISION_ID_ARGUMENT = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
+_REPLAY_ERRORS = (BundleError, EvaluationError, OpaError, StoreError, OSError, ValueError)
+
+
+def _load_record(path: Path, decision_id: str | None = None) -> dict[str, Any]:
+    recorded = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(recorded, dict):
+        raise EvaluationError(f"{path} is not a decision record")
+    if decision_id is not None and recorded.get("decision_id") != decision_id:
+        raise EvaluationError(
+            f"{path.name} holds decision {recorded.get('decision_id')!r}, not {decision_id}"
+        )
+    return recorded
+
+
+def _replay_record(recorded: dict[str, Any], evidence: EvidenceStore, runner: OpaRunner) -> ReplayResult:
+    with tempfile.TemporaryDirectory(prefix="sentinel-replay-") as work:
+        return replay(recorded, store=evidence, opa=runner, work_dir=Path(work))
+
+
 @app.command("replay")
 def replay_command(
     decision: Annotated[
-        str, typer.Argument(help="Decision id (looked up in the store) or path to a decision file.")
-    ],
+        str | None, typer.Argument(help="Decision id (looked up in the store) or path to a decision file.")
+    ] = None,
+    all_decisions: Annotated[
+        bool, typer.Option("--all", help="Replay every decision in the store (the nightly job).")
+    ] = False,
     store: Annotated[
         Path, typer.Option(help="Evidence store written by `sentinel evaluate --store`.")
     ] = DEFAULT_STORE,
@@ -274,17 +296,21 @@ def replay_command(
 
     Every input, the policy bundle included, comes from the store by digest. Exit code 0 when identical,
     1 when the replayed decision differs, 3 when the decision cannot be replayed (missing or tampered
-    evidence).
+    evidence). With --all, decisions recorded with another engine or OPA version are skipped; the exit code
+    is 3 if any decision cannot be replayed or the store holds none, else 1 if any differs.
     """
+    if (decision is None) != all_decisions:
+        raise typer.BadParameter("give either a decision (id or file) or --all")
     evidence = EvidenceStore(store)
+    if decision is None:
+        _replay_all(evidence, opa)
+        return
     try:
-        path = evidence.decision_path(decision) if _DECISION_ID_ARGUMENT.match(decision) else Path(decision)
-        recorded = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(recorded, dict):
-            raise EvaluationError(f"{path} is not a decision record")
-        with tempfile.TemporaryDirectory(prefix="sentinel-replay-") as work:
-            result = replay(recorded, store=evidence, opa=OpaRunner.locate(opa), work_dir=Path(work))
-    except (BundleError, EvaluationError, OpaError, StoreError, OSError, ValueError) as exc:
+        by_id = _DECISION_ID_ARGUMENT.match(decision) is not None
+        path = evidence.decision_path(decision) if by_id else Path(decision)
+        recorded = _load_record(path, decision if by_id else None)
+        result = _replay_record(recorded, evidence, OpaRunner.locate(opa))
+    except _REPLAY_ERRORS as exc:
         typer.echo(f"sentinel replay: {exc}", err=True)
         typer.echo("sentinel replay: the decision could not be replayed.", err=True)
         raise typer.Exit(EXIT_NO_DECISION) from exc
@@ -297,6 +323,50 @@ def replay_command(
     for line in result.differences:
         typer.echo(f"  {line}")
     raise typer.Exit(EXIT_REPLAY_DIFFERS)
+
+
+def _replay_all(evidence: EvidenceStore, opa: Path | None) -> None:
+    try:
+        runner = OpaRunner.locate(opa)
+        opa_version = runner.version()
+    except OpaError as exc:
+        typer.echo(f"sentinel replay: {exc}", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    decisions = evidence.root / "decisions"
+    paths = sorted(decisions.glob("*.json")) if decisions.is_dir() else []
+    if not paths:
+        # Nothing replayed must not read as "all identical".
+        typer.echo(f"sentinel replay: no decision in {decisions}", err=True)
+        raise typer.Exit(EXIT_NO_DECISION)
+
+    counts = {"identical": 0, "skipped": 0, "differ": 0, "cannot replay": 0}
+    for path in paths:
+        decision_id = path.stem
+        try:
+            evidence.decision_path(decision_id)  # the file name must be a decision id
+            recorded = _load_record(path, decision_id)
+            reason = skip_reason(recorded, opa_version)
+            result = None if reason else _replay_record(recorded, evidence, runner)
+        except _REPLAY_ERRORS as exc:
+            typer.echo(f"cannot replay {decision_id}: {exc}")
+            counts["cannot replay"] += 1
+            continue
+        if result is None:
+            typer.echo(f"skipped    {decision_id} ({reason})")
+            counts["skipped"] += 1
+        elif result.identical:
+            typer.echo(f"identical  {decision_id} ({recorded.get('verdict')})")
+            counts["identical"] += 1
+        else:
+            typer.echo(f"differs    {decision_id} (field: recorded -> replayed)")
+            for line in result.differences:
+                typer.echo(f"  {line}")
+            counts["differ"] += 1
+    typer.echo(", ".join(f"{n} {label}" for label, n in counts.items()))
+    if counts["cannot replay"]:
+        raise typer.Exit(EXIT_NO_DECISION)
+    if counts["differ"]:
+        raise typer.Exit(EXIT_REPLAY_DIFFERS)
 
 
 # ---------------------------------------------------------------- normalize

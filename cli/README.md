@@ -55,6 +55,7 @@ Runs the OPA policies in `policies/` and writes a Decision record (`schemas/deci
 uv run sentinel evaluate ... --store out/evidence      # also keep every input and the decision
 uv run sentinel replay <decision-id> --store out/evidence
 uv run sentinel replay out/decision.v1.json --store out/evidence
+uv run sentinel replay --all --store out/evidence                # every stored decision (nightly job)
 ```
 
 - `evaluate --store DIR` writes every input exactly as digested to `DIR/sha256/<hex>` (findings, waivers, baseline,
@@ -66,6 +67,11 @@ uv run sentinel replay out/decision.v1.json --store out/evidence
   replay (missing or tampered evidence, malformed record, Decision 1.0).
 - Scanner versions are passed back as recorded (scanners do not run again); the OPA version is the running
   binary's, so an OPA or engine upgrade shows up as a difference.
+- `--all` replays every decision in the store and skips those recorded with another engine or OPA version
+  (listed as `skipped`). Exit 3 if any cannot be replayed or the store holds none, else 1 if any differs.
+- The nightly job (`.github/workflows/replay-nightly.yml`) replays last night's corpus with today's engine,
+  then records a fresh one with `eval/replay/corpus.py`. So a change to what the engine decides for the same
+  inputs needs an engine version bump (`sentinelci.__version__`).
 
 ### Waivers
 

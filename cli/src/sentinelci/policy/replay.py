@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from sentinelci.policy.decision import Subject, dumps_decision, evaluate
+from sentinelci.policy.decision import Subject, dumps_decision, engine_version, evaluate
 from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaRunner
 from sentinelci.policy.store import EvidenceStore
@@ -64,6 +64,23 @@ def differences(recorded: Any, replayed: Any, path: str = "") -> list[str]:
     # Types too: True == 1 and 1.0 == 1 in Python, but they are different JSON.
     same = type(recorded) is type(replayed) and recorded == replayed
     return [] if same else [f"{path}: {_short(recorded)} -> {_short(replayed)}"]
+
+
+def skip_reason(recorded: Mapping[str, Any], opa_version: str) -> str | None:
+    """Why `--all` leaves a record out: another engine or OPA version cannot reproduce it by design.
+
+    Within one engine and OPA version a decision must replay identically; across versions it differs at least
+    in `engine_version` or `tool_versions.opa` (and so in `decision_id`).
+    """
+    engine = recorded.get("engine_version")
+    if engine != engine_version():
+        return f"recorded with engine {engine}"
+    inputs = recorded.get("inputs")
+    versions = inputs.get("tool_versions") if isinstance(inputs, dict) else None
+    opa = versions.get("opa") if isinstance(versions, dict) else None
+    if opa != opa_version:
+        return f"recorded with OPA {opa}"
+    return None
 
 
 def _string(document: Mapping[str, Any], key: str, where: str) -> str:
