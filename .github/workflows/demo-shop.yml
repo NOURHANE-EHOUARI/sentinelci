@@ -29,6 +29,9 @@ concurrency:
 jobs:
   sentinel:
     name: SentinelCI
+    # `$/` is GitHub's self-repository syntax (July 2026): this repository's workflow at the commit that is
+    # running, with no checkout. zizmor's `self-repository` audit asks for it instead of `./`.
+    # https://github.blog/changelog/2026-07-30-reference-same-repository-actions-with-self-repository-syntax/
     uses: $/.github/workflows/sentinel-scan.yml
     permissions:
       contents: read # check out the pipeline and the change to scan
