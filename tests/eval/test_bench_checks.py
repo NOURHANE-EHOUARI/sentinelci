@@ -1,13 +1,18 @@
 """Controls for the model-selection checks (eval/model-selection/bench.py).
 
 Every check must accept a known-good answer and reject known-bad ones, or a model score means nothing. The
-patch check runs code in Docker: it skips without Docker, unless SENTINEL_REQUIRE_DOCKER is set (CI).
+patch check runs code in Docker: those tests need a running daemon and the sandbox image (present or
+pullable). They skip without them, unless SENTINEL_REQUIRE_DOCKER_DAEMON is set (CI). The diff checks that
+come first need git only.
 """
 
+import difflib
 import importlib.util
 import json
 import os
 import shutil
+import stat
+import subprocess
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -104,33 +109,144 @@ EXTRA_FILE_DIFF = (
 )
 
 
+def _docker_problem() -> str | None:
+    """Why patched code cannot run here, or None: a daemon must answer and the sandbox image must be there."""
+    docker = shutil.which("docker")
+    if docker is None or shutil.which("git") is None:
+        return "docker and git are needed to run patched code"
+    try:
+        info = subprocess.run([docker, "info"], capture_output=True, timeout=30, check=False)  # noqa: S603
+        if info.returncode != 0:
+            return "no Docker daemon answers"
+        image = [docker, "image", "inspect", BENCH.SANDBOX_IMAGE]
+        if subprocess.run(image, capture_output=True, timeout=30, check=False).returncode != 0:  # noqa: S603
+            pull = [docker, "pull", "-q", BENCH.SANDBOX_IMAGE]
+            if subprocess.run(pull, capture_output=True, timeout=600, check=False).returncode:  # noqa: S603
+                return "the sandbox image is neither present nor pullable"
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"docker did not answer: {exc}"
+    return None
+
+
+@pytest.fixture(scope="session")
+def docker_daemon() -> None:
+    problem = _docker_problem()
+    if problem is not None:
+        if os.environ.get("SENTINEL_REQUIRE_DOCKER_DAEMON"):
+            pytest.fail(f"SENTINEL_REQUIRE_DOCKER_DAEMON is set but {problem}")
+        pytest.skip(problem)
+
+
 @pytest.fixture
-def docker_available() -> None:
-    if shutil.which("docker") is None or shutil.which("git") is None:
-        if os.environ.get("SENTINEL_REQUIRE_DOCKER"):
-            pytest.fail("SENTINEL_REQUIRE_DOCKER is set but docker or git is missing")
-        pytest.skip("docker and git are needed to run patched code")
+def git_available() -> None:
+    if shutil.which("git") is None:
+        pytest.skip("git is needed to apply a patch")
 
 
-@pytest.mark.usefixtures("docker_available")
+def patch_of(new_db: str) -> str:
+    """A diff that turns app/db.py into `new_db`."""
+    lines = difflib.unified_diff(
+        BENCH.SQLI_FILE.splitlines(keepends=True),
+        new_db.splitlines(keepends=True),
+        "a/app/db.py",
+        "b/app/db.py",
+    )
+    return "".join(lines)
+
+
+@pytest.mark.usefixtures("docker_daemon")
 def test_patch_accepts_a_correct_fix() -> None:
     assert run("patch-sqli-python", {"diff": GOOD_DIFF, "rationale": "parameterized"}) == []
 
 
-@pytest.mark.usefixtures("docker_available")
+@pytest.mark.usefixtures("git_available")
 @pytest.mark.parametrize(
     ("diff", "expected"),
     [
         ("@@" + GOOD_DIFF.split("@@", 1)[1], "git apply failed"),
+        (EXTRA_FILE_DIFF, "must change only app/db.py"),
+    ],
+    ids=["no-file-headers", "extra-file"],
+)
+def test_patch_rejects_bad_diffs_before_running_anything(diff: str, expected: str) -> None:
+    problems = run("patch-sqli-python", {"diff": diff, "rationale": "x"})
+    assert any(expected in p for p in problems), problems
+
+
+@pytest.mark.usefixtures("docker_daemon")
+@pytest.mark.parametrize(
+    ("diff", "expected"),
+    [
         (GOOD_DIFF.replace("(query, (username,))", "(query)"), "patched code fails"),
         (
             GOOD_DIFF.replace('= ?"', '= \'" + username + "\'"').replace("(query, (username,))", "(query)"),
             "still injectable",
         ),
-        (EXTRA_FILE_DIFF, "must change only app/db.py"),
     ],
-    ids=["no-file-headers", "placeholder-without-parameter", "still-concatenated", "extra-file"],
+    ids=["placeholder-without-parameter", "still-concatenated"],
 )
 def test_patch_rejects_bad_fixes(diff: str, expected: str) -> None:
     problems = run("patch-sqli-python", {"diff": diff, "rationale": "x"})
     assert any(expected in p for p in problems), problems
+
+
+@pytest.mark.usefixtures("git_available")
+def test_the_sandbox_is_limited_and_always_removed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A fake docker that records each call, so the flags are checked without a daemon.
+    calls = tmp_path / "calls"
+    fake = tmp_path / "docker"
+    fake.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$@" "--END--" >> "{calls}"\n[ "$1" = run ] && echo PATCH_OK\nexit 0\n',
+        encoding="utf-8",
+    )
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    real_tool = BENCH._tool
+    monkeypatch.setattr(BENCH, "_tool", lambda name: str(fake) if name == "docker" else real_tool(name))
+
+    assert run("patch-sqli-python", {"diff": GOOD_DIFF, "rationale": "parameterized"}) == []
+
+    run_args, rm_args = [
+        c.strip("\n").split("\n") for c in calls.read_text(encoding="utf-8").split("--END--")[:2]
+    ]
+    assert run_args[0] == "run" and rm_args[:2] == ["rm", "-f"]
+    name = run_args[run_args.index("--name") + 1]
+    assert name.startswith("sentinel-bench-") and rm_args[2] == name, "the container that ran is removed"
+    for flag in ("--network none", "--read-only", "--cap-drop ALL", "--pids-limit 64", "--memory 256m",
+                 "--cpus 1", "--security-opt no-new-privileges:true"):  # fmt: skip
+        assert flag in " ".join(run_args), flag
+    image = run_args.index(BENCH.SANDBOX_IMAGE)
+    assert run_args[image + 1 : image + 5] == ["timeout", "-s", "KILL", str(BENCH.SANDBOX_TIMEOUT_S)]
+
+
+@pytest.mark.usefixtures("docker_daemon")
+def test_a_patch_that_never_ends_is_stopped_and_its_container_removed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(BENCH, "SANDBOX_TIMEOUT_S", 3)
+    endless = patch_of("while True:\n    pass\n" + BENCH.SQLI_FILE)
+
+    problems = run("patch-sqli-python", {"diff": endless, "rationale": "x"})
+
+    assert any("did not finish within 3 s" in p for p in problems), problems
+    docker = shutil.which("docker")
+    assert docker is not None
+    left = subprocess.run(  # noqa: S603
+        [docker, "ps", "-aq", "--filter", "name=sentinel-bench-"], capture_output=True, text=True, check=True
+    )
+    assert left.stdout.strip() == "", "no sandbox container may outlive the check"
+
+
+@pytest.mark.usefixtures("docker_daemon")
+def test_a_patch_that_forks_without_end_is_contained() -> None:
+    # The correct fix plus 200 processes: only the PID limit makes it fail.
+    fixed = BENCH.SQLI_FILE.replace(
+        """f"SELECT id, username FROM users WHERE username = '{username}'\"""",
+        '"SELECT id, username FROM users WHERE username = ?"',
+    ).replace("conn.execute(query)", "conn.execute(query, (username,))")
+    assert fixed != BENCH.SQLI_FILE
+    forks = "import subprocess\n_procs = [subprocess.Popen(['sleep', '30']) for _ in range(200)]\n"
+    assert run("patch-sqli-python", {"diff": patch_of(fixed), "rationale": "x"}) == []
+
+    problems = run("patch-sqli-python", {"diff": patch_of(forks + fixed), "rationale": "x"})
+
+    assert any("Resource temporarily unavailable" in p or "BlockingIOError" in p for p in problems), problems

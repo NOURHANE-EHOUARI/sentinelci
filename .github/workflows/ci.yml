@@ -47,6 +47,7 @@ jobs:
       - name: Tests (including JSON Schema contracts and Compose invariants)
         env:
           SENTINEL_REQUIRE_DOCKER: "1"
+          SENTINEL_REQUIRE_DOCKER_DAEMON: "1"  # ubuntu-24.04 runners have a daemon: the sandbox tests must run
         run: uv run pytest
 
   workflow-security:
