@@ -75,7 +75,10 @@ jobs:
         if: steps.previous.outputs.run_id != ''
         run: |
           set +e
-          uv run sentinel replay --all --store "$RUNNER_TEMP/previous" > "$RUNNER_TEMP/previous.txt" 2>&1
+          # After an engine or OPA version bump every previous decision is skipped: that night says so in its
+          # summary instead of failing. Tonight's corpus below is always compared, without this flag.
+          uv run sentinel replay --all --allow-all-skipped --store "$RUNNER_TEMP/previous" \
+            > "$RUNNER_TEMP/previous.txt" 2>&1
           code=$?
           set -e
           cat "$RUNNER_TEMP/previous.txt"

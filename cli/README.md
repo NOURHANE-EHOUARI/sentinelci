@@ -72,7 +72,8 @@ uv run sentinel replay --all --store out/evidence                # every stored 
 - Scanner versions are passed back as recorded (scanners do not run again); the OPA version is the running
   binary's, so an OPA or engine upgrade shows up as a difference.
 - `--all` replays every decision in the store and skips those recorded with another engine or OPA version
-  (listed as `skipped`). Exit 3 if any cannot be replayed or the store holds none, else 1 if any differs.
+  (listed as `skipped`). Exit 3 if any cannot be replayed, the store holds none or nothing was compared (every
+  decision skipped; `--allow-all-skipped` accepts that, as after an engine bump), else 1 if any differs.
 - The nightly job (`.github/workflows/replay-nightly.yml`) replays last night's corpus with today's engine,
   then records a fresh one with `eval/replay/corpus.py`. So a change to what the engine decides for the same
   inputs needs an engine version bump (`sentinelci.__version__`).

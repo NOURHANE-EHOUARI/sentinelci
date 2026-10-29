@@ -337,9 +337,9 @@ def test_a_record_that_cannot_be_replayed_means_no_replay(
 # ---------------------------------------------------------------- sentinel replay --all (the nightly job)
 
 
-def replay_all(tmp_path: Path, opa_binary: Path) -> tuple[int, str]:
+def replay_all(tmp_path: Path, opa_binary: Path, *extra: str) -> tuple[int, str]:
     result = CliRunner().invoke(
-        app, ["replay", "--all", "--store", str(tmp_path / "store"), "--opa", str(opa_binary)]
+        app, ["replay", "--all", "--store", str(tmp_path / "store"), "--opa", str(opa_binary), *extra]
     )
     return result.exit_code, result.output
 
@@ -406,6 +406,38 @@ def test_replay_all_skips_decisions_of_another_engine_or_opa(
     assert code == 0, out
     assert f"skipped    {first} ({reason})" in out
     assert "1 identical, 1 skipped" in out
+
+
+def test_replay_all_that_compared_nothing_is_not_a_success(tmp_path: Path, opa_binary: Path) -> None:
+    # Found by Nourhane in the review of #13: after an engine bump, every decision is skipped.
+    first, second = record_two(tmp_path, opa_binary)
+    for decision_id in (first, second):
+        edit_stored(stored(tmp_path, decision_id), lambda d: d.update(engine_version="0.0.1"))
+
+    code, out = replay_all(tmp_path, opa_binary)
+    assert code == 3, out
+    assert "0 identical, 2 skipped, 0 differ, 0 cannot replay" in out
+    assert "nothing compared" in out
+
+    code, out = replay_all(tmp_path, opa_binary, "--allow-all-skipped")
+    assert code == 0, out
+    assert "nothing compared: every decision was skipped (allowed by --allow-all-skipped)" in out
+
+
+def test_allow_all_skipped_never_hides_a_difference(tmp_path: Path, opa_binary: Path) -> None:
+    first, second = record_two(tmp_path, opa_binary)
+    edit_stored(stored(tmp_path, first), lambda d: d.update(engine_version="0.0.1"))
+    edit_stored(stored(tmp_path, second), lambda d: d.update(verdict="BLOCK"))
+    code, out = replay_all(tmp_path, opa_binary, "--allow-all-skipped")
+    assert code == 1, out
+
+
+def test_allow_all_skipped_needs_all(tmp_path: Path) -> None:
+    result = CliRunner().invoke(
+        app,
+        ["replay", "5b1c6a0e-3f0d-4c8e-9a51-8d3e2f6b7c40", "--allow-all-skipped", "--store", str(tmp_path)],
+    )
+    assert result.exit_code == 2, result.output
 
 
 def test_replay_all_with_nothing_to_replay_fails_closed(tmp_path: Path, opa_binary: Path) -> None:
