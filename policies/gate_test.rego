@@ -50,7 +50,7 @@ sc005(d) := [v | some v in d.violations; v.rule == "SC-005"]
 
 test_no_findings_pass if {
 	d := gate.decision with input as base
-	d == {"verdict": "PASS", "violations": [], "waivers_applied": []}
+	d == {"verdict": "PASS", "violations": [], "waivers_applied": [], "vex_applied": []}
 }
 
 # A LOW finding is P3 at worst: no rule applies to it.
@@ -79,13 +79,13 @@ test_secrets_grouped_in_one_sorted_violation if {
 
 test_waived_secret_passes_and_is_recorded if {
 	d := gate.decision with input as with_waivers([secret], [waiver("w-1", secret)])
-	d == {"verdict": "PASS", "violations": [], "waivers_applied": ["w-1"]}
+	d == {"verdict": "PASS", "violations": [], "waivers_applied": ["w-1"], "vex_applied": []}
 }
 
 test_several_waivers_for_one_finding_are_all_recorded if {
 	w2 := object.union(waiver("w-2", secret), {"expires_at": "2027-01-15T00:00:00Z"})
 	d := gate.decision with input as with_waivers([secret], [waiver("w-1", secret), w2])
-	d == {"verdict": "PASS", "violations": [], "waivers_applied": ["w-1", "w-2"]}
+	d == {"verdict": "PASS", "violations": [], "waivers_applied": ["w-1", "w-2"], "vex_applied": []}
 }
 
 test_waiver_for_another_finding_does_not_apply if {
@@ -96,7 +96,7 @@ test_waiver_for_another_finding_does_not_apply if {
 
 test_unused_waiver_is_not_recorded if {
 	d := gate.decision with input as with_waivers([], [waiver("w-1", secret)])
-	d == {"verdict": "PASS", "violations": [], "waivers_applied": []}
+	d == {"verdict": "PASS", "violations": [], "waivers_applied": [], "vex_applied": []}
 }
 
 test_package_waiver_matches_any_version_by_cve_alias_or_rule_id if {
@@ -573,5 +573,72 @@ test_an_unknown_profile_fails_closed if {
 		some v in d.violations
 		v.rule == "SC-010"
 		contains(v.message, "unknown policy profile")
+	}
+}
+
+# ---------------------------------------------------------------- VEX (not_affected statements)
+
+critical_sca := object.union(sca, {"severity": "CRITICAL"}) # unscored CRITICAL: P0, SC-002 blocks
+
+statement(ids, products) := {"vulnerabilities": ids, "products": products, "justification": "component_not_present"}
+
+with_vex(fs, statements) := object.union(with_findings(fs), {"vex": statements})
+
+test_a_not_affected_statement_covers_a_package_finding if {
+	d := gate.decision with input as with_vex([critical_sca], [statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": null}])])
+	d == {"verdict": "PASS", "violations": [], "waivers_applied": [], "vex_applied": [critical_sca.id]}
+}
+
+test_vex_matches_any_id_of_the_finding_in_any_case if {
+	every id in ["GHSA-aaaa-bbbb-cccc", "PYSEC-2026-1", "cve-2026-12345"] {
+		d := gate.decision with input as with_vex([critical_sca], [statement([id], [{"base": "pkg:pypi/example-lib", "version": null}])])
+		d.vex_applied == [critical_sca.id]
+	}
+}
+
+test_vex_with_a_version_covers_only_that_version if {
+	same := statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": "1.2.0"}])
+	other := statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": "1.2.1"}])
+	gate.decision.verdict == "PASS" with input as with_vex([critical_sca], [same])
+	gate.decision.verdict == "BLOCK" with input as with_vex([critical_sca], [other])
+}
+
+test_vex_compares_pypi_names_in_canonical_form if {
+	spelled := object.union(critical_sca, {"package": {"purl": "pkg:pypi/Example_Lib@1.2.0"}})
+	d := gate.decision with input as with_vex([spelled], [statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": null}])])
+	d.vex_applied == [spelled.id]
+}
+
+test_vex_for_another_vulnerability_or_package_covers_nothing if {
+	every s in [
+		statement(["CVE-2026-99999"], [{"base": "pkg:pypi/example-lib", "version": null}]),
+		statement(["CVE-2026-12345"], [{"base": "pkg:pypi/other-lib", "version": null}]),
+		statement(["CVE-2026-12345"], [{"base": "pkg:npm/example-lib", "version": null}]),
+	] {
+		d := gate.decision with input as with_vex([critical_sca], [s])
+		d.verdict == "BLOCK"
+		d.vex_applied == []
+	}
+}
+
+test_vex_never_covers_a_secret if {
+	secret_with_ids := object.union(secret, {"cve": ["CVE-2026-12345"], "package": {"purl": "pkg:pypi/example-lib"}})
+	d := gate.decision with input as with_vex([secret_with_ids], [statement(["CVE-2026-12345", "generic-api-key"], [{"base": "pkg:pypi/example-lib", "version": null}])])
+	d.verdict == "BLOCK"
+	d.vex_applied == []
+}
+
+test_vex_covers_a_kev_finding_too if {
+	kev_sca := object.union(critical_sca, {"enrichment": {"kev": {"listed": true}, "fix_available": true}})
+	d := gate.decision with input as with_vex([kev_sca], [statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": null}])])
+	d.verdict == "PASS"
+}
+
+test_vex_applies_in_every_context if {
+	s := statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": null}])
+	every ctx in ["pr", "release", "local"] {
+		d := gate.decision with input as object.union(with_vex([critical_sca], [s]), {"context": ctx})
+		d.vex_applied == [critical_sca.id]
+		not "SC-002" in {v.rule | some v in d.violations}
 	}
 }

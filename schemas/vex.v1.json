@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/NOURHANE-EHOUARI/sentinelci/schemas/vex.v1.json",
+  "title": "SentinelCI VEX v1 (OpenVEX v0.2.0 subset)",
+  "description": "`.sentinel/vex.json` of a scan target (SPEC section 6.4): OpenVEX statements, read from the base branch and reviewed like the waivers. Only `not_affected` statements change a decision: a matching package finding stops counting for every rule (like a waiver) and is listed in the decision's `vex_applied`. A statement matches a finding when one of its vulnerability ids (name or aliases) is one of the finding's ids (rule_id, cve, aliases) and one of its products is the finding's package: the purl base (no version: every version), or the purl with its version (that version only). Other statuses are accepted and change nothing. Stricter than OpenVEX: `not_affected` needs a `justification` (an impact statement alone is not enough), products are purls, and unknown fields are refused.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "@context",
+    "@id",
+    "author",
+    "timestamp",
+    "version",
+    "statements"
+  ],
+  "properties": {
+    "@context": {
+      "const": "https://openvex.dev/ns/v0.2.0"
+    },
+    "@id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029]).*\\S.*$"
+    },
+    "author": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029]).*\\S.*$"
+    },
+    "role": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029]).*\\S.*$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "last_updated": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "tooling": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029]).*\\S.*$"
+    },
+    "statements": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/statement"
+      }
+    }
+  },
+  "$defs": {
+    "vuln_id": {
+      "type": "string",
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[A-Za-z0-9][A-Za-z0-9._:-]{1,63}$"
+    },
+    "purl": {
+      "description": "Package URL; with a version, the statement covers that version only.",
+      "type": "string",
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])pkg:[a-z0-9.+-]+/[^?#@]+(@[^?#@/]+)?(\\?[^#]*)?$"
+    },
+    "statement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vulnerability",
+        "products",
+        "status"
+      ],
+      "properties": {
+        "@id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029]).*\\S.*$"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "last_updated": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "vulnerability": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "@id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029]).*\\S.*$"
+            },
+            "name": {
+              "$ref": "#/$defs/vuln_id"
+            },
+            "description": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029]).*\\S.*$"
+            },
+            "aliases": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/vuln_id"
+              }
+            }
+          }
+        },
+        "products": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "@id"
+            ],
+            "properties": {
+              "@id": {
+                "$ref": "#/$defs/purl"
+              }
+            }
+          }
+        },
+        "status": {
+          "enum": [
+            "not_affected",
+            "affected",
+            "fixed",
+            "under_investigation"
+          ]
+        },
+        "justification": {
+          "enum": [
+            "component_not_present",
+            "vulnerable_code_not_present",
+            "vulnerable_code_not_in_execute_path",
+            "vulnerable_code_cannot_be_controlled_by_adversary",
+            "inline_mitigations_already_exist"
+          ]
+        },
+        "impact_statement": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029]).*\\S.*$"
+        },
+        "status_notes": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029]).*\\S.*$"
+        },
+        "action_statement": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029]).*\\S.*$"
+        },
+        "action_statement_timestamp": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "not_affected"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "justification"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "not": {
+                  "const": "not_affected"
+                }
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "justification"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

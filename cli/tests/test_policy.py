@@ -477,3 +477,10 @@ def test_an_invalid_service_context_is_never_recorded(tmp_path: Path, opa_binary
     assert code == 3, out
     assert "--service-context" in out
     assert not decision.exists()
+
+
+def test_an_invalid_vex_document_is_never_recorded(tmp_path: Path, opa_binary: Path) -> None:
+    bad = ROOT / "schemas" / "fixtures" / "vex" / "invalid" / "not-affected-without-justification.json"
+    code, out, decision = run_evaluate(tmp_path, b"", "--vex", str(bad), "--opa", str(opa_binary))
+    assert code == 3, out
+    assert not decision.exists()

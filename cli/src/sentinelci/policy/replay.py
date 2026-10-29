@@ -139,6 +139,7 @@ def replay(
         enrichment_snapshot=blob("enrichment_snapshot_digest"),
         sbom=optional_blob("sbom_digest"),
         service_context=optional_blob("service_context_digest"),
+        vex_data=optional_blob("vex_digest"),
     )
     canonical: dict[str, Any] = json.loads(dumps_decision(replayed))
     return ReplayResult(dict(recorded), canonical, differences(dict(recorded), canonical))

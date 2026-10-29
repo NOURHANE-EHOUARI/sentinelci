@@ -13,8 +13,10 @@
 #                 checking them is this policy's job (SC-005)
 #   policy_profile optional: `policy_profile` of the base-branch sentinel.yaml (policies/profiles.rego);
 #                 absent: default. An unknown profile is malformed input (SC-010).
+#   vex           optional: the not_affected statements of .sentinel/vex.json (schemas/vex.v1.json), checked
+#                 and normalized by `sentinel evaluate`: {vulnerabilities, products: [{base, version}], ...}
 #
-# Output: data.sentinel.gate.decision = {verdict, violations, waivers_applied}, in the shape of
+# Output: data.sentinel.gate.decision = {verdict, violations, waivers_applied, vex_applied}, in the shape of
 # schemas/decision.v1.json. One violation per rule, listing every finding id that triggered it.
 #
 # Fail closed: anything that cannot be evaluated (malformed input, invalid waiver) blocks.
@@ -240,12 +242,61 @@ block contains v if {
 	v := {"rule": "SC-001", "effect": "BLOCK", "finding_ids": sort(secret_ids), "message": "Hard-coded secret"}
 }
 
+# ---------------------------------------------------------------- VEX (SPEC section 6.4)
+
+# A not_affected statement covers a package finding when one of its vulnerability ids is one of the finding's ids
+# and one of its products is the finding's package: same purl base (canonical: PyPI names folded as PEP 503),
+# and the same version when the statement names one.
+canonical_base(p) := concat("", ["pkg:pypi/", regex.replace(lower(trim_prefix(base, "pkg:pypi/")), `[-_.]+`, "-")]) if {
+	base := purl_base(p)
+	startswith(base, "pkg:pypi/")
+}
+
+canonical_base(p) := purl_base(p) if not startswith(purl_base(p), "pkg:pypi/")
+
+purl_version(p) := m[0][1] if {
+	m := regex.find_all_string_submatch_n(`@([^/@]+)$`, regex.replace(p, `[?#].*$`, ""), 1)
+	count(m) == 1
+}
+
+finding_ids(f) := {upper(i) |
+	some i in array.concat(array.concat([object.get(f, "rule_id", "")], object.get(f, "cve", [])), object.get(f, "aliases", []))
+	is_string(i)
+}
+
+vex_product(p, f) if {
+	canonical_base(f.package.purl) == p.base
+	p.version == null
+}
+
+vex_product(p, f) if {
+	canonical_base(f.package.purl) == p.base
+	purl_version(f.package.purl) == p.version
+}
+
+not_affected(f) if {
+	f.category in {"SCA", "CONTAINER"}
+	ids := finding_ids(f)
+	some s in object.get(input, "vex", [])
+	some v in s.vulnerabilities
+	upper(v) in ids
+	some p in s.products
+	vex_product(p, f)
+}
+
+vex_applied contains f.id if {
+	some f in input.findings
+	not_affected(f)
+}
+
 # ---------------------------------------------------------------- rule catalogue (SPEC section 6.3)
 
-# A finding counts for a rule when the change introduces it (any finding outside PR mode) and no waiver covers it.
+# A finding counts for a rule when the change introduces it (any finding outside PR mode), and no waiver and no
+# not_affected VEX statement covers it.
 counts(f) if {
 	introduced(f)
 	not waived(f)
+	not not_affected(f)
 }
 
 # The priority the risk engine (B3) recorded, or the worst case for an unscored finding. risk = 100 x S x E x X x R
@@ -448,4 +499,5 @@ decision := {
 	"verdict": verdict,
 	"violations": array.concat(sort(block), sort(warn)),
 	"waivers_applied": sort(waivers_applied),
+	"vex_applied": sort(vex_applied),
 }

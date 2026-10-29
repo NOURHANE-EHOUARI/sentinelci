@@ -12,6 +12,7 @@ JSON Schemas (draft 2020-12) shared by both tracks. See `docs/spec/SPEC.md` sect
 | `tool-status.v1.json` | A3 pipeline (superset of the `tools verify --report` manifest) → B4 gate (SC-010) |
 | `enrichment-snapshot.v1.json` | B2 fetchers (EPSS, KEV, OSV) → `sentinel enrich`, evidence store, replay |
 | `sentinel-config.v1.json` | `sentinel.yaml` of a scan target, read from the base branch → B2 (exposure), B4 (profile) |
+| `vex.v1.json` | `.sentinel/vex.json` (OpenVEX subset), read from the base branch → B4 gate (`not_affected` statements) |
 
 Rules:
 
@@ -19,10 +20,10 @@ Rules:
   that valid ones pass and invalid ones fail. Add a fixture for every new rule you encode.
 - A breaking change creates a new version (`finding.v2.json`) — never edit a released version's meaning.
 - An additive change may bump the minor `schema_version` in the same file (`decision.v1.json` accepts
-  `1.0` to `1.3`): every older document stays valid, and the schema states what the new minor version
+  `1.0` to `1.4`): every older document stays valid, and the schema states what the new minor version
   requires and forbids the new fields in older minor versions. Current minor versions: decision 1.3 (1.1 added
-  `inputs.waivers_digest`; 1.2 added `inputs.baseline_digest` and `inputs.tool_status_digest`; 1.3 adds
-  `inputs.service_context_digest`), finding 1.1 (adds
+  `inputs.waivers_digest`; 1.2 added `inputs.baseline_digest` and `inputs.tool_status_digest`; 1.3 added
+  `inputs.service_context_digest`; 1.4 adds `inputs.vex_digest` and `vex_applied`), finding 1.1 (adds
   `other_locations`).
 - Schemas encode safety rules where possible (no raw secrets, no path traversal, VERIFIED only when every
   verification condition holds, verdict consistent with violations).
