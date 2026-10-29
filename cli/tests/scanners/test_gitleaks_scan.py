@@ -278,6 +278,26 @@ def test_remerge_paths_without_a_valid_commit_are_left_alone(tmp_path: Path, com
     assert findings[0]["File"] == "b/settings.py"
 
 
+@pytest.mark.parametrize(
+    "error",
+    [subprocess.TimeoutExpired(["git"], 30), OSError("Resource temporarily unavailable")],
+    ids=["timeout", "os-error"],
+)
+def test_a_git_failure_during_the_path_repair_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    # Every failure of a scan must exit 3 (SC-010), never escape as a traceback with exit code 1.
+    repo = _Repo(tmp_path / "repo")
+    commit = repo.commit({"settings.py": "x\n"}, "tree")
+
+    def broken(*_args: object, **_kwargs: object) -> None:
+        raise error
+
+    monkeypatch.setattr(subprocess, "run", broken)
+    with pytest.raises(ScannerError, match="git could not check a finding's path"):
+        _repair_remerge_paths([{"File": "b/settings.py", "Commit": commit}], repo.path)
+
+
 def test_git_mode_runs_a_second_pass_for_octopus_merges(
     tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
 ) -> None:
