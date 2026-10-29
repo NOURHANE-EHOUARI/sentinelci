@@ -14,6 +14,21 @@ The deterministic core of SentinelCI. It runs inside CI and locally with the sam
 
 `risk/`, `policy/`, `enrich/` and `normalize/` must never import `sentinel_ai` (enforced by import-linter).
 
+## `sentinel score` (risk engine, B3)
+
+```bash
+uv run sentinel score --findings out/findings.ndjson --out out/findings.scored.ndjson
+```
+
+- Sets `risk` on every finding: `score` (0-100, rounded to 0.1), `priority` (P0-P4), `factors` (S, E, X, R) and the
+  `model_version` of `policies/risk-model.yaml`, with `risk = 100 x S x E x X x R` (SPEC section 6.2).
+- Missing enrichment never lowers a score: no EPSS/KEV data counts as E = 1.0, no exposure as X = 1.0, no
+  reachability as the model's `unknown`. Every score stays at most `100 x severity_weight`.
+- SAST counts as taint-mode (`SAST_TAINT`) until findings say which kind they are; a category the model does not
+  list counts as E = 1.0. Reachability applies to SCA and CONTAINER only.
+- Fail closed: findings that are not Finding v1, or an invalid risk model, write nothing and exit 3.
+- `cvss_baseline()` gives the CVSS-only score on the same scale, the baseline the evaluation compares with (B8).
+
 ## `sentinel evaluate` (release gate, B4)
 
 ```bash

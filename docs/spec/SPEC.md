@@ -217,6 +217,12 @@ priority_bands: {P0: 70, P1: 50, P2: 30, P3: 10}   # below 10 -> P4
 | Internal service importing it | 0.7 | 0.9 | 61 | P1 |
 | Offline batch job never importing it | 0.5 | 0.4 | 19 | P3 |
 
+Implementation (`sentinel score`, B3): the score is rounded to 0.1 and banded from the rounded value; `factors`
+records S, E, X and R. Missing enrichment never lowers a score (no EPSS/KEV: E = 1.0; no exposure: X = 1.0; no
+reachability: the model's `unknown`), so every score stays at most `100 × severity_weight`, the bound the gate uses
+for unscored findings. R applies to SCA and CONTAINER only; SAST counts as `SAST_TAINT` until findings carry the
+analysis kind; a category without a `non_cve` weight counts as E = 1.0.
+
 ### 6.3 Rule catalogue
 
 | Rule | Verdict | Condition |
