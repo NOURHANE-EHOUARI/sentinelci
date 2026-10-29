@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "service": "demo-shop",
+  "exposure": "internet-facing"
+}

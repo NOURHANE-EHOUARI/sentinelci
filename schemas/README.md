@@ -9,6 +9,8 @@ JSON Schemas (draft 2020-12) shared by both tracks. See `docs/spec/SPEC.md` sect
 | `patch-proposal.v1.json` | A6 fixers / B6 LLM → A6 remediation loop |
 | `verification-result.v1.json` | A6 → platform, B8 |
 | `waivers.v1.json` | people via reviewed PRs (AI drafts only) → B4 gate, platform |
+| `enrichment-snapshot.v1.json` | B2 fetchers (EPSS, KEV, OSV) → `sentinel enrich`, evidence store, replay |
+| `sentinel-config.v1.json` | `sentinel.yaml` of a scan target, read from the base branch → B2 (exposure), B4 (profile) |
 
 Rules:
 

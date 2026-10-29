@@ -14,6 +14,25 @@ The deterministic core of SentinelCI. It runs inside CI and locally with the sam
 
 `risk/`, `policy/`, `enrich/` and `normalize/` must never import `sentinel_ai` (enforced by import-linter).
 
+## `sentinel enrich` (enrichment, B2)
+
+```bash
+uv run sentinel enrich --findings out/findings.ndjson --snapshot out/enrichment-snapshot.json \
+  --config sentinel.yaml --out out/findings.enriched.ndjson
+```
+
+- Offline: applies an enrichment snapshot (`schemas/enrichment-snapshot.v1.json`) and the service context
+  (`sentinel.yaml`, `schemas/sentinel-config.v1.json`) to findings. Pass the same snapshot to
+  `sentinel evaluate --enrichment-snapshot` so the decision records its digest.
+- Package findings (SCA, CONTAINER): `cvss` and `epss` (highest among the finding's ids and their aliases), `kev`
+  (only when the KEV feed was read), `fix_available` (true from the finding or OSV, false only when OSV knew the
+  vulnerability and fixes none of the package). Every finding: `exposure` of its `sentinel.yaml` component
+  (longest matching path), else the top-level exposure.
+- Unknown stays absent; the risk engine treats absent as the worst case. Without `--snapshot` or `--config`,
+  nothing from that source is added.
+- Read `sentinel.yaml` from the base branch in PR mode: a change must not lower its own exposure.
+- Fail closed: an invalid snapshot, `sentinel.yaml` or findings file writes nothing and exits 3.
+
 ## `sentinel evaluate` (release gate, B4)
 
 ```bash

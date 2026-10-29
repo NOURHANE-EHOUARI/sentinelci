@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "sources": {
+    "epss": {
+      "date": "2026-11-10",
+      "model_version": "v2025.03.14"
+    },
+    "kev": {
+      "catalog_version": "2026.11.09",
+      "date_released": "2026-11-09T18:00:00Z"
+    },
+    "osv": {
+      "date": "2026-11-10"
+    },
+    "nvd": {
+      "date": "2026-11-10"
+    }
+  },
+  "vulnerabilities": {
+    "CVE-2099-0001": {
+      "aliases": [
+        "GHSA-xxxx-yyyy-zzzz"
+      ],
+      "cvss": {
+        "version": "3.1",
+        "score": 9.8,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+      },
+      "fixed_versions": {
+        "pkg:pypi/example-lib": [
+          "1.2.4"
+        ]
+      },
+      "epss": {
+        "score": 0.41,
+        "percentile": 0.95
+      }
+    },
+    "GHSA-xxxx-yyyy-zzzz": {
+      "aliases": [
+        "CVE-2099-0001"
+      ],
+      "fixed_versions": {
+        "pkg:pypi/example-lib": [
+          "1.2.4"
+        ]
+      }
+    },
+    "CVE-2099-0002": {
+      "cvss": {
+        "version": "3.1",
+        "score": 7.5,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
+      },
+      "epss": {
+        "score": 0.92,
+        "percentile": 0.99
+      },
+      "kev": {
+        "date_added": "2026-10-01"
+      }
+    }
+  }
+}

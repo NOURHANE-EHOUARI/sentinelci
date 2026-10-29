@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/NOURHANE-EHOUARI/sentinelci/schemas/enrichment-snapshot.v1.json",
+  "title": "SentinelCI Enrichment snapshot v1",
+  "description": "What the enrichment sources said about each vulnerability at one point in time (SPEC section 6.1). Built by the enrichment fetchers (B2), read offline by `sentinel enrich`, stored by content and recorded in decisions as inputs.enrichment_snapshot_digest, so replay never calls a live feed. Dated by the feeds, not by the clock. A source that could not be reached is absent, and every value it would have given stays unknown (the risk engine treats unknown as the worst case).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "sources",
+    "vulnerabilities"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "sources": {
+      "description": "Which feeds this snapshot holds. KEV absent means KEV status is unknown, not 'not listed'.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "epss": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "date"
+          ],
+          "properties": {
+            "date": {
+              "type": "string",
+              "format": "date"
+            },
+            "model_version": {
+              "$ref": "#/$defs/token"
+            }
+          }
+        },
+        "kev": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "catalog_version"
+          ],
+          "properties": {
+            "catalog_version": {
+              "$ref": "#/$defs/token"
+            },
+            "date_released": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "osv": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "date"
+          ],
+          "properties": {
+            "date": {
+              "type": "string",
+              "format": "date"
+            }
+          }
+        }
+      }
+    },
+    "vulnerabilities": {
+      "description": "Keyed by vulnerability id (CVE, GHSA, PYSEC, GO...).",
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/vuln_id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/vulnerability"
+      }
+    }
+  },
+  "$defs": {
+    "token": {
+      "type": "string",
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[A-Za-z0-9][A-Za-z0-9._:+-]{0,63}$"
+    },
+    "vuln_id": {
+      "type": "string",
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[A-Za-z0-9][A-Za-z0-9._:-]{1,63}$"
+    },
+    "purl_base": {
+      "description": "Package URL without version, qualifiers or subpath.",
+      "type": "string",
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])pkg:[a-z0-9.+-]+/[^?#@]+$"
+    },
+    "vulnerability": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "aliases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/vuln_id"
+          },
+          "uniqueItems": true
+        },
+        "cvss": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "score"
+          ],
+          "properties": {
+            "version": {
+              "enum": [
+                "2.0",
+                "3.0",
+                "3.1",
+                "4.0"
+              ]
+            },
+            "score": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 10
+            },
+            "vector": {
+              "type": "string",
+              "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])\\S+$"
+            }
+          }
+        },
+        "fixed_versions": {
+          "description": "OSV: versions that fix this vulnerability, per affected package (purl base).",
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/purl_base"
+          },
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/token"
+            },
+            "uniqueItems": true
+          }
+        },
+        "epss": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "score",
+            "percentile"
+          ],
+          "properties": {
+            "score": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "percentile": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        },
+        "kev": {
+          "description": "Present only when listed in the KEV catalogue.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "date_added"
+          ],
+          "properties": {
+            "date_added": {
+              "type": "string",
+              "format": "date"
+            }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "description": "A epss value anywhere needs the epss source (its date or catalogue version).",
+      "if": {
+        "properties": {
+          "vulnerabilities": {
+            "not": {
+              "additionalProperties": {
+                "not": {
+                  "required": [
+                    "epss"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sources": {
+            "required": [
+              "epss"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "description": "A kev value anywhere needs the kev source (its date or catalogue version).",
+      "if": {
+        "properties": {
+          "vulnerabilities": {
+            "not": {
+              "additionalProperties": {
+                "not": {
+                  "required": [
+                    "kev"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sources": {
+            "required": [
+              "kev"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

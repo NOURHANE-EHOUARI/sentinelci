@@ -194,6 +194,14 @@ AI advisory: in the dashboard (advisory only — does not affect the verdict)
 
 Each run stores a content-addressed **enrichment snapshot**; replay never uses live feeds.
 
+Implementation (B2): fetching (network) and applying (offline) are separate. The fetchers write a snapshot
+(`schemas/enrichment-snapshot.v1.json`), keyed by vulnerability id and dated by the feeds; a feed that could not be
+reached is absent, so its values stay unknown. `sentinel enrich --snapshot --config sentinel.yaml` applies it to
+package findings (CVSS and EPSS: the highest among the finding's ids and their aliases; KEV; fix availability) and
+gives every finding the exposure of its `sentinel.yaml` component (longest matching path). Unknown stays absent:
+the risk engine counts it as the worst case. `sentinel.yaml` (`schemas/sentinel-config.v1.json`) is read from the
+base branch, like the policies and waivers, so a change cannot lower its own exposure.
+
 ### 6.2 Risk model
 
 `risk = 100 × S × E × X × R` clamped to [0, 100]. For CVEs: `E = 1.0` if KEV-listed else
@@ -405,7 +413,8 @@ cannot contain `..`.
 | `verification-result.v1.json` | A6 → B1, B8 | gate outcome; VERIFIED only if every condition holds |
 | evidence bundle layout | A4 → B1 | `manifest.json` (sha256 of each file, signed) + decision, findings, snapshot, SBOMs, raw outputs |
 | `openapi.yaml` | B1 → A3, A6, A8, B7 | Platform API |
-| `sentinel.yaml` | target → B2, B4 | service, exposure, environment, data_classification, owners, policy_profile |
+| `sentinel.yaml` (`sentinel-config.v1.json`) | target → B2, B4 | service, exposure, environment, data_classification, owners, policy_profile; optional `components` (path, exposure, data class) |
+| `enrichment-snapshot.v1.json` | B2 fetchers → B2 apply, evidence store | per vulnerability id: aliases, CVSS, fixed versions per purl base, EPSS, KEV; dated sources |
 
 ### 13.3 Platform API v1 (first cut)
 
