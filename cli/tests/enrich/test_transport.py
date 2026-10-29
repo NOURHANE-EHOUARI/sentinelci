@@ -9,7 +9,9 @@ import http.client
 import http.server
 import io
 import json
+import ssl
 import threading
+import time
 import urllib.error
 from collections.abc import Iterator
 from pathlib import Path
@@ -128,11 +130,70 @@ def test_the_timeout_is_given_to_the_socket_and_bounds_the_whole_request(
     assert opener.calls == [(URL, 7.5)]
     clock = iter(range(0, 1000, 4))  # each read takes 4 s: a slow drip
     monkeypatch.setattr(tr.time, "monotonic", lambda: next(clock))
-    transport, _, _ = http_transport(
+    transport, opener, sleeps = http_transport(
         FakeResponse(b"x" * 64, chunk=8), FakeResponse(b"x" * 64, chunk=8), timeout=10
     )
     with pytest.raises(TransportError, match="time limit"):
         transport.request("GET", URL)
+    assert len(opener.calls) == 2 and sleeps == [1.0], "a missed deadline is transient: retried once"
+
+
+@pytest.fixture
+def dripping_server() -> Iterator[str]:
+    """Promises 10,000 bytes, then sends 8 every 0.5 s: never slow enough for one socket timeout."""
+
+    class Drip(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Length", "10000")
+            self.end_headers()
+            try:
+                for _ in range(20):  # 10 s at most, so a regression fails in seconds, not minutes
+                    self.wfile.write(b"x" * 8)
+                    self.wfile.flush()
+                    time.sleep(0.5)
+            except OSError:
+                pass
+
+        def log_message(self, *args: object) -> None:
+            return None
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Drip)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_address[1]}/"
+    server.shutdown()
+
+
+def test_the_deadline_holds_on_a_real_socket(dripping_server: str) -> None:
+    """#18 re-review: read(64 KiB) waited for 64 KiB, so a 2 s timeout failed only after 40 s."""
+    start = time.monotonic()
+    with pytest.raises(TransportError, match="time limit"):
+        HttpTransport(timeout=2)._once("GET", dripping_server, None)
+    assert time.monotonic() - start < 5
+
+
+def test_the_whole_run_has_a_time_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#18 nit: OSV is asked once per id; all requests together stop at the run budget."""
+    now = [0.0]
+    monkeypatch.setattr(tr.time, "monotonic", lambda: now[0])
+    transport, opener, _ = http_transport(*(FakeResponse(b"{}") for _ in range(3)), timeout=30)
+    transport.budget = 50
+    transport.request("GET", URL)  # t = 0: the budget starts
+    now[0] = 40.0
+    transport.request("GET", URL)  # 10 s left: the socket gets 10, not 30
+    assert [timeout for _, timeout in opener.calls] == [30, 10]
+    now[0] = 50.0
+    with pytest.raises(TransportError, match="budget is spent"):
+        transport.request("GET", URL)
+    assert len(opener.calls) == 2, "no request once the budget is spent, and no retry"
+
+
+@pytest.mark.parametrize("budget", [0, -1, float("inf"), float("nan")])
+def test_the_budget_must_be_sensible(budget: float) -> None:
+    with pytest.raises(ValueError, match="budget"):
+        HttpTransport(budget=budget)
 
 
 @pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), 301])
@@ -142,22 +203,28 @@ def test_the_timeout_must_be_sensible(timeout: float) -> None:
 
 
 @pytest.mark.parametrize(
-    "error",
+    ("error", "retried"),
     [
-        http.client.IncompleteRead(b"partial"),
-        http.client.BadStatusLine("garbage"),
-        urllib.error.URLError("no route"),
-        TimeoutError("timed out"),
-        ConnectionResetError("reset"),
-        ValueError("bad url"),
+        (http.client.IncompleteRead(b"partial"), True),
+        (TimeoutError("timed out"), True),
+        (ConnectionResetError("reset"), True),
+        (urllib.error.URLError(TimeoutError("timed out")), True),
+        (urllib.error.URLError(ConnectionResetError("reset")), True),
+        (http.client.BadStatusLine("garbage"), False),
+        (urllib.error.URLError("no route"), False),
+        (urllib.error.URLError(ssl.SSLCertVerificationError("certificate verify failed")), False),
+        (ssl.SSLError("handshake failure"), False),
+        (TransportError("answered a redirect (302): not followed"), False),
+        (ValueError("bad url"), False),
     ],
-    ids=lambda e: type(e).__name__,
+    ids=lambda e: type(e).__name__ if isinstance(e, BaseException) else str(e),
 )
-def test_network_and_protocol_errors_are_transport_errors(error: BaseException) -> None:
+def test_network_and_protocol_errors_are_transport_errors(error: BaseException, retried: bool) -> None:
+    """Only what a second try may cure is retried (#18 nit): never a refused redirect or a TLS failure."""
     transport, _, sleeps = http_transport(error, error)
     with pytest.raises(TransportError):
         transport.request("GET", URL)
-    assert sleeps == [1.0], "retried once"
+    assert sleeps == ([1.0] if retried else [])
 
 
 def test_an_error_status_is_returned_with_its_body() -> None:
@@ -167,6 +234,23 @@ def test_an_error_status_is_returned_with_its_body() -> None:
     transport, _, sleeps = http_transport(error)
     assert transport.request("GET", URL) == (404, b'{"code":5}')
     assert sleeps == [], "a 404 is an answer, not a transient failure"
+
+
+class BrokenBody(io.BytesIO):
+    def read(self, size: int | None = -1) -> bytes:
+        raise ConnectionResetError("reset while reading the error body")
+
+    read1 = read
+
+
+def test_an_error_status_whose_body_cannot_be_read_is_a_transport_error() -> None:
+    def error() -> urllib.error.HTTPError:
+        return urllib.error.HTTPError(URL, 503, "Unavailable", http.client.HTTPMessage(), BrokenBody())
+
+    transport, _, sleeps = http_transport(error(), error())
+    with pytest.raises(TransportError, match="reset while reading"):
+        transport.request("GET", URL)
+    assert sleeps == [1.0], "retried once, like any transport failure"
 
 
 def test_one_transient_failure_is_retried() -> None:

@@ -11,12 +11,18 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 OPA_ENV_VAR = "SENTINEL_OPA"
+# Removed on top of every built-in OPA flags as non-deterministic: certificate verification checks validity
+# against the current time.
+ALWAYS_DENIED_BUILTINS = frozenset(
+    {"crypto.x509.parse_and_verify_certificates", "crypto.x509.parse_and_verify_certificates_with_options"}
+)
 DEFAULT_TIMEOUT_S = 60.0
 _VERSION_LINE = re.compile(r"^Version:\s*(\S+)\s*$", re.MULTILINE)
 
@@ -63,7 +69,9 @@ class OpaRunner:
         except OSError as exc:
             raise OpaError(f"cannot run OPA: {exc}") from exc
         if proc.returncode != 0:
-            raise OpaError(f"OPA exited with {proc.returncode}: {proc.stderr.strip()}")
+            # With --format json, OPA reports compile and evaluation errors on stdout.
+            reason = " ".join((proc.stderr or proc.stdout).split())[:1000]
+            raise OpaError(f"OPA exited with {proc.returncode}: {reason}")
         return proc.stdout
 
     def version(self) -> str:
@@ -72,13 +80,35 @@ class OpaRunner:
             raise OpaError("cannot read the OPA version")
         return match.group(1)
 
+    def restricted_capabilities(self) -> dict[str, Any]:
+        """This OPA's capabilities minus every built-in a deterministic policy must not use.
+
+        Derived from the pinned binary at run time, so it follows OPA upgrades. A policy calling a removed
+        built-in (the clock, the network, randomness, the environment) fails to compile: "policies never read
+        the clock" is enforced, not a convention.
+        """
+        try:
+            capabilities: dict[str, Any] = json.loads(self._run(["capabilities", "--current"]))
+            builtins = capabilities["builtins"]
+            capabilities["builtins"] = [
+                b
+                for b in builtins
+                if not b.get("nondeterministic") and b["name"] not in ALWAYS_DENIED_BUILTINS
+            ]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise OpaError("cannot read OPA's capabilities") from exc
+        return capabilities
+
     def eval(self, query: str, policies: Sequence[Path], input_doc: Any) -> Any:
         """Evaluate `query` against `policies` with `input_doc`; return the single result value."""
-        args = ["eval", "--format", "json", "--stdin-input"]
-        for path in policies:
-            args += ["--data", str(path)]
-        args.append(query)
-        return parse_eval_output(self._run(args, stdin=json.dumps(input_doc)))
+        with tempfile.TemporaryDirectory(prefix="sentinel-opa-") as private:
+            capabilities = Path(private) / "capabilities.json"
+            capabilities.write_text(json.dumps(self.restricted_capabilities()), encoding="utf-8")
+            args = ["eval", "--format", "json", "--stdin-input", "--capabilities", str(capabilities)]
+            for path in policies:
+                args += ["--data", str(path)]
+            args.append(query)
+            return parse_eval_output(self._run(args, stdin=json.dumps(input_doc)))
 
 
 def parse_eval_output(stdout: str) -> Any:
