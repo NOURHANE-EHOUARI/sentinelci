@@ -1,0 +1,222 @@
+package sentinel.gate_test
+
+import rego.v1
+
+import data.sentinel.gate
+
+secret := {"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "category": "SECRET", "rule_id": "generic-api-key"}
+
+other_secret := {"id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "category": "SECRET", "rule_id": "aws-access-token"}
+
+sca := {
+	"id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+	"category": "SCA",
+	"rule_id": "GHSA-aaaa-bbbb-cccc",
+	"cve": ["CVE-2026-12345"],
+	"aliases": ["PYSEC-2026-1"],
+	"package": {"purl": "pkg:pypi/example-lib@1.2.0?arch=x86_64"},
+}
+
+base := {"evaluated_at": "2026-11-10T10:00:00Z", "findings": [], "waivers": []}
+
+with_findings(fs) := object.union(base, {"findings": fs})
+
+with_waivers(fs, ws) := object.union(with_findings(fs), {"waivers": ws})
+
+# A valid waiver for finding f; tests patch fields with object.union / object.remove.
+waiver(id, f) := {
+	"id": id,
+	"finding_id": f.id,
+	"owner": "@Hiba-elouazi",
+	"justification": "Accepted for the test.",
+	"expires_at": "2026-12-01T00:00:00Z",
+}
+
+package_waiver(id, vuln, purl) := object.union(object.remove(waiver(id, sca), ["finding_id"]), {"vulnerability": vuln, "purl": purl})
+
+sc005(d) := [v | some v in d.violations; v.rule == "SC-005"]
+
+# ---------------------------------------------------------------- verdicts and SC-001
+
+test_no_findings_pass if {
+	d := gate.decision with input as base
+	d == {"verdict": "PASS", "violations": [], "waivers_applied": []}
+}
+
+test_non_secret_findings_pass if {
+	gate.decision.verdict == "PASS" with input as with_findings([sca])
+}
+
+test_secret_blocks_with_sc001 if {
+	d := gate.decision with input as with_findings([sca, secret])
+	d.verdict == "BLOCK"
+	d.violations == [{
+		"rule": "SC-001",
+		"effect": "BLOCK",
+		"finding_ids": [secret.id],
+		"message": "Hard-coded secret",
+	}]
+}
+
+test_secrets_grouped_in_one_sorted_violation if {
+	d := gate.decision with input as with_findings([other_secret, secret])
+	[v] := d.violations
+	v.finding_ids == [secret.id, other_secret.id]
+}
+
+# ---------------------------------------------------------------- waivers that apply
+
+test_waived_secret_passes_and_is_recorded if {
+	d := gate.decision with input as with_waivers([secret], [waiver("w-1", secret)])
+	d == {"verdict": "PASS", "violations": [], "waivers_applied": ["w-1"]}
+}
+
+test_several_waivers_for_one_finding_are_all_recorded if {
+	w2 := object.union(waiver("w-2", secret), {"expires_at": "2027-01-15T00:00:00Z"})
+	d := gate.decision with input as with_waivers([secret], [waiver("w-1", secret), w2])
+	d == {"verdict": "PASS", "violations": [], "waivers_applied": ["w-1", "w-2"]}
+}
+
+test_waiver_for_another_finding_does_not_apply if {
+	d := gate.decision with input as with_waivers([secret, other_secret], [waiver("w-1", secret)])
+	d.violations[0].finding_ids == [other_secret.id]
+	d.waivers_applied == ["w-1"]
+}
+
+test_unused_waiver_is_not_recorded if {
+	d := gate.decision with input as with_waivers([], [waiver("w-1", secret)])
+	d == {"verdict": "PASS", "violations": [], "waivers_applied": []}
+}
+
+test_package_waiver_matches_any_version_by_cve_alias_or_rule_id if {
+	some vuln in ["CVE-2026-12345", "PYSEC-2026-1", "GHSA-aaaa-bbbb-cccc"]
+	w := package_waiver("w-pkg", vuln, "pkg:pypi/example-lib")
+	gate.waivers_applied == {"w-pkg"} with input as with_waivers([sca], [w])
+}
+
+test_package_waiver_for_another_package_or_vulnerability_does_not_apply if {
+	some w in [
+		package_waiver("w-pkg", "CVE-2026-12345", "pkg:pypi/other-lib"),
+		package_waiver("w-pkg", "CVE-2026-99999", "pkg:pypi/example-lib"),
+	]
+	gate.waivers_applied == set() with input as with_waivers([sca], [w])
+}
+
+test_package_waiver_handles_scoped_npm_names if {
+	f := object.union(sca, {"package": {"purl": "pkg:npm/@scope/left-pad@1.0.0"}})
+	w := package_waiver("w-npm", "CVE-2026-12345", "pkg:npm/@scope/left-pad")
+	gate.waivers_applied == {"w-npm"} with input as with_waivers([f], [w])
+}
+
+test_expired_waiver_does_not_apply_and_is_not_invalid if {
+	w := object.union(waiver("w-1", secret), {"expires_at": "2026-11-01T00:00:00Z"})
+	d := gate.decision with input as with_waivers([secret], [w])
+	[v] := d.violations
+	v.rule == "SC-001"
+	d.waivers_applied == []
+}
+
+test_waiver_expiring_exactly_now_does_not_apply if {
+	w := object.union(waiver("w-1", secret), {"expires_at": base.evaluated_at})
+	gate.decision.verdict == "BLOCK" with input as with_waivers([secret], [w])
+}
+
+test_waiver_expiring_in_exactly_90_days_is_valid if {
+	w := object.union(waiver("w-1", secret), {"expires_at": "2027-02-08T10:00:00Z"})
+	gate.decision.verdict == "PASS" with input as with_waivers([secret], [w])
+}
+
+# ---------------------------------------------------------------- SC-005: invalid waivers
+
+invalid_cases := {
+	"no owner": [object.remove(waiver("w-1", secret), ["owner"]), "missing owner"],
+	"blank owner": [object.union(waiver("w-1", secret), {"owner": "  "}), "missing owner"],
+	"owner not a string": [object.union(waiver("w-1", secret), {"owner": 42}), "missing owner"],
+	"no justification": [object.remove(waiver("w-1", secret), ["justification"]), "missing justification"],
+	"no expiry": [object.remove(waiver("w-1", secret), ["expires_at"]), "expires_at must be an RFC 3339 date-time"],
+	"date-only expiry": [object.union(waiver("w-1", secret), {"expires_at": "2026-12-01"}), "expires_at must be an RFC 3339 date-time"],
+	"expiry over 90 days": [object.union(waiver("w-1", secret), {"expires_at": "2027-02-08T10:00:00.000000001Z"}), "expires more than 90 days after evaluation"],
+	"bad id": [object.union(waiver("w-1", secret), {"id": "../w"}), "id must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}"],
+	"no id": [object.remove(waiver("w-1", secret), ["id"]), "id must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}"],
+	"unknown field": [object.union(waiver("w-1", secret), {"approved_by": "me"}), `unknown field "approved_by"`],
+	"no target": [object.remove(waiver("w-1", secret), ["finding_id"]), "needs finding_id, or vulnerability and purl"],
+	"both targets": [object.union(waiver("w-1", secret), {"vulnerability": "CVE-2026-12345", "purl": "pkg:pypi/x"}), "use finding_id or vulnerability and purl, not both"],
+	"bad finding id": [object.union(waiver("w-1", secret), {"finding_id": "abc"}), "finding_id must be a sha256 fingerprint"],
+	"vulnerability without purl": [object.remove(package_waiver("w-1", "CVE-2026-12345", "pkg:pypi/x"), ["purl"]), "vulnerability and purl must be given together"],
+	"blank vulnerability": [package_waiver("w-1", " ", "pkg:pypi/x"), "missing vulnerability"],
+	"purl with version": [package_waiver("w-1", "CVE-2026-12345", "pkg:pypi/example-lib@1.2.0"), "purl must be a package URL without version"],
+	"purl with qualifiers": [package_waiver("w-1", "CVE-2026-12345", "pkg:pypi/example-lib?arch=x86_64"), "purl must be a package URL without version"],
+	"not a purl": [package_waiver("w-1", "CVE-2026-12345", "example-lib"), "purl must be a package URL without version"],
+}
+
+test_invalid_waiver_blocks_with_sc005_and_never_applies if {
+	every case in invalid_cases {
+		[w, reason] := case
+		d := gate.decision with input as with_waivers([secret, sca], [w])
+		d.verdict == "BLOCK"
+		[v] := sc005(d)
+		contains(v.message, reason)
+		d.waivers_applied == []
+	}
+}
+
+test_sc005_names_the_waiver_and_lists_every_reason if {
+	w := object.remove(waiver("w-7", secret), ["owner", "justification"])
+	d := gate.decision with input as with_waivers([secret], [w])
+	sc005(d) == [{
+		"rule": "SC-005",
+		"effect": "BLOCK",
+		"finding_ids": [secret.id],
+		"message": "Invalid waiver w-7 (entry 1): missing justification; missing owner",
+	}]
+	"SC-001" in {v.rule | some v in d.violations}
+}
+
+test_sc005_lists_findings_targeted_by_package if {
+	w := object.remove(package_waiver("w-pkg", "CVE-2026-12345", "pkg:pypi/example-lib"), ["owner"])
+	[v] := sc005(gate.decision) with input as with_waivers([sca, secret], [w])
+	v.finding_ids == [sca.id]
+}
+
+test_waiver_that_is_not_a_mapping_is_labelled_by_position if {
+	[v] := sc005(gate.decision) with input as with_waivers([], [waiver("w-1", secret), "w-2"])
+	v.message == "Invalid waiver entry 2: must be a mapping"
+}
+
+test_duplicate_ids_invalidate_both_waivers if {
+	d := gate.decision with input as with_waivers([secret], [waiver("w-1", secret), waiver("w-1", secret)])
+	count(sc005(d)) == 2
+	d.waivers_applied == []
+}
+
+test_one_invalid_waiver_does_not_disable_the_others if {
+	bad := object.remove(waiver("w-bad", other_secret), ["owner"])
+	d := gate.decision with input as with_waivers([secret], [waiver("w-1", secret), bad])
+	d.waivers_applied == ["w-1"]
+	[v] := d.violations
+	v.rule == "SC-005"
+}
+
+# ---------------------------------------------------------------- SC-010: malformed input
+
+test_missing_findings_blocks_with_sc010 if {
+	d := gate.decision with input as object.remove(base, ["findings"])
+	d.verdict == "BLOCK"
+	d.violations[0].rule == "SC-010"
+	contains(d.violations[0].message, "findings must be an array")
+}
+
+test_missing_waivers_blocks_with_sc010 if {
+	d := gate.decision with input as object.remove(base, ["waivers"])
+	d.violations[0].rule == "SC-010"
+}
+
+test_bad_evaluated_at_blocks_with_sc010 if {
+	d := gate.decision with input as object.union(base, {"evaluated_at": "yesterday"})
+	d.verdict == "BLOCK"
+	contains(d.violations[0].message, "evaluated_at")
+}
+
+test_missing_evaluated_at_blocks_with_sc010 if {
+	gate.decision.violations[0].rule == "SC-010" with input as object.remove(base, ["evaluated_at"])
+}

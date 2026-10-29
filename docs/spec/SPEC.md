@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.3 | Scanner hardening (§5): verify-before-exec, minimal child environment, scanner configuration owned by SentinelCI; repository-controlled suppressions are neutralized or refused (Gitleaks: `.gitleaks.toml`, `gitleaks:allow`, `.gitleaksignore`, and `.gitattributes` `-diff`/`binary` in git mode); merge commits scanned with `--diff-merges=remerge` plus a `first-parent` pass for octopus merges (evil merges), archives opened in dir mode. |
 | 1.1.2 | Tool lock is `tools.lock.toml` (read with the standard library: no extra dependency). A1 split: A1a = lock + `sentinel tools install/verify` (done), A1b = scanner adapters + Opengrep pinning via signature verification. |
 | 1.1.1a | Package fingerprints use the purl base (no version, qualifiers or subpath — same as the gate's waiver matching), agreed in the review of PR #1. "Green CI" may be a local `make check` report while Actions minutes are exhausted. |
 | 1.1.1 | No GitHub Pro: `main` protected by convention + local guard until the repository goes public. |
@@ -161,6 +162,21 @@ Local CLI runs can **push** to the same ingestion API. No self-hosted runners (a
 | 11 | Report | PR comment, evidence artifact | comment, artifact | — |
 | 12 | Deploy | GitOps digest bump → Argo CD → Kyverno | pods | admission deny |
 
+**Scanner hardening (A1).** Every scanner run (1) re-verifies the binary against `tools.lock.toml` right
+before execution, (2) gets a minimal environment (no CI tokens, keys or proxy variables), (3) uses a configuration
+owned by SentinelCI, never one from the scanned repository, and (4) treats crashes, timeouts and missing reports as
+SC-010. Suppression mechanisms that live in the scanned repository are written by the change author, so they are
+neutralized (`--config`, `--ignore-gitleaks-allow`) or refused when the tool offers no way to disable them
+(Gitleaks always loads `<source>/.gitleaksignore`). In git mode, `git log -p` honours the repository's
+`.gitattributes`, where a `-diff` or `binary` attribute would hide a file's patch, so patches are forced to text
+(`--text`, no textconv or external diff) and caller `--log-opts` are restricted to revisions, pathspecs and a few
+harmless options. Merge commits are scanned with `--diff-merges=remerge`, so a secret slipped into a merge
+(an "evil merge") is found while an honest merge of the base branch blames nobody (octopus merges excepted:
+remerge does not diff them, so they get a second `first-parent` pass, which also reports what the other parents
+already had; the PR baseline drops what the base branch has). Each Gitleaks pass gets the full scanner time
+limit, so git mode can take twice as long. Dir mode opens archives (`.zip`, nested up to 3 levels). Legitimate
+exceptions go through waivers (§6.4).
+
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
 (no repo code; signing key / OIDC only here) · `report` (`pull-requests: write`).
@@ -270,7 +286,8 @@ draft a waiver PR; only a human approval makes it effective.
 
 Schema: `schemas/decision.v1.json`. Fields: `decision_id`, `evaluated_at`, `subject` (repo, ref, commit, image
 digest, context), `verdict`, `violations` (rule, effect, finding ids, message), `waivers_applied`, `inputs`
-(digests of findings, SBOM, enrichment snapshot, policy bundle; risk model version; tool versions),
+(digests of findings, SBOM, enrichment snapshot, policy bundle, waivers file (since 1.1); risk model version;
+tool versions),
 `engine_version`. The schema enforces verdict consistency (BLOCK ⇒ at least one BLOCK violation; PASS ⇒ none).
 Attached to the image as an in-toto attestation, predicate type
 `https://github.com/NOURHANE-EHOUARI/sentinelci/specs/release-decision/v1`. `sentinel replay` re-evaluates from
