@@ -111,6 +111,15 @@ def test_load_findings_skips_blank_lines() -> None:
     assert load_findings(ndjson(SECRET) + b"\n  \n" + ndjson(CONTAINER)) == [SECRET, CONTAINER]
 
 
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x85"])
+def test_load_findings_splits_on_newlines_only(separator: str) -> None:
+    # JSON allows these raw inside strings, and the normalizer writes ensure_ascii=False; str.splitlines()
+    # broke such a line in two, so one scanned file could leave the gate with no decision.
+    finding = {**SECRET, "title": f"Hard-coded key{separator}next to a separator"}
+    data = (json.dumps(finding, ensure_ascii=False) + "\n").encode("utf-8")
+    assert load_findings(data) == [finding]
+
+
 @pytest.mark.parametrize(
     "data",
     [

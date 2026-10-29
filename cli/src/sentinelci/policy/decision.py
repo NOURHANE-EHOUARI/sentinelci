@@ -109,7 +109,10 @@ def load_findings(data: bytes) -> list[dict[str, Any]]:
     except UnicodeDecodeError as exc:
         raise EvaluationError("findings file is not UTF-8") from exc
     findings: list[dict[str, Any]] = []
-    for lineno, line in enumerate(text.splitlines(), start=1):
+    # NDJSON lines end with "\n" only. str.splitlines() would also split on U+2028, U+2029 and \x85,
+    # which JSON allows raw inside strings (the normalizer writes ensure_ascii=False). A trailing \r is
+    # JSON whitespace.
+    for lineno, line in enumerate(text.split("\n"), start=1):
         if not line.strip():
             continue
         try:
