@@ -44,6 +44,7 @@ from sentinelci.policy.replay import ReplayResult, replay, skip_reason
 from sentinelci.policy.store import EvidenceStore, StoreError
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
 from sentinelci.report.pr_comment import ReportError, load_inputs, render_no_decision, render_pr_comment
+from sentinelci.scanners.combine import CombineError, combine_findings, combine_tool_statuses
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
 from sentinelci.scanners.installer import VerificationReport, detect_platform, install_tools, verify_tools
@@ -615,6 +616,41 @@ def scan_iac_cmd(
         return findings, tool_run
 
     _scan_and_record("trivy", scan, out=out, tool_status_out=tool_status_out, lock=lock, platform=platform)
+
+
+@scan_app.command("combine")
+def scan_combine_cmd(
+    findings: Annotated[
+        list[Path], typer.Option("--findings", help="Findings NDJSON of one scanner (repeatable).")
+    ],
+    out: Annotated[Path, typer.Option(help="Combined findings NDJSON for the gate.")],
+    tool_status: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--tool-status", help="Tool status of one scanner (repeatable); missing ones are skipped."
+        ),
+    ] = None,
+    tool_status_out: Annotated[Path | None, typer.Option(help="Combined tool status for the gate.")] = None,
+) -> None:
+    """Merge per-scanner findings and tool statuses into the gate's inputs; refuse anything inconsistent.
+
+    A tool status file that does not exist is left out (that scanner wrote none, so the gate reports it as
+    missing, SC-010). Exit code 3 when the outputs cannot be combined; nothing is written then.
+    """
+    _clear(out, tool_status_out)
+    statuses = [path for path in tool_status or [] if path.exists()]
+    try:
+        combined = combine_findings(findings)
+        document = combine_tool_statuses(statuses) if tool_status_out is not None and statuses else None
+    except CombineError as exc:
+        raise _fail_closed(exc) from exc
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_ndjson(combined, out)
+    message = f"{len(combined)} finding(s) from {len(findings)} file(s) written to {out}"
+    if document is not None and tool_status_out is not None:
+        write_tool_status(document, tool_status_out)
+        message += f"; tool status for {', '.join(document['tools'])} written to {tool_status_out}"
+    typer.echo(message)
 
 
 def _clear(out: Path, tool_status_out: Path | None) -> None:
