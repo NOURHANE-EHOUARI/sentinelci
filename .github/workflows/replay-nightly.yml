@@ -1,7 +1,8 @@
 name: replay-nightly
 
 # SPEC section 6.5 and section 3 ("replay determinism: 100% identical, nightly replay job").
-# Each night: replay the previous night's decisions with today's engine, then record, replay and upload a fresh
+# Each night: replay the previous night's decisions with today's engine, replay the real release decisions of the
+# last demo-shop runs on main (their `sentinel-evidence` artifacts), then record, replay and upload a fresh
 # corpus (eval/replay/corpus.py). A decision that changes for the same inputs without an engine or OPA version
 # change turns this red. Only the last successful run's corpus is replayed, so a red night stays red until the
 # change is reverted or the engine version is bumped (decisions of another engine or OPA version are skipped).
@@ -39,6 +40,7 @@ jobs:
         with:
           version: "0.11.32"
           python-version: "3.12"
+          enable-cache: false
 
       - name: Install locked dependencies
         run: uv sync --locked
@@ -70,6 +72,7 @@ jobs:
           path: ${{ runner.temp }}/previous
           run-id: ${{ steps.previous.outputs.run_id }}
           github-token: ${{ github.token }}
+          digest-mismatch: error
 
       - name: Replay the previous night's decisions with today's engine
         if: steps.previous.outputs.run_id != ''
@@ -86,6 +89,38 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$code"
+
+      # Only runs triggered by a push to main: their workflow file and pipeline are main's own. Evidence from
+      # pull-request runs is not replayed here, because a pull request can edit the workflow that uploads it.
+      - name: Replay the release decisions of the last demo-shop runs on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          runs=$(gh api \
+            "repos/$REPO/actions/workflows/demo-shop.yml/runs?branch=main&event=push&status=completed&per_page=5" \
+            --jq '.workflow_runs[].id') || exit 1
+          failed=0
+          {
+            echo "### Release decisions of the last demo-shop runs on main, replayed"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          for run in $runs; do
+            store="$RUNNER_TEMP/releases/$run"
+            if ! gh run download "$run" --repo "$REPO" --name sentinel-evidence --dir "$store" > /dev/null 2>&1; then
+              echo "run $run: no sentinel-evidence artifact (expired, or no decision was made)" \
+                | tee -a "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            code=0
+            result=$(uv run sentinel replay --all --store "$store" 2>&1) || code=$?
+            echo "run $run (exit $code): $result" | tee -a "$GITHUB_STEP_SUMMARY"
+            [ "$code" -eq 0 ] || failed=1
+          done
+          [ -n "$runs" ] || echo "no completed demo-shop run on main yet" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          exit "$failed"
 
       - name: Record tonight's corpus
         run: uv run python eval/replay/corpus.py --store out/replay-corpus --work "$RUNNER_TEMP/corpus-work"

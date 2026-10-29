@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.6 | A3b evidence (§5, §6.5): every scan writes a tool status (`sentinel scan secrets --tool-status-out`), so a failed, timed-out or tampered scanner becomes a recorded BLOCK (SC-010) instead of a bare red job. PR mode scans the base commit's tree as the baseline. The gate stores its evidence (`--store`), uploaded as the `sentinel-evidence` artifact; the PR comment names it in its replay line and shows "N new" only for the baseline the gate used. The nightly replay also replays the last release decisions of `demo-shop.yml` on main. |
 | 1.1.4 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
 | 1.1.3 | Scanner hardening (§5): verify-before-exec, minimal child environment, scanner configuration owned by SentinelCI; repository-controlled suppressions are neutralized or refused (Gitleaks: `.gitleaks.toml`, `gitleaks:allow`, `.gitleaksignore`, and `.gitattributes` `-diff`/`binary` in git mode); merge commits scanned with `--diff-merges=remerge` plus a `first-parent` pass for octopus merges (evil merges), archives opened in dir mode. |
 | 1.1.2 | Tool lock is `tools.lock.toml` (read with the standard library: no extra dependency). A1 split: A1a = lock + `sentinel tools install/verify` (done), A1b = scanner adapters + Opengrep pinning via signature verification. |
@@ -184,9 +185,16 @@ scan; tools live in `$RUNNER_TEMP` (ADR-0008).
 
 **PR mode (diff-aware):** only findings new to the PR (fingerprints not in the base-branch baseline) can block. A known
 secret also counts as new in a file where the base did not have it (every place counts: `location` plus
-`other_locations`, Finding 1.1).
+`other_locations`, Finding 1.1). The baseline is the base commit's tree, exported with `git archive` outside the
+pipeline checkout and scanned in dir mode by the same pinned scanners. If it cannot be produced, every finding
+counts (the strict side). The PR comment shows "N new" only when the gate used that baseline (checked against
+`inputs.baseline_digest`), with the gate's own definition of new.
+**Scanner failures** (any mode): each scanner writes a tool status (`schemas/tool-status.v1.json`) on success and
+on failure, and the scan job keeps going, so a failed, timed-out or tampered scanner becomes a recorded BLOCK
+(SC-010) with its reason. A missing tool status is SC-010 too.
 **Release mode:** full evaluation, then signing. In this single repo, `demo-shop/` is scanned by its own workflow
-calling `./.github/workflows/sentinel-scan.yml`; the self-scan of SentinelCI excludes `demo-shop/`.
+calling `$/.github/workflows/sentinel-scan.yml` (GitHub's self-repository syntax: the workflow at the running
+commit); the self-scan of SentinelCI excludes `demo-shop/`.
 
 Example deterministic PR comment:
 
@@ -303,13 +311,16 @@ manifest (`<sha256>  <path>` per file, sorted; its digest is `policy_bundle_dige
 decisions. Written by `sentinel evaluate --store`; every read is checked against its digest. `sentinel replay
 <id | file>` takes all inputs from the store, policy included, and compares the whole record (exit 0 identical,
 1 differs, 3 missing or tampered evidence). Recorded scanner versions are passed back as evidence; the OPA and
-engine versions are the running ones, so an upgrade shows up as a difference. Proposed: the evidence bundle
-(A4) and the platform evidence store (SeaweedFS, ADR-0007) carry the same `sha256/<hex>` layout, so replay works
-on either.
+engine versions are the running ones, so an upgrade shows up as a difference. Every `sentinel-scan.yml` run
+uploads its store as the `sentinel-evidence` artifact, and the PR comment's replay line names it. Proposed: the
+evidence bundle (A4) and the platform evidence store (SeaweedFS, ADR-0007) carry the same `sha256/<hex>` layout,
+so replay works on either.
 
 **Nightly replay** (`.github/workflows/replay-nightly.yml`): replays the last successful night's corpus with
-today's engine (`sentinel replay --all`), then records a fresh corpus (`eval/replay/corpus.py`: fixed gate cases
-covering PASS, SC-001, SC-005 and SC-010), replays it in a fresh process and uploads it. `--all` skips decisions
+today's engine (`sentinel replay --all`), replays the `sentinel-evidence` artifacts of the last five
+`demo-shop.yml` runs triggered by a push to main (not pull-request runs: a pull request can edit the workflow that
+uploads its evidence), then records a fresh corpus (`eval/replay/corpus.py`: fixed gate cases covering PASS,
+SC-001, SC-005 and SC-010), replays it in a fresh process and uploads it. `--all` skips decisions
 recorded with another engine or OPA version and fails on any difference, on missing evidence and on an empty
 store. Consequence: a change to what the engine decides for the same inputs must come with an engine version bump.
 
