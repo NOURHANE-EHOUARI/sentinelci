@@ -45,6 +45,10 @@ reusable workflows called with `./` or `$/`. A pull request can therefore always
 - Residual risk: the workflow YAML itself still comes from the pull request (GitHub's model). Mitigations: the
   warning in the comment, CODEOWNERS review of `.github/`, and zizmor in CI. Once the repository is public,
   rulesets with required workflows can pin the gate to `main`.
+- The required scanners of the policy bundle (`policies/required_tools.rego`, read from the base commit) turn a
+  workflow that drops a scanner, or the whole tool status, into SC-010. They cannot detect a workflow edited by
+  the pull request that forges an `ok` tool status and skips the scan: that case is the residual risk above,
+  covered by review of `.github/` until required workflows exist.
 - A waiver lands in its own reviewed pull request first; the blocked pull request then re-runs. The comment
   says so when a pull request edits the waivers file.
 - Public phase: for pull requests from forks, `github.token` is read-only under `pull_request`, so posting the
