@@ -242,3 +242,138 @@ def test_cli_fails_closed_on_unreadable_inputs(tmp_path: Path, option: str, name
     code, _, path = run_enrich(tmp_path, [SECRET], option, write(tmp_path, name, data))
     assert code == 3
     assert not path.exists()
+
+
+# ---------------------------------------------------------------- "known no" only for what was checked (#17)
+
+
+def snapshot_with(**changes: Any) -> bytes:
+    document = json.loads(FULL)
+    for key, value in changes.items():
+        if key == "kev_cves":
+            document["sources"]["kev"]["cves"] = value
+        else:
+            document[key] = value
+    return json.dumps(document).encode("utf-8")
+
+
+def test_kev_says_not_listed_only_for_cves_the_kev_lookup_covered() -> None:
+    assert enrichment(SCA)["kev"] == {"listed": False}  # CVE-2099-0001 covered, not listed
+    assert "kev" not in enrichment(SCA, snapshot_with(kev_cves=["CVE-2099-0002"]))
+
+
+def test_a_finding_without_a_cve_never_gets_a_known_kev_status() -> None:
+    only_kev = json.dumps(
+        {
+            "schema_version": "1.0",
+            "sources": {"kev": {"catalog_version": "2026.11.09", "cves": ["CVE-2099-0001"]}},
+            "vulnerabilities": {},
+        }
+    ).encode("utf-8")
+    ghsa = {**SCA, "rule_id": "GHSA-aaaa-bbbb-cccc", "cve": [], "aliases": []}
+    assert "kev" not in enrichment(ghsa, only_kev)  # OSV down: no alias leads to a CVE
+    assert enrichment({**ghsa, "cve": ["CVE-2099-0001"]}, only_kev)["kev"] == {"listed": False}
+
+
+def test_one_uncovered_cve_keeps_kev_unknown() -> None:
+    two = {**SCA, "cve": ["CVE-2099-0001", "CVE-2099-0999"]}
+    assert "kev" not in enrichment(two)
+
+
+def test_a_kev_entry_outside_the_covered_cves_is_refused() -> None:
+    with pytest.raises(EnrichmentError, match="did not cover"):
+        load_snapshot(snapshot_with(kev_cves=["CVE-2099-0001"]))
+
+
+def test_package_names_are_compared_in_canonical_form() -> None:
+    package = {**SCA["package"], "purl": "pkg:pypi/Example_Lib@1.2.3"}
+    package.pop("fixed_versions", None)
+    assert enrichment({**SCA, "package": package})["fix_available"] is True
+
+
+def test_without_a_snapshot_no_source_is_claimed(tmp_path: Path) -> None:
+    code, out, path = run_enrich(tmp_path, [SCA])
+    assert code == 0, out
+    assert set(json.loads(path.read_text(encoding="utf-8")).get("enrichment", {})) <= {"fix_available"}
+
+
+# ---------------------------------------------------------------- sentinel.yaml is a trust boundary (#17)
+
+
+@pytest.mark.parametrize(
+    ("text", "why"),
+    [
+        ("version: 1\nservice: demo\nexposure: internet-facing\nexposure: offline\n", "duplicate key"),
+        ("version: 1\nservice: &s demo\nexposure: internet-facing\nowners: [*s]\n", "anchor and alias"),
+        ("a: &a [x, x]\nb: &b [*a, *a]\nc: [*b, *b]\n", "alias bomb"),
+        ("version: 1\nservice: 2026-01-01\nexposure: internal\n", "unquoted date"),
+        ("version: 1\nservice: !!binary aGVsbG8=\nexposure: internal\n", "binary tag"),
+        ("version: 1\nservice: !!set {a}\nexposure: internal\n", "set tag"),
+        ("version: yes\nservice: demo\nexposure: internal\n", "YAML 1.1 boolean for the version"),
+        ("version: 1\nservice: demo\nexposure: internal\nowners: " + "[" * 5000 + "]" * 5000, "deep nesting"),
+        ("version: 1\nservice: demo\nexposure: internal\n# " + "x" * 70_000 + "\n", "larger than 64 KiB"),
+    ],
+)  # fmt: skip
+def test_sentinel_yaml_means_what_it_says_or_is_refused(text: str, why: str) -> None:
+    with pytest.raises(EnrichmentError):
+        load_service_context(text.encode("utf-8"))
+
+
+def test_component_paths_are_unique() -> None:
+    with pytest.raises(EnrichmentError, match="unique"):
+        config(
+            components=[{"path": "infra", "exposure": "offline"}, {"path": "infra", "exposure": "internal"}]
+        )
+
+
+# ---------------------------------------------------------------- the CLI fails closed (#17)
+
+
+def test_out_may_not_be_the_findings_file(tmp_path: Path) -> None:
+    findings = tmp_path / "in.ndjson"
+    findings.write_text(json.dumps(SECRET) + "\n", encoding="utf-8")
+    result = CliRunner().invoke(app, ["enrich", "--findings", str(findings), "--out", str(findings)])
+    assert result.exit_code == 3
+    assert json.loads(findings.read_text(encoding="utf-8")) == SECRET, "the input is never deleted"
+
+
+def test_out_may_not_be_a_directory(tmp_path: Path) -> None:
+    (tmp_path / "out.ndjson").mkdir()
+    code, out, _ = run_enrich(tmp_path, [SECRET])
+    assert code == 3, out
+
+
+@pytest.mark.parametrize(
+    "extra", [{"reachability": "maybe"}, {"ai_says": "safe"}, {"kev": {"listed": "yes"}}], ids=str
+)
+def test_enrichment_outside_the_contract_is_refused(tmp_path: Path, extra: dict[str, Any]) -> None:
+    code, _, path = run_enrich(tmp_path, [{**SECRET, "enrichment": extra}])
+    assert code == 3
+    assert not path.exists()
+
+
+def test_anchors_and_aliases_are_refused_even_when_the_result_would_be_valid() -> None:
+    text = b"version: 1\nservice: demo\nexposure: &e internal\ncomponents:\n  - {path: infra, exposure: *e}\n"
+    with pytest.raises(EnrichmentError, match="anchors and aliases"):
+        load_service_context(text)
+
+
+@pytest.mark.parametrize(
+    "value", ["2026-01-01", "!!binary aGVsbG8=", "!!set {a}"], ids=["date", "binary", "set"]
+)
+def test_typed_yaml_values_are_refused_by_name(value: str) -> None:
+    with pytest.raises(EnrichmentError, match=r"not allowed in sentinel\.yaml"):
+        load_service_context(f"version: 1\nservice: {value}\nexposure: internal\n".encode())
+
+
+def test_a_document_that_is_not_json_shaped_fails_closed() -> None:
+    from sentinelci.enrich.models import ServiceContext as Context
+    from sentinelci.enrich.models import _validate
+
+    with pytest.raises(EnrichmentError):
+        _validate(Context, {"version": 1, "service": {"a", "b"}, "exposure": "internal"}, "sentinel.yaml")
+
+
+def test_a_deeply_nested_snapshot_fails_closed() -> None:
+    with pytest.raises(EnrichmentError):
+        load_snapshot(b"[" * 200_000 + b"]" * 200_000)

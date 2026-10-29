@@ -14,6 +14,7 @@ import pytest
 from jsonschema import Draft202012Validator
 from typer.testing import CliRunner
 
+from sentinelci import enrich
 from sentinelci.cli import app
 from sentinelci.enrich import enrich_finding, load_snapshot
 from sentinelci.enrich import reachability as reach
@@ -29,7 +30,7 @@ SCA = {
     if k not in ("enrichment", "risk")
 }
 SECRET = json.loads((FINDING_FIXTURES / "secret-in-config.json").read_text(encoding="utf-8"))
-EMPTY_SNAPSHOT = load_snapshot(b'{"schema_version": 1, "sources": {}, "vulnerabilities": {}}')
+EMPTY_SNAPSHOT = load_snapshot(enrich.EMPTY_SNAPSHOT)
 
 
 def finding(purl: str, category: str = "SCA") -> dict[str, Any]:

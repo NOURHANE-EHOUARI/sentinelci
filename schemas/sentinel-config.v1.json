@@ -91,9 +91,10 @@
       ]
     },
     "relative_path": {
+      "description": "Canonical relative path: no leading or trailing '/', no empty, '.' or '..' part, no backslash. (Component paths must also be unique: checked by the model, which JSON Schema cannot express for one property.)",
       "type": "string",
       "minLength": 1,
-      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])(?!/)(?!.*(^|/)\\.\\.(/|$))[^\\\\]+$"
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])(?!\\.{1,2}(/|$))[^/\\\\]+(/(?!\\.{1,2}(/|$))[^/\\\\]+)*$"
     }
   }
 }

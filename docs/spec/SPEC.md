@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.4 | Enrichment (B2, §6.1): `schemas/enrichment-snapshot.v1.json` (`schema_version` "1.0", `sources.kev.cves`: the CVEs the KEV lookup covered) and `schemas/sentinel-config.v1.json` (`sentinel.yaml`, canonical component paths); `sentinel enrich`. "Not listed in KEV" only for covered CVEs; `sentinel.yaml` read with a restricted YAML loader. |
 | 1.1.2 | Tool lock is `tools.lock.toml` (read with the standard library: no extra dependency). A1 split: A1a = lock + `sentinel tools install/verify` (done), A1b = scanner adapters + Opengrep pinning via signature verification. |
 | 1.1.1a | Package fingerprints use the purl base (no version, qualifiers or subpath — same as the gate's waiver matching), agreed in the review of PR #1. "Green CI" may be a local `make check` report while Actions minutes are exhausted. |
 | 1.1.1 | No GitHub Pro: `main` protected by convention + local guard until the repository goes public. |
@@ -208,6 +209,15 @@ score is computed from the OSV vector (highest vector wins). Each feed is all or
 feed out with a warning, never a partial feed. `--record` / `--offline` capture and replay the feed answers as
 offline fixtures. The NVD fallback for CVSS is not implemented yet: an id without a 3.x vector in OSV keeps an
 unknown CVSS, which the risk engine counts as the worst case.
+
+"Known no" is written only for what was checked: `kev: {listed: false}` only when the KEV lookup covered every
+CVE id of the finding (`sources.kev.cves`), and `fix_available: false` only when OSV knew the vulnerability and
+fixes none of the package (package URLs compared in canonical form). A KEV outage therefore leaves KEV unknown,
+never "not listed", and the risk engine counts unknown as the worst case. `sentinel.yaml` is a reviewed trust
+boundary: it is read with a YAML loader that refuses duplicate keys, anchors and aliases, and tags beyond plain
+scalars, lists and mappings, and is limited to 64 KiB; component paths are canonical and unique. Residual risk:
+where a change puts its files decides their path-scoped exposure (a file under an `offline` component is scored
+as offline), so changes to `sentinel.yaml` and new top-level directories deserve a reviewer's eye.
 
 Reachability (B2, `sentinel enrich --source`): static import analysis of the scanned tree for PyPI and npm
 packages, never executing it. `imported` when first-party code imports the package; `not_imported` only with

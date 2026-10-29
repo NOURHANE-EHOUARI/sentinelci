@@ -23,6 +23,7 @@ import typer
 from sentinelci import __version__
 from sentinelci.contracts.finding import Finding, Run, RunContext, Tool
 from sentinelci.enrich import (
+    EMPTY_SNAPSHOT,
     EnrichmentError,
     Reachability,
     enrich_finding,
@@ -83,7 +84,6 @@ def _fail_closed(exc: Exception) -> typer.Exit:
 
 EXIT_BLOCK = 1
 # A snapshot that holds no source: what enrichment knows when no feed was read.
-EMPTY_SNAPSHOT = b'{"schema_version": 1, "sources": {}, "vulnerabilities": {}}'
 EXIT_NO_DECISION = 3
 
 
@@ -142,6 +142,7 @@ def snapshot_command(
     fails is left out (its values stay unknown, scored as the worst case) and named on stderr; exit code 0.
     Exit code 3 when the findings cannot be read (nothing is written).
     """
+    _refuse_output(out, findings, "sentinel snapshot")
     out.unlink(missing_ok=True)
     try:
         loaded = load_findings(findings.read_bytes())
@@ -166,6 +167,14 @@ def snapshot_command(
         f"Snapshot of {len(document['vulnerabilities'])} vulnerability id(s) (sources: {sources}) -> {out}  "
         f"sha256:{hashlib.sha256(data).hexdigest()}"
     )
+
+
+def _refuse_output(out: Path, source: Path, command: str) -> None:
+    """Fail closed before anything is deleted: --out must not be the input file, nor a directory."""
+    if out.is_dir() or (out.exists() and source.exists() and out.resolve() == source.resolve()):
+        what = "a directory" if out.is_dir() else f"the input file {source}"
+        typer.echo(f"{command}: --out {out} is {what}; nothing was written", err=True)
+        raise typer.Exit(EXIT_NO_DECISION)
 
 
 @app.command("enrich")
@@ -198,6 +207,7 @@ def enrich_command(
     the worst case). Pass the same snapshot to `sentinel evaluate --enrichment-snapshot`, so the decision
     records its digest. Exit code 0 on success, 3 when an input cannot be read (nothing is written).
     """
+    _refuse_output(out, findings, "sentinel enrich")
     # A stale file from an earlier run must never be read as this run's findings.
     out.unlink(missing_ok=True)
     try:
@@ -218,7 +228,7 @@ def enrich_command(
         f"service context: {'yes' if context else 'no'}) -> {out}"
     )
     if reachability is not None:
-        counts = Counter((f.enrichment or {}).get("reachability") for f in enriched)
+        counts = Counter(f.enrichment.reachability for f in enriched if f.enrichment)
         typer.echo(
             "reachability: " + ", ".join(f"{counts[v]} {v}" for v in ("imported", "unknown", "not_imported"))
         )
