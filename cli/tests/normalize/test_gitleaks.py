@@ -57,7 +57,8 @@ def test_same_secret_in_two_files_is_one_finding() -> None:
     assert len(findings) == 2
     api_key = next(f for f in findings if f.rule_id == "generic-api-key")
     assert api_key.id == secret_fingerprint("generic-api-key", FAKE_SECRETS[0])
-    assert api_key.message is not None and "2 locations" in api_key.message
+    # The places are structured (other_locations), not repeated as free text in the message.
+    assert api_key.message is None
     # Canonical location is the first one in a stable (path, line) order.
     assert api_key.location is not None
     assert api_key.location.path == "demo-shop/services/shop-api/app/config.py"

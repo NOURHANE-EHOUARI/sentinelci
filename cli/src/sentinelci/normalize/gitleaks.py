@@ -103,10 +103,9 @@ def normalize_gitleaks(
         secret = str(item["Secret"])
         rule_id = str(item["RuleID"])
 
+        # Every place is structured in `location` + `other_locations`; the message no longer repeats them
+        # (a free-text list counted commits, not places, and had no bound for a secret pasted everywhere).
         notes: list[str] = []
-        if len(hits) > 1:
-            places = ", ".join(f"{p}:{s}" for p, s, _, _ in hits)
-            notes.append(f"Same secret found in {len(hits)} locations: {places}")
         commit = str(item.get("Commit") or "")
         if commit:
             notes.append(f"Found in git history at commit {commit[:12]}.")
