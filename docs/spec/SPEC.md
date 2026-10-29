@@ -404,6 +404,12 @@ LICENSE), `title`, `severity` (CRITICAL | HIGH | MEDIUM | LOW | INFO), `run`. Co
 CONTAINER ⇒ `package` + `image`. Optional blocks `enrichment` (B2) and `risk` (B3). Paths must be relative and
 cannot contain `..`.
 
+**Several locations (1.1, additive).** One finding (one `id`) can be seen in several places, e.g. the same secret
+in two files. `location` is the first one by (path, start line); `other_locations` lists every other one, sorted
+the same way, without duplicates and never truncated. It is only allowed in a `schema_version` 1.1 finding and
+only next to `location`. A finding seen in one place may stay 1.0. Consumers that compare locations (diff-aware PR
+mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
+
 **Fingerprint rules:**
 - SCA / CONTAINER: `sha256(category | vuln id | purl base)` where *purl base* = the purl without version,
   qualifiers or subpath (same definition as `purl_base` in `policies/gate.rego`). After a bump the finding disappears; base-image point releases, other

@@ -17,6 +17,7 @@ Rules:
 - A breaking change creates a new version (`finding.v2.json`) — never edit a released version's meaning.
 - An additive change may bump the minor `schema_version` in the same file (`decision.v1.json` accepts
   `1.0` and `1.1`): every older document stays valid, and the schema states what the new minor version
-  requires. Current minor versions: decision 1.1 (`inputs.waivers_digest`).
+  requires and forbids the new fields in older minor versions. Current minor versions: decision 1.1
+  (`inputs.waivers_digest`), finding 1.1 (adds `other_locations`).
 - Schemas encode safety rules where possible (no raw secrets, no path traversal, VERIFIED only when every
   verification condition holds, verdict consistent with violations).
