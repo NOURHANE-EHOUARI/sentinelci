@@ -21,6 +21,7 @@ import json
 import time
 import urllib.error
 import urllib.request
+import zlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
@@ -211,7 +212,7 @@ class ReplayTransport:
                 raise ValueError("status is not a number")
         except FileNotFoundError as exc:
             raise TransportError(f"{method} {url}: no recorded response in {self.directory}") from exc
-        except (OSError, ValueError, KeyError, TypeError, EOFError, binascii.Error) as exc:
+        except (OSError, ValueError, KeyError, TypeError, EOFError, binascii.Error, zlib.error) as exc:
             raise TransportError(f"{method} {url}: unreadable recording {path.name}: {exc}") from exc
         if hashlib.sha256(data).hexdigest() != record.get("response_sha256"):
             raise TransportError(f"{method} {url}: recording {path.name} does not match its sha256")

@@ -83,3 +83,32 @@ def test_cli_enriches_the_fixture_findings_offline(tmp_path: Path) -> None:
     assert by_rule["GHSA-jfh8-c2jp-5v3q"]["cvss"]["score"] == 10.0
     assert by_rule["GHSA-8q59-q68h-6hv4"]["kev"] == {"listed": False}
     assert by_rule["GHSA-j8r2-6x86-q33q"]["fix_available"] is True
+
+
+class _Down:
+    def request(self, method: str, url: str, body: bytes | None = None) -> tuple[int, bytes]:
+        return 503, b""
+
+
+def test_a_failed_refresh_changes_nothing(tmp_path: Path) -> None:
+    """#21 nit: the recordings are staged and swapped in only when every feed answered."""
+    (tmp_path / "recordings").mkdir()
+    (tmp_path / "recordings" / "kept.json").write_text("{}", encoding="utf-8")
+    try:
+        FIXTURES.refresh(_Down(), here=tmp_path)
+    except SystemExit as exc:
+        assert "fixtures not refreshed" in str(exc)
+    else:
+        raise AssertionError("a failed refresh must stop")
+    assert sorted(p.name for p in tmp_path.rglob("*")) == ["kept.json", "recordings"]
+
+
+def test_a_successful_refresh_replaces_the_whole_set(tmp_path: Path) -> None:
+    (tmp_path / "recordings").mkdir()
+    (tmp_path / "recordings" / "stale.json").write_text("{}", encoding="utf-8")
+    FIXTURES.refresh(ReplayTransport(FEEDS / "recordings"), here=tmp_path)
+    assert (tmp_path / "snapshot.json").read_bytes() == (FEEDS / "snapshot.json").read_bytes()
+    assert (tmp_path / "findings.ndjson").read_bytes() == (FEEDS / "findings.ndjson").read_bytes()
+    recorded = sorted(p.name for p in (tmp_path / "recordings").iterdir())
+    assert recorded == sorted(p.name for p in (FEEDS / "recordings").iterdir())
+    assert not (tmp_path / "recordings.new").exists() and not (tmp_path / "recordings.old").exists()

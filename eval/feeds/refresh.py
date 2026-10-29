@@ -26,7 +26,7 @@ from typing import Any
 from sentinelci.contracts.finding import Finding
 from sentinelci.enrich import enrich_finding, load_snapshot
 from sentinelci.enrich.fetch import build_snapshot, dumps_snapshot
-from sentinelci.enrich.transport import HttpTransport, RecordingTransport, ReplayTransport
+from sentinelci.enrich.transport import HttpTransport, RecordingTransport, ReplayTransport, Transport
 from sentinelci.normalize.fingerprint import package_fingerprint
 from sentinelci.normalize.ndjson import dumps_ndjson
 
@@ -114,13 +114,24 @@ def replay() -> bytes:
     return dumps_snapshot(document)
 
 
-def refresh() -> None:
-    shutil.rmtree(RECORDINGS, ignore_errors=True)  # no stale recording survives a refresh
-    FINDINGS.write_text(dumps_ndjson(Finding.model_validate(f) for f in findings()), encoding="utf-8")
-    document, warnings = build_snapshot(findings(), RecordingTransport(HttpTransport(), RECORDINGS))
+def refresh(transport: Transport | None = None, here: Path = HERE) -> None:
+    """Re-record every feed answer, then swap the new set in. Nothing changes unless every feed answered:
+    the recordings go to a staging directory first, so a failed refresh never leaves a partial set."""
+    recordings, staging, old = here / "recordings", here / "recordings.new", here / "recordings.old"
+    shutil.rmtree(staging, ignore_errors=True)
+    document, warnings = build_snapshot(findings(), RecordingTransport(transport or HttpTransport(), staging))
     if warnings:
+        shutil.rmtree(staging, ignore_errors=True)
         raise SystemExit("a feed failed, fixtures not refreshed:\n  " + "\n  ".join(warnings))
-    SNAPSHOT.write_bytes(dumps_snapshot(document))
+    shutil.rmtree(old, ignore_errors=True)
+    if recordings.exists():
+        recordings.rename(old)
+    staging.rename(recordings)  # no stale recording survives a refresh
+    shutil.rmtree(old, ignore_errors=True)
+    (here / "findings.ndjson").write_text(
+        dumps_ndjson(Finding.model_validate(f) for f in findings()), encoding="utf-8"
+    )
+    (here / "snapshot.json").write_bytes(dumps_snapshot(document))
 
 
 def main() -> int:
