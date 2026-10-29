@@ -293,7 +293,9 @@ on either.
 **Nightly replay** (`.github/workflows/replay-nightly.yml`): replays the last successful night's corpus with
 today's engine (`sentinel replay --all`), then records a fresh corpus (`eval/replay/corpus.py`: fixed gate cases
 covering PASS, SC-001, SC-005 and SC-010), replays it in a fresh process and uploads it. `--all` skips decisions
-recorded with another engine or OPA version and fails on any difference, on missing evidence, on an empty
+recorded with another engine or OPA version (after checking that the record's `decision_id` matches its own
+subject, time, inputs and engine version, so an edited version cannot turn a difference into a skip) and fails
+on any difference, on missing evidence, on an empty
 store and when nothing was compared (every decision skipped; the previous-night step accepts that with
 `--allow-all-skipped`, so an engine bump night says so in its summary). Consequence: a change to what the engine decides for the same inputs must come with an engine version bump.
 
