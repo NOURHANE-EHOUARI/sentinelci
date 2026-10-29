@@ -1,13 +1,15 @@
 """Risk score and priority of a finding (SPEC section 6.2): risk = 100 x S x E x X x R, clamped to [0, 100].
 
 S  severity weight.
-E  exploitability. SCA/CONTAINER: 1.0 if KEV-listed, else epss_floor + (1 - epss_floor) x EPSS percentile.
+E  exploitability. SCA/CONTAINER: epss_floor + (1 - epss_floor) x EPSS percentile only when KEV was read and
+   does not list the CVE (`kev.listed` is false); the model's `kev` weight when it is listed; 1.0 otherwise.
    Other categories: their `non_cve` weight (SAST counts as SAST_TAINT until findings say which kind they are;
    a category the model does not list counts as 1.0).
 X  exposure of the service (`enrichment.exposure`).
 R  reachability (`enrichment.reachability`), for SCA/CONTAINER only; 1.0 for every other category.
 
-Missing enrichment never lowers a score: no EPSS/KEV data means E = 1.0, no exposure means X = 1.0 and no
+Missing enrichment never lowers a score: E < 1 only when KEV was read and the CVE is not listed (a KEV outage
+next to a working EPSS feed must not lower it), no exposure means X = 1.0 and no
 reachability analysis means R = 1.0 (the model's `unknown` is for an analysis that ran and could not decide).
 So until enrichment (B2) runs, a score is exactly 100 x S, the bound the gate uses for unscored findings:
 adding `sentinel score` to a pipeline never relaxes the gate.
@@ -115,12 +117,13 @@ def factors(finding: Mapping[str, Any], model: RiskModel) -> dict[str, float]:
     exposure = model.exposure.get(_get(finding, "enrichment", "exposure"), 1.0)
     if category in PACKAGE_CATEGORIES:
         percentile = _get(finding, "enrichment", "epss", "percentile")
-        if _get(finding, "enrichment", "kev", "listed") is True:
+        listed = _get(finding, "enrichment", "kev", "listed")
+        if listed is True:
             exploitability = model.exploitability.kev
-        elif isinstance(percentile, int | float) and not isinstance(percentile, bool):
+        elif listed is False and isinstance(percentile, int | float) and not isinstance(percentile, bool):
             floor = model.exploitability.epss_floor
             exploitability = floor + (1 - floor) * min(max(float(percentile), 0.0), 1.0)
-        else:
+        else:  # KEV unknown (feed down, never read) or no EPSS: the worst case
             exploitability = 1.0
         # Not analysed (absent) is the worst case; `unknown` means the analysis ran and could not decide.
         reachability = model.reachability.get(_get(finding, "enrichment", "reachability"), 1.0)

@@ -218,7 +218,8 @@ priority_bands: {P0: 70, P1: 50, P2: 30, P3: 10}   # below 10 -> P4
 | Offline batch job never importing it | 0.5 | 0.4 | 19 | P3 |
 
 Implementation (`sentinel score`, B3): the score is rounded to 0.1 and banded from the rounded value; `factors`
-records S, E, X and R. Missing enrichment never lowers a score (no EPSS/KEV: E = 1.0; no exposure: X = 1.0; no
+records S, E, X and R. Missing enrichment never lowers a score (E < 1 only when KEV was read and the CVE is not
+listed, so a KEV outage next to a working EPSS feed cannot lower E; no exposure: X = 1.0; no
 reachability analysis: R = 1.0, while `unknown` is for an analysis that ran and could not decide), so every score
 stays at most `100 × severity_weight`, the bound the gate uses for unscored findings, and a finding with no
 enrichment scores exactly that bound. Every priority band floor lies in (0, 100]. R applies to SCA and CONTAINER only; SAST counts as `SAST_TAINT` until findings carry the

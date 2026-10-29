@@ -22,7 +22,8 @@ uv run sentinel score --findings out/findings.ndjson --out out/findings.scored.n
 
 - Sets `risk` on every finding: `score` (0-100, rounded to 0.1), `priority` (P0-P4), `factors` (S, E, X, R) and the
   `model_version` of `policies/risk-model.yaml`, with `risk = 100 x S x E x X x R` (SPEC section 6.2).
-- Missing enrichment never lowers a score: no EPSS/KEV data counts as E = 1.0, no exposure as X = 1.0, no
+- Missing enrichment never lowers a score: E < 1 only when KEV was read and does not list the CVE (EPSS alone,
+  with KEV unknown, counts as E = 1.0), no exposure counts as X = 1.0, no
   reachability analysis as R = 1.0 (`unknown` is for an analysis that could not decide). Every score stays at most
   `100 x severity_weight`, and a finding with no enrichment scores exactly that, like an unscored one at the gate.
 - SAST counts as taint-mode (`SAST_TAINT`) until findings say which kind they are; a category the model does not

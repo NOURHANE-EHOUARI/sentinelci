@@ -33,13 +33,13 @@ PRIORITY_ORDER = {"P4": 0, "P3": 1, "P2": 2, "P1": 3, "P0": 4}
 def vuln(
     severity: str = "CRITICAL",
     percentile: float | None = 0.95,
-    kev: bool = False,
+    kev: bool | None = False,
     exposure: str | None = "internet-facing",
     reachability: str | None = "imported",
 ) -> dict[str, Any]:
     finding = {k: v for k, v in SCA.items() if k not in ("risk", "enrichment")}
     finding["severity"] = severity
-    enrichment: dict[str, Any] = {"kev": {"listed": kev}}
+    enrichment: dict[str, Any] = {} if kev is None else {"kev": {"listed": kev}}
     if percentile is not None:
         enrichment["epss"] = {"score": 0.1, "percentile": percentile, "date": "2026-11-01"}
     if exposure is not None:
@@ -141,6 +141,25 @@ def test_monotone_in_reachability(sev: str, pct: float, kev: bool, exposure: str
 
 
 # ---------------------------------------------------------------- missing enrichment (B2 not run yet)
+
+
+@pytest.mark.parametrize(
+    ("sev", "exposure", "reach"), list(itertools.product(SEVERITIES, EXPOSURES, REACHABILITY))
+)
+def test_a_kev_outage_never_lowers_a_score(sev: str, exposure: str, reach: str) -> None:
+    # Found by Nourhane in the review of #16: the KEV feed down while EPSS answers (#18 writes EPSS alone).
+    no_data = risk(vuln(sev, None, None, exposure, reach))
+    for pct in PERCENTILES:
+        kev_unknown = risk(vuln(sev, pct, None, exposure, reach))
+        assert kev_unknown["factors"]["E"] == 1.0
+        assert kev_unknown["score"] == no_data["score"]
+        assert kev_unknown["score"] >= risk(vuln(sev, pct, False, exposure, reach))["score"]
+
+
+def test_kev_without_a_listed_value_is_unknown() -> None:
+    finding = vuln(percentile=0.1)
+    finding["enrichment"]["kev"] = {}
+    assert risk(finding)["factors"]["E"] == 1.0
 
 
 def test_missing_exploitability_and_exposure_count_as_the_worst() -> None:
