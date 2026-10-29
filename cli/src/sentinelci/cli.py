@@ -16,6 +16,7 @@ import json
 import os
 import re
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
@@ -23,10 +24,11 @@ from typing import Annotated, Any
 import typer
 
 from sentinelci import __version__
-from sentinelci.contracts.finding import Run, RunContext, Tool
+from sentinelci.contracts.finding import Finding, Run, RunContext, Tool
 from sentinelci.normalize.errors import NormalizationError
 from sentinelci.normalize.gitleaks import load_gitleaks_report, normalize_gitleaks
 from sentinelci.normalize.ndjson import write_ndjson
+from sentinelci.normalize.trivy import normalize_trivy_config
 from sentinelci.policy.bundle import BundleError, PolicyBundle
 from sentinelci.policy.decision import (
     CONTEXTS,
@@ -46,12 +48,14 @@ from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
 from sentinelci.scanners.installer import VerificationReport, detect_platform, install_tools, verify_tools
 from sentinelci.scanners.lock import LOCK_FILE_NAME, ToolLock, load_lock
+from sentinelci.scanners.runner import ToolRun
 from sentinelci.scanners.status import (
     outcome_from_error,
     outcome_from_run,
     tool_status_document,
     write_tool_status,
 )
+from sentinelci.scanners.trivy import scan_iac_with_run
 
 EXIT_UNTRUSTED_INPUT = 3
 DEFAULT_TOOLS_DIR = Path(".sentinel/tools")
@@ -540,16 +544,13 @@ def scan_secrets_cmd(
     ] = None,
 ) -> None:
     """Scan for secrets with the verified Gitleaks binary; raw secrets never leave memory."""
-    out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
-    if tool_status_out is not None:
-        tool_status_out.unlink(missing_ok=True)  # nor an older status vouching for it
+    _clear(out, tool_status_out)
     if mode not in ("dir", "git"):
         raise typer.BadParameter("mode must be 'dir' or 'git'")
     scan_mode: GitleaksMode = "git" if mode == "git" else "dir"
     root = repo_root or target
-    tool_lock: ToolLock | None = None
-    try:
-        tool_lock = load_lock(lock)
+
+    def scan(tool_lock: ToolLock) -> tuple[list[Finding], ToolRun]:
         raw, tool_run = scan_secrets_with_run(
             target,
             lock=tool_lock,
@@ -565,18 +566,89 @@ def scan_secrets_cmd(
             tool=Tool(name="gitleaks", version=tool_run.version),
             repo_root=root,
         )
+        return findings, tool_run
+
+    _scan_and_record("gitleaks", scan, out=out, tool_status_out=tool_status_out, lock=lock, platform=platform)
+
+
+@scan_app.command("iac")
+def scan_iac_cmd(
+    target: Annotated[
+        Path, typer.Argument(help="Directory to scan (Terraform, Kubernetes, Dockerfiles, ...).")
+    ],
+    out: Annotated[Path, typer.Option(help="Destination NDJSON file.")],
+    repo: Annotated[str, typer.Option(help="Repository as owner/name.")],
+    commit: Annotated[str, typer.Option(help="Commit SHA that was scanned.")],
+    context: Annotated[RunContext, typer.Option(help="Run context.")],
+    ref: Annotated[str | None, typer.Option(help="Git ref that was scanned.")] = None,
+    run_id: Annotated[str | None, typer.Option(help="CI run identifier.")] = None,
+    repo_root: Annotated[
+        Path | None, typer.Option(help="Repository root (default: the target itself).")
+    ] = None,
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    tools_dir: Annotated[
+        Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
+    ] = (DEFAULT_TOOLS_DIR),
+    platform: PlatformOption = None,
+    tool_status_out: Annotated[
+        Path | None,
+        typer.Option(
+            help="Also write a tool status (schemas/tool-status.v1.json), on success and on failure, so the "
+            "gate can record a failed scan as SC-010."
+        ),
+    ] = None,
+) -> None:
+    """Scan infrastructure as code with the verified Trivy binary (`trivy config`), offline."""
+    _clear(out, tool_status_out)
+    root = repo_root or target
+
+    def scan(tool_lock: ToolLock) -> tuple[list[Finding], ToolRun]:
+        results, tool_run = scan_iac_with_run(
+            target, lock=tool_lock, tools_dir=tools_dir, repo_root=root, platform=platform
+        )
+        findings = normalize_trivy_config(
+            results,
+            run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
+            tool=Tool(name="trivy", version=tool_run.version),
+            scan_root=target.resolve().relative_to(root.resolve()).as_posix(),
+        )
+        return findings, tool_run
+
+    _scan_and_record("trivy", scan, out=out, tool_status_out=tool_status_out, lock=lock, platform=platform)
+
+
+def _clear(out: Path, tool_status_out: Path | None) -> None:
+    out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
+    if tool_status_out is not None:
+        tool_status_out.unlink(missing_ok=True)  # nor an older status vouching for it
+
+
+def _scan_and_record(
+    tool: str,
+    scan: Callable[[ToolLock], tuple[list[Finding], ToolRun]],
+    *,
+    out: Path,
+    tool_status_out: Path | None,
+    lock: Path,
+    platform: str | None,
+) -> None:
+    """Run one scanner, write its findings, then its tool status; record a failure before failing closed."""
+    tool_lock: ToolLock | None = None
+    try:
+        tool_lock = load_lock(lock)
+        findings, tool_run = scan(tool_lock)
     except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
         if tool_status_out is not None and tool_lock is not None:  # no lock: no status, the gate blocks
-            outcome = outcome_from_error("gitleaks", exc, lock=tool_lock)
-            _write_status(tool_status_out, lock, platform or _host_platform(), {"gitleaks": outcome})
+            outcome = outcome_from_error(tool, exc, lock=tool_lock)
+            _write_status(tool_status_out, lock, platform or _host_platform(), {tool: outcome})
         raise _fail_closed(exc) from exc
     out.parent.mkdir(parents=True, exist_ok=True)
     write_ndjson(findings, out)
     if tool_status_out is not None:  # last: an `ok` status never vouches for a findings file not yet written
         host = platform or _host_platform()
         outcome = outcome_from_run(tool_run, lock=tool_lock, platform=host)
-        _write_status(tool_status_out, lock, host, {"gitleaks": outcome})
-    typer.echo(f"gitleaks {tool_run.version}: {len(findings)} finding(s) written to {out}")
+        _write_status(tool_status_out, lock, host, {tool: outcome})
+    typer.echo(f"{tool} {tool_run.version}: {len(findings)} finding(s) written to {out}")
 
 
 def _host_platform() -> str | None:
