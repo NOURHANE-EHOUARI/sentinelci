@@ -238,6 +238,97 @@ block contains v if {
 	v := {"rule": "SC-001", "effect": "BLOCK", "finding_ids": sort(secret_ids), "message": "Hard-coded secret"}
 }
 
+# ---------------------------------------------------------------- rule catalogue (SPEC section 6.3)
+
+# A finding counts for a rule when the change introduces it (any finding outside PR mode) and no waiver covers it.
+counts(f) if {
+	introduced(f)
+	not waived(f)
+}
+
+# The priority the risk engine (B3) recorded, or the worst case for an unscored finding. risk = 100 x S x E x X x R
+# with E, X and R at most 1, so 100 x severity_weight bounds it (risk-model.yaml; a test keeps them in step).
+# A finding without a usable severity is treated as the worst of all.
+worst_case_priority := {"CRITICAL": "P0", "HIGH": "P0", "MEDIUM": "P2", "LOW": "P3", "INFO": "P4"}
+
+scored_priority(f) := p if {
+	p := object.get(f, ["risk", "priority"], null)
+	p in {"P0", "P1", "P2", "P3", "P4"}
+}
+
+priority(f) := scored_priority(f)
+
+priority(f) := object.get(worst_case_priority, object.get(f, "severity", ""), "P0") if not scored_priority(f)
+
+# SC-003: a known exploited vulnerability that can be fixed, in an internet-facing service.
+fix_available(f) if f.enrichment.fix_available == true
+
+fix_available(f) if count(object.get(f, ["package", "fixed_versions"], [])) > 0
+
+kev_ids contains f.id if {
+	some f in input.findings
+	f.category in {"SCA", "CONTAINER"}
+	f.enrichment.kev.listed == true
+	fix_available(f)
+	f.enrichment.exposure == "internet-facing"
+	counts(f)
+}
+
+block contains v if {
+	count(kev_ids) > 0
+	v := {
+		"rule": "SC-003",
+		"effect": "BLOCK",
+		"finding_ids": sort(kev_ids),
+		"message": "Known exploited vulnerability with a fix, internet-facing",
+	}
+}
+
+# SC-009: a high-severity CI workflow issue.
+pipeline_ids contains f.id if {
+	some f in input.findings
+	f.category == "PIPELINE"
+	f.severity in {"HIGH", "CRITICAL"}
+	counts(f)
+}
+
+block contains v if {
+	count(pipeline_ids) > 0
+	v := {"rule": "SC-009", "effect": "BLOCK", "finding_ids": sort(pipeline_ids), "message": "High-severity CI workflow issue"}
+}
+
+# SC-002 (P0, BLOCK) and SC-006 (P1, WARN) for findings no more specific rule already blocks, so each finding is
+# reported once, under its most specific rule.
+specific_ids := (secret_ids | kev_ids) | pipeline_ids
+
+priority_ids[p] contains f.id if {
+	some f in input.findings
+	not f.id in specific_ids
+	counts(f)
+	p := priority(f)
+}
+
+unscored_note(found) := " (unscored findings count at their worst-case priority)" if {
+	some f in input.findings
+	f.id in found
+	not scored_priority(f)
+} else := ""
+
+block contains v if {
+	found := priority_ids.P0
+	v := {
+		"rule": "SC-002",
+		"effect": "BLOCK",
+		"finding_ids": sort(found),
+		"message": sprintf("P0 finding not waived%s", [unscored_note(found)]),
+	}
+}
+
+warn contains v if {
+	found := priority_ids.P1
+	v := {"rule": "SC-006", "effect": "WARN", "finding_ids": sort(found), "message": sprintf("P1 finding%s", [unscored_note(found)])}
+}
+
 # SC-010: a scanner failed, timed out, did not match its pin or did not run. Its silence is not a pass.
 tool_status := object.get(input, "tool_status", null)
 
@@ -325,10 +416,12 @@ block contains v if {
 
 verdict := "BLOCK" if count(block) > 0
 
+else := "WARN" if count(warn) > 0
+
 else := "PASS"
 
 decision := {
 	"verdict": verdict,
-	"violations": sort(block),
+	"violations": array.concat(sort(block), sort(warn)),
 	"waivers_applied": sort(waivers_applied),
 }
