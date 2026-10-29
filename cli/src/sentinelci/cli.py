@@ -46,6 +46,7 @@ from sentinelci.policy.decision import CONTEXTS, Subject, dumps_decision, evalua
 from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaError, OpaRunner
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
+from sentinelci.risk import RiskModel, RiskModelError, score_finding
 from sentinelci.scanners.errors import ToolIntegrityError
 from sentinelci.scanners.installer import VerificationReport, install_tools, verify_tools
 from sentinelci.scanners.lock import LOCK_FILE_NAME, load_lock
@@ -223,6 +224,32 @@ def enrich_command(
         f"{len(enriched)} finding(s) enriched (sources: {', '.join(sources)}; "
         f"service context: {'yes' if context else 'no'}) -> {out}"
     )
+
+
+@app.command("score")
+def score_command(
+    findings: Annotated[Path, typer.Option(help="Findings NDJSON (Finding v1), enriched or not.")],
+    out: Annotated[Path, typer.Option(help="Scored findings NDJSON to write.")],
+    policy_dir: Annotated[Path, typer.Option(help="Policy bundle holding risk-model.yaml.")] = Path(
+        "policies"
+    ),
+) -> None:
+    """Set `risk` (score, priority P0-P4, factors, model version) on every finding (SPEC section 6.2).
+
+    Exit code 0 on success, 3 when the findings or the risk model cannot be read (nothing is written).
+    """
+    # A stale file from an earlier run must never be read as this run's scores.
+    out.unlink(missing_ok=True)
+    try:
+        model = RiskModel.load(policy_dir / "risk-model.yaml")
+        scored = [
+            Finding.model_validate(score_finding(f, model)) for f in load_findings(findings.read_bytes())
+        ]
+    except (EvaluationError, RiskModelError, OSError, ValueError) as exc:
+        typer.echo(f"sentinel score: {exc}", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    _write_atomically(out, dumps_ndjson(scored))
+    typer.echo(f"{len(scored)} finding(s) scored with risk model {model.version} -> {out}")
 
 
 @app.command("evaluate")
