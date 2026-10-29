@@ -1,0 +1,9 @@
+# Gitleaks configuration managed by SentinelCI.
+#
+# The scanned repository's own .gitleaks.toml, .gitleaksignore and `gitleaks:allow` comments are written by the
+# author of the change, so SentinelCI never lets them decide what is reported. Exceptions go through SentinelCI
+# waivers instead: reviewed in a pull request, owned, justified and expiring (SPEC §6.4).
+title = "SentinelCI"
+
+[extend]
+useDefault = true
