@@ -28,8 +28,8 @@ from sentinelci.enrich import (
     EMPTY_SNAPSHOT,
     EnrichmentError,
     enrich_finding,
-    load_service_context,
     load_snapshot,
+    read_service_context,
 )
 from sentinelci.normalize.errors import NormalizationError
 from sentinelci.normalize.gitleaks import load_gitleaks_report, normalize_gitleaks
@@ -132,12 +132,15 @@ def _write_atomically(path: Path, text: str) -> None:
         raise
 
 
-def _refuse_output(out: Path, source: Path, command: str) -> None:
-    """Fail closed before anything is deleted: --out must not be the input file, nor a directory."""
-    if out.is_dir() or (out.exists() and source.exists() and out.resolve() == source.resolve()):
-        what = "a directory" if out.is_dir() else f"the input file {source}"
-        typer.echo(f"{command}: --out {out} is {what}; nothing was written", err=True)
+def _refuse_output(out: Path, sources: list[Path | None], command: str) -> None:
+    """Fail closed before anything is deleted: --out must not be any input file, nor a directory."""
+    if out.is_dir():
+        typer.echo(f"{command}: --out {out} is a directory; nothing was written", err=True)
         raise typer.Exit(EXIT_NO_DECISION)
+    for source in sources:
+        if source is not None and out.exists() and source.exists() and out.resolve() == source.resolve():
+            typer.echo(f"{command}: --out {out} is the input file {source}; nothing was written", err=True)
+            raise typer.Exit(EXIT_NO_DECISION)
 
 
 @app.command("enrich")
@@ -163,12 +166,12 @@ def enrich_command(
     the worst case). Pass the same snapshot to `sentinel evaluate --enrichment-snapshot`, so the decision
     records its digest. Exit code 0 on success, 3 when an input cannot be read (nothing is written).
     """
-    _refuse_output(out, findings, "sentinel enrich")
+    _refuse_output(out, [findings, snapshot, config], "sentinel enrich")
     # A stale file from an earlier run must never be read as this run's findings.
     out.unlink(missing_ok=True)
     try:
         data = load_snapshot(snapshot.read_bytes()) if snapshot else load_snapshot(EMPTY_SNAPSHOT)
-        context = load_service_context(config.read_bytes()) if config else None
+        context = read_service_context(config) if config else None
         enriched = [
             Finding.model_validate(enrich_finding(f, data, context))
             for f in load_findings(findings.read_bytes())

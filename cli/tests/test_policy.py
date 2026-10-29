@@ -441,8 +441,16 @@ def test_subject_identifiers_cannot_end_with_a_newline(field: dict[str, str]) ->
         Subject(**{**values, "context": "pr", **field})
 
 
-def test_an_invalid_enrichment_snapshot_is_never_recorded(tmp_path: Path, opa_binary: Path) -> None:
-    (tmp_path / "snapshot.json").write_text("not a snapshot", encoding="utf-8")
+@pytest.mark.parametrize(
+    "data",
+    [b"not a snapshot", b'{"x": ' + b"[" * 2_000 + b"]" * 2_000 + b"}", b"[" * 10_000 + b"]" * 10_000],
+    ids=["text", "nested-2000", "nested-10000"],
+)
+def test_an_invalid_enrichment_snapshot_is_never_recorded(
+    tmp_path: Path, opa_binary: Path, data: bytes
+) -> None:
+    """Exit 3 (no decision), never 1 (BLOCK) from a crash: also for a deeply nested document (#17 N2)."""
+    (tmp_path / "snapshot.json").write_bytes(data)
     code, out, decision = run_evaluate(
         tmp_path, b"", "--enrichment-snapshot", str(tmp_path / "snapshot.json"), "--opa", str(opa_binary)
     )
