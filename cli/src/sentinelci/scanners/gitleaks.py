@@ -15,6 +15,16 @@ differ", so its secrets are never seen. Patches are therefore forced to text (`-
 external diff), and caller-supplied `--log-opts` are limited to revisions, pathspecs and a few harmless
 options, so they cannot turn that back off or make git write files (`--output`).
 
+`git log -p` also prints no patch for merge commits, so a secret added while "resolving" a merge (an evil
+merge) was invisible. `--diff-merges=remerge` shows what each merge adds beyond the automatic merge of its
+parents: an evil merge is scanned, an honest merge of the base branch adds nothing and blames nobody (unlike
+`first-parent`, which would report every secret the base branch already had). Options that hide commits or
+merges from the walk (`--no-merges`, `--first-parent`) are refused. For a conflicted file, Gitleaks reads the
+remerge header as `b/<path>`; that prefix is removed when only the path without it exists.
+
+In dir mode, archives are opened up to `MAX_ARCHIVE_DEPTH` levels, so a token inside a committed `.zip` is
+found. Git patches of binary files are never decompressed, so this applies to dir mode only.
+
 The raw report contains real secret values: it is written to a private temporary directory and deleted as soon
 as it has been read. Only the normalized, hashed findings leave this module.
 """
@@ -34,11 +44,14 @@ from sentinelci.scanners.runner import DEFAULT_TIMEOUT_S, ToolRun, is_within, ru
 GitleaksMode = Literal["dir", "git"]
 IGNORE_FILE = ".gitleaksignore"
 
-# Always passed to `git log` in git mode (see the module docstring).
-GIT_LOG_HARDENING = ("--text", "--no-textconv", "--no-ext-diff")
+# Always passed to `git log` in git mode (see the module docstring). remerge needs git 2.36 or later; an older
+# git makes Gitleaks fail, and the scan fails closed.
+GIT_LOG_HARDENING = ("--text", "--no-textconv", "--no-ext-diff", "--diff-merges=remerge")
 # Gitleaks' own default when no --log-opts is given (sources/git.go): every ref, deleted files excluded.
 GIT_LOG_DEFAULT = ("--full-history", "--all", "--diff-filter=tuxdb")
-_SAFE_LOG_FLAGS = frozenset({"--all", "--full-history", "--first-parent", "--no-merges"})
+# Walk options that cannot hide a commit or a merge from the scan.
+_SAFE_LOG_FLAGS = frozenset({"--all", "--full-history"})
+MAX_ARCHIVE_DEPTH = 3
 _SAFE_LOG_PREFIXES = ("--since=", "--until=", "--max-count=")
 
 
@@ -137,6 +150,8 @@ def scan_secrets_with_run(
         ]  # fmt: skip
         if hardened_log_opts is not None:
             args += ["--log-opts", hardened_log_opts]
+        else:
+            args += ["--max-archive-depth", str(MAX_ARCHIVE_DEPTH)]
 
         run = run_verified_tool(
             "gitleaks",
@@ -153,4 +168,16 @@ def scan_secrets_with_run(
             findings = load_gitleaks_report(report)
         except NormalizationError as exc:
             raise ScannerError(f"gitleaks produced an unreadable report: {exc}") from exc
+    if mode == "git":
+        _repair_remerge_paths(findings, repo_root)
     return findings, run
+
+
+def _repair_remerge_paths(findings: list[dict[str, Any]], repo_root: Path) -> None:
+    """Undo Gitleaks' `b/<path>` for conflicted files of a remerge diff, only when that is unambiguous."""
+    for item in findings:
+        reported = item.get("File")
+        if not isinstance(reported, str) or not reported.startswith("b/"):
+            continue
+        if not (repo_root / reported).exists() and (repo_root / reported[2:]).is_file():
+            item["File"] = reported[2:]

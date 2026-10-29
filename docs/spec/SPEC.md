@@ -10,7 +10,7 @@
 
 | Version | Change |
 |---|---|
-| 1.1.3 | Scanner hardening (§5): verify-before-exec, minimal child environment, scanner configuration owned by SentinelCI; repository-controlled suppressions are neutralized or refused (Gitleaks: `.gitleaks.toml`, `gitleaks:allow`, `.gitleaksignore`, and `.gitattributes` `-diff`/`binary` in git mode). |
+| 1.1.3 | Scanner hardening (§5): verify-before-exec, minimal child environment, scanner configuration owned by SentinelCI; repository-controlled suppressions are neutralized or refused (Gitleaks: `.gitleaks.toml`, `gitleaks:allow`, `.gitleaksignore`, and `.gitattributes` `-diff`/`binary` in git mode); merge commits scanned with `--diff-merges=remerge` (evil merges), archives opened in dir mode. |
 | 1.1.2 | Tool lock is `tools.lock.toml` (read with the standard library: no extra dependency). A1 split: A1a = lock + `sentinel tools install/verify` (done), A1b = scanner adapters + Opengrep pinning via signature verification. |
 | 1.1.1a | Package fingerprints use the purl base (no version, qualifiers or subpath — same as the gate's waiver matching), agreed in the review of PR #1. "Green CI" may be a local `make check` report while Actions minutes are exhausted. |
 | 1.1.1 | No GitHub Pro: `main` protected by convention + local guard until the repository goes public. |
@@ -170,7 +170,9 @@ neutralized (`--config`, `--ignore-gitleaks-allow`) or refused when the tool off
 (Gitleaks always loads `<source>/.gitleaksignore`). In git mode, `git log -p` honours the repository's
 `.gitattributes`, where a `-diff` or `binary` attribute would hide a file's patch, so patches are forced to text
 (`--text`, no textconv or external diff) and caller `--log-opts` are restricted to revisions, pathspecs and a few
-harmless options. Legitimate exceptions go through waivers (§6.4).
+harmless options. Merge commits are scanned with `--diff-merges=remerge`, so a secret slipped into a merge
+(an "evil merge") is found while an honest merge of the base branch blames nobody; dir mode opens archives
+(`.zip`, nested up to 3 levels). Legitimate exceptions go through waivers (§6.4).
 
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
