@@ -4,7 +4,8 @@ Checked on the raw text, so the `# vX.Y.Z` comment of a pinned action is seen an
 zizmor audits the workflows too, but it does not check that a same-repository reference exists: a broken
 path is only caught when GitHub refuses the workflow. Same-repository references use GitHub's
 self-repository syntax `$/<path>` (July 2026), which resolves to the running commit; zizmor's
-`self-repository` audit flags the older `./<path>`.
+`self-repository` audit flags the older `./<path>`. Reference:
+https://github.blog/changelog/2026-07-30-reference-same-repository-actions-with-self-repository-syntax/
 """
 
 import re
@@ -101,3 +102,19 @@ SHA = "3d3c42e5aac5ba805825da76410c181273ba90b1"
 def test_reference_rules(ref: str, rest: str, problem: str | None) -> None:
     found = reference_problem(ref, rest)
     assert (found is None) if problem is None else (found is not None and problem in found)
+
+
+def test_the_pipeline_change_warning_covers_every_input_read_from_the_base_commit() -> None:
+    # ADR-0008: these are taken from the base commit, so a pull request that edits them must be told.
+    text = (ROOT / ".github" / "workflows" / "sentinel-scan.yml").read_text(encoding="utf-8")
+    step = text[text.index("- name: List pipeline files changed by the pull request") :]
+    step = step[: step.index("- name:", 10)]
+    for pathspec in (
+        "tools.lock.toml",
+        "policies",
+        "cli",
+        ".sentinel",
+        "uv.lock",
+        "':(glob)**/sentinel.yaml'",
+    ):
+        assert f" {pathspec} " in step.replace("\\\n", " ").replace("\n", " "), pathspec

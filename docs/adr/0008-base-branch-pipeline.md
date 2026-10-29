@@ -24,15 +24,16 @@ reusable workflows called with `./` or `$/`. A pull request can therefore always
 
 1. Every job of `sentinel-scan.yml` checks out the **pipeline** at the base commit
    (`github.event.pull_request.base.sha`, or the pushed commit outside pull requests): CLI, lock, scanner
-   configurations, policies and waivers. The pull request head is checked out only as **data** to scan, in a
+   configurations, policies, waivers and the service context (`sentinel.yaml`). The pull request head is
+   checked out only as **data** to scan, in a
    separate directory, and no job runs its code. `gate` and `report` never check it out at all.
 2. Tools are installed in `$RUNNER_TEMP`, outside both checkouts, and `sentinel` re-verifies each binary
    against the base lock right before it runs.
 3. Waivers come from the base commit. A waiver added by a pull request applies once it is reviewed and merged,
    never to the pull request that adds it.
 4. The PR comment warns when the pull request changes pipeline files (`.github/workflows`, `tools.lock.toml`,
-   `policies/`, `cli/`, `.sentinel/`, `pyproject.toml`, `uv.lock`), because those changes are not what judged
-   it.
+   `policies/`, `cli/`, `.sentinel/`, `pyproject.toml`, `uv.lock`, any `sentinel.yaml`), because those changes
+   are not what judged it.
 5. Least privilege per job: `scan` and `gate` read only. `report` may write one PR comment. No job gets a
    secret.
 
@@ -51,6 +52,12 @@ reusable workflows called with `./` or `$/`. A pull request can therefore always
   covered by review of `.github/` until required workflows exist.
 - A waiver lands in its own reviewed pull request first; the blocked pull request then re-runs. The comment
   says so when a pull request edits the waivers file.
+- `sentinel.yaml` (service context) is read from the base commit, like the policies and the waivers: its
+  exposure lowers risk scores, so a change must not choose its own. A pull request that changes it gets the
+  "pipeline files changed" warning, and the change applies after merge. Residual risk: path-scoped exposure
+  follows where a change puts its files (a file under an `offline` component is scored as offline), so new
+  top-level directories and moves into lower-exposure components deserve the reviewer's eye (text proposed
+  by Hiba in the review of #17).
 - Public phase: for pull requests from forks, `github.token` is read-only under `pull_request`, so posting the
   comment fails. The report job should then skip the post and keep the step summary, never move to
   `pull_request_target` (suggested by Hiba in the review of #6).
