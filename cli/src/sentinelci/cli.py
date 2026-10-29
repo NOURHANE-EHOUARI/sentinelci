@@ -238,6 +238,10 @@ def score_command(
 
     Exit code 0 on success, 3 when the findings or the risk model cannot be read (nothing is written).
     """
+    # Fail closed before anything is deleted: --out must not be the findings file, nor a directory.
+    if out.is_dir() or (out.exists() and findings.exists() and out.resolve() == findings.resolve()):
+        typer.echo(f"sentinel score: --out {out} is the input or a directory; nothing was written", err=True)
+        raise typer.Exit(EXIT_NO_DECISION)
     # A stale file from an earlier run must never be read as this run's scores.
     out.unlink(missing_ok=True)
     try:
