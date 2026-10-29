@@ -8,11 +8,18 @@ JSON Schemas (draft 2020-12) shared by both tracks. See `docs/spec/SPEC.md` sect
 | `decision.v1.json` | B4 (policy engine) → A4, A5, platform |
 | `patch-proposal.v1.json` | A6 fixers / B6 LLM → A6 remediation loop |
 | `verification-result.v1.json` | A6 → platform, B8 |
+| `waivers.v1.json` | people via reviewed PRs (AI drafts only) → B4 gate, platform |
+| `tool-status.v1.json` | A3 pipeline (superset of the `tools verify --report` manifest) → B4 gate (SC-010) |
 
 Rules:
 
 - Every schema has `fixtures/<name>/valid/` and `fixtures/<name>/invalid/` examples; `tests/contracts` checks
   that valid ones pass and invalid ones fail. Add a fixture for every new rule you encode.
 - A breaking change creates a new version (`finding.v2.json`) — never edit a released version's meaning.
+- An additive change may bump the minor `schema_version` in the same file (`decision.v1.json` accepts
+  `1.0` to `1.2`): every older document stays valid, and the schema states what the new minor version
+  requires and forbids the new fields in older minor versions. Current minor versions: decision 1.2 (1.1 added
+  `inputs.waivers_digest`; 1.2 adds `inputs.baseline_digest` and `inputs.tool_status_digest`), finding 1.1 (adds
+  `other_locations`).
 - Schemas encode safety rules where possible (no raw secrets, no path traversal, VERIFIED only when every
   verification condition holds, verdict consistent with violations).
