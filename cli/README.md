@@ -53,6 +53,31 @@ Runs the OPA policies in `policies/` and writes a Decision record (`schemas/deci
 - Rules implemented so far: SC-001 (secret introduced by the change, not waived), SC-005 (invalid waiver) and
   SC-010 (scanner failure, malformed gate input).
 
+### Replay
+
+```bash
+uv run sentinel evaluate ... --store out/evidence      # also keep every input and the decision
+uv run sentinel replay <decision-id> --store out/evidence
+uv run sentinel replay out/decision.v1.json --store out/evidence
+uv run sentinel replay --all --store out/evidence                # every stored decision (nightly job)
+```
+
+- `evaluate --store DIR` writes every input exactly as digested to `DIR/sha256/<hex>` (findings, waivers, baseline,
+  tool status, enrichment snapshot, SBOM, each policy file), the policy bundle manifest (its digest is the
+  recorded `policy_bundle_digest`) and the decision to `DIR/decisions/<id>.json`. If the evidence cannot be
+  stored, no decision is written (exit 3).
+- `replay` re-evaluates from the store only, policy included, and compares the whole record, `decision_id`
+  included. Exit 0 identical, 1 differs (each differing field is listed as `recorded -> replayed`), 3 cannot
+  replay (missing or tampered evidence, malformed record, Decision 1.0).
+- Scanner versions are passed back as recorded (scanners do not run again); the OPA version is the running
+  binary's, so an OPA or engine upgrade shows up as a difference.
+- `--all` replays every decision in the store and skips those recorded with another engine or OPA version
+  (listed as `skipped`). Exit 3 if any cannot be replayed, the store holds none or nothing was compared (every
+  decision skipped; `--allow-all-skipped` accepts that, as after an engine bump), else 1 if any differs.
+- The nightly job (`.github/workflows/replay-nightly.yml`) replays last night's corpus with today's engine,
+  then records a fresh one with `eval/replay/corpus.py`. So a change to what the engine decides for the same
+  inputs needs an engine version bump (`sentinelci.__version__`).
+
 ### Waivers
 
 `--waivers` (default `.sentinel/waivers.yaml` when it exists) follows `schemas/waivers.v1.json`:

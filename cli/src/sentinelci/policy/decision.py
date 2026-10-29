@@ -46,6 +46,7 @@ _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _COMMIT = re.compile(r"[a-f0-9]{40}")
 _OCI_DIGEST = re.compile(r"sha256:[a-f0-9]{64}")
 _SHA256_HEX = re.compile(r"[a-f0-9]{64}")
+_VERSION_SEPARATOR = ", "
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,11 @@ def canonical_time(value: str) -> str:
     return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
+def engine_version() -> str:
+    """The `engine_version` this engine records."""
+    return __version__
+
+
 def now_utc() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -132,14 +138,19 @@ def load_findings(data: bytes) -> list[dict[str, Any]]:
 def _tool_versions(
     findings: Sequence[Mapping[str, Any]], explicit: Mapping[str, str], opa_version: str
 ) -> dict[str, str]:
-    """Versions of every tool behind the decision; several versions of one tool are all listed."""
+    """Versions of every tool behind the decision; several versions of one tool are all listed.
+
+    An explicit value may list several versions joined by ", ", as recorded, so a recorded `tool_versions`
+    passed back in (`sentinel replay`) gives the same result.
+    """
     seen: dict[str, set[str]] = {}
     tools = [f["tool"] for f in findings if isinstance(f.get("tool"), dict)]
     pairs = [(tool.get("name"), tool.get("version")) for tool in tools]
-    for name, version in [*pairs, *explicit.items(), ("opa", opa_version)]:
+    given = [(name, v) for name, value in explicit.items() for v in value.split(_VERSION_SEPARATOR)]
+    for name, version in [*pairs, *given, ("opa", opa_version)]:
         if isinstance(name, str) and name and isinstance(version, str) and version:
             seen.setdefault(name, set()).add(version)
-    return {name: ", ".join(sorted(versions)) for name, versions in sorted(seen.items())}
+    return {name: _VERSION_SEPARATOR.join(sorted(versions)) for name, versions in sorted(seen.items())}
 
 
 def _check_policy_result(result: Any) -> dict[str, Any]:

@@ -296,6 +296,23 @@ Attached to the image as an in-toto attestation, predicate type
 `https://github.com/NOURHANE-EHOUARI/sentinelci/specs/release-decision/v1`. `sentinel replay` re-evaluates from
 digests and must be identical; checked nightly.
 
+**Evidence store (replay input).** Content-addressed: `sha256/<hex>` holds every input exactly as digested
+(findings, waivers, baseline, tool status, enrichment snapshot, SBOM, each policy file) and each policy bundle
+manifest (`<sha256>  <path>` per file, sorted; its digest is `policy_bundle_digest`); `decisions/<id>.json` holds
+decisions. Written by `sentinel evaluate --store`; every read is checked against its digest. `sentinel replay
+<id | file>` takes all inputs from the store, policy included, and compares the whole record (exit 0 identical,
+1 differs, 3 missing or tampered evidence). Recorded scanner versions are passed back as evidence; the OPA and
+engine versions are the running ones, so an upgrade shows up as a difference. Proposed: the evidence bundle
+(A4) and the platform evidence store (SeaweedFS, ADR-0007) carry the same `sha256/<hex>` layout, so replay works
+on either.
+
+**Nightly replay** (`.github/workflows/replay-nightly.yml`): replays the last successful night's corpus with
+today's engine (`sentinel replay --all`), then records a fresh corpus (`eval/replay/corpus.py`: fixed gate cases
+covering PASS, SC-001, SC-005 and SC-010), replays it in a fresh process and uploads it. `--all` skips decisions
+recorded with another engine or OPA version and fails on any difference, on missing evidence, on an empty
+store and when nothing was compared (every decision skipped; the previous-night step accepts that with
+`--allow-all-skipped`, so an engine bump night says so in its summary). Consequence: a change to what the engine decides for the same inputs must come with an engine version bump.
+
 ## 7. Supply-chain integrity and deploy-time enforcement
 
 - **SBOM:** Syft → CycloneDX JSON (primary) + SPDX JSON, for source and image.
