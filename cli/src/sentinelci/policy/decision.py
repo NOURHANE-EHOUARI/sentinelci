@@ -23,9 +23,13 @@ from sentinelci.contracts.finding import Finding
 from sentinelci.policy.bundle import PolicyBundle
 from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaRunner
+from sentinelci.policy.tool_status import load_tool_status
 from sentinelci.policy.waivers import load_waivers
 
+# 1.2 only when a 1.2 input (baseline, tool status) is given: a decision without them stays readable by
+# consumers that know 1.1, and both versions mean the same thing for it.
 SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION_WITH_NEW_INPUTS = "1.2"
 GATE_QUERY = "data.sentinel.gate.decision"
 CONTEXTS = ("pr", "release", "local")
 VERDICTS = ("PASS", "WARN", "BLOCK")
@@ -162,15 +166,23 @@ def evaluate(
     opa: OpaRunner,
     tool_versions: Mapping[str, str] | None = None,
     waivers_data: bytes | None = None,
+    baseline_data: bytes | None = None,
+    tool_status_data: bytes | None = None,
     enrichment_snapshot: bytes | None = None,
     sbom: bytes | None = None,
 ) -> dict[str, Any]:
     """Run the release gate and return a Decision v1 record."""
     findings = load_findings(findings_data)
-    # Parsed from the same bytes that are digested, so the record names exactly what was evaluated.
+    # Each input is parsed from the same bytes that are digested: the record names exactly what was evaluated.
     waivers_data = b"" if waivers_data is None else waivers_data
     waivers = load_waivers(waivers_data)
+    baseline = None if baseline_data is None else load_findings(baseline_data)
+    tool_status = None if tool_status_data is None else load_tool_status(tool_status_data)
     timestamp = canonical_time(evaluated_at)
+
+    reported = dict(tool_versions or {})
+    for name, tool in (tool_status or {}).get("tools", {}).items():
+        reported.setdefault(name, tool["version"])
 
     inputs: dict[str, Any] = {
         "findings_digest": sha256_digest(findings_data),
@@ -180,16 +192,31 @@ def evaluate(
         "policy_bundle_digest": bundle.digest,
         "waivers_digest": sha256_digest(waivers_data),
         "risk_model_version": bundle.risk_model_version,
-        "tool_versions": _tool_versions(findings, tool_versions or {}, opa.version()),
+        "tool_versions": _tool_versions(findings, reported, opa.version()),
     }
     if sbom is not None:
         inputs["sbom_digest"] = sha256_digest(sbom)
+    if baseline_data is not None:
+        inputs["baseline_digest"] = sha256_digest(baseline_data)
+    if tool_status_data is not None:
+        inputs["tool_status_digest"] = sha256_digest(tool_status_data)
+
+    gate_input: dict[str, Any] = {
+        "evaluated_at": timestamp,
+        "context": subject.context,
+        "findings": findings,
+        "waivers": waivers,
+    }
+    if baseline is not None:
+        gate_input["baseline"] = baseline
+    if tool_status is not None:
+        gate_input["tool_status"] = tool_status
 
     result = _check_policy_result(
         opa.eval(
             GATE_QUERY,
             bundle.rego_files,
-            {"evaluated_at": timestamp, "findings": findings, "waivers": waivers},
+            gate_input,
         )
     )
 
@@ -201,12 +228,16 @@ def evaluate(
     }
     decision_id = uuid.uuid5(_DECISION_ID_NAMESPACE, json.dumps(identity, sort_keys=True))
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": SCHEMA_VERSION_WITH_NEW_INPUTS
+        if baseline is not None or tool_status is not None
+        else SCHEMA_VERSION,
         "decision_id": str(decision_id),
         "evaluated_at": timestamp,
         "subject": subject.to_json(),
         "verdict": result["verdict"],
-        "violations": sorted(result["violations"], key=lambda v: (v.get("rule", ""), v["effect"])),
+        "violations": sorted(
+            result["violations"], key=lambda v: (v.get("rule", ""), v["effect"], str(v.get("message", "")))
+        ),
         "waivers_applied": sorted(result["waivers_applied"]),
         "inputs": inputs,
         "engine_version": __version__,

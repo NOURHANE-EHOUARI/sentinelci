@@ -373,12 +373,33 @@ def test_lowercase_secret_category_is_no_decision_not_pass(tmp_path: Path, opa_b
     assert not output.exists()
 
 
-def test_opa_runs_without_the_callers_environment(
-    tmp_path: Path, opa_binary: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "call",
+    ["time.now_ns()", "opa.runtime().env", 'rand.intn("x", 10)', 'http.send({"method": "get", "url": "x"})'],
+    ids=["clock", "environment", "randomness", "network"],
+)
+def test_policies_cannot_compile_non_deterministic_builtins(
+    tmp_path: Path, opa_binary: Path, call: str
 ) -> None:
-    monkeypatch.setenv("SENTINEL_TEST_JOB_SECRET", "must-not-leak")
+    # Enforces "policies never read the clock" (and the environment, the network, randomness) at compile time.
     probe = tmp_path / "probe.rego"
-    probe.write_text("package probe\n\nenv := opa.runtime().env\n", encoding="utf-8")
-    env = OpaRunner(binary=opa_binary).eval("data.probe.env", [probe], {})
-    assert "SENTINEL_TEST_JOB_SECRET" not in env
-    assert env == {}
+    probe.write_text(f"package probe\n\nvalue := {call}\n", encoding="utf-8")
+    with pytest.raises(OpaError, match="undefined function"):
+        OpaRunner(binary=opa_binary).eval("data.probe.value", [probe], {})
+
+
+def test_restricted_capabilities_keep_what_the_gate_uses(opa_binary: Path) -> None:
+    allowed = {b["name"] for b in OpaRunner(binary=opa_binary).restricted_capabilities()["builtins"]}
+    assert {"time.parse_rfc3339_ns", "regex.match", "sprintf", "object.get"} <= allowed
+    denied = {"time.now_ns", "opa.runtime", "http.send", "net.lookup_ip_addr", "rand.intn", "uuid.rfc4122"}
+    assert not denied & allowed
+    assert "crypto.x509.parse_and_verify_certificates" not in allowed
+
+
+def test_policy_capabilities_command_writes_the_document(tmp_path: Path, opa_binary: Path) -> None:
+    out = tmp_path / "caps.json"
+    result = CliRunner().invoke(app, ["policy", "capabilities", "--opa", str(opa_binary), "--out", str(out)])
+    assert result.exit_code == 0, result.output
+    names = {b["name"] for b in json.loads(out.read_text(encoding="utf-8"))["builtins"]}
+    assert "time.now_ns" not in names
+    assert "time.parse_rfc3339_ns" in names
