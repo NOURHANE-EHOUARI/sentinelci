@@ -19,8 +19,11 @@ options, so they cannot turn that back off or make git write files (`--output`).
 merge) was invisible. `--diff-merges=remerge` shows what each merge adds beyond the automatic merge of its
 parents: an evil merge is scanned, an honest merge of the base branch adds nothing and blames nobody (unlike
 `first-parent`, which would report every secret the base branch already had). Options that hide commits or
-merges from the walk (`--no-merges`, `--first-parent`) are refused. For a conflicted file, Gitleaks reads the
-remerge header as `b/<path>`; that prefix is removed when only the path without it exists.
+merges from the walk (`--no-merges`, `--first-parent`) are refused. git only re-creates two-parent merges,
+so `remerge` prints nothing for an octopus merge (3+ parents): a second Gitleaks pass covers exactly those
+commits with `--min-parents=3 --diff-merges=first-parent`. For a conflicted file, Gitleaks reads the remerge
+header as `b/<path>`; the prefix is removed only when git confirms that the finding's commit has `<path>` and
+no `b/<path>` in its tree.
 
 In dir mode, archives are opened up to `MAX_ARCHIVE_DEPTH` levels, so a token inside a committed `.zip` is
 found. Git patches of binary files are never decompressed, so this applies to dir mode only.
@@ -29,7 +32,9 @@ The raw report contains real secret values: it is written to a private temporary
 as it has been read. Only the normalized, hashed findings leave this module.
 """
 
+import re
 import shutil
+import subprocess
 import tempfile
 from importlib.resources import as_file, files
 from pathlib import Path
@@ -39,7 +44,14 @@ from sentinelci.normalize.errors import NormalizationError
 from sentinelci.normalize.gitleaks import load_gitleaks_report
 from sentinelci.scanners.errors import ScannerError
 from sentinelci.scanners.lock import ToolLock
-from sentinelci.scanners.runner import DEFAULT_TIMEOUT_S, ToolRun, is_within, run_verified_tool
+from sentinelci.scanners.runner import (
+    DEFAULT_TIMEOUT_S,
+    SAFE_PATH,
+    ToolRun,
+    is_within,
+    minimal_env,
+    run_verified_tool,
+)
 
 GitleaksMode = Literal["dir", "git"]
 IGNORE_FILE = ".gitleaksignore"
@@ -53,12 +65,19 @@ GIT_LOG_DEFAULT = ("--full-history", "--all", "--diff-filter=tuxdb")
 _SAFE_LOG_FLAGS = frozenset({"--all", "--full-history"})
 MAX_ARCHIVE_DEPTH = 3
 _SAFE_LOG_PREFIXES = ("--since=", "--until=", "--max-count=")
+# Second pass: only octopus merges, which remerge does not diff. The last --diff-merges wins.
+GIT_LOG_OCTOPUS = ("--min-parents=3", "--diff-merges=first-parent")
+_COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
-def git_log_opts(log_opts: str | None) -> str:
-    """The `--log-opts` value for Gitleaks: hardening flags first, then a validated range and pathspecs."""
+def git_log_opts(log_opts: str | None, *, octopus: bool = False) -> str:
+    """The `--log-opts` value for Gitleaks: hardening flags first, then a validated range and pathspecs.
+
+    With `octopus=True`, the walk is limited to merges with 3+ parents, diffed against their first parent.
+    """
+    hardening = (*GIT_LOG_HARDENING, *GIT_LOG_OCTOPUS) if octopus else GIT_LOG_HARDENING
     if not log_opts:
-        return " ".join((*GIT_LOG_HARDENING, *GIT_LOG_DEFAULT))
+        return " ".join((*hardening, *GIT_LOG_DEFAULT))
     tokens = log_opts.split()  # Gitleaks itself splits on spaces, so no token can contain one
     separator = tokens.index("--") if "--" in tokens else len(tokens)
     for token in tokens[:separator]:
@@ -68,7 +87,7 @@ def git_log_opts(log_opts: str | None) -> str:
                 f"git log option {token!r} is not allowed in --log-opts: only revisions, pathspecs and "
                 f"{', '.join(sorted(_SAFE_LOG_FLAGS))}, --since=, --until=, --max-count= are accepted"
             )
-    return " ".join((*GIT_LOG_HARDENING, "--diff-filter=tuxdb", *tokens))
+    return " ".join((*hardening, "--diff-filter=tuxdb", *tokens))
 
 
 def _relative_target(target: Path, repo_root: Path) -> str:
@@ -119,7 +138,12 @@ def scan_secrets_with_run(
     source = _relative_target(target, repo_root)
     if mode != "git" and log_opts:
         raise ScannerError("--log-opts only applies to git mode")
-    hardened_log_opts = git_log_opts(log_opts) if mode == "git" else None
+    # Validated before anything runs: one Gitleaks pass in dir mode, two in git mode (octopus merges).
+    passes: list[list[str]] = (
+        [["--log-opts", git_log_opts(log_opts)], ["--log-opts", git_log_opts(log_opts, octopus=True)]]
+        if mode == "git"
+        else [["--max-archive-depth", str(MAX_ARCHIVE_DEPTH)]]
+    )
     if (repo_root / source / IGNORE_FILE).exists():
         raise ScannerError(
             f"{IGNORE_FILE} found at the root of the scanned tree ({source}). Gitleaks would let it silence "
@@ -130,54 +154,76 @@ def scan_secrets_with_run(
         work = Path(private)
         empty_ignore_dir = work / "ignore"
         empty_ignore_dir.mkdir()
-        report = work / "report.json"
         with as_file(files("sentinelci.scanners.configs").joinpath("gitleaks.toml")) as packaged:
             config = work / "gitleaks.toml"
             shutil.copyfile(packaged, config)
 
-        args = [
-            mode,
-            source,
-            "--config", str(config),
-            "--gitleaks-ignore-path", str(empty_ignore_dir),
-            "--ignore-gitleaks-allow",
-            "--report-format", "json",
-            "--report-path", str(report),
-            "--exit-code", "0",
-            "--no-banner",
-            "--no-color",
-            "--log-level", "error",
-        ]  # fmt: skip
-        if hardened_log_opts is not None:
-            args += ["--log-opts", hardened_log_opts]
-        else:
-            args += ["--max-archive-depth", str(MAX_ARCHIVE_DEPTH)]
-
-        run = run_verified_tool(
-            "gitleaks",
-            args,
-            lock=lock,
-            tools_dir=tools_dir,
-            cwd=repo_root,
-            platform=platform,
-            timeout_s=timeout_s,
-        )
-        if not report.is_file():
-            raise ScannerError("gitleaks produced no report")
-        try:
-            findings = load_gitleaks_report(report)
-        except NormalizationError as exc:
-            raise ScannerError(f"gitleaks produced an unreadable report: {exc}") from exc
+        findings: list[dict[str, Any]] = []
+        runs: list[ToolRun] = []
+        for index, extra in enumerate(passes):
+            report = work / f"report-{index}.json"
+            args = [
+                mode,
+                source,
+                "--config", str(config),
+                "--gitleaks-ignore-path", str(empty_ignore_dir),
+                "--ignore-gitleaks-allow",
+                "--report-format", "json",
+                "--report-path", str(report),
+                "--exit-code", "0",
+                "--no-banner",
+                "--no-color",
+                "--log-level", "error",
+                *extra,
+            ]  # fmt: skip
+            runs.append(
+                run_verified_tool(
+                    "gitleaks",
+                    args,
+                    lock=lock,
+                    tools_dir=tools_dir,
+                    cwd=repo_root,
+                    platform=platform,
+                    timeout_s=timeout_s,
+                )
+            )
+            if not report.is_file():
+                raise ScannerError("gitleaks produced no report")
+            try:
+                findings += load_gitleaks_report(report)
+            except NormalizationError as exc:
+                raise ScannerError(f"gitleaks produced an unreadable report: {exc}") from exc
     if mode == "git":
         _repair_remerge_paths(findings, repo_root)
-    return findings, run
+    return findings, runs[0]
 
 
 def _repair_remerge_paths(findings: list[dict[str, Any]], repo_root: Path) -> None:
-    """Undo Gitleaks' `b/<path>` for conflicted files of a remerge diff, only when that is unambiguous."""
+    """Undo Gitleaks' `b/<path>` for conflicted files of a remerge diff.
+
+    Only when the finding's own commit has `<path>` and no `b/<path>` in its tree, so a real `b/` file (even
+    one deleted later) keeps its name.
+    """
     for item in findings:
-        reported = item.get("File")
-        if not isinstance(reported, str) or not reported.startswith("b/"):
+        reported, commit = item.get("File"), item.get("Commit")
+        if not isinstance(reported, str) or not reported.startswith("b/") or not isinstance(commit, str):
             continue
-        if not (repo_root / reported).exists() and (repo_root / reported[2:]).is_file():
+        if _in_tree(repo_root, commit, reported[2:]) and not _in_tree(repo_root, commit, reported):
             item["File"] = reported[2:]
+
+
+def _in_tree(repo_root: Path, commit: str, path: str) -> bool:
+    """Whether `path` exists in `commit`'s tree (read-only git query, minimal environment)."""
+    git = shutil.which("git", path=SAFE_PATH)
+    if git is None or not _COMMIT.fullmatch(commit):
+        return False
+    with tempfile.TemporaryDirectory(prefix="sentinel-git-") as home:
+        # Fixed git binary from a fixed PATH, no shell; the argument is `<hex sha>:<path>`, never an option.
+        proc = subprocess.run(  # noqa: S603
+            [git, "-C", str(repo_root), "cat-file", "-e", f"{commit}:{path}"],
+            env=minimal_env(Path(home)),
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    return proc.returncode == 0
