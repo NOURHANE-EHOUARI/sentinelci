@@ -1,10 +1,11 @@
 """How the snapshot fetchers reach the feeds: live HTTPS, or recorded responses for offline runs.
 
 `HttpTransport` talks only to the three feeds over HTTPS, never follows a redirect, needs no credentials (the
-feeds are public), caps every response at 32 MB and every request at one overall deadline, and retries a
-transient failure once. `RecordingTransport` saves every response it passes on (raw bytes, base64, with
-their sha256), and `ReplayTransport` answers from those files after checking the digest: the offline fixtures,
-for demos, evaluation and tests. Recordings are evidence inputs: use them only from the base commit or a
+feeds are public), caps every response at 32 MB, every request at one overall deadline and the whole run at
+a time budget, and retries a transient failure (a timeout, a reset, a retryable status) once.
+`RecordingTransport` saves every response it passes on (raw bytes, base64, with their sha256), and
+`ReplayTransport` answers from those files after checking the digest: the offline fixtures, for demos,
+evaluation and tests. Recordings are evidence inputs: use them only from the base commit or a
 trusted store, since a change that edits them could forge EPSS or KEV answers.
 """
 
@@ -26,6 +27,7 @@ from urllib.parse import urlsplit
 ALLOWED_HOSTS = frozenset({"api.first.org", "www.cisa.gov", "api.osv.dev"})
 DEFAULT_TIMEOUT_S = 30.0
 MAX_TIMEOUT_S = 300.0
+RUN_BUDGET_S = 600.0  # all requests of one run together: OSV is asked once per vulnerability id
 MAX_RESPONSE_BYTES = 32 * 1024 * 1024  # the KEV catalogue is about 2 MB
 RETRIES = 1
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
@@ -34,7 +36,23 @@ _RECORDING_FORMAT = "sentinelci-feed-recording/1"
 
 
 class TransportError(Exception):
-    """A request could not be completed (network, timeout, size, redirect, or no valid recording)."""
+    """A request could not be completed (network, timeout, size, redirect, or no valid recording).
+
+    `transient` marks what a second try may cure (a timeout, a reset or dropped connection); a refused
+    redirect, a TLS failure or an oversized answer would fail the same way again, so it is not retried.
+    """
+
+    def __init__(self, message: str, *, transient: bool = False) -> None:
+        super().__init__(message)
+        self.transient = transient
+
+
+_TRANSIENT = (TimeoutError, ConnectionResetError, ConnectionAbortedError, http.client.IncompleteRead)
+
+
+def _transient(exc: BaseException) -> bool:
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    return isinstance(reason, _TRANSIENT)
 
 
 class Transport(Protocol):
@@ -61,11 +79,18 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 class HttpTransport:
     def __init__(
-        self, timeout: float = DEFAULT_TIMEOUT_S, sleep: Callable[[float], None] = time.sleep
+        self,
+        timeout: float = DEFAULT_TIMEOUT_S,
+        sleep: Callable[[float], None] = time.sleep,
+        budget: float = RUN_BUDGET_S,
     ) -> None:
         if not 0 < timeout <= MAX_TIMEOUT_S:
             raise ValueError(f"timeout must be in (0, {MAX_TIMEOUT_S}] seconds, got {timeout}")
+        if not 0 < budget < float("inf"):
+            raise ValueError(f"budget must be a positive number of seconds, got {budget}")
         self.timeout = timeout
+        self.budget = budget
+        self._started: float | None = None
         self._opener = urllib.request.build_opener(_NoRedirect())
         self._sleep = sleep
 
@@ -78,8 +103,8 @@ class HttpTransport:
             last = attempt == RETRIES
             try:
                 status, data = self._once(method, url, body)
-            except TransportError:
-                if last:
+            except TransportError as exc:
+                if last or not exc.transient:
                     raise
             else:
                 if status not in RETRY_STATUSES or last:
@@ -92,29 +117,40 @@ class HttpTransport:
         if body is not None:
             headers["Content-Type"] = "application/json"
         req = urllib.request.Request(url, data=body, method=method, headers=headers)  # noqa: S310 - https only
-        deadline = time.monotonic() + self.timeout
+        now = time.monotonic()
+        if self._started is None:
+            self._started = now
+        left = self._started + self.budget - now
+        if left <= 0:
+            raise TransportError(f"{method} {url}: the run's {self.budget:g} s budget is spent")
+        limit = min(self.timeout, left)
+        deadline = now + limit
         try:
-            with self._opener.open(req, timeout=self.timeout) as response:
+            with self._opener.open(req, timeout=limit) as response:
                 return int(response.status), _read(response, deadline, url)
         except urllib.error.HTTPError as exc:  # an answer with an error status: the caller decides
             try:
                 return exc.code, _read(exc, deadline, url)
             except (OSError, http.client.HTTPException) as read_error:
-                raise TransportError(f"{method} {url}: {read_error}") from read_error
+                raise TransportError(f"{method} {url}: {read_error}", transient=_transient(read_error)) from (
+                    read_error
+                )
         except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError, OverflowError) as exc:
-            raise TransportError(f"{method} {url}: {exc}") from exc
+            raise TransportError(f"{method} {url}: {exc}", transient=_transient(exc)) from exc
 
 
 def _read(response: Any, deadline: float, url: str) -> bytes:
     """The whole body, within the size cap and the overall deadline (a slow drip cannot hold a run)."""
     chunks: list[bytes] = []
     total = 0
-    while chunk := response.read(_CHUNK):
+    # read1 returns what has arrived: read(n) would wait for n bytes, so a drip could outlast the deadline.
+    read = getattr(response, "read1", response.read)
+    while chunk := read(_CHUNK):
         total += len(chunk)
         if total > MAX_RESPONSE_BYTES:
             raise TransportError(f"{url}: response larger than {MAX_RESPONSE_BYTES} bytes")
         if time.monotonic() > deadline:
-            raise TransportError(f"{url}: no complete answer within the time limit")
+            raise TransportError(f"{url}: no complete answer within the time limit", transient=True)
         chunks.append(chunk)
     return b"".join(chunks)
 

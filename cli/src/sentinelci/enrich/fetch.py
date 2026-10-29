@@ -27,8 +27,9 @@ from datetime import date, datetime
 from typing import Any
 from urllib.parse import quote
 
+from sentinelci.enrich.apply import canonical_id
 from sentinelci.enrich.cvss import base_score
-from sentinelci.enrich.models import _PURL_BASE, _TOKEN, _VULN_ID, load_snapshot
+from sentinelci.enrich.models import _PURL_BASE, _RFC3339, _TOKEN, _VULN_ID, load_snapshot
 from sentinelci.enrich.transport import Transport, TransportError
 from sentinelci.normalize.fingerprint import purl_base
 
@@ -41,9 +42,6 @@ MIN_KEV_ENTRIES = 1000
 PACKAGE_CATEGORIES = frozenset({"SCA", "CONTAINER"})
 _CVE = re.compile(r"CVE-[0-9]{4}-[0-9]{4,}")
 _DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
-_RFC3339 = re.compile(
-    r"[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:[Zz]|[+-][0-9]{2}:[0-9]{2})"
-)
 _DECIMAL = re.compile(r"[0-9]+(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?")
 # OSV ecosystem -> purl type, for affected packages without a purl (OSV names, purl-spec types).
 _PURL_TYPES = {"PyPI": "pypi", "npm": "npm", "crates.io": "cargo", "RubyGems": "gem", "Go": "golang",
@@ -83,11 +81,6 @@ def _dict(value: Any, what: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise FeedError(f"{what} is not an object")
     return value
-
-
-def canonical_id(value: str) -> str:
-    """CVE ids in their canonical upper case (a `cve-...` rule id still reaches EPSS and KEV)."""
-    return value.upper() if _CVE.fullmatch(value.upper()) else value
 
 
 def _ids(findings: Iterable[Mapping[str, Any]]) -> set[str]:
@@ -206,7 +199,10 @@ def _number(value: Any, what: str) -> float:
     if (isinstance(value, int | float) and not isinstance(value, bool)) or (
         isinstance(value, str) and _DECIMAL.fullmatch(value)
     ):
-        number = float(value)
+        try:
+            number = float(value)
+        except OverflowError as exc:  # a JSON integer with hundreds of digits
+            raise FeedError(f"EPSS {what} is too large: {str(value)[:20]}...") from exc
     else:
         raise FeedError(f"EPSS {what} is not a number: {value!r}"[:200])
     if not 0 <= number <= 1:  # also refuses NaN and infinity
@@ -291,17 +287,26 @@ def build_snapshot(
     sources: dict[str, Any] = {}
     warnings: list[str] = []
 
+    osv_read = False
     try:
         osv_entries, osv_date = _osv(ids, transport) if ids else ({}, None)
         vulnerabilities.update(osv_entries)
         if osv_date is not None:
             sources["osv"] = {"date": osv_date.isoformat()}
+        osv_read = True
     except FEED_FAILURES as exc:
         warnings.append(f"OSV left out: {exc}")
 
     cves = sorted({i for i in ids | {a for e in vulnerabilities.values() for a in e.get("aliases", [])}
                    if _CVE.fullmatch(i)})  # fmt: skip
-    if cves:
+    if cves and not osv_read:
+        # Without OSV the aliases are unknown: KEV could say "not listed" for a finding whose listed CVE
+        # only OSV links to it, and EPSS would score the wrong CVE. Both stay unknown (the worst case).
+        warnings.append(
+            "KEV and EPSS left out: without OSV the findings' aliases are unknown, and a CVE only OSV "
+            "links to a finding may be the one KEV lists"
+        )
+    elif cves:
         kev_read = False
         try:
             listed, kev_source = _kev(set(cves), transport)

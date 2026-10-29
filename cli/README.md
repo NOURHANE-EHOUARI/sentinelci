@@ -39,9 +39,13 @@ uv run sentinel snapshot --findings out/findings.ndjson --out out/enrichment-sna
   policies: in CI, use them only from the base commit or a trusted store, since a change that edits them could
   forge EPSS or KEV answers.
 - KEV is read before EPSS, and EPSS is left out when KEV could not be read: EPSS alone would lower the risk of a
-  KEV-listed vulnerability. The KEV catalogue is trusted whole or not at all (every entry, its `count`, at least
-  1,000 entries). Redirects are never followed; each request has one overall deadline and is retried once on a
-  transient failure; `--timeout` must be in (0, 300]. Anything unexpected exits 3 with nothing written.
+  KEV-listed vulnerability. When OSV could not be read, KEV and EPSS are left out too: the findings' aliases are
+  then unknown, and the CVE KEV lists may be one only OSV links to a finding. The KEV catalogue is trusted whole
+  or not at all (every entry, its `count`, at least 1,000 entries).
+- Redirects are never followed. Each request has one overall deadline (enforced on every read, so a slow drip
+  cannot hold it) and is retried once only on a timeout, a reset or a retryable status (429, 5xx), never on a
+  TLS failure or a refused redirect; the whole run stops after 10 minutes. `--timeout` must be in (0, 300].
+  An `--out` that cannot be written, or anything unexpected, exits 3 with nothing written.
 
 ## `sentinel enrich` (enrichment, B2)
 
