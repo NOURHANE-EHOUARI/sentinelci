@@ -11,6 +11,7 @@
 | Version | Change |
 |---|---|
 | 1.1.6 | A3b evidence (§5, §6.5): every scan writes a tool status (`sentinel scan secrets --tool-status-out`), so a failed, timed-out or tampered scanner becomes a recorded BLOCK (SC-010) instead of a bare red job. PR mode scans the base commit's tree as the baseline. The gate stores its evidence (`--store`), uploaded as the `sentinel-evidence` artifact; the PR comment names it in its replay line and shows "N new" only for the baseline the gate used. The nightly replay also replays the last release decisions of `demo-shop.yml` on main. |
+| 1.1.5 | A9 first seeds (§17): 5 fake secrets, 6 IaC, 3 CI-workflow seeds and 4 clean controls in `demo-shop/`, with a draft ground-truth format (`demo-shop/ground-truth/`, final schema owned by B9) checked against the pinned Gitleaks, Trivy and zizmor. SentinelCI's Trivy configuration trusts only the kind registry for KSV0125. |
 | 1.1.4 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
 | 1.1.3 | Scanner hardening (§5): verify-before-exec, minimal child environment, scanner configuration owned by SentinelCI; repository-controlled suppressions are neutralized or refused (Gitleaks: `.gitleaks.toml`, `gitleaks:allow`, `.gitleaksignore`, and `.gitattributes` `-diff`/`binary` in git mode); merge commits scanned with `--diff-merges=remerge` plus a `first-parent` pass for octopus merges (evil merges), archives opened in dir mode. |
 | 1.1.2 | Tool lock is `tools.lock.toml` (read with the standard library: no extra dependency). A1 split: A1a = lock + `sentinel tools install/verify` (done), A1b = scanner adapters + Opengrep pinning via signature verification. |
@@ -597,7 +598,7 @@ schema-constrained outputs and injection isolation (0 verdict changes across [X]
 | 5 | Repository settings: require SHA-pinned actions, read-only default workflow token, Dependabot alerts (branch protection deferred to the public phase, convention + local guard meanwhile) | to do (owner) |
 | 6 | Choose and pin tool versions in `tools.lock.toml` | done (A1a; Opengrep pending) |
 | 7 | Compose skeleton (postgres+pgvector, redis, seaweedfs, ollama, api, prometheus, grafana; worker with B1, web with B7) | B |
-| 8 | `demo-shop/` skeleton + ground-truth format; first seeds | A9 + B9 |
+| 8 | `demo-shop/` skeleton + ground-truth format; first seeds | A9 first seeds done (draft format v1); B9 to do |
 | 9 | GitHub Project board: one issue per task id | both |
 | 10 | Choose the local model and measure tokens/second | B |
 

