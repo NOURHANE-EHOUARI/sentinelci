@@ -31,7 +31,15 @@ uv run sentinel enrich --findings out/findings.ndjson --snapshot out/enrichment-
 - Unknown stays absent; the risk engine treats absent as the worst case. Without `--snapshot` or `--config`,
   nothing from that source is added.
 - Read `sentinel.yaml` from the base branch in PR mode: a change must not lower its own exposure.
-- Fail closed: an invalid snapshot, `sentinel.yaml` or findings file writes nothing and exits 3.
+- `kev: {listed: false}` only for CVEs the snapshot's KEV lookup covered (`sources.kev.cves`); otherwise KEV
+  stays unknown. Package URLs are compared in canonical form (PyPI names per PEP 503).
+- `sentinel.yaml` is read with a restricted YAML loader: no duplicate keys, anchors, aliases, dates, binary or
+  set values; at most 64 KiB. Component paths must be canonical (`services/web`, not `./services/web/`) and
+  unique.
+- Fail closed: an invalid snapshot, `sentinel.yaml` or findings file (including enrichment outside the Finding
+  contract), or `--out` naming the input or a directory, writes nothing and exits 3. `sentinel evaluate`
+  refuses an `--enrichment-snapshot` that is not a valid snapshot; with none, both commands use the same empty
+  snapshot, so "no snapshot" has a single digest.
 
 ## `sentinel evaluate` (release gate, B4)
 

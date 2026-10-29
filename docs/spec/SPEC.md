@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.4 | Enrichment (B2, §6.1): `schemas/enrichment-snapshot.v1.json` (`schema_version` "1.0", `sources.kev.cves`: the CVEs the KEV lookup covered) and `schemas/sentinel-config.v1.json` (`sentinel.yaml`, canonical component paths); `sentinel enrich`. "Not listed in KEV" only for covered CVEs; `sentinel.yaml` read with a restricted YAML loader. |
 | 1.1.2 | Tool lock is `tools.lock.toml` (read with the standard library: no extra dependency). A1 split: A1a = lock + `sentinel tools install/verify` (done), A1b = scanner adapters + Opengrep pinning via signature verification. |
 | 1.1.1a | Package fingerprints use the purl base (no version, qualifiers or subpath — same as the gate's waiver matching), agreed in the review of PR #1. "Green CI" may be a local `make check` report while Actions minutes are exhausted. |
 | 1.1.1 | No GitHub Pro: `main` protected by convention + local guard until the repository goes public. |
@@ -201,6 +202,15 @@ package findings (CVSS and EPSS: the highest among the finding's ids and their a
 gives every finding the exposure of its `sentinel.yaml` component (longest matching path). Unknown stays absent:
 the risk engine counts it as the worst case. `sentinel.yaml` (`schemas/sentinel-config.v1.json`) is read from the
 base branch, like the policies and waivers, so a change cannot lower its own exposure.
+
+"Known no" is written only for what was checked: `kev: {listed: false}` only when the KEV lookup covered every
+CVE id of the finding (`sources.kev.cves`), and `fix_available: false` only when OSV knew the vulnerability and
+fixes none of the package (package URLs compared in canonical form). A KEV outage therefore leaves KEV unknown,
+never "not listed", and the risk engine counts unknown as the worst case. `sentinel.yaml` is a reviewed trust
+boundary: it is read with a YAML loader that refuses duplicate keys, anchors and aliases, and tags beyond plain
+scalars, lists and mappings, and is limited to 64 KiB; component paths are canonical and unique. Residual risk:
+where a change puts its files decides their path-scoped exposure (a file under an `offline` component is scored
+as offline), so changes to `sentinel.yaml` and new top-level directories deserve a reviewer's eye.
 
 ### 6.2 Risk model
 

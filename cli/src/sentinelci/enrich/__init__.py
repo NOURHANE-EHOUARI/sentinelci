@@ -5,6 +5,7 @@ Must never import sentinel_ai: deterministic decides, AI advises.
 
 from sentinelci.enrich.apply import enrich_finding
 from sentinelci.enrich.models import (
+    EMPTY_SNAPSHOT,
     EnrichmentError,
     ServiceContext,
     Snapshot,
@@ -13,6 +14,7 @@ from sentinelci.enrich.models import (
 )
 
 __all__ = [
+    "EMPTY_SNAPSHOT",
     "EnrichmentError",
     "ServiceContext",
     "Snapshot",

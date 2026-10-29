@@ -21,7 +21,13 @@ import typer
 
 from sentinelci import __version__
 from sentinelci.contracts.finding import Finding, Run, RunContext, Tool
-from sentinelci.enrich import EnrichmentError, enrich_finding, load_service_context, load_snapshot
+from sentinelci.enrich import (
+    EMPTY_SNAPSHOT,
+    EnrichmentError,
+    enrich_finding,
+    load_service_context,
+    load_snapshot,
+)
 from sentinelci.normalize.errors import NormalizationError
 from sentinelci.normalize.gitleaks import load_gitleaks_report, normalize_gitleaks
 from sentinelci.normalize.ndjson import dumps_ndjson, write_ndjson
@@ -68,7 +74,6 @@ def _fail_closed(exc: Exception) -> typer.Exit:
 
 EXIT_BLOCK = 1
 # A snapshot that holds no source: what enrichment knows when no feed was read.
-EMPTY_SNAPSHOT = b'{"schema_version": 1, "sources": {}, "vulnerabilities": {}}'
 EXIT_NO_DECISION = 3
 
 
@@ -105,6 +110,14 @@ def _write_atomically(path: Path, text: str) -> None:
         raise
 
 
+def _refuse_output(out: Path, source: Path, command: str) -> None:
+    """Fail closed before anything is deleted: --out must not be the input file, nor a directory."""
+    if out.is_dir() or (out.exists() and source.exists() and out.resolve() == source.resolve()):
+        what = "a directory" if out.is_dir() else f"the input file {source}"
+        typer.echo(f"{command}: --out {out} is {what}; nothing was written", err=True)
+        raise typer.Exit(EXIT_NO_DECISION)
+
+
 @app.command("enrich")
 def enrich_command(
     findings: Annotated[Path, typer.Option(help="Findings NDJSON (Finding v1).")],
@@ -128,6 +141,7 @@ def enrich_command(
     the worst case). Pass the same snapshot to `sentinel evaluate --enrichment-snapshot`, so the decision
     records its digest. Exit code 0 on success, 3 when an input cannot be read (nothing is written).
     """
+    _refuse_output(out, findings, "sentinel enrich")
     # A stale file from an earlier run must never be read as this run's findings.
     out.unlink(missing_ok=True)
     try:
