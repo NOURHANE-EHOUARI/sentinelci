@@ -147,7 +147,8 @@ Runs the OPA policies in `policies/` and writes a Decision record (`schemas/deci
   given, 1.1 otherwise.
 - Rules implemented so far: SC-001 (secret introduced by the change, not waived), SC-002 (P0 finding, BLOCK),
   SC-003 (KEV-listed, fixable, internet-facing or exposure unknown), SC-005 (invalid waiver), SC-006 (P1 finding, WARN), SC-009
-  (HIGH/CRITICAL CI workflow issue) and SC-010 (scanner failure or missing, malformed gate input). Waivers and
+  (HIGH/CRITICAL CI workflow issue), SC-010 (scanner failure or missing, malformed gate input) and SC-011
+  (misconfiguration that exposes the service by itself, `policies/exposing.rego`). Waivers and
   PR diff-awareness apply to every finding rule; each finding is reported under its most specific rule only.
 - Priority is `risk.priority` from the risk engine (B3), trusted only when `risk.model_version` is the
   bundle's risk model. An unscored finding, or one scored with another model, counts at its worst case,
