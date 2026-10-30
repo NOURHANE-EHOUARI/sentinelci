@@ -30,8 +30,8 @@
     "message": { "type": "string" },
     "severity": { "$ref": "#/$defs/severity" },
     "severity_source": { "type": "string", "description": "Raw severity as reported by the tool." },
-    "cwe": { "type": "array", "items": { "type": "string", "pattern": "^CWE-[0-9]+$" }, "uniqueItems": true },
-    "cve": { "type": "array", "items": { "type": "string", "pattern": "^CVE-[0-9]{4}-[0-9]{4,}$" }, "uniqueItems": true },
+    "cwe": { "type": "array", "items": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])CWE-[0-9]+$" }, "uniqueItems": true },
+    "cve": { "type": "array", "items": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])CVE-[0-9]{4}-[0-9]{4,}$" }, "uniqueItems": true },
     "aliases": {
       "description": "Other identifiers for the same vulnerability (GHSA, OSV, PYSEC...).",
       "type": "array",
@@ -54,7 +54,7 @@
       "additionalProperties": false,
       "required": ["purl", "name", "version", "ecosystem"],
       "properties": {
-        "purl": { "type": "string", "pattern": "^pkg:[a-z0-9.+-]+/.+" },
+        "purl": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])pkg:[a-z0-9.+-]+/.+" },
         "name": { "type": "string", "minLength": 1 },
         "version": { "type": "string", "minLength": 1 },
         "ecosystem": { "type": "string", "minLength": 1 },
@@ -85,8 +85,8 @@
       "additionalProperties": false,
       "required": ["repo", "commit", "context"],
       "properties": {
-        "repo": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
-        "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "repo": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "commit": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[a-f0-9]{40}$" },
         "ref": { "type": "string" },
         "context": { "enum": ["pr", "release", "local"] },
         "run_id": { "type": "string" }
@@ -140,7 +140,7 @@
         "score": { "type": "number", "minimum": 0, "maximum": 100 },
         "priority": { "enum": ["P0", "P1", "P2", "P3", "P4"] },
         "factors": { "type": "object", "additionalProperties": { "type": "number" } },
-        "model_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" }
+        "model_version": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[0-9]+\\.[0-9]+\\.[0-9]+$" }
       }
     }
   },
@@ -175,8 +175,8 @@
   ],
   "$defs": {
     "severity": { "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"] },
-    "sha256_hex": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-    "oci_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "sha256_hex": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[a-f0-9]{64}$" },
+    "oci_digest": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])sha256:[a-f0-9]{64}$" },
     "location": {
       "type": "object",
       "additionalProperties": false,
@@ -190,7 +190,7 @@
     "relative_path": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$)).+$"
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])(?!/)(?!.*(^|/)\\.\\.(/|$)).+$"
     }
   }
 }

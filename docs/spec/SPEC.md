@@ -456,7 +456,7 @@ Required: `schema_version`, `id`, `tool`, `rule_id`, `category` (SECRET | SAST |
 LICENSE), `title`, `severity` (CRITICAL | HIGH | MEDIUM | LOW | INFO), `run`. Conditional: SECRET ⇒ `location` +
 `evidence.secret_hash` (raw secrets are never stored); SAST/IAC/PIPELINE ⇒ `location`; SCA/LICENSE ⇒ `package`;
 CONTAINER ⇒ `package` + `image`. Optional blocks `enrichment` (B2) and `risk` (B3). Paths must be relative and
-cannot contain `..`.
+cannot contain `..`. No pattern-checked field (ids, digests, paths, purls) may contain a line break, in any validator.
 
 **Several locations (1.1, additive).** One finding (one `id`) can be seen in several places, e.g. the same secret
 in two files. `location` is the first one by (path, start line); `other_locations` lists every other one, sorted

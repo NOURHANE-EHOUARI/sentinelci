@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "waivers": [
+    {
+      "id": "waiver-2026-003",
+      "vulnerability": "CVE-2026-12345",
+      "purl": "pkg:npm/@example/left-pad",
+      "owner": "@Hiba-elouazi",
+      "justification": "Written as a YAML folded block, which ends in a line break.\nThe vulnerable function is never called.\n",
+      "expires_at": "2027-01-15T12:00:00+01:00"
+    }
+  ]
+}
