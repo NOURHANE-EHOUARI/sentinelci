@@ -1,0 +1,9 @@
+{
+  "format": "sentinelci-feed-recording/2",
+  "method": "GET",
+  "url": "https://api.osv.dev/v1/vulns/CVE-2021-44906",
+  "body_base64": null,
+  "status": 200,
+  "response_gzip_base64": "H4sIAAAAAAAC/5VUa2+bMBT9K4hqUifV2BAgAWkfoixb07VdVNpor6pyjJN4JTazDWtW7b/vmjZTq2SbJgSyzzXn3Ov7uPdF6ef+aDZGEYlCFMcZSf0jv+SWisqA6UxIsRbGel8aQnrsVRhEQeIJ47VNJbmm84p7VnlTrayym5p7U1VVjRVKeq2g3kKAXciS3wVfzZG3aCTrbIbbd3xz+NI7rITkxkszlCUvA5CmlaCGg/Rn/+1xMUR3LVuhZNnGKBvEK//6yF+rUiwEd46D0ykiMQrTSxLnvTCPBkFCoiwjSZp9Ara6mVfCrLaHI0R6KOxfhmkeJjnpB0lI3DHNK2rdoc/+8BRE3dE8I/0e2LZALyckIc+BXhQCUJx/fIdOCnQ2OZ+cTYpLlCRZP42d5aoYo+LqgS+MkwyFu2ga7kWjvWi6B02zeA/aD/u7aBTG8V7U8V67i1hwzSXrEnDvu4zCzQ1fzybF+4uP8F+jKwBW1tYmx9hw1mhhN4GEgqnrgKk1pmUrjNIbLAFy/DFJobQIISn2fx79Jr0YT99fXO5SWspuVcv1olLfO8JvDTeuaAweJINBkvZAohRyiVhjrFqjWquaayu4QVYhirZFhkG7PyDp4GC7eCr/ZvJhR3sp7KqZd6KmmXee4PVjA2BhDDiCQ0jsP2iM3NwGQmHXIvhPxfGEYzybvB6fj8Z/8+eM6o28xSe0pQXTorZo24CiggQg6Fj+EPW8UnO8pkL+dv1FRKZqFPwQ9f+q7t7CI7uxXONtXx+cppn/E6qHLhbgRNdH935JLZ1DK9+YmjNoWObn975RjWb8WbqVpkseLJVaVpzWwnTCrOVImRYxJaEUjIvLbVVj68bi5/MKPFDSRSE1N6pqeXmjqVw+ljBvubQPSyGtVmXDumlAurtYiLtu58ZaCjHA4wIxbMXX9OZRurPDrAANA3Su4J92x2hWFDczNyoMU3qL5L0gxMNZfo6Ho/wUTy9gdTWBT5Ff4VF+jCfwDvNjJ/oLMJyqpYcFAAA=",
+  "response_sha256": "98572bc94d1e14847603efee202b9c442d4b867c868a9c1c1f84aa454937609b"
+}

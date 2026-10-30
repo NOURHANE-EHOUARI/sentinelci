@@ -14,7 +14,7 @@
     }
   },
   "$defs": {
-    "non_blank": { "type": "string", "pattern": "\\S" },
+    "non_blank": { "description": "Free text with at least one non-space character; line breaks allowed (a YAML > or | block).", "type": "string", "pattern": "\\S" },
     "waiver": {
       "type": "object",
       "additionalProperties": false,
@@ -23,22 +23,21 @@
         "id": {
           "description": "Unique within the file; recorded in decisions as waivers_applied.",
           "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+          "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
         },
         "finding_id": {
           "description": "Waive one finding by its fingerprint.",
           "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
+          "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[a-f0-9]{64}$"
         },
         "vulnerability": {
           "description": "Waive a vulnerability (CVE, GHSA, OSV id...) in one package, whatever its version. Matched against the finding's rule_id, cve and aliases.",
           "$ref": "#/$defs/non_blank"
         },
         "purl": {
-          "description": "Package URL without version, qualifiers or subpath.",
+          "description": "Package URL without version, qualifiers or subpath: no '@' in the last path segment (a scope such as %40types or @types/ before it is fine).",
           "type": "string",
-          "pattern": "^pkg:[a-z0-9.+-]+/[^?#]+$",
-          "not": { "pattern": "@[^/@]*$" }
+          "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])pkg:[a-z0-9.+-]+/(?=[^?#])(?:[^?#]*/)?[^?#/@]*$"
         },
         "owner": { "description": "Who answers for this waiver.", "$ref": "#/$defs/non_blank" },
         "justification": { "description": "Why the risk is accepted.", "$ref": "#/$defs/non_blank" },

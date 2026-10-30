@@ -20,7 +20,7 @@
       "description": "Fingerprints of findings with severity MEDIUM or higher that appeared after the patch.",
       "type": "array",
       "uniqueItems": true,
-      "items": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      "items": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[a-f0-9]{64}$" }
     },
     "verdict": { "enum": ["PASS", "WARN", "BLOCK"] },
     "outcome": { "enum": ["VERIFIED", "REJECTED", "FAILED"] },

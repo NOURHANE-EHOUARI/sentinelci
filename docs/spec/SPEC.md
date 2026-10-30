@@ -10,8 +10,9 @@
 
 | Version | Change |
 |---|---|
-| 1.1.6 | A3b evidence (§5, §6.5): every scan writes a tool status (`sentinel scan secrets --tool-status-out`), so a failed, timed-out or tampered scanner becomes a recorded BLOCK (SC-010) instead of a bare red job. PR mode scans the base commit's tree as the baseline. The gate stores its evidence (`--store`), uploaded as the `sentinel-evidence` artifact; the PR comment names it in its replay line and shows "N new" only for the baseline the gate used. The nightly replay also replays the last release decisions of `demo-shop.yml` on main. The gate scores findings with the base risk model before deciding, and every scanner run has a time limit the scan job outlives. |
-| 1.1.4 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
+| 1.1.7 | A3b evidence (§5, §6.5): every scan writes a tool status (`sentinel scan secrets --tool-status-out`), so a failed, timed-out or tampered scanner becomes a recorded BLOCK (SC-010) instead of a bare red job. PR mode scans the base commit's tree as the baseline. The gate stores its evidence (`--store`), uploaded as the `sentinel-evidence` artifact; the PR comment names it in its replay line and shows "N new" only for the baseline the gate used. The nightly replay also replays the last release decisions of `demo-shop.yml` on main. The gate scores findings with the base risk model before deciding, and every scanner run has a time limit the scan job outlives. |
+| 1.1.5 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
+| 1.1.4 | Enrichment (B2, §6.1): `schemas/enrichment-snapshot.v1.json` (`schema_version` "1.0", `sources.kev.cves`: the CVEs the KEV lookup covered) and `schemas/sentinel-config.v1.json` (`sentinel.yaml`, canonical component paths); `sentinel enrich`. "Not listed in KEV" only for covered CVEs; `sentinel.yaml` read with a restricted YAML loader. |
 | 1.1.3 | Scanner hardening (§5): verify-before-exec, minimal child environment, scanner configuration owned by SentinelCI; repository-controlled suppressions are neutralized or refused (Gitleaks: `.gitleaks.toml`, `gitleaks:allow`, `.gitleaksignore`, and `.gitattributes` `-diff`/`binary` in git mode); merge commits scanned with `--diff-merges=remerge` plus a `first-parent` pass for octopus merges (evil merges), archives opened in dir mode. |
 | 1.1.2 | Tool lock is `tools.lock.toml` (read with the standard library: no extra dependency). A1 split: A1a = lock + `sentinel tools install/verify` (done), A1b = scanner adapters + Opengrep pinning via signature verification. |
 | 1.1.1a | Package fingerprints use the purl base (no version, qualifiers or subpath — same as the gate's waiver matching), agreed in the review of PR #1. "Green CI" may be a local `make check` report while Actions minutes are exhausted. |
@@ -227,6 +228,44 @@ AI advisory: in the dashboard (advisory only — does not affect the verdict)
 | Service context | `sentinel.yaml` (exposure, environment, data class) | X, policy profile |
 
 Each run stores a content-addressed **enrichment snapshot**; replay never uses live feeds.
+
+Implementation (B2): fetching (network) and applying (offline) are separate. The fetchers write a snapshot
+(`schemas/enrichment-snapshot.v1.json`), keyed by vulnerability id and dated by the feeds; a feed that could not be
+reached is absent, so its values stay unknown. `sentinel enrich --snapshot --config sentinel.yaml` applies it to
+package findings (CVSS and EPSS: the highest among the finding's ids and their aliases; KEV; fix availability) and
+gives every finding the exposure of its `sentinel.yaml` component (longest matching path). Unknown stays absent:
+the risk engine counts it as the worst case. `sentinel.yaml` (`schemas/sentinel-config.v1.json`) is read from the
+base branch, like the policies and waivers, so a change cannot lower its own exposure.
+
+Fetchers (B2, `sentinel snapshot`): OSV by id (one extra round for the aliases it reveals), EPSS in batches of
+100 CVEs, and the KEV catalogue filtered to those CVEs; HTTPS to those three hosts only. The CVSS 3.0/3.1 base
+score is computed from the OSV vector (highest vector wins). Each feed is all or nothing: a failure leaves the
+feed out with a warning, never a partial feed; KEV is read before EPSS, and EPSS is left out when KEV could not
+be read (EPSS alone would lower the risk of a listed vulnerability); the KEV catalogue is trusted whole or not at
+all; redirects are never followed. `--record` / `--offline` capture and replay the feed answers (raw bytes and
+their sha256, gzip-compressed) as offline fixtures; in CI they come from the base commit or a trusted store, like the
+policies. `eval/feeds/` holds committed fixtures: 7 real vulnerable packages (Maven, PyPI, npm; KEV-listed and not;
+alias chains), their recordings and the snapshot they give, checked offline by the tests. The NVD fallback for CVSS is not implemented yet: an id without a 3.x vector in OSV keeps an
+unknown CVSS, which the risk engine counts as the worst case.
+
+"Known no" is written only for what was checked: `kev: {listed: false}` only when the KEV lookup covered every
+CVE id of the finding (`sources.kev.cves`), and `fix_available: false` only when OSV knew the vulnerability and
+fixes none of the package (package URLs compared in canonical form). A KEV outage therefore leaves KEV unknown,
+never "not listed", and the risk engine counts unknown as the worst case. `sentinel.yaml` is a reviewed trust
+boundary: it is read with a YAML loader that refuses duplicate keys, anchors and aliases, and tags beyond plain
+scalars, lists and mappings, and is limited to 64 KiB; component paths are canonical and unique. Residual risk:
+where a change puts its files decides their path-scoped exposure (a file under an `offline` component is scored
+as offline), so changes to `sentinel.yaml` and new top-level directories deserve a reviewer's eye.
+
+Reachability (B2, `sentinel enrich --source`): static import analysis of the scanned tree for PyPI and npm SCA
+findings, never executing it. `imported` when first-party code imports the package, or when a lockfile shows that
+an imported package depends on it at runtime; nothing otherwise (the worst case, R = 1.0). `not_imported` is not
+claimed: libraries load packages themselves (FastAPI templates load jinja2, PyJWT's RS256 loads cryptography)
+through optional dependencies a lockfile does not record, so it needs per-library evidence first. CONTAINER
+findings, `MAL-` advisories and npm packages with install scripts get no answer. In PR mode the base and the head
+are both analysed and `imported` must hold in both, so a change cannot lower its own score by adding an import.
+`reachable` would need call-graph analysis, a stretch goal (§16). Residual risk: a deliberately written import that
+nothing uses gives `imported` (R 0.9 instead of 1.0); a missed import only leaves the worst case.
 
 ### 6.2 Risk model
 
@@ -458,7 +497,7 @@ Required: `schema_version`, `id`, `tool`, `rule_id`, `category` (SECRET | SAST |
 LICENSE), `title`, `severity` (CRITICAL | HIGH | MEDIUM | LOW | INFO), `run`. Conditional: SECRET ⇒ `location` +
 `evidence.secret_hash` (raw secrets are never stored); SAST/IAC/PIPELINE ⇒ `location`; SCA/LICENSE ⇒ `package`;
 CONTAINER ⇒ `package` + `image`. Optional blocks `enrichment` (B2) and `risk` (B3). Paths must be relative and
-cannot contain `..`.
+cannot contain `..`. No pattern-checked field (ids, digests, paths, purls) may contain a line break, in any validator.
 
 **Several locations (1.1, additive).** One finding (one `id`) can be seen in several places, e.g. the same secret
 in two files. `location` is the first one by (path, start line); `other_locations` lists every other one, sorted
@@ -484,7 +523,8 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
 | `verification-result.v1.json` | A6 → B1, B8 | gate outcome; VERIFIED only if every condition holds |
 | evidence bundle layout | A4 → B1 | `manifest.json` (sha256 of each file, signed) + decision, findings, snapshot, SBOMs, raw outputs |
 | `openapi.yaml` | B1 → A3, A6, A8, B7 | Platform API |
-| `sentinel.yaml` | target → B2, B4 | service, exposure, environment, data_classification, owners, policy_profile |
+| `sentinel.yaml` (`sentinel-config.v1.json`) | target → B2, B4 | service, exposure, environment, data_classification, owners, policy_profile; optional `components` (path, exposure, data class) |
+| `enrichment-snapshot.v1.json` | B2 fetchers → B2 apply, evidence store | per vulnerability id: aliases, CVSS, fixed versions per purl base, EPSS, KEV; dated sources |
 
 ### 13.3 Platform API v1 (first cut)
 
