@@ -1,0 +1,213 @@
+"""How the snapshot fetchers reach the feeds: live HTTPS, or recorded responses for offline runs.
+
+`HttpTransport` talks only to the three feeds over HTTPS, never follows a redirect, needs no credentials (the
+feeds are public), caps every response at 32 MB, every request at one overall deadline and the whole run at
+a time budget, and retries a transient failure (a timeout, a reset, a retryable status) once.
+`RecordingTransport` saves every response it passes on (raw bytes, base64, with their sha256), and
+`ReplayTransport` answers from those files after checking the digest: the offline fixtures, for demos,
+evaluation and tests. Recordings are evidence inputs: use them only from the base commit or a
+trusted store, since a change that edits them could forge EPSS or KEV answers.
+"""
+
+from __future__ import annotations
+
+import base64
+import binascii
+import hashlib
+import http.client
+import json
+import time
+import urllib.error
+import urllib.request
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any, Protocol
+from urllib.parse import urlsplit
+
+ALLOWED_HOSTS = frozenset({"api.first.org", "www.cisa.gov", "api.osv.dev"})
+DEFAULT_TIMEOUT_S = 30.0
+MAX_TIMEOUT_S = 300.0
+RUN_BUDGET_S = 600.0  # all requests of one run together: OSV is asked once per vulnerability id
+MAX_RESPONSE_BYTES = 32 * 1024 * 1024  # the KEV catalogue is about 2 MB
+RETRIES = 1
+RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+_CHUNK = 64 * 1024
+_RECORDING_FORMAT = "sentinelci-feed-recording/1"
+
+
+class TransportError(Exception):
+    """A request could not be completed (network, timeout, size, redirect, or no valid recording).
+
+    `transient` marks what a second try may cure (a timeout, a reset or dropped connection); a refused
+    redirect, a TLS failure or an oversized answer would fail the same way again, so it is not retried.
+    """
+
+    def __init__(self, message: str, *, transient: bool = False) -> None:
+        super().__init__(message)
+        self.transient = transient
+
+
+_TRANSIENT = (TimeoutError, ConnectionResetError, ConnectionAbortedError, http.client.IncompleteRead)
+
+
+def _transient(exc: BaseException) -> bool:
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    return isinstance(reason, _TRANSIENT)
+
+
+class Transport(Protocol):
+    def request(self, method: str, url: str, body: bytes | None = None) -> tuple[int, bytes]:
+        """Return (HTTP status, response body)."""
+        ...
+
+
+def allowed(url: str) -> bool:
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return False
+    return parts.scheme == "https" and parts.hostname in ALLOWED_HOSTS and port in (None, 443)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect could leave the allow-list or HTTPS: never follow one."""
+
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        raise TransportError(f"{req.full_url} answered a redirect ({code}) to {newurl}: not followed")
+
+
+class HttpTransport:
+    def __init__(
+        self,
+        timeout: float = DEFAULT_TIMEOUT_S,
+        sleep: Callable[[float], None] = time.sleep,
+        budget: float = RUN_BUDGET_S,
+    ) -> None:
+        if not 0 < timeout <= MAX_TIMEOUT_S:
+            raise ValueError(f"timeout must be in (0, {MAX_TIMEOUT_S}] seconds, got {timeout}")
+        if not 0 < budget < float("inf"):
+            raise ValueError(f"budget must be a positive number of seconds, got {budget}")
+        self.timeout = timeout
+        self.budget = budget
+        self._started: float | None = None
+        self._opener = urllib.request.build_opener(_NoRedirect())
+        self._sleep = sleep
+
+    def request(self, method: str, url: str, body: bytes | None = None) -> tuple[int, bytes]:
+        if not allowed(url):
+            raise TransportError(
+                f"{url} is not an allowed feed (HTTPS to {', '.join(sorted(ALLOWED_HOSTS))})"
+            )
+        for attempt in range(RETRIES + 1):
+            last = attempt == RETRIES
+            try:
+                status, data = self._once(method, url, body)
+            except TransportError as exc:
+                if last or not exc.transient:
+                    raise
+            else:
+                if status not in RETRY_STATUSES or last:
+                    return status, data
+            self._sleep(1.0)
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    def _once(self, method: str, url: str, body: bytes | None) -> tuple[int, bytes]:
+        headers = {"Accept": "application/json", "User-Agent": "sentinelci-enrich"}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(url, data=body, method=method, headers=headers)  # noqa: S310 - https only
+        now = time.monotonic()
+        if self._started is None:
+            self._started = now
+        left = self._started + self.budget - now
+        if left <= 0:
+            raise TransportError(f"{method} {url}: the run's {self.budget:g} s budget is spent")
+        limit = min(self.timeout, left)
+        deadline = now + limit
+        try:
+            with self._opener.open(req, timeout=limit) as response:
+                return int(response.status), _read(response, deadline, url)
+        except urllib.error.HTTPError as exc:  # an answer with an error status: the caller decides
+            try:
+                return exc.code, _read(exc, deadline, url)
+            except (OSError, http.client.HTTPException) as read_error:
+                raise TransportError(f"{method} {url}: {read_error}", transient=_transient(read_error)) from (
+                    read_error
+                )
+        except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError, OverflowError) as exc:
+            raise TransportError(f"{method} {url}: {exc}", transient=_transient(exc)) from exc
+
+
+def _read(response: Any, deadline: float, url: str) -> bytes:
+    """The whole body, within the size cap and the overall deadline (a slow drip cannot hold a run)."""
+    chunks: list[bytes] = []
+    total = 0
+    # read1 returns what has arrived: read(n) would wait for n bytes, so a drip could outlast the deadline.
+    read = getattr(response, "read1", response.read)
+    while chunk := read(_CHUNK):
+        total += len(chunk)
+        if total > MAX_RESPONSE_BYTES:
+            raise TransportError(f"{url}: response larger than {MAX_RESPONSE_BYTES} bytes")
+        if time.monotonic() > deadline:
+            raise TransportError(f"{url}: no complete answer within the time limit", transient=True)
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _key(method: str, url: str, body: bytes | None) -> str:
+    return hashlib.sha256(b"\n".join([method.encode(), url.encode(), body or b""])).hexdigest()
+
+
+class RecordingTransport:
+    """Pass requests on and save each response as `<sha256 of the request>.json` under `directory`."""
+
+    def __init__(self, inner: Transport, directory: Path) -> None:
+        if directory.exists() and not directory.is_dir():
+            raise TransportError(f"--record {directory} is not a directory")
+        self.inner = inner
+        self.directory = directory
+        directory.mkdir(parents=True, exist_ok=True)
+
+    def request(self, method: str, url: str, body: bytes | None = None) -> tuple[int, bytes]:
+        status, data = self.inner.request(method, url, body)
+        record = {
+            "format": _RECORDING_FORMAT,
+            "method": method,
+            "url": url,
+            "body_base64": None if body is None else base64.b64encode(body).decode("ascii"),
+            "status": status,
+            "response_base64": base64.b64encode(data).decode("ascii"),
+            "response_sha256": hashlib.sha256(data).hexdigest(),
+        }
+        path = self.directory / f"{_key(method, url, body)}.json"
+        try:
+            path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            raise TransportError(f"cannot record {url} in {self.directory}: {exc}") from exc
+        return status, data
+
+
+class ReplayTransport:
+    """Answer from a directory written by RecordingTransport; a missing or altered recording is an outage."""
+
+    def __init__(self, directory: Path) -> None:
+        self.directory = directory
+
+    def request(self, method: str, url: str, body: bytes | None = None) -> tuple[int, bytes]:
+        path = self.directory / f"{_key(method, url, body)}.json"
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if record["format"] != _RECORDING_FORMAT or record["method"] != method or record["url"] != url:
+                raise ValueError("recording of another request")
+            data = base64.b64decode(record["response_base64"], validate=True)
+            status = record["status"]
+            if not isinstance(status, int) or isinstance(status, bool):
+                raise ValueError("status is not a number")
+        except FileNotFoundError as exc:
+            raise TransportError(f"{method} {url}: no recorded response in {self.directory}") from exc
+        except (OSError, ValueError, KeyError, TypeError, binascii.Error) as exc:
+            raise TransportError(f"{method} {url}: unreadable recording {path.name}: {exc}") from exc
+        if hashlib.sha256(data).hexdigest() != record.get("response_sha256"):
+            raise TransportError(f"{method} {url}: recording {path.name} does not match its sha256")
+        return status, data

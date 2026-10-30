@@ -31,6 +31,16 @@ from sentinelci.enrich import (
     load_snapshot,
     read_service_context,
 )
+from sentinelci.enrich.fetch import build_snapshot, dumps_snapshot
+from sentinelci.enrich.transport import (
+    DEFAULT_TIMEOUT_S,
+    MAX_TIMEOUT_S,
+    HttpTransport,
+    RecordingTransport,
+    ReplayTransport,
+    Transport,
+    TransportError,
+)
 from sentinelci.normalize.errors import NormalizationError
 from sentinelci.normalize.gitleaks import load_gitleaks_report, normalize_gitleaks
 from sentinelci.normalize.ndjson import dumps_ndjson, write_ndjson
@@ -132,6 +142,76 @@ def _write_atomically(path: Path, text: str) -> None:
         raise
 
 
+@app.command("snapshot")
+def snapshot_command(
+    findings: Annotated[
+        Path, typer.Option(help="Findings NDJSON (Finding v1): their package findings are looked up.")
+    ],
+    out: Annotated[
+        Path, typer.Option(help="Enrichment snapshot to write (schemas/enrichment-snapshot.v1.json).")
+    ],
+    offline: Annotated[
+        Path | None, typer.Option(help="Answer from responses recorded with --record instead of the network.")
+    ] = None,
+    record: Annotated[
+        Path | None, typer.Option(help="Also save every response under this directory.")
+    ] = None,
+    timeout: Annotated[
+        float, typer.Option(help=f"Seconds per request, in (0, {MAX_TIMEOUT_S:g}].")
+    ] = DEFAULT_TIMEOUT_S,
+) -> None:
+    """Fetch OSV, FIRST EPSS and CISA KEV data for the findings into a snapshot (SPEC section 6.1).
+
+    The only network step of enrichment; `sentinel enrich` then applies the snapshot offline. A feed that
+    fails is left out (its values stay unknown, scored as the worst case) and named on stderr; exit code 0.
+    Exit code 3 when the findings cannot be read, or anything else goes wrong (nothing is written).
+    `--offline` recordings are inputs like the policies: use them from the base commit or a trusted store.
+    """
+    if not 0 < timeout <= MAX_TIMEOUT_S:
+        raise typer.BadParameter(f"--timeout must be in (0, {MAX_TIMEOUT_S:g}] seconds")
+    _refuse_output(out, [findings], "sentinel snapshot")
+    _clear_output(out, "sentinel snapshot")
+    try:
+        loaded = load_findings(findings.read_bytes())
+        transport: Transport = ReplayTransport(offline) if offline else HttpTransport(timeout=timeout)
+        if record is not None:
+            transport = RecordingTransport(transport, record)
+        document, warnings = build_snapshot(loaded, transport)
+    except (EvaluationError, EnrichmentError, TransportError, OSError) as exc:
+        typer.echo(f"sentinel snapshot: {exc}", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    except Exception as exc:  # fail closed: no traceback, no partial snapshot, no exit 0 or 1
+        typer.echo(f"sentinel snapshot: unexpected {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    for warning in warnings:
+        typer.echo(f"warning: {warning}", err=True)
+    data = dumps_snapshot(document)
+    _write_output(out, data.decode("utf-8"), "sentinel snapshot")
+    sources = ", ".join(document["sources"]) or "none"
+    typer.echo(
+        f"Snapshot of {len(document['vulnerabilities'])} vulnerability id(s) (sources: {sources}) -> {out}  "
+        f"sha256:{hashlib.sha256(data).hexdigest()}"
+    )
+
+
+def _clear_output(out: Path, command: str) -> None:
+    """Remove a stale --out from an earlier run; a path that cannot be cleared is exit 3, not a traceback."""
+    try:
+        out.unlink(missing_ok=True)
+    except OSError as exc:
+        typer.echo(f"{command}: cannot use --out {out}: {exc}", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+
+
+def _write_output(out: Path, text: str, command: str) -> None:
+    """Write --out atomically; a write that fails (no space, a file in the way) is exit 3, nothing left."""
+    try:
+        _write_atomically(out, text)
+    except OSError as exc:
+        typer.echo(f"{command}: cannot write --out {out}: {exc}", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+
+
 def _refuse_output(out: Path, sources: list[Path | None], command: str) -> None:
     """Fail closed before anything is deleted: --out must not be any input file, nor a directory."""
     if out.is_dir():
@@ -168,7 +248,7 @@ def enrich_command(
     """
     _refuse_output(out, [findings, snapshot, config], "sentinel enrich")
     # A stale file from an earlier run must never be read as this run's findings.
-    out.unlink(missing_ok=True)
+    _clear_output(out, "sentinel enrich")
     try:
         data = load_snapshot(snapshot.read_bytes()) if snapshot else load_snapshot(EMPTY_SNAPSHOT)
         context = read_service_context(config) if config else None
@@ -179,7 +259,7 @@ def enrich_command(
     except (EnrichmentError, EvaluationError, OSError, ValueError) as exc:
         typer.echo(f"sentinel enrich: {exc}", err=True)
         raise typer.Exit(EXIT_NO_DECISION) from exc
-    _write_atomically(out, dumps_ndjson(enriched))
+    _write_output(out, dumps_ndjson(enriched), "sentinel enrich")
     sources = sorted(k for k, v in data.sources.model_dump().items() if v is not None) or ["none"]
     typer.echo(
         f"{len(enriched)} finding(s) enriched (sources: {', '.join(sources)}; "
@@ -204,7 +284,7 @@ def score_command(
         typer.echo(f"sentinel score: --out {out} is the input or a directory; nothing was written", err=True)
         raise typer.Exit(EXIT_NO_DECISION)
     # A stale file from an earlier run must never be read as this run's scores.
-    out.unlink(missing_ok=True)
+    _clear_output(out, "sentinel score")
     try:
         model = RiskModel.load(policy_dir / "risk-model.yaml")
         scored = [
@@ -213,7 +293,7 @@ def score_command(
     except (EvaluationError, RiskModelError, OSError, ValueError) as exc:
         typer.echo(f"sentinel score: {exc}", err=True)
         raise typer.Exit(EXIT_NO_DECISION) from exc
-    _write_atomically(out, dumps_ndjson(scored))
+    _write_output(out, dumps_ndjson(scored), "sentinel score")
     typer.echo(f"{len(scored)} finding(s) scored with risk model {model.version} -> {out}")
 
 
