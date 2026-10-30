@@ -73,6 +73,47 @@ def test_dots_inside_names_are_fine(path: str, finding_validator: Draft202012Val
     assert Finding.model_validate(document).location is not None
 
 
+ENRICHED = FIXTURES / "valid" / "sca-enriched-and-scored.json"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"epss": {"score": "0.41", "percentile": 0.95, "date": "2026-11-10"}},
+        {"epss": {"score": 0.41, "percentile": "0.95", "date": "2026-11-10"}},
+        {"cvss": {"score": "9.8"}},
+        {"epss": {"score": 1.5, "percentile": 0.95, "date": "2026-11-10"}},
+        {"epss": {"score": 0.41, "percentile": -0.1, "date": "2026-11-10"}},
+        {"epss": {"score": 0.41, "percentile": 1.01, "date": "2026-11-10"}},
+        {"cvss": {"score": 10.5}},
+        {"cvss": {"score": -1}},
+        {"fix_available": "yes"},
+        {"kev": {"listed": 1}},
+    ],
+    ids=[
+        "epss-score-string",
+        "epss-percentile-string",
+        "cvss-string",
+        "epss-score-above-1",
+        "epss-percentile-below-0",
+        "epss-percentile-above-1",
+        "cvss-above-10",
+        "cvss-below-0",
+        "fix-string",
+        "kev-int",
+    ],
+)
+def test_enrichment_numbers_are_numbers_within_their_range(
+    change: dict[str, Any], finding_validator: Draft202012Validator
+) -> None:
+    """#17 N4: the typed Finding.enrichment refuses what the schema refuses."""
+    document = load(ENRICHED)
+    document["enrichment"] = {**document["enrichment"], **change}
+    assert list(finding_validator.iter_errors(document)), "the schema must refuse it"
+    with pytest.raises(ValidationError):
+        Finding.model_validate(document)
+
+
 def test_model_path_rule_is_the_schema_rule() -> None:
     schema = json.loads((FIXTURES.parents[1] / "finding.v1.json").read_text(encoding="utf-8"))
     assert _RELATIVE_PATH.pattern == schema["$defs"]["relative_path"]["pattern"]
