@@ -28,8 +28,8 @@ from sentinelci.enrich import (
     EMPTY_SNAPSHOT,
     EnrichmentError,
     enrich_finding,
-    load_service_context,
     load_snapshot,
+    read_service_context,
 )
 from sentinelci.normalize.errors import NormalizationError
 from sentinelci.normalize.gitleaks import load_gitleaks_report, normalize_gitleaks
@@ -46,11 +46,13 @@ from sentinelci.policy.decision import (
 )
 from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaError, OpaRunner
-from sentinelci.policy.replay import ReplayResult, replay, skip_reason
+from sentinelci.policy.replay import ReplayResult, check_identity, replay, skip_reason
 from sentinelci.policy.store import EvidenceStore, StoreError
 from sentinelci.policy.vex import DEFAULT_VEX_PATH
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
-from sentinelci.scanners.errors import ToolIntegrityError
+from sentinelci.risk import RiskModel, RiskModelError, score_finding
+from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
+from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
 from sentinelci.scanners.installer import VerificationReport, install_tools, verify_tools
 from sentinelci.scanners.lock import LOCK_FILE_NAME, load_lock
 
@@ -66,10 +68,14 @@ normalize_app = typer.Typer(help="Convert raw scanner output into Finding v1 NDJ
 tools_app = typer.Typer(
     help="Install and verify the pinned security tools (tools.lock.toml).", no_args_is_help=True
 )
+scan_app = typer.Typer(
+    help="Run a verified scanner and write normalized Finding v1 NDJSON.", no_args_is_help=True
+)
 app.add_typer(normalize_app, name="normalize")
 policy_app = typer.Typer(help="Release-gate policy tools.", no_args_is_help=True)
 app.add_typer(policy_app, name="policy")
 app.add_typer(tools_app, name="tools")
+app.add_typer(scan_app, name="scan")
 
 LockOption = Annotated[Path, typer.Option("--lock", help="Path to the tool lock file.")]
 DestOption = Annotated[Path, typer.Option("--dest", help="Installation directory (bin/ and cache/).")]
@@ -127,12 +133,15 @@ def _write_atomically(path: Path, text: str) -> None:
         raise
 
 
-def _refuse_output(out: Path, source: Path, command: str) -> None:
-    """Fail closed before anything is deleted: --out must not be the input file, nor a directory."""
-    if out.is_dir() or (out.exists() and source.exists() and out.resolve() == source.resolve()):
-        what = "a directory" if out.is_dir() else f"the input file {source}"
-        typer.echo(f"{command}: --out {out} is {what}; nothing was written", err=True)
+def _refuse_output(out: Path, sources: list[Path | None], command: str) -> None:
+    """Fail closed before anything is deleted: --out must not be any input file, nor a directory."""
+    if out.is_dir():
+        typer.echo(f"{command}: --out {out} is a directory; nothing was written", err=True)
         raise typer.Exit(EXIT_NO_DECISION)
+    for source in sources:
+        if source is not None and out.exists() and source.exists() and out.resolve() == source.resolve():
+            typer.echo(f"{command}: --out {out} is the input file {source}; nothing was written", err=True)
+            raise typer.Exit(EXIT_NO_DECISION)
 
 
 @app.command("enrich")
@@ -158,12 +167,12 @@ def enrich_command(
     the worst case). Pass the same snapshot to `sentinel evaluate --enrichment-snapshot`, so the decision
     records its digest. Exit code 0 on success, 3 when an input cannot be read (nothing is written).
     """
-    _refuse_output(out, findings, "sentinel enrich")
+    _refuse_output(out, [findings, snapshot, config], "sentinel enrich")
     # A stale file from an earlier run must never be read as this run's findings.
     out.unlink(missing_ok=True)
     try:
         data = load_snapshot(snapshot.read_bytes()) if snapshot else load_snapshot(EMPTY_SNAPSHOT)
-        context = load_service_context(config.read_bytes()) if config else None
+        context = read_service_context(config) if config else None
         enriched = [
             Finding.model_validate(enrich_finding(f, data, context))
             for f in load_findings(findings.read_bytes())
@@ -177,6 +186,36 @@ def enrich_command(
         f"{len(enriched)} finding(s) enriched (sources: {', '.join(sources)}; "
         f"service context: {'yes' if context else 'no'}) -> {out}"
     )
+
+
+@app.command("score")
+def score_command(
+    findings: Annotated[Path, typer.Option(help="Findings NDJSON (Finding v1), enriched or not.")],
+    out: Annotated[Path, typer.Option(help="Scored findings NDJSON to write.")],
+    policy_dir: Annotated[Path, typer.Option(help="Policy bundle holding risk-model.yaml.")] = Path(
+        "policies"
+    ),
+) -> None:
+    """Set `risk` (score, priority P0-P4, factors, model version) on every finding (SPEC section 6.2).
+
+    Exit code 0 on success, 3 when the findings or the risk model cannot be read (nothing is written).
+    """
+    # Fail closed before anything is deleted: --out must not be the findings file, nor a directory.
+    if out.is_dir() or (out.exists() and findings.exists() and out.resolve() == findings.resolve()):
+        typer.echo(f"sentinel score: --out {out} is the input or a directory; nothing was written", err=True)
+        raise typer.Exit(EXIT_NO_DECISION)
+    # A stale file from an earlier run must never be read as this run's scores.
+    out.unlink(missing_ok=True)
+    try:
+        model = RiskModel.load(policy_dir / "risk-model.yaml")
+        scored = [
+            Finding.model_validate(score_finding(f, model)) for f in load_findings(findings.read_bytes())
+        ]
+    except (EvaluationError, RiskModelError, OSError, ValueError) as exc:
+        typer.echo(f"sentinel score: {exc}", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    _write_atomically(out, dumps_ndjson(scored))
+    typer.echo(f"{len(scored)} finding(s) scored with risk model {model.version} -> {out}")
 
 
 @app.command("evaluate")
@@ -442,6 +481,7 @@ def _replay_all(evidence: EvidenceStore, opa: Path | None, *, allow_all_skipped:
         try:
             evidence.decision_path(decision_id)  # the file name must be a decision id
             recorded = _load_record(path, decision_id)
+            check_identity(recorded)  # before skipping: a skip must not hide an edited record
             reason = skip_reason(recorded, opa_version)
             result = None if reason else _replay_record(recorded, evidence, runner)
         except _REPLAY_ERRORS as exc:
@@ -592,6 +632,62 @@ def policy_capabilities(
         raise typer.Exit(EXIT_NO_DECISION) from exc
     _write_atomically(out, json.dumps(capabilities, indent=2, sort_keys=True) + "\n")
     typer.echo(f"{len(capabilities['builtins'])} built-ins allowed; written to {out}")
+
+
+# ---------------------------------------------------------------- scan
+
+
+@scan_app.command("secrets")
+def scan_secrets_cmd(
+    target: Annotated[Path, typer.Argument(help="Directory (or git repository with --mode git) to scan.")],
+    out: Annotated[Path, typer.Option(help="Destination NDJSON file.")],
+    repo: Annotated[str, typer.Option(help="Repository as owner/name.")],
+    commit: Annotated[str, typer.Option(help="Commit SHA that was scanned.")],
+    context: Annotated[RunContext, typer.Option(help="Run context.")],
+    ref: Annotated[str | None, typer.Option(help="Git ref that was scanned.")] = None,
+    run_id: Annotated[str | None, typer.Option(help="CI run identifier.")] = None,
+    repo_root: Annotated[
+        Path | None, typer.Option(help="Repository root (default: the target itself).")
+    ] = None,
+    mode: Annotated[str, typer.Option(help="dir (working tree) or git (history).")] = "dir",
+    log_opts: Annotated[
+        str | None,
+        typer.Option(help="git mode only: commit range and pathspecs, e.g. 'origin/main..HEAD -- src'."),
+    ] = None,
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    tools_dir: Annotated[
+        Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
+    ] = (DEFAULT_TOOLS_DIR),
+    platform: PlatformOption = None,
+) -> None:
+    """Scan for secrets with the verified Gitleaks binary; raw secrets never leave memory."""
+    out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
+    if mode not in ("dir", "git"):
+        raise typer.BadParameter("mode must be 'dir' or 'git'")
+    scan_mode: GitleaksMode = "git" if mode == "git" else "dir"
+    root = repo_root or target
+    try:
+        tool_lock = load_lock(lock)
+        raw, tool_run = scan_secrets_with_run(
+            target,
+            lock=tool_lock,
+            tools_dir=tools_dir,
+            repo_root=root,
+            platform=platform,
+            mode=scan_mode,
+            log_opts=log_opts,
+        )
+        findings = normalize_gitleaks(
+            raw,
+            run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
+            tool=Tool(name="gitleaks", version=tool_run.version),
+            repo_root=root,
+        )
+    except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
+        raise _fail_closed(exc) from exc
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_ndjson(findings, out)
+    typer.echo(f"gitleaks {tool_run.version}: {len(findings)} finding(s) written to {out}")
 
 
 if __name__ == "__main__":

@@ -22,24 +22,43 @@ uv run sentinel enrich --findings out/findings.ndjson --snapshot out/enrichment-
 ```
 
 - Offline: applies an enrichment snapshot (`schemas/enrichment-snapshot.v1.json`) and the service context
-  (`sentinel.yaml`, `schemas/sentinel-config.v1.json`) to findings. Pass the same snapshot to
-  `sentinel evaluate --enrichment-snapshot` so the decision records its digest.
-- Package findings (SCA, CONTAINER): `cvss` and `epss` (highest among the finding's ids and their aliases), `kev`
-  (only when the KEV feed was read), `fix_available` (true from the finding or OSV, false only when OSV knew the
-  vulnerability and fixes none of the package). Every finding: `exposure` of its `sentinel.yaml` component
-  (longest matching path), else the top-level exposure.
+  (`sentinel.yaml`, `schemas/sentinel-config.v1.json`) to findings. Pass the same snapshot to `sentinel evaluate
+  --enrichment-snapshot` so the decision records its digest.
+- Package findings (SCA, CONTAINER): `cvss` and `epss` (highest among the finding's ids and every alias reachable
+  from them in the snapshot; CVE ids compared in upper case), `kev` (only when the KEV feed was read),
+  `fix_available` (true from the finding or OSV, false only when OSV knew the vulnerability and fixes none of the
+  package). Every finding: `exposure` of its `sentinel.yaml` component (longest matching path), else the top-level
+  exposure; a finding without a path (a container image) gets the highest exposure of the service and its
+  components.
 - Unknown stays absent; the risk engine treats absent as the worst case. Without `--snapshot` or `--config`,
   nothing from that source is added.
 - Read `sentinel.yaml` from the base branch in PR mode: a change must not lower its own exposure.
-- `kev: {listed: false}` only for CVEs the snapshot's KEV lookup covered (`sources.kev.cves`); otherwise KEV
-  stays unknown. Package URLs are compared in canonical form (PyPI names per PEP 503).
-- `sentinel.yaml` is read with a restricted YAML loader: no duplicate keys, anchors, aliases, dates, binary or
-  set values; at most 64 KiB. Component paths must be canonical (`services/web`, not `./services/web/`) and
-  unique.
+- `kev: {listed: false}` only for CVEs the snapshot's KEV lookup covered (`sources.kev.cves`); otherwise KEV stays
+  unknown. Package URLs are compared in canonical form (PyPI names per PEP 503).
+- `sentinel.yaml` is read with a restricted YAML loader: no duplicate keys, merge keys (`<<`), anchors, aliases,
+  dates, binary or set values; at most 64 KiB (never read further). Component paths must be canonical
+  (`services/web`, not `./services/web/`) and unique.
 - Fail closed: an invalid snapshot, `sentinel.yaml` or findings file (including enrichment outside the Finding
-  contract), or `--out` naming the input or a directory, writes nothing and exits 3. `sentinel evaluate`
-  refuses an `--enrichment-snapshot` that is not a valid snapshot; with none, both commands use the same empty
-  snapshot, so "no snapshot" has a single digest.
+  contract, or nested too deeply), or `--out` naming any input or a directory, writes nothing and exits 3.
+  `sentinel evaluate` refuses an `--enrichment-snapshot` that is not a valid snapshot; with none, both commands use
+  the same empty snapshot, so "no snapshot" has a single digest.
+
+## `sentinel score` (risk engine, B3)
+
+```bash
+uv run sentinel score --findings out/findings.ndjson --out out/findings.scored.ndjson
+```
+
+- Sets `risk` on every finding: `score` (0-100, rounded to 0.1), `priority` (P0-P4), `factors` (S, E, X, R) and the
+  `model_version` of `policies/risk-model.yaml`, with `risk = 100 x S x E x X x R` (SPEC section 6.2).
+- Missing enrichment never lowers a score: E < 1 only when KEV was read and does not list the CVE (EPSS alone,
+  with KEV unknown, counts as E = 1.0), no exposure counts as X = 1.0, no
+  reachability analysis as R = 1.0 (`unknown` is for an analysis that could not decide). Every score stays at most
+  `100 x severity_weight`, and a finding with no enrichment scores exactly that, like an unscored one at the gate.
+- SAST counts as taint-mode (`SAST_TAINT`) until findings say which kind they are; a category the model does not
+  list counts as E = 1.0. Reachability applies to SCA and CONTAINER only.
+- Fail closed: findings that are not Finding v1, or an invalid risk model, write nothing and exit 3.
+- `cvss_baseline()` gives the CVSS-only score on the same scale, the baseline the evaluation compares with (B8).
 
 ## `sentinel evaluate` (release gate, B4)
 
@@ -110,6 +129,9 @@ uv run sentinel replay --all --store out/evidence                # every stored 
   replay (missing or tampered evidence, malformed record, Decision 1.0).
 - Scanner versions are passed back as recorded (scanners do not run again); the OPA version is the running
   binary's, so an OPA or engine upgrade shows up as a difference.
+- Before anything else, a record's `decision_id` must be the one its own subject, `evaluated_at`, inputs and
+  `engine_version` give; an edited record cannot be replayed (exit 3), so editing a version can never turn
+  "differs" into "skipped". (A record edited *and* re-identified is caught only once decisions are signed, A4.)
 - `--all` replays every decision in the store and skips those recorded with another engine or OPA version
   (listed as `skipped`). Exit 3 if any cannot be replayed, the store holds none or nothing was compared (every
   decision skipped; `--allow-all-skipped` accepts that, as after an engine bump), else 1 if any differs.

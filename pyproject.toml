@@ -49,7 +49,7 @@ select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
 known-first-party = ["sentinelci", "sentinel_api", "sentinel_worker", "sentinel_ai"]
 
 [tool.ruff.lint.per-file-ignores]
-"**/tests/**" = ["S101", "S311"]  # asserts; seeded PRNG used only to shuffle fixtures
+"**/tests/**" = ["S101", "S311", "S603", "S607"]  # asserts; seeded PRNG for fixtures; local git/subprocess in tests
 
 # ---------------------------------------------------------------- mypy
 [tool.mypy]
@@ -61,6 +61,9 @@ files = ["cli/src", "platform/api/src", "platform/worker/src", "ai/src"]
 [tool.pytest.ini_options]
 testpaths = ["tests", "cli/tests", "platform/api/tests", "platform/worker/tests", "ai/tests"]
 addopts = "-ra --strict-markers --import-mode=importlib"
+markers = [
+    "integration: uses real pinned scanners; runs only when SENTINEL_TOOLS_DIR points to `sentinel tools install` output",
+]
 
 # ---------------------------------------------------------------- import-linter
 # Principle P1: deterministic decides, AI advises.

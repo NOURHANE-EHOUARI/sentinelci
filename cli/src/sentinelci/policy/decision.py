@@ -266,13 +266,7 @@ def evaluate(
         )
     )
 
-    identity = {
-        "subject": subject.to_json(),
-        "evaluated_at": timestamp,
-        "inputs": inputs,
-        "engine_version": __version__,
-    }
-    decision_id = uuid.uuid5(_DECISION_ID_NAMESPACE, json.dumps(identity, sort_keys=True))
+    decision_id = decision_id_of(subject.to_json(), timestamp, inputs, __version__)
     decision: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION_WITH_VEX
         if vex_data is not None
@@ -281,7 +275,7 @@ def evaluate(
         else SCHEMA_VERSION_WITH_NEW_INPUTS
         if baseline is not None or tool_status is not None
         else SCHEMA_VERSION,
-        "decision_id": str(decision_id),
+        "decision_id": decision_id,
         "evaluated_at": timestamp,
         "subject": subject.to_json(),
         "verdict": result["verdict"],
@@ -298,6 +292,14 @@ def evaluate(
             raise EvaluationError("policy decision is missing vex_applied")
         decision["vex_applied"] = sorted(applied)
     return decision
+
+
+def decision_id_of(
+    subject: Mapping[str, Any], evaluated_at: str, inputs: Mapping[str, Any], engine: str
+) -> str:
+    """UUIDv5 of what the decision is about and what it read: the same inputs give the same id."""
+    identity = {"subject": subject, "evaluated_at": evaluated_at, "inputs": inputs, "engine_version": engine}
+    return str(uuid.uuid5(_DECISION_ID_NAMESPACE, json.dumps(identity, sort_keys=True)))
 
 
 def dumps_decision(decision: Mapping[str, Any]) -> str:
