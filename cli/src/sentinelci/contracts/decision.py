@@ -2,14 +2,15 @@
 
 The policy engine (B4) produces decisions; this model is how the rest of the pipeline reads them (PR comment,
 attestation, verification). It mirrors every rule of the JSON Schema, including verdict consistency, so a
-malformed or tampered record is rejected instead of being reported as a PASS. Minor versions only add fields:
-1.1 requires `inputs.waivers_digest`; 1.2 may also record `baseline_digest` and `tool_status_digest`; an older
-version must not carry a field a later one introduced.
+malformed or tampered record is rejected instead of being reported as a PASS. Minor versions only add fields
+(`_SINCE`), and an older version must not carry a field a later one introduced. What each version requires
+is the schema's `allOf` table, copied in `_REQUIRED`: `waivers_digest` from 1.1, `service_context_digest`
+in 1.3.
 """
 
 import re
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -20,11 +21,36 @@ DecisionContext = Literal["pr", "release", "local"]
 
 _SHA256_HEX = r"^[a-f0-9]{64}$"
 _PREFIXED_SHA256 = r"^sha256:[a-f0-9]{64}$"
+SchemaVersion = Literal["1.0", "1.1", "1.2", "1.3"]
+
+# The version that introduced each optional field (an older record must not carry it) ...
+_SINCE: dict[str, tuple[int, int]] = {
+    "inputs.waivers_digest": (1, 1),
+    "inputs.baseline_digest": (1, 2),
+    "inputs.tool_status_digest": (1, 2),
+    "inputs.service_context_digest": (1, 3),
+}
+# ... and the fields each version requires, as in the schema's allOf.
+_REQUIRED: dict[str, frozenset[str]] = {
+    "1.0": frozenset(),
+    "1.1": frozenset({"inputs.waivers_digest"}),
+    "1.2": frozenset({"inputs.waivers_digest"}),
+    "1.3": frozenset({"inputs.waivers_digest", "inputs.service_context_digest"}),
+}
+
 _RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$")
 
 
 class _Contract(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    @model_validator(mode="after")
+    def _no_null(self) -> Self:
+        # An optional field is absent or holds a value: the schema has no null.
+        for name in sorted(self.model_fields_set):
+            if getattr(self, name) is None:
+                raise ValueError(f"{name} must be absent or hold a value, not null")
+        return self
 
 
 class Subject(_Contract):
@@ -60,6 +86,7 @@ class Inputs(_Contract):
     waivers_digest: str | None = Field(default=None, pattern=_PREFIXED_SHA256)
     baseline_digest: str | None = Field(default=None, pattern=_PREFIXED_SHA256)
     tool_status_digest: str | None = Field(default=None, pattern=_PREFIXED_SHA256)
+    service_context_digest: str | None = Field(default=None, pattern=_PREFIXED_SHA256)
 
     @field_validator("tool_versions")
     @classmethod
@@ -70,7 +97,7 @@ class Inputs(_Contract):
 
 
 class Decision(_Contract):
-    schema_version: Literal["1.0", "1.1", "1.2"]
+    schema_version: SchemaVersion
     decision_id: str
     evaluated_at: str
     subject: Subject
@@ -104,6 +131,9 @@ class Decision(_Contract):
             raise ValueError("waivers_applied must hold unique, non-empty ids")
         return value
 
+    def _present(self) -> set[str]:
+        return {f"inputs.{name}" for name in self.inputs.model_fields_set}  # never null: see _no_null
+
     @model_validator(mode="after")
     def _consistent(self) -> "Decision":
         effects = {violation.effect for violation in self.violations}
@@ -113,12 +143,11 @@ class Decision(_Contract):
             raise ValueError("a WARN verdict needs WARN violations only, and at least one")
         if self.verdict == "PASS" and self.violations:
             raise ValueError("a PASS verdict cannot have violations")
-        has_waivers_digest = self.inputs.waivers_digest is not None
-        if (self.schema_version != "1.0") != has_waivers_digest:
-            raise ValueError("inputs.waivers_digest is required from schema 1.1 and absent in 1.0")
-        new_inputs = (self.inputs.baseline_digest, self.inputs.tool_status_digest)
-        if self.schema_version != "1.2" and any(digest is not None for digest in new_inputs):
-            raise ValueError(
-                "inputs.baseline_digest and inputs.tool_status_digest exist only from schema 1.2"
-            )
+        major, minor = (int(part) for part in self.schema_version.split("."))
+        present = self._present()
+        for field, since in sorted(_SINCE.items()):
+            if field in present and (major, minor) < since:
+                raise ValueError(f"{field} exists only from schema {since[0]}.{since[1]}")
+        if missing := sorted(_REQUIRED[self.schema_version] - present):
+            raise ValueError(f"{missing[0]} is required in schema {self.schema_version}")
         return self

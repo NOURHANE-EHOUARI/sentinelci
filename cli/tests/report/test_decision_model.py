@@ -119,3 +119,73 @@ def test_decision_minor_versions_keep_their_meaning(
 ) -> None:
     with pytest.raises(ValidationError, match=message):
         Decision.model_validate_json(_with_inputs(version, **extra))
+
+
+SCHEMA = Path(__file__).resolve().parents[3] / "schemas" / "decision.v1.json"
+
+
+def _schema_version_rules() -> dict[str, tuple[frozenset[str], frozenset[str]]]:
+    """Per version, the fields the schema's allOf requires and forbids (`inputs.<name>` or top-level name)."""
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    rules: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
+    for branch in schema["allOf"]:
+        version = branch["if"]["properties"].get("schema_version", {}).get("const")
+        if version is None:
+            continue
+        then = branch["then"]
+        inputs = then.get("properties", {}).get("inputs", {})
+        required = {f"inputs.{name}" for name in inputs.get("required", [])} | set(then.get("required", []))
+        forbidden: set[str] = set(then.get("not", {}).get("required", []))
+        excluded = inputs.get("not", {})
+        for clause in excluded.get("anyOf", [excluded]):
+            forbidden |= {f"inputs.{name}" for name in clause.get("required", [])}
+        rules[version] = (frozenset(required), frozenset(forbidden))
+    return rules
+
+
+def test_the_version_table_is_the_schema_one() -> None:
+    """A new minor version in the schema fails here until the read model learns it (contracts first)."""
+    from typing import get_args
+
+    from sentinelci.contracts import decision as model
+
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    versions = schema["properties"]["schema_version"]["enum"]
+    assert list(get_args(model.SchemaVersion)) == versions == list(model._REQUIRED)
+    rules = _schema_version_rules()
+    assert set(rules) == set(versions)
+    for version in versions:
+        required, forbidden = rules[version]
+        number = tuple(int(part) for part in version.split("."))
+        assert model._REQUIRED[version] == required, version
+        assert {field for field, since in model._SINCE.items() if number < since} == forbidden, version
+
+
+def test_later_versions_keep_the_1_2_inputs() -> None:
+    """The 1.2 rule used to be `version == 1.2`: a 1.3 decision with a baseline must stay readable."""
+    decision = Decision.model_validate_json(
+        _with_inputs(
+            "1.3", waivers_digest=DIGEST, baseline_digest=DIGEST, tool_status_digest=DIGEST,
+            service_context_digest=DIGEST,
+        )
+    )  # fmt: skip
+    assert decision.inputs.baseline_digest == decision.inputs.service_context_digest == DIGEST
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("inputs", "sbom_digest"),
+        ("inputs", "baseline_digest"),
+        ("subject", "ref"),
+        ("subject", "image_digest"),
+    ],
+    ids=lambda p: ".".join(p),
+)
+def test_an_optional_field_is_absent_never_null(path: tuple[str, str]) -> None:
+    data = _load(FIXTURES / "valid" / "pass-pr-v1.3-with-service-context.json")
+    parent = dict(data[path[0]])  # type: ignore[call-overload]
+    parent[path[1]] = None
+    data[path[0]] = parent
+    with pytest.raises(ValidationError, match="not null"):
+        Decision.model_validate_json(json.dumps(data))
