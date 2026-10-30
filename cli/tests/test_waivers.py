@@ -17,6 +17,7 @@ from sentinelci.policy.waivers import load_waivers
 ROOT = Path(__file__).resolve().parents[2]
 POLICIES = ROOT / "policies"
 FIXTURES = ROOT / "schemas" / "fixtures" / "waivers"
+TOOLS_OK = (ROOT / "schemas" / "fixtures" / "tool-status" / "valid" / "all-ok.json").read_bytes()
 SECRET = json.loads(
     (ROOT / "schemas" / "fixtures" / "finding" / "valid" / "secret-in-config.json").read_text(
         encoding="utf-8"
@@ -107,6 +108,7 @@ def gate(opa_binary: Path, waivers: bytes | None, findings: bytes = b"") -> dict
         bundle=PolicyBundle.load(POLICIES),
         opa=OpaRunner(binary=opa_binary),
         waivers_data=waivers,
+        tool_status_data=TOOLS_OK,  # a complete PR pipeline (policies/required_tools.rego)
     )
 
 
@@ -134,7 +136,7 @@ def test_schema_invalid_waivers_are_blocked_by_sc005(path: Path, opa_binary: Pat
 def test_decision_records_the_digest_of_the_waivers_file_as_read(opa_binary: Path) -> None:
     data = VALID_WAIVERS_YAML.encode("utf-8")
     decision = gate(opa_binary, data)
-    assert decision["schema_version"] == "1.1"
+    assert decision["schema_version"] == "1.2"  # waivers_digest since 1.1; 1.2 because a tool status is given
     assert decision["inputs"]["waivers_digest"] == "sha256:" + hashlib.sha256(data).hexdigest()
 
 
