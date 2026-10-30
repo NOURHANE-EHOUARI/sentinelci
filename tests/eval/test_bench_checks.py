@@ -224,14 +224,25 @@ def test_a_patch_that_never_ends_is_stopped_and_its_container_removed(
 ) -> None:
     monkeypatch.setattr(BENCH, "SANDBOX_TIMEOUT_S", 3)
     endless = patch_of("while True:\n    pass\n" + BENCH.SQLI_FILE)
+    # Record the name of this check's own container: other runs on a shared daemon have sandboxes too.
+    names: list[str] = []
+    real_run = subprocess.run
+
+    def recording_run(args: Any, *rest: Any, **kwargs: Any) -> Any:
+        if isinstance(args, list) and args[1:2] == ["run"] and "--name" in args:
+            names.append(args[args.index("--name") + 1])
+        return real_run(args, *rest, **kwargs)
+
+    monkeypatch.setattr(BENCH.subprocess, "run", recording_run)
 
     problems = run("patch-sqli-python", {"diff": endless, "rationale": "x"})
 
     assert any("did not finish within 3 s" in p for p in problems), problems
+    assert len(names) == 1 and names[0].startswith("sentinel-bench-"), names
     docker = shutil.which("docker")
     assert docker is not None
-    left = subprocess.run(
-        [docker, "ps", "-aq", "--filter", "name=sentinel-bench-"], capture_output=True, text=True, check=True
+    left = real_run(
+        [docker, "ps", "-aq", "--filter", f"name=^/{names[0]}$"], capture_output=True, text=True, check=True
     )
     assert left.stdout.strip() == "", "no sandbox container may outlive the check"
 
