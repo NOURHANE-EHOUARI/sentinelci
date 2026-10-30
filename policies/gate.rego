@@ -304,9 +304,12 @@ counts(f) if {
 # A finding without a usable severity is treated as the worst of all.
 worst_case_priority := {"CRITICAL": "P0", "HIGH": "P0", "MEDIUM": "P2", "LOW": "P3", "INFO": "P4"}
 
+# A recorded priority counts only when the finding was scored with this bundle's risk model
+# (input.risk_model_version, from risk-model.yaml): findings scored elsewhere count at their worst case.
 scored_priority(f) := p if {
 	p := object.get(f, ["risk", "priority"], null)
 	p in {"P0", "P1", "P2", "P3", "P4"}
+	object.get(f, ["risk", "model_version"], null) == input.risk_model_version
 }
 
 priority(f) := scored_priority(f)
@@ -363,6 +366,10 @@ priority_ids[p] contains f.id if {
 }
 
 unscored_note(found) := " (unscored findings count at their worst-case priority)" if {
+	some f in input.findings
+	f.id in found
+	object.get(f, ["risk", "priority"], null) == null
+} else := " (findings scored with another risk model count at their worst-case priority)" if {
 	some f in input.findings
 	f.id in found
 	not scored_priority(f)

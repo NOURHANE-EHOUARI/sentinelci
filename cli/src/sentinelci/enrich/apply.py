@@ -16,6 +16,7 @@ exposure of the service and its components).
 - fix_available: true if the finding lists fixed versions or a matched OSV entry fixes its package; false only
   when a matched OSV entry exists and fixes none of it; absent otherwise. Package URLs are compared in their
   canonical form (PyPI names normalized as PEP 503 says), so a spelling difference never reads as "no fix".
+- reachability: from the static import analysis of the source trees (enrich/reachability.py), when given.
 """
 
 from __future__ import annotations
@@ -26,11 +27,12 @@ from collections.abc import Mapping
 from typing import Any
 
 from sentinelci.enrich.models import ServiceContext, Snapshot, Vulnerability
+from sentinelci.enrich.reachability import Reachability
 from sentinelci.normalize.fingerprint import purl_base
 
 PACKAGE_CATEGORIES = frozenset({"SCA", "CONTAINER"})
 _CVE = re.compile(r"CVE-[0-9]{4}-[0-9]{4,}")
-MANAGED = ("cvss", "epss", "kev", "fix_available", "exposure")
+MANAGED = ("cvss", "epss", "kev", "fix_available", "exposure", "reachability")
 
 
 def canonical_id(vuln_id: str) -> str:
@@ -141,9 +143,12 @@ def _exposure(finding: Mapping[str, Any], context: ServiceContext) -> str:
 
 
 def enrich_finding(
-    finding: Mapping[str, Any], snapshot: Snapshot, context: ServiceContext | None
+    finding: Mapping[str, Any],
+    snapshot: Snapshot,
+    context: ServiceContext | None,
+    reachability: Reachability | None = None,
 ) -> dict[str, Any]:
-    """Return a copy of the finding with the enrichment this snapshot and context support (idempotent)."""
+    """Return a copy of the finding with the enrichment these sources support (idempotent)."""
     result = copy.deepcopy(dict(finding))
     kept = (result.get("enrichment") or {}).items()  # a null field is absent, not an empty object
     enrichment = {k: v for k, v in kept if k not in MANAGED and v is not None}
@@ -151,6 +156,9 @@ def enrich_finding(
         enrichment.update(_package_enrichment(result, snapshot))
     if context is not None:
         enrichment["exposure"] = _exposure(result, context)
+    reached = reachability.classify(result) if reachability is not None else None
+    if reached is not None:
+        enrichment["reachability"] = reached
     if enrichment:
         result["enrichment"] = dict(sorted(enrichment.items()))
     else:

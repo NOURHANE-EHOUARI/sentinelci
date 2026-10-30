@@ -248,6 +248,8 @@ def evaluate(
         "context": subject.context,
         "findings": findings,
         "waivers": waivers,
+        # A finding's recorded priority counts only if it was scored with this bundle's risk model.
+        "risk_model_version": inputs["risk_model_version"],
     }
     if baseline is not None:
         gate_input["baseline"] = baseline
