@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "platform": "linux-amd64",
+  "lock_sha256": "1d2c3b4a1d2c3b4a1d2c3b4a1d2c3b4a1d2c3b4a1d2c3b4a1d2c3b4a1d2c3b4a",
+  "tools": {
+    "gitleaks": {
+      "version": "8.30.1",
+      "artifact_sha256": "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
+      "status": "integrity_mismatch",
+      "detail": "installed binary was modified (expected sha256 88f91962aa2f\u2026, got 97e9a4fea109\u2026)"
+    },
+    "opa": {
+      "version": "1.21.4",
+      "artifact_sha256": "2ab571f367f293bb19523b76f92f1945bbf245003392c7f392903f95c2b9b630",
+      "binary_sha256": "2ab571f367f293bb19523b76f92f1945bbf245003392c7f392903f95c2b9b630",
+      "status": "ok"
+    }
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/NOURHANE-EHOUARI/sentinelci/schemas/waivers.v1.json",
+  "title": "SentinelCI Waivers v1",
+  "description": "The waivers file `.sentinel/waivers.yaml` (YAML holding this JSON shape). Written by people through reviewed pull requests (the AI may only draft them), consumed by the release gate (B4). See docs/spec/SPEC.md section 6.4. The policy enforces the same rules as SC-005, plus two this schema cannot express: waiver ids are unique, and expiry is at most 90 days after the evaluation time.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "waivers"],
+  "properties": {
+    "version": { "const": 1 },
+    "waivers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/waiver" }
+    }
+  },
+  "$defs": {
+    "non_blank": { "description": "Free text with at least one non-space character; line breaks allowed (a YAML > or | block).", "type": "string", "pattern": "\\S" },
+    "waiver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "owner", "justification", "expires_at"],
+      "properties": {
+        "id": {
+          "description": "Unique within the file; recorded in decisions as waivers_applied.",
+          "type": "string",
+          "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        },
+        "finding_id": {
+          "description": "Waive one finding by its fingerprint.",
+          "type": "string",
+          "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[a-f0-9]{64}$"
+        },
+        "vulnerability": {
+          "description": "Waive a vulnerability (CVE, GHSA, OSV id...) in one package, whatever its version. Matched against the finding's rule_id, cve and aliases.",
+          "$ref": "#/$defs/non_blank"
+        },
+        "purl": {
+          "description": "Package URL without version, qualifiers or subpath: no '@' in the last path segment (a scope such as %40types or @types/ before it is fine).",
+          "type": "string",
+          "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])pkg:[a-z0-9.+-]+/(?=[^?#])(?:[^?#]*/)?[^?#/@]*$"
+        },
+        "owner": { "description": "Who answers for this waiver.", "$ref": "#/$defs/non_blank" },
+        "justification": { "description": "Why the risk is accepted.", "$ref": "#/$defs/non_blank" },
+        "expires_at": {
+          "description": "RFC 3339 date-time. The waiver stops applying at this instant.",
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "oneOf": [
+        { "required": ["finding_id"], "not": { "anyOf": [{ "required": ["vulnerability"] }, { "required": ["purl"] }] } },
+        { "required": ["vulnerability", "purl"], "not": { "required": ["finding_id"] } }
+      ]
+    }
+  }
+}

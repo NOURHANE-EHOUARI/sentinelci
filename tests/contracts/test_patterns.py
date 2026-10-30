@@ -21,6 +21,10 @@ ROOT = Path(__file__).resolve().parents[2]
 SCHEMAS = ROOT / "schemas"
 FIXTURES = SCHEMAS / "fixtures"
 LINE_BREAK_GUARD = r"^(?![^\r\n\u2028\u2029]*[\r\n\u2028\u2029])"
+# The one exemption: free text (waiver owner, justification), where a YAML `>` or `|` block ends in a line
+# break. `\S` only asks for one non-space character anywhere, so neither `$` nor `.` is involved and both
+# engines still agree; the probes below check that line-break variants are accepted by both.
+FREE_TEXT = frozenset({r"\S"})
 BREAKS = ("\n", "\r", "\r\n", "\u2028", "\u2029")
 
 
@@ -46,7 +50,7 @@ ALL_PATTERNS = sorted(
 )
 
 
-@pytest.mark.parametrize("pattern", ALL_PATTERNS)
+@pytest.mark.parametrize("pattern", sorted(set(ALL_PATTERNS) - FREE_TEXT))
 def test_every_pattern_starts_with_the_line_break_guard(pattern: str) -> None:
     assert pattern.startswith(LINE_BREAK_GUARD), f"add LINE_BREAK_GUARD after '^': {pattern}"
 
@@ -79,15 +83,25 @@ def test_every_pattern_is_exercised_by_a_valid_fixture() -> None:
     assert set(ALL_PATTERNS) <= set(MATCHED)
 
 
+def test_the_free_text_exemption_stays_narrow() -> None:
+    """Only `\\S` is exempt, and only the waivers' free-text fields use it."""
+    assert {r"\S"} == FREE_TEXT
+    users = sorted(
+        f.name for f in schema_files() if r"\S" in set(patterns_of(json.loads(f.read_text(encoding="utf-8"))))
+    )
+    assert users == ["waivers.v1.json"]
+
+
 def probes() -> list[tuple[str, str, bool]]:
     """(pattern, string, expected): each accepted value, and line-break variants that must be rejected."""
     cases = []
     for pattern, values in sorted(MATCHED.items()):
         value = sorted(values)[0]
         cases.append((pattern, value, True))
+        allowed = pattern in FREE_TEXT  # free text may hold line breaks; every other pattern refuses them
         for brk in BREAKS:
-            cases += [(pattern, value + brk, False), (pattern, brk + value, False)]
-            cases.append((pattern, value[: len(value) // 2] + brk + value[len(value) // 2 :], False))
+            cases += [(pattern, value + brk, allowed), (pattern, brk + value, allowed)]
+            cases.append((pattern, value[: len(value) // 2] + brk + value[len(value) // 2 :], allowed))
     return cases
 
 
@@ -108,7 +122,7 @@ def test_ecma_engine_agrees() -> None:
         "const cases = JSON.parse(require('fs').readFileSync(0, 'utf8'));"
         "process.stdout.write(JSON.stringify(cases.map(([p, s]) => new RegExp(p, 'u').test(s))));"
     )
-    result = subprocess.run(  # noqa: S603 - fixed arguments, node resolved from PATH, probes via stdin
+    result = subprocess.run(
         [node, "-e", script],
         input=json.dumps([[p, s] for p, s, _ in PROBES]),
         capture_output=True,
