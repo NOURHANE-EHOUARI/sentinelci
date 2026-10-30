@@ -11,7 +11,7 @@
   ],
   "properties": {
     "schema_version": {
-      "description": "Minor versions only add; older documents stay valid. 1.1 adds inputs.waivers_digest (required from 1.1). 1.2 adds inputs.baseline_digest and inputs.tool_status_digest (each present when that input was given). 1.3 adds inputs.service_context_digest (required from 1.3: the sentinel.yaml the decision depended on). 1.4 adds inputs.vex_digest and vex_applied (required from 1.4: the OpenVEX statements and the package findings their not_affected statements covered).",
+      "description": "Minor versions only add; older documents stay valid. 1.1 adds inputs.waivers_digest (required from 1.1). 1.2 adds inputs.baseline_digest and inputs.tool_status_digest (each present when that input was given). 1.3 adds inputs.service_context_digest (required in 1.3: the sentinel.yaml the decision depended on; from 1.4, present when given). 1.4 adds inputs.vex_digest and vex_applied (required from 1.4: the OpenVEX statements and the package findings their not_affected statements covered).",
       "enum": ["1.0", "1.1", "1.2", "1.3", "1.4"]
     },
     "decision_id": { "type": "string", "format": "uuid" },
