@@ -823,7 +823,7 @@ def scan_iac_cmd(
     """Scan infrastructure as code with the verified Trivy binary (`trivy config`), offline."""
     _clear(out, tool_status_out)
     root = repo_root or target
-    remote = remote_modules(target) if target.is_dir() else []
+    remote = remote_modules(target, root) if target.is_dir() else []
     if remote:  # not fetched, so not evaluated: say so in the job log
         typer.echo(
             f"warning: {len(remote)} remote Terraform module(s) not fetched or evaluated: "

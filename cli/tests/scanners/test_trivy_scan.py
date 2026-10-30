@@ -27,6 +27,7 @@ from sentinelci.scanners.trivy import (
     check_outside_reads,
     escaping_links,
     inline_ignores,
+    outside_terraform_ignores,
     remote_modules,
     scan_iac_with_run,
 )
@@ -192,6 +193,12 @@ def test_the_marker_check_matches_what_trivy_reads(tmp_path: Path) -> None:
         ("Dockerfile", True),
         ("Dockerfile.prod", True),
         ("api.dockerfile", True),
+        # Trivy reads these as Dockerfiles by name, whatever the extension (review of #26, repro D1).
+        ("Dockerfile.txt", True),
+        ("Dockerfile.sh", True),
+        ("Containerfile.md", True),
+        ("dockerfile.py", True),
+        ("api.Containerfile", True),
         ("template", True),  # no extension: checked
         ("tfplan.bin", True),  # unknown type: checked
         ("scanner.py", False),
@@ -246,6 +253,112 @@ def test_what_trivy_read_outside_the_scan_path_is_checked(tmp_path: Path) -> Non
         )
     with pytest.raises(ScannerError, match="outside the repository"):
         check_outside_reads([{"Target": "../../etc/passwd"}], repo, "demo-shop")
+
+
+def _module_chain(repo: Path, *, ignore: bool) -> None:
+    """Review of #26, repro N1: the scan tree calls ../moda, which calls ../modb under a module ignore."""
+    for name in ("demo-shop", "moda", "modb"):
+        (repo / name).mkdir(parents=True)
+    (repo / "demo-shop" / "main.tf").write_text('module "a" { source = "../moda" }\n')
+    marker = "#trivy:ignore:*\n" if ignore else ""
+    (repo / "moda" / "main.tf").write_text(f'{marker}module "b" {{\n  source = "../modb"\n}}\n')
+    (repo / "modb" / "main.tf").write_text(PUBLIC_ACL)
+
+
+def test_a_module_level_ignore_outside_the_scan_path_is_refused_before_the_run(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
+) -> None:
+    # moda has no resource, so Trivy never reports it: only a check before the run can see its ignore.
+    dest, argv_file, _ = fake_trivy(tmp_path, releases, write_lock)
+    repo = tmp_path / "repo"
+    _module_chain(repo, ignore=True)
+    assert outside_terraform_ignores(repo / "demo-shop", repo) == ["moda/main.tf"]
+    with pytest.raises(ScannerError, match=r"outside the scan path, in Terraform files .* \(moda/main\.tf\)"):
+        scan_iac_with_run(
+            repo / "demo-shop",
+            lock=load_lock(tmp_path / "tools.lock.toml"),
+            tools_dir=dest,
+            repo_root=repo,
+            platform=PLATFORM,
+        )
+    assert not argv_file.exists(), "the scanner must not even start"
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        ("main.tf", 'module "a" { source = "../moda" }\n'),
+        ("main.tf", 'module /* a comment */ "a" {\n  source = "\\u002e\\u002e/moda"\n}\n'),  # HCL escapes
+        ("main.tf.json", '{"module": {"a": {"source": "../moda"}}}'),
+        ("main.tf.json", '{"\\u006dodule": {"a": {"source": "../moda"}}}'),  # an escaped JSON key
+        ("main.tf.json", '{"module": '),  # unparsable here: assume the worst
+    ],
+    ids=["hcl", "hcl-escaped-source", "json", "json-escaped-key", "json-unparsable"],
+)
+def test_any_module_in_the_scan_tree_makes_the_repository_terraform_checked(
+    tmp_path: Path, name: str, text: str
+) -> None:
+    repo = tmp_path / "repo"
+    _module_chain(repo, ignore=True)
+    (repo / "demo-shop" / "main.tf").unlink()
+    (repo / "demo-shop" / name).write_text(text)
+    assert outside_terraform_ignores(repo / "demo-shop", repo) == ["moda/main.tf"]
+
+
+def test_without_modules_or_outside_the_scan_tree_nothing_else_is_checked(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _module_chain(repo, ignore=True)
+    (repo / "demo-shop" / "main.tf").write_text('resource "aws_s3_bucket" "b" {}\n')  # no module any more
+    assert outside_terraform_ignores(repo / "demo-shop", repo) == []
+    (repo / "demo-shop" / "main.tf").write_text('module "a" { source = "../moda" }\n')
+    assert outside_terraform_ignores(repo, repo) == [], (
+        "the whole repository is the scan tree: checked already"
+    )
+    (repo / ".git").mkdir()
+    (repo / ".git" / "old.tf").write_text("#trivy:ignore:*\n")  # Trivy never reads .git
+    assert outside_terraform_ignores(repo / "demo-shop", repo) == ["moda/main.tf"]
+
+
+def test_linked_terraform_files_outside_the_scan_tree_are_checked_through_their_target(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _module_chain(repo, ignore=False)
+    (repo / "docs").mkdir()
+    (repo / "docs" / "notes.md").write_text(
+        "#trivy:ignore:*\n"
+    )  # skipped by name, but loaded through the link
+    (repo / "modb" / "extra.tf").symlink_to(repo / "docs" / "notes.md")
+    assert outside_terraform_ignores(repo / "demo-shop", repo) == ["modb/extra.tf"]
+    (repo / "modb" / "extra.tf").unlink()
+    (tmp_path / "elsewhere.tf").write_text('resource "aws_s3_bucket" "c" {}\n')
+    (repo / "modb" / "extra.tf").symlink_to(tmp_path / "elsewhere.tf")
+    with pytest.raises(ScannerError, match=r"modb/extra\.tf links outside the repository"):
+        outside_terraform_ignores(repo / "demo-shop", repo)
+
+
+def test_remote_modules_are_listed_through_local_modules(tmp_path: Path) -> None:
+    # Review of #26, nit R1: a remote module inside ../mod, and module sources in .tf.json files.
+    repo = tmp_path / "repo"
+    for name in ("demo-shop", "mod", "mod/nested"):
+        (repo / name).mkdir(parents=True)
+    (repo / "demo-shop" / "main.tf").write_text('module "a" { source = "../mod" }\n')
+    (repo / "demo-shop" / "more.tf.json").write_text(
+        json.dumps({"module": [{"k": {"source": "git::https://example.invalid/k.git"}}]})
+    )
+    (repo / "mod" / "main.tf").write_text(
+        'module "r" {\n  source = "git::https://example.invalid/r.git"\n}\n'
+        'module "n" {\n  source = "./nested"\n}\nmodule "back" {\n  source = "../demo-shop"\n}\n'
+    )
+    (repo / "mod" / "nested" / "main.tf.json").write_text(
+        json.dumps({"module": {"j": {"source": "registry.example/ns/j/aws"}}})
+    )
+    assert remote_modules(repo / "demo-shop", repo) == [
+        "git::https://example.invalid/k.git",
+        "git::https://example.invalid/r.git",
+        "registry.example/ns/j/aws",
+    ]
+    assert remote_modules(repo / "demo-shop") == ["git::https://example.invalid/k.git"], "scan tree only"
 
 
 def test_remote_modules_are_listed(tmp_path: Path) -> None:
@@ -469,7 +582,49 @@ def test_real_trivy_ignores_in_a_module_outside_the_scan_path_fail_closed(tmp_pa
 
     (repo / "demo-shop" / "main.tf").write_text('module "m" {\n  source = "../mod"\n}\n')
     (repo / "mod" / "main.tf").write_text(PUBLIC_ACL.replace("resource ", "#trivy:ignore:*\nresource "))
-    with pytest.raises(ScannerError, match=r"in a module outside the scan path \(mod/main.tf\)"):
+    with pytest.raises(ScannerError, match=r"outside the scan path.* \(mod/main.tf\)"):
         scan_iac_with_run(
             repo / "demo-shop", lock=load_lock(REPO_LOCK), tools_dir=Path(str(TOOLS_DIR)), repo_root=repo
         )
+
+
+@real
+@pytest.mark.integration
+def test_real_trivy_module_level_ignore_in_an_outside_module_fails_closed(tmp_path: Path) -> None:
+    # Review of #26, repro N1: with the real Trivy, the ignore above `module "b"` in ../moda silenced modb.
+    control = tmp_path / "control"
+    _module_chain(control, ignore=False)
+    results, run = scan_iac_with_run(
+        control / "demo-shop", lock=load_lock(REPO_LOCK), tools_dir=Path(str(TOOLS_DIR)), repo_root=control
+    )
+    findings = normalize_trivy_config(
+        results,
+        run=Run(repo="o/r", commit=COMMIT, context="pr"),
+        tool=Tool(name="trivy", version=run.version),
+        scan_root="demo-shop",
+    )
+    assert ("modb/main.tf", "AWS-0086") in {(f.location.path, f.rule_id) for f in findings if f.location}
+
+    repo = tmp_path / "repo"
+    _module_chain(repo, ignore=True)
+    with pytest.raises(ScannerError, match=r"\(moda/main\.tf\)"):
+        scan_iac_with_run(
+            repo / "demo-shop", lock=load_lock(REPO_LOCK), tools_dir=Path(str(TOOLS_DIR)), repo_root=repo
+        )
+
+
+DOCKERFILE = "FROM ubuntu:latest\nRUN apt-get update && apt-get install -y curl\nUSER root\nEXPOSE 22\n"
+
+
+@real
+@pytest.mark.integration
+@pytest.mark.parametrize("name", ["Dockerfile.txt", "Dockerfile.sh", "Containerfile.md"])
+def test_real_trivy_reads_dockerfiles_by_name_so_their_ignores_are_refused(tmp_path: Path, name: str) -> None:
+    # Review of #26, repro D1: Trivy parses these as Dockerfiles, so the marker check must not skip them.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / name).write_text(DOCKERFILE)
+    assert {rule for _, rule in _real_ids(repo)} >= {"DS-0002"}, "control: Trivy reads the file"
+    (repo / name).write_text("".join(f"# trivy:ignore:*\n{line}\n" for line in DOCKERFILE.splitlines()))
+    with pytest.raises(ScannerError, match=rf"in the scanned tree \({name}\)"):
+        _real_ids(repo)
