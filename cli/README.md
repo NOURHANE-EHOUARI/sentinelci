@@ -52,7 +52,8 @@ uv run sentinel snapshot --findings out/findings.ndjson --out out/enrichment-sna
 
 ```bash
 uv run sentinel enrich --findings out/findings.ndjson --snapshot out/enrichment-snapshot.json \
-  --config sentinel.yaml --out out/findings.enriched.ndjson
+  --config sentinel.yaml --source . --out out/findings.enriched.ndjson
+# PR mode: --source <base checkout> --source <head checkout>
 ```
 
 - Offline: applies an enrichment snapshot (`schemas/enrichment-snapshot.v1.json`) and the service context
@@ -67,6 +68,20 @@ uv run sentinel enrich --findings out/findings.ndjson --snapshot out/enrichment-
 - Unknown stays absent; the risk engine treats absent as the worst case. Without `--snapshot` or `--config`,
   nothing from that source is added.
 - Read `sentinel.yaml` from the base branch in PR mode: a change must not lower its own exposure.
+- `--source DIR` (repeatable) adds `reachability: imported` to PyPI and npm SCA findings by static import analysis
+  (`enrich/reachability.py`). The tree is only read: nothing in it is run, imported or installed, and symlinks
+  are never followed.
+  - `imported`: first-party code imports the package (Python AST; JS/TS `import`, `export ... from`, literal
+    `require()` and `import()`, comments ignored), or an imported package depends on it at runtime (uv.lock,
+    poetry.lock, package-lock.json v2/v3, pip-compile `# via` annotations; optional and peer dependencies are
+    not followed).
+  - Nothing otherwise, which the risk engine counts as the worst case. `not_imported` and `unknown` are not
+    claimed: a library can load a package itself through an optional dependency the lockfile does not record.
+  - No answer for CONTAINER findings, `MAL-` advisories or npm packages with install scripts.
+  - With several trees `imported` must hold in all of them: in PR mode pass the base and the head, so a change
+    cannot lower the score of its own dependencies by adding an import.
+  - Files that cannot be read or parsed, are too large, or hold a dotted name of 64 parts or more are skipped
+    (fixed limits, no clock: the same tree always gives the same answer).
 - `kev: {listed: false}` only for CVEs the snapshot's KEV lookup covered (`sources.kev.cves`); otherwise KEV stays
   unknown. Package URLs are compared in canonical form (PyPI names per PEP 503).
 - `sentinel.yaml` is read with a restricted YAML loader: no duplicate keys, merge keys (`<<`), anchors, aliases,

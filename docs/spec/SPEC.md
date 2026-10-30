@@ -241,6 +241,16 @@ scalars, lists and mappings, and is limited to 64 KiB; component paths are canon
 where a change puts its files decides their path-scoped exposure (a file under an `offline` component is scored
 as offline), so changes to `sentinel.yaml` and new top-level directories deserve a reviewer's eye.
 
+Reachability (B2, `sentinel enrich --source`): static import analysis of the scanned tree for PyPI and npm SCA
+findings, never executing it. `imported` when first-party code imports the package, or when a lockfile shows that
+an imported package depends on it at runtime; nothing otherwise (the worst case, R = 1.0). `not_imported` is not
+claimed: libraries load packages themselves (FastAPI templates load jinja2, PyJWT's RS256 loads cryptography)
+through optional dependencies a lockfile does not record, so it needs per-library evidence first. CONTAINER
+findings, `MAL-` advisories and npm packages with install scripts get no answer. In PR mode the base and the head
+are both analysed and `imported` must hold in both, so a change cannot lower its own score by adding an import.
+`reachable` would need call-graph analysis, a stretch goal (§16). Residual risk: a deliberately written import that
+nothing uses gives `imported` (R 0.9 instead of 1.0); a missed import only leaves the worst case.
+
 ### 6.2 Risk model
 
 `risk = 100 × S × E × X × R` clamped to [0, 100]. For CVEs: `E = 1.0` if KEV-listed else
