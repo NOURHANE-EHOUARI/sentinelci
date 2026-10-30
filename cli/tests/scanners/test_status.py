@@ -200,3 +200,43 @@ def test_cli_writes_no_status_without_a_lock(tmp_path: Path) -> None:
 
     assert result.exit_code == 3
     assert not status.exists() and not out.exists()
+
+
+def test_cli_passes_its_time_limit_to_the_scanner(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sentinelci.cli as cli
+
+    seen: dict[str, object] = {}
+    real = cli.scan_secrets_with_run
+
+    def spy(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        seen.update(kwargs)
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(cli, "scan_secrets_with_run", spy)
+    _, dest, _, _ = fake_gitleaks(tmp_path, releases, write_lock)
+    _scan(tmp_path, dest)
+    assert seen["timeout_s"] == 900, "default: the runner's DEFAULT_TIMEOUT_S"
+    repo = tmp_path / "repo"
+    result = CliRunner().invoke(
+        app,
+        [
+            "scan", "secrets", str(repo), "--out", str(tmp_path / "o.ndjson"),
+            "--repo", "o/r", "--commit", COMMIT, "--context", "pr",
+            "--lock", str(tmp_path / "tools.lock.toml"), "--tools-dir", str(dest),
+            "--platform", PLATFORM, "--timeout", "300",
+        ],
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert seen["timeout_s"] == 300
+
+
+@pytest.mark.parametrize("value", ["10", "0", "99999"])
+def test_cli_refuses_a_time_limit_out_of_range(value: str) -> None:
+    result = CliRunner().invoke(
+        app,
+        ["scan", "secrets", ".", "--out", "o", "--repo", "o/r", "--commit", COMMIT, "--context", "pr",
+         "--timeout", value],
+    )  # fmt: skip
+    assert result.exit_code == 2
