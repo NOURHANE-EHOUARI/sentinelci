@@ -623,3 +623,26 @@ def test_cli_enrich_fails_closed_on_a_missing_source(tmp_path: Path) -> None:
     )
     assert result.exit_code == 3
     assert not out.exists()
+
+
+def test_a_conditional_dependency_is_not_an_edge(tmp_path: Path) -> None:
+    """colorama is a dependency of pytest only on Windows: on Linux it is not even installed."""
+    lock = uv_lock(
+        ("pytest", ["iniconfig"]), ("iniconfig", []), ("colorama", []), project=["pytest"]
+    ).replace(
+        '    { name = "iniconfig" },\n',
+        '    { name = "iniconfig" },\n    { name = "colorama", marker = "sys_platform == \'win32\'" },\n',
+        1,
+    )
+    poetry = (
+        '[[package]]\nname = "click"\nversion = "8.0"\n\n[package.dependencies]\n'
+        'colorama = {version = "*", markers = "platform_system == \\"Windows\\""}\nsix = "*"\n\n'
+        '[[package]]\nname = "colorama"\nversion = "0.4"\n\n[[package]]\nname = "six"\nversion = "1.16"\n'
+    )
+    assert 'colorama", marker' in lock.split('[[package]]\nname = "pytest"')[1], "the marker is on pytest's own edge"
+    uv_repo = tree(tmp_path / "uv", {"uv.lock": lock, "app/main.py": "import pytest\n"})
+    assert classify(uv_repo, "pkg:pypi/iniconfig@2.0") == "imported"
+    assert classify(uv_repo, "pkg:pypi/colorama@0.4") is None
+    poetry_repo = tree(tmp_path / "poetry", {"poetry.lock": poetry, "app/main.py": "import click\n"})
+    assert classify(poetry_repo, "pkg:pypi/six@1.16") == "imported"
+    assert classify(poetry_repo, "pkg:pypi/colorama@0.4") is None

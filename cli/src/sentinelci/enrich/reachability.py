@@ -286,8 +286,13 @@ def _python_lock(lock: dict[str, Any], tree: _Tree, *, uv: bool) -> None:
             continue  # first-party: its imports are read from its source
         name = normalize_pypi(str(package["name"]))
         tree.packages["pypi"].add(name)
-        dependencies = package.get("dependencies") or ([] if uv else {})
-        names = [d["name"] for d in dependencies] if uv else list(dependencies)
+        # An edge with an environment marker (colorama only on Windows) may not even be installed: skipped.
+        names: list[Any]
+        if uv:
+            names = [d["name"] for d in package.get("dependencies") or [] if "marker" not in d]
+        else:
+            specs = package.get("dependencies") or {}
+            names = [n for n, s in specs.items() if not (isinstance(s, dict) and "markers" in s)]
         tree.edges["pypi"].setdefault(name, set()).update(normalize_pypi(str(d)) for d in names)
 
 
