@@ -544,6 +544,67 @@ def test_output_may_not_be_the_default_waivers_file(
     assert waivers.read_text(encoding="utf-8") == "version: 1\nwaivers: []\n"
 
 
+@pytest.mark.parametrize("name", ["risk-model.yaml", "gate.rego", "not-yet-there.json"])
+def test_output_may_not_be_inside_the_policy_dir(tmp_path: Path, opa_binary: Path, name: str) -> None:
+    """#22 review: `--output policies/risk-model.yaml` deleted the risk model before exit 3."""
+    policies = tmp_path / "policies"
+    shutil.copytree(POLICIES, policies)
+    before = {p: p.read_bytes() for p in policies.rglob("*") if p.is_file()}
+    code, out, _ = run_evaluate(
+        tmp_path / "run", b"", "--opa", str(opa_binary), "--policy-dir", str(policies),
+        "--output", str(policies / name),
+    )  # fmt: skip
+    assert code == 3, out
+    assert "--policy-dir" in out
+    assert {p: p.read_bytes() for p in policies.rglob("*") if p.is_file()} == before, (
+        "the bundle is untouched"
+    )
+
+
+def test_output_may_not_be_inside_the_store(tmp_path: Path, opa_binary: Path) -> None:
+    store = tmp_path / "store"
+    code, out, _ = run_evaluate(tmp_path / "first", b"", "--opa", str(opa_binary), "--store", str(store))
+    assert code == 0, out
+    before = {p: p.read_bytes() for p in store.rglob("*") if p.is_file()}
+    victim = next(p for p in sorted(before) if p.parent.name == "decisions")
+
+    code, out, _ = run_evaluate(
+        tmp_path / "second", b"", "--opa", str(opa_binary), "--store", str(store), "--output", str(victim)
+    )
+
+    assert code == 3, out
+    assert "--store" in out
+    assert {p: p.read_bytes() for p in store.rglob("*") if p.is_file()} == before, "the store is untouched"
+
+
+def test_output_may_not_be_the_opa_binary(tmp_path: Path, opa_binary: Path) -> None:
+    opa = tmp_path / "bin" / opa_binary.name
+    opa.parent.mkdir(parents=True)
+    shutil.copy2(opa_binary, opa)
+    code, out, _ = run_evaluate(tmp_path / "run", b"", "--opa", str(opa), "--output", str(opa))
+    assert code == 3, out
+    assert opa.read_bytes() == opa_binary.read_bytes()
+
+
+def test_output_next_to_the_policy_dir_is_allowed(tmp_path: Path, opa_binary: Path) -> None:
+    """Only paths inside the bundle are refused, not a sibling whose name starts the same way."""
+    policies = tmp_path / "policies"
+    shutil.copytree(POLICIES, policies)
+    output = tmp_path / "policies-out" / "decision.v1.json"
+    code, out, _ = run_evaluate(
+        tmp_path / "run",
+        b"",
+        "--opa",
+        str(opa_binary),
+        "--policy-dir",
+        str(policies),
+        "--output",
+        str(output),
+    )
+    assert code == 0, out
+    assert output.is_file()
+
+
 SCORED_SCA = json.loads((FINDING_FIXTURES / "sca-enriched-and-scored.json").read_text(encoding="utf-8"))
 
 
