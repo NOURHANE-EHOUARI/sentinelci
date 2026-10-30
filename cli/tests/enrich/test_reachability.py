@@ -639,7 +639,8 @@ def test_a_conditional_dependency_is_not_an_edge(tmp_path: Path) -> None:
         'colorama = {version = "*", markers = "platform_system == \\"Windows\\""}\nsix = "*"\n\n'
         '[[package]]\nname = "colorama"\nversion = "0.4"\n\n[[package]]\nname = "six"\nversion = "1.16"\n'
     )
-    assert 'colorama", marker' in lock.split('[[package]]\nname = "pytest"')[1], "the marker is on pytest's own edge"
+    pytest_entry = lock.split('[[package]]\nname = "pytest"')[1]
+    assert 'colorama", marker' in pytest_entry, "the marker is on pytest's own edge"
     uv_repo = tree(tmp_path / "uv", {"uv.lock": lock, "app/main.py": "import pytest\n"})
     assert classify(uv_repo, "pkg:pypi/iniconfig@2.0") == "imported"
     assert classify(uv_repo, "pkg:pypi/colorama@0.4") is None
