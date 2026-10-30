@@ -11,7 +11,7 @@
 | Version | Change |
 |---|---|
 | 1.1.7 | A1c IaC scanning (§5): `sentinel scan iac` runs the pinned Trivy (`trivy config`) offline, with repository configuration, ignore files and remote modules neutralized and inline ignore comments refused (SC-010); findings are category IAC with the §13.1 config fingerprint. `sentinel scan combine` merges the scanners' findings and tool statuses for the gate; `sentinel-scan.yml` runs both scanners on the head and, in pull requests, on the base tree as the baseline. |
-| 1.1.6 | A3b evidence (§5, §6.5): every scan writes a tool status (`sentinel scan secrets --tool-status-out`), so a failed, timed-out or tampered scanner becomes a recorded BLOCK (SC-010) instead of a bare red job. PR mode scans the base commit's tree as the baseline. The gate stores its evidence (`--store`), uploaded as the `sentinel-evidence` artifact; the PR comment names it in its replay line and shows "N new" only for the baseline the gate used. The nightly replay also replays the last release decisions of `demo-shop.yml` on main. |
+| 1.1.6 | A3b evidence (§5, §6.5): every scan writes a tool status (`sentinel scan secrets --tool-status-out`), so a failed, timed-out or tampered scanner becomes a recorded BLOCK (SC-010) instead of a bare red job. PR mode scans the base commit's tree as the baseline. The gate stores its evidence (`--store`), uploaded as the `sentinel-evidence` artifact; the PR comment names it in its replay line and shows "N new" only for the baseline the gate used. The nightly replay also replays the last release decisions of `demo-shop.yml` on main. The gate scores findings with the base risk model before deciding, and every scanner run has a time limit the scan job outlives. |
 | 1.1.5 | A9 first seeds (§17): 5 fake secrets, 6 IaC, 3 CI-workflow seeds and 4 clean controls in `demo-shop/`, with a draft ground-truth format (`demo-shop/ground-truth/`, final schema owned by B9) checked against the pinned Gitleaks, Trivy and zizmor. SentinelCI's Trivy configuration trusts only the kind registry for KSV0125. |
 | 1.1.4 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
 | 1.1.3 | Scanner hardening (§5): verify-before-exec, minimal child environment, scanner configuration owned by SentinelCI; repository-controlled suppressions are neutralized or refused (Gitleaks: `.gitleaks.toml`, `gitleaks:allow`, `.gitleaksignore`, and `.gitattributes` `-diff`/`binary` in git mode); merge commits scanned with `--diff-merges=remerge` plus a `first-parent` pass for octopus merges (evil merges), archives opened in dir mode. |
@@ -200,7 +200,12 @@ counts (the strict side). The PR comment shows "N new" only when the gate used t
 `inputs.baseline_digest`), with the gate's own definition of new.
 **Scanner failures** (any mode): each scanner writes a tool status (`schemas/tool-status.v1.json`) on success and
 on failure, and the scan job keeps going, so a failed, timed-out or tampered scanner becomes a recorded BLOCK
-(SC-010) with its reason. A missing tool status is SC-010 too.
+(SC-010) with its reason. A missing tool status is SC-010 too. Each scanner run has a time limit
+(`--timeout`, 300 s in `sentinel-scan.yml`), and the scan job's own limit outlives the sum of its runs, so a slow
+scanner ends as a recorded `timeout`, not as a killed job.
+**Scoring:** the gate job scores the findings with the base commit's risk model (`sentinel score`, §6.2) before
+`sentinel evaluate`; the decision records, and the PR comment shows, the scored findings. A scoring failure
+means no decision (exit 3).
 **Release mode:** full evaluation, then signing. In this single repo, `demo-shop/` is scanned by its own workflow
 calling `$/.github/workflows/sentinel-scan.yml` (GitHub's self-repository syntax: the workflow at the running
 commit); the self-scan of SentinelCI excludes `demo-shop/`.

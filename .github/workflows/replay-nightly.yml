@@ -111,9 +111,18 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           for run in $runs; do
             store="$RUNNER_TEMP/releases/$run"
-            if ! gh run download "$run" --repo "$REPO" --name sentinel-evidence --dir "$store" > /dev/null 2>&1; then
+            # Only a missing or expired artifact is a normal skip; one that exists but cannot be downloaded fails.
+            available=$(gh api "repos/$REPO/actions/runs/$run/artifacts?name=sentinel-evidence" \
+              --jq '[.artifacts[] | select(.expired == false)] | length') || available=error
+            if [ "$available" = 0 ]; then
               echo "run $run: no sentinel-evidence artifact (expired, or no decision was made)" \
                 | tee -a "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            if [ "$available" = error ] \
+              || ! gh run download "$run" --repo "$REPO" --name sentinel-evidence --dir "$store" > /dev/null 2>&1; then
+              echo "run $run: sentinel-evidence could not be listed or downloaded" | tee -a "$GITHUB_STEP_SUMMARY"
+              failed=1
               continue
             fi
             code=0

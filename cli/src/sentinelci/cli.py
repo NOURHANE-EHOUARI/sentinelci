@@ -51,7 +51,7 @@ from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
 from sentinelci.scanners.installer import VerificationReport, detect_platform, install_tools, verify_tools
 from sentinelci.scanners.lock import LOCK_FILE_NAME, ToolLock, load_lock
-from sentinelci.scanners.runner import ToolRun
+from sentinelci.scanners.runner import DEFAULT_TIMEOUT_S, ToolRun
 from sentinelci.scanners.status import (
     outcome_from_error,
     outcome_from_run,
@@ -85,6 +85,16 @@ app.add_typer(report_app, name="report")
 
 LockOption = Annotated[Path, typer.Option("--lock", help="Path to the tool lock file.")]
 DestOption = Annotated[Path, typer.Option("--dest", help="Installation directory (bin/ and cache/).")]
+ScanTimeoutOption = Annotated[
+    int,
+    typer.Option(
+        "--timeout",
+        min=30,
+        max=3600,
+        help="Time limit of one scanner run, in seconds (Gitleaks git mode runs twice). A scanner that "
+        "outlives it is recorded as `timeout` (SC-010).",
+    ),
+]
 PlatformOption = Annotated[
     str | None, typer.Option("--platform", help="Override platform detection, e.g. linux-amd64.")
 ]
@@ -586,6 +596,7 @@ def scan_secrets_cmd(
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
     ] = (DEFAULT_TOOLS_DIR),
     platform: PlatformOption = None,
+    timeout: ScanTimeoutOption = DEFAULT_TIMEOUT_S,
     tool_status_out: Annotated[
         Path | None,
         typer.Option(
@@ -610,6 +621,7 @@ def scan_secrets_cmd(
             platform=platform,
             mode=scan_mode,
             log_opts=log_opts,
+            timeout_s=timeout,
         )
         findings = normalize_gitleaks(
             raw,
@@ -641,6 +653,7 @@ def scan_iac_cmd(
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
     ] = (DEFAULT_TOOLS_DIR),
     platform: PlatformOption = None,
+    timeout: ScanTimeoutOption = DEFAULT_TIMEOUT_S,
     tool_status_out: Annotated[
         Path | None,
         typer.Option(
@@ -655,7 +668,7 @@ def scan_iac_cmd(
 
     def scan(tool_lock: ToolLock) -> tuple[list[Finding], ToolRun]:
         results, tool_run = scan_iac_with_run(
-            target, lock=tool_lock, tools_dir=tools_dir, repo_root=root, platform=platform
+            target, lock=tool_lock, tools_dir=tools_dir, repo_root=root, platform=platform, timeout_s=timeout
         )
         findings = normalize_trivy_config(
             results,

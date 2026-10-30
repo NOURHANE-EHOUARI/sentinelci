@@ -36,12 +36,16 @@ permissions: {}
 env:
   UV_VERSION: "0.11.32"
   PYTHON_VERSION: "3.12"
+  # Time limit of one scanner run. The scan job's timeout-minutes must outlive every run it may make (a git-mode
+  # Gitleaks scan runs twice), so a slow scanner is recorded as `timeout` (SC-010) instead of a killed job.
+  # tests/ci/test_workflows.py checks the sum.
+  SCANNER_TIMEOUT_S: "300"
 
 jobs:
   scan:
     name: scan (no secrets, read-only)
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 40
     permissions:
       contents: read # check out the pipeline and the change to scan; nothing else
     steps:
@@ -142,7 +146,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/scan"
           common=(
             --out "$RUNNER_TEMP/scan/secrets.ndjson"
-            --tool-status-out "$RUNNER_TEMP/scan/secrets-status.json"
+            --tool-status-out "$RUNNER_TEMP/scan/secrets-status.json" --timeout "$SCANNER_TIMEOUT_S"
             --repo "$REPO" --commit "$HEAD_SHA" --context "$CONTEXT" --ref "$REF" --run-id "$RUN_ID"
             --repo-root target --lock pipeline/tools.lock.toml --tools-dir "$RUNNER_TEMP/sentinel-tools"
           )
@@ -174,6 +178,7 @@ jobs:
           status=0
           "$SENTINEL" scan iac "target/$SCAN_PATH" --repo-root target \
             --out "$RUNNER_TEMP/scan/iac.ndjson" --tool-status-out "$RUNNER_TEMP/scan/iac-status.json" \
+            --timeout "$SCANNER_TIMEOUT_S" \
             --repo "$REPO" --commit "$HEAD_SHA" --context "$CONTEXT" --ref "$REF" --run-id "$RUN_ID" \
             --lock pipeline/tools.lock.toml --tools-dir "$RUNNER_TEMP/sentinel-tools" || status=$?
           if [ "$status" -ne 0 ]; then
@@ -206,7 +211,7 @@ jobs:
           set -uo pipefail
           base="$RUNNER_TEMP/base"
           mkdir -p "$base"
-          common=(--repo-root "$base" --repo "$REPO" --commit "$BASE_SHA" --context pr
+          common=(--repo-root "$base" --repo "$REPO" --commit "$BASE_SHA" --context pr --timeout "$SCANNER_TIMEOUT_S"
             --lock pipeline/tools.lock.toml --tools-dir "$RUNNER_TEMP/sentinel-tools")
           if git -C target archive --format=tar "$BASE_SHA" -- "$SCAN_PATH" | tar -x -C "$base" \
             && "$SENTINEL" scan secrets "$base/$SCAN_PATH" --mode dir \
@@ -301,11 +306,11 @@ jobs:
           # pull request cannot waive its own findings (a waiver applies once it is reviewed and merged).
           cd pipeline
           status=0
-          "$SENTINEL" score --findings "$in/findings.ndjson" --policy-dir policies \
-            --out "$RUNNER_TEMP/decision/findings.ndjson" || status=$?
-          if [ "$status" -ne 0 ]; then
-            echo "status=$status" >> "$GITHUB_OUTPUT"
-            echo "sentinel score exited with $status: no decision (SC-010)"
+          if ! "$SENTINEL" score --findings "$in/findings.ndjson" --policy-dir policies \
+            --out "$RUNNER_TEMP/decision/findings.ndjson"; then
+            # Whatever score's own exit code (3, or 1 for an unexpected crash), there is no decision.
+            echo "status=3" >> "$GITHUB_OUTPUT"
+            echo "sentinel score failed: no decision (SC-010)"
             exit 0
           fi
           "$SENTINEL" evaluate \
