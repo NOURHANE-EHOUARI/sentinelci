@@ -8,7 +8,7 @@ import pytest
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 
-from sentinelci.contracts.finding import Finding
+from sentinelci.contracts.finding import _RELATIVE_PATH, Finding
 
 FIXTURES = Path(__file__).resolve().parents[2] / "schemas" / "fixtures" / "finding"
 # Invalid fixtures for the 1.1 rules and for paths; the model checks these exactly like the schema. The
@@ -52,7 +52,9 @@ def test_model_default_stays_1_0() -> None:
     assert Finding.model_validate(document).schema_version == "1.0"
 
 
-@pytest.mark.parametrize("path", ["/etc/passwd", "..", "a/../b", "a/..", "x\n/../y", "a\nb"])
+@pytest.mark.parametrize(
+    "path", ["/etc/passwd", "..", "a/../b", "a/..", "x\n/../y", "a\nb", "a\n", "a\r", "a\u2028b"]
+)
 def test_location_paths_must_stay_inside_the_repository(
     path: str, finding_validator: Draft202012Validator
 ) -> None:
@@ -69,3 +71,8 @@ def test_dots_inside_names_are_fine(path: str, finding_validator: Draft202012Val
     document["location"]["path"] = path
     assert not list(finding_validator.iter_errors(document))
     assert Finding.model_validate(document).location is not None
+
+
+def test_model_path_rule_is_the_schema_rule() -> None:
+    schema = json.loads((FIXTURES.parents[1] / "finding.v1.json").read_text(encoding="utf-8"))
+    assert _RELATIVE_PATH.pattern == schema["$defs"]["relative_path"]["pattern"]
