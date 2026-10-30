@@ -19,6 +19,13 @@ def finding_validator() -> Draft202012Validator:
     return Draft202012Validator(schema, format_checker=FormatChecker())
 
 
+@pytest.fixture(scope="session")
+def snapshot_validator() -> Draft202012Validator:
+    """Validator for the enrichment snapshot (schemas/enrichment-snapshot.v1.json)."""
+    path = REPO_ROOT / "schemas" / "enrichment-snapshot.v1.json"
+    return Draft202012Validator(json.loads(path.read_text(encoding="utf-8")), format_checker=FormatChecker())
+
+
 @pytest.fixture
 def opa_binary() -> Path:
     """The real OPA binary. Skips when absent, unless SENTINEL_REQUIRE_OPA is set (CI)."""

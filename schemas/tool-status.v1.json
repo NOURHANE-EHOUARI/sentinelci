@@ -8,7 +8,7 @@
   "required": ["schema_version", "lock_sha256", "tools"],
   "properties": {
     "schema_version": { "const": 1 },
-    "platform": { "type": "string", "pattern": "^(linux|darwin)-(amd64|arm64)$" },
+    "platform": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])(linux|darwin)-(amd64|arm64)$" },
     "lock_sha256": {
       "description": "sha256 of the tools.lock.toml the tools were verified against (the base commit's, ADR-0008).",
       "$ref": "#/$defs/sha256_hex"
@@ -17,12 +17,12 @@
       "description": "Every tool the scan was supposed to run. An empty map would vouch for nothing, so it is invalid.",
       "type": "object",
       "minProperties": 1,
-      "propertyNames": { "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+      "propertyNames": { "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[a-z0-9][a-z0-9._-]{0,63}$" },
       "additionalProperties": { "$ref": "#/$defs/tool" }
     }
   },
   "$defs": {
-    "sha256_hex": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "sha256_hex": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[a-f0-9]{64}$" },
     "tool": {
       "type": "object",
       "additionalProperties": false,
