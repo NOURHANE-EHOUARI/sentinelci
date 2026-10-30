@@ -58,7 +58,7 @@ from sentinelci.scanners.status import (
     tool_status_document,
     write_tool_status,
 )
-from sentinelci.scanners.trivy import scan_iac_with_run
+from sentinelci.scanners.trivy import remote_modules, scan_iac_with_run
 
 EXIT_UNTRUSTED_INPUT = 3
 DEFAULT_TOOLS_DIR = Path(".sentinel/tools")
@@ -665,6 +665,13 @@ def scan_iac_cmd(
     """Scan infrastructure as code with the verified Trivy binary (`trivy config`), offline."""
     _clear(out, tool_status_out)
     root = repo_root or target
+    remote = remote_modules(target) if target.is_dir() else []
+    if remote:  # not fetched, so not evaluated: say so in the job log
+        typer.echo(
+            f"warning: {len(remote)} remote Terraform module(s) not fetched or evaluated: "
+            + ", ".join(remote),
+            err=True,
+        )
 
     def scan(tool_lock: ToolLock) -> tuple[list[Finding], ToolRun]:
         results, tool_run = scan_iac_with_run(

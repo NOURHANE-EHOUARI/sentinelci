@@ -10,7 +10,7 @@
 
 | Version | Change |
 |---|---|
-| 1.1.7 | A1c IaC scanning (§5): `sentinel scan iac` runs the pinned Trivy (`trivy config`) offline, with repository configuration, ignore files and remote modules neutralized and inline ignore comments refused (SC-010); findings are category IAC with the §13.1 config fingerprint. `sentinel scan combine` merges the scanners' findings and tool statuses for the gate; `sentinel-scan.yml` runs both scanners on the head and, in pull requests, on the base tree as the baseline. |
+| 1.1.7 | A1c IaC scanning (§5): `sentinel scan iac` runs the pinned Trivy (`trivy config`) offline, with repository configuration and ignore files never loaded, remote modules not fetched and not evaluated, and inline ignore comments (also in local modules outside the scan path) and symbolic links leaving the scan path refused (SC-010); findings are category IAC with the §13.1 config fingerprint. `sentinel scan combine` merges the scanners' findings and tool statuses for the gate; `sentinel-scan.yml` runs both scanners on the head and, in pull requests, on the base tree as the baseline. |
 | 1.1.6 | A3b evidence (§5, §6.5): every scan writes a tool status (`sentinel scan secrets --tool-status-out`), so a failed, timed-out or tampered scanner becomes a recorded BLOCK (SC-010) instead of a bare red job. PR mode scans the base commit's tree as the baseline. The gate stores its evidence (`--store`), uploaded as the `sentinel-evidence` artifact; the PR comment names it in its replay line and shows "N new" only for the baseline the gate used. The nightly replay also replays the last release decisions of `demo-shop.yml` on main. The gate scores findings with the base risk model before deciding, and every scanner run has a time limit the scan job outlives. |
 | 1.1.5 | A9 first seeds (§17): 5 fake secrets, 6 IaC, 3 CI-workflow seeds and 4 clean controls in `demo-shop/`, with a draft ground-truth format (`demo-shop/ground-truth/`, final schema owned by B9) checked against the pinned Gitleaks, Trivy and zizmor. SentinelCI's Trivy configuration trusts only the kind registry for KSV0125. |
 | 1.1.4 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
@@ -183,7 +183,11 @@ limit, so git mode can take twice as long. Dir mode opens archives (`.zip`, nest
 `--ignorefile ""`), refuses a tree that contains inline `trivy:ignore` / `tfsec:ignore` comments (no flag turns
 them off), uses the checks embedded in the pinned binary with SentinelCI's own check data, and runs offline: proxy
 variables point at a closed local port and `GIT_ALLOW_PROTOCOL=none`, so remote Terraform modules named by the
-scanned code are never fetched (their resources are not evaluated). Telemetry and version checks are off.
+scanned code are never fetched and not evaluated (the CLI lists them in the job log). Trivy also loads local
+modules outside the scan path (`source = "../mod"`): a file outside the repository is refused, and their
+directories get the same marker check. Trivy does not follow symbolic links while Terraform and kubectl do, so a
+link that leaves the scan path is refused too. The marker check skips only files Trivy never parses (source code,
+documentation, images). Telemetry and version checks are off.
 Legitimate exceptions go through waivers (§6.4).
 
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;

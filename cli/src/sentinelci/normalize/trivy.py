@@ -13,6 +13,7 @@
   the raw value.
 """
 
+import posixpath
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
@@ -52,8 +53,11 @@ def _resource(cause: Mapping[str, Any]) -> str:
 
 
 def _path(scan_root: str, target: str) -> str:
+    """Repository-relative path of a Trivy target; a local module outside the scan path keeps its own path."""
     joined = target if scan_root in ("", ".") else (PurePosixPath(scan_root) / target).as_posix()
-    return to_repo_relative(joined)
+    if not joined or PurePosixPath(joined).is_absolute():
+        return to_repo_relative(joined)  # refuses it with the usual message
+    return to_repo_relative(posixpath.normpath(joined))
 
 
 def normalize_trivy_config(

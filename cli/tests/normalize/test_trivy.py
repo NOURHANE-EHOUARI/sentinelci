@@ -157,3 +157,10 @@ def test_malformed_reports_fail_closed(mutate: Any, message: str) -> None:
     mutate(results)
     with pytest.raises(NormalizationError, match=message):
         normalize_trivy_config(results, run=RUN, tool=TOOL, scan_root="demo-shop")
+
+
+def test_a_local_module_outside_the_scan_path_keeps_its_repository_path() -> None:
+    results = copy.deepcopy(_results())
+    results[1]["Target"] = "../modules/db/main.tf"
+    paths = {f["location"]["path"] for f in _normalize(results)}
+    assert "modules/db/main.tf" in paths

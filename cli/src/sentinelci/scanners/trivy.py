@@ -15,12 +15,20 @@ written by the author of the change, so each one is neutralized:
 Trivy also downloads the remote Terraform modules that the scanned code names (`git::https://...`, registry
 sources): network access chosen by the change author, and a result that depends on the network. The run gets
 proxy variables pointing at a closed local port and `GIT_ALLOW_PROTOCOL=none`, so every download fails at once
-and the scan stays offline. Resources built inside a remote module are not evaluated: scanning third-party
-modules is not the job of this stage. Version checks and telemetry are disabled.
+and the scan stays offline. Remote modules are therefore not fetched and not evaluated; `remote_modules` lists
+them so the CLI can say so. Version checks and telemetry are disabled.
 
-Trivy does not follow symbolic links, so the marker check does not either. The raw report holds code lines
-of the scanned files (which may contain credentials): it stays in a private temporary directory, and only
-normalized findings, without code, leave this module.
+What Trivy reads beyond the scan target is checked too:
+- local Terraform modules outside the scan path (`source = "../mod"`) are loaded by Trivy, and their inline
+  ignores are honoured: after the run, the directory of every file Trivy reports outside the scan path gets
+  the marker check, and a file outside the repository is refused;
+- Trivy does not follow symbolic links, but Terraform and kubectl do: a link that leaves the scan target would
+  hide its content, so the target is refused when it has one.
+
+The marker check skips files Trivy never parses as configuration (source code, documentation, images), so a
+tree whose code merely mentions the markers can still be scanned; every other file is checked. The raw report
+holds code lines of the scanned files (which may contain credentials): it stays in a private temporary
+directory, and only normalized findings, without code, leave this module.
 """
 
 import json
@@ -38,6 +46,17 @@ from sentinelci.scanners.runner import DEFAULT_TIMEOUT_S, ToolRun, is_within, ru
 
 # Matched case-insensitively and with optional spaces: wider than what Trivy honours, never narrower.
 INLINE_IGNORE = re.compile(rb"(?:trivy|tfsec)\s*:\s*ignore", re.IGNORECASE)
+# Files Trivy's misconfiguration scanners never read (they select by name and extension). Unknown types are
+# checked: the list only names what is certainly not configuration.
+NOT_CONFIGURATION = frozenset(
+    {
+        ".py", ".pyc", ".pyi", ".md", ".rst", ".txt", ".adoc", ".go", ".rs", ".java", ".kt", ".c", ".h",
+        ".cpp", ".cs", ".rb", ".php", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".sh", ".bash", ".ps1",
+        ".html", ".css", ".scss", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".lock", ".sql",
+        ".csv", ".ipynb",
+    }
+)  # fmt: skip
+_MODULE_SOURCE = re.compile(r'^\s*source\s*=\s*"([^"]+)"', re.MULTILINE)
 _CHUNK = 1 << 20
 _OVERLAP = 64
 MAX_REPORTED_FILES = 5
@@ -75,16 +94,78 @@ def _has_marker(path: Path) -> bool:
     return False
 
 
-def inline_ignores(root: Path) -> list[str]:
-    """Regular files under `root` (symlinks not followed, `.git` skipped) that contain an inline ignore."""
+def _may_be_configuration(name: str) -> bool:
+    return Path(name).suffix.lower() not in NOT_CONFIGURATION
+
+
+def inline_ignores(root: Path, *, recursive: bool = True) -> list[str]:
+    """Files under `root` Trivy may read (no symlink followed, `.git` skipped) that hold an inline ignore."""
+    found: list[str] = []
+    for directory, subdirs, names in os.walk(root, followlinks=False):
+        subdirs[:] = sorted(d for d in subdirs if d != ".git") if recursive else []
+        for name in sorted(names):
+            path = Path(directory, name)
+            if _may_be_configuration(name) and stat.S_ISREG(path.lstat().st_mode) and _has_marker(path):
+                found.append(path.relative_to(root).as_posix())
+    return found
+
+
+def escaping_links(root: Path) -> list[str]:
+    """Symbolic links under `root` (files or directories) whose target is outside `root`."""
     found: list[str] = []
     for directory, subdirs, names in os.walk(root, followlinks=False):
         subdirs[:] = sorted(d for d in subdirs if d != ".git")
-        for name in sorted(names):
+        for name in sorted([*subdirs, *names]):
             path = Path(directory, name)
-            if stat.S_ISREG(path.lstat().st_mode) and _has_marker(path):
+            if path.is_symlink() and not is_within(path, root):
                 found.append(path.relative_to(root).as_posix())
     return found
+
+
+def remote_modules(root: Path) -> list[str]:
+    """Terraform module sources under `root` that are not local paths: not fetched, so not evaluated."""
+    sources: set[str] = set()
+    for path in sorted(root.rglob("*.tf")):
+        if ".git" in path.relative_to(root).parts or not path.is_file() or path.is_symlink():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        sources.update(s for s in _MODULE_SOURCE.findall(text) if not s.startswith(("./", "../")))
+    return sorted(sources)
+
+
+def _listed(items: list[str]) -> str:
+    more = f" and {len(items) - MAX_REPORTED_FILES} more" if len(items) > MAX_REPORTED_FILES else ""
+    return ", ".join(items[:MAX_REPORTED_FILES]) + more
+
+
+def _refuse_markers(marked: list[str], where: str) -> None:
+    if marked:
+        raise ScannerError(
+            f"inline trivy:ignore / tfsec:ignore comments found {where} ({_listed(marked)}). Trivy would let "
+            "them silence findings, and they are controlled by the author of the change: remove them and use "
+            "SentinelCI waivers"
+        )
+
+
+def check_outside_reads(results: list[dict[str, Any]], repo_root: Path, source: str) -> None:
+    """Fail closed on what Trivy read outside the scan path: a file outside the repository, or an ignore."""
+    scan_root, repo = (repo_root / source).resolve(), repo_root.resolve()
+    directories: set[Path] = set()
+    for result in results:
+        target = result.get("Target")
+        if not isinstance(target, str):
+            continue  # the normalizer refuses it
+        path = (scan_root / target).resolve()
+        if not is_within(path, repo):
+            raise ScannerError(f"trivy read {target!r}, outside the repository (a local module?)")
+        if not is_within(path, scan_root):
+            directories.add(path if path.is_dir() else path.parent)
+    marked = [
+        f"{directory.relative_to(repo).as_posix()}/{name}".removeprefix("./")
+        for directory in sorted(directories)
+        for name in inline_ignores(directory, recursive=False)
+    ]
+    _refuse_markers(marked, "in a module outside the scan path")
 
 
 def scan_iac_with_run(
@@ -99,14 +180,12 @@ def scan_iac_with_run(
     """Run `trivy config` on `target`; return the Trivy results (paths relative to `target`) and the run."""
     repo_root = repo_root or target
     source = _relative_target(target, repo_root)
-    marked = inline_ignores(repo_root / source)
-    if marked:
-        shown = ", ".join(marked[:MAX_REPORTED_FILES])
-        more = f" and {len(marked) - MAX_REPORTED_FILES} more" if len(marked) > MAX_REPORTED_FILES else ""
+    _refuse_markers(inline_ignores(repo_root / source), "in the scanned tree")
+    links = escaping_links(repo_root / source)
+    if links:
         raise ScannerError(
-            f"inline trivy:ignore / tfsec:ignore comments found in the scanned tree ({shown}{more}). Trivy "
-            "would let them silence findings, and they are controlled by the author of the change: remove "
-            "them and use SentinelCI waivers"
+            f"symbolic links leave the scanned tree ({_listed(links)}). Trivy does not follow them while "
+            "Terraform and kubectl do, so their content would go unscanned: commit the files themselves"
         )
 
     with tempfile.TemporaryDirectory(prefix="sentinel-trivy-") as private:
@@ -161,4 +240,5 @@ def scan_iac_with_run(
     results = data.get("Results", [])
     if not isinstance(results, list) or not all(isinstance(result, dict) for result in results):
         raise ScannerError("trivy report `Results` must be a list of objects")
+    check_outside_reads(results, repo_root, source)
     return results, run

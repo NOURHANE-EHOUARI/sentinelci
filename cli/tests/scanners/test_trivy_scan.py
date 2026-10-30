@@ -21,7 +21,15 @@ from sentinelci.policy.tool_status import ToolStatus
 from sentinelci.scanners.errors import ScannerError, ScannerTimeout
 from sentinelci.scanners.lock import load_lock
 from sentinelci.scanners.runner import run_verified_tool
-from sentinelci.scanners.trivy import _CHUNK, OFFLINE_ENV, inline_ignores, scan_iac_with_run
+from sentinelci.scanners.trivy import (
+    _CHUNK,
+    OFFLINE_ENV,
+    check_outside_reads,
+    escaping_links,
+    inline_ignores,
+    remote_modules,
+    scan_iac_with_run,
+)
 
 from .conftest import FakeReleases
 from .test_runner import PLATFORM, install_script
@@ -174,6 +182,83 @@ def test_the_marker_check_matches_what_trivy_reads(tmp_path: Path) -> None:
     big.write_bytes(b"x" * (_CHUNK - 5) + b"#tfsec:ignore:aws-s3")  # the marker spans two read chunks
     (root / "a.yaml").write_text("ok: true\n")
     assert inline_ignores(root) == ["big/main.tf"]
+
+
+@pytest.mark.parametrize(
+    ("name", "refused"),
+    [
+        ("main.tf", True),
+        ("values.yaml", True),
+        ("Dockerfile", True),
+        ("Dockerfile.prod", True),
+        ("api.dockerfile", True),
+        ("template", True),  # no extension: checked
+        ("tfplan.bin", True),  # unknown type: checked
+        ("scanner.py", False),
+        ("README.md", False),
+        ("app.ts", False),
+    ],
+)
+def test_the_marker_check_skips_only_files_trivy_never_parses(
+    tmp_path: Path, name: str, refused: bool
+) -> None:
+    # A tree whose code or documentation merely mentions the markers (a self-scan) can still be scanned.
+    (tmp_path / name).write_text("# trivy:ignore:AWS-0086\n")
+    assert inline_ignores(tmp_path) == ([name] if refused else [])
+
+
+def test_links_that_leave_the_scanned_tree_are_refused(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
+) -> None:
+    # Trivy does not follow them, but Terraform and kubectl do: the content would go unscanned.
+    dest, argv_file, _ = fake_trivy(tmp_path, releases, write_lock)
+    repo = _repo(tmp_path)
+    outside = tmp_path / "elsewhere"
+    (outside / "mod").mkdir(parents=True)
+    (outside / "pod.yaml").write_text("kind: Pod\n")
+    (repo / "infra" / "inside.tf").symlink_to(repo / "infra" / "main.tf")  # stays inside: fine
+    assert escaping_links(repo) == []
+    (repo / "infra" / "pod.yaml").symlink_to(outside / "pod.yaml")
+    (repo / "infra" / "modlink").symlink_to(outside / "mod")
+    assert escaping_links(repo) == ["infra/modlink", "infra/pod.yaml"]
+
+    with pytest.raises(
+        ScannerError, match=r"symbolic links leave the scanned tree \(infra/modlink, infra/pod.yaml\)"
+    ):
+        scan_iac_with_run(
+            repo, lock=load_lock(tmp_path / "tools.lock.toml"), tools_dir=dest, platform=PLATFORM
+        )
+    assert not argv_file.exists(), "the scanner must not even start"
+
+
+def test_what_trivy_read_outside_the_scan_path_is_checked(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    for name in ("demo-shop", "mod", "mod2"):
+        (repo / name).mkdir(parents=True)
+    (repo / "mod" / "main.tf").write_text('#trivy:ignore:*\nresource "aws_s3_bucket" "a" {}\n')
+    (repo / "mod2" / "main.tf").write_text('resource "aws_s3_bucket" "b" {}\n')
+    clean = [{"Target": "."}, {"Target": "../mod2/main.tf"}]
+    check_outside_reads(clean, repo, "demo-shop")  # a local module without ignores is fine
+
+    with pytest.raises(ScannerError, match=r"in a module outside the scan path \(mod/main.tf\)"):
+        check_outside_reads(
+            [*clean, {"Target": "../mod/main.tf", "Misconfigurations": []}], repo, "demo-shop"
+        )
+    with pytest.raises(ScannerError, match="outside the repository"):
+        check_outside_reads([{"Target": "../../etc/passwd"}], repo, "demo-shop")
+
+
+def test_remote_modules_are_listed(tmp_path: Path) -> None:
+    (tmp_path / "net").mkdir()
+    (tmp_path / "main.tf").write_text(
+        'module "a" {\n  source = "git::https://example.invalid/net.git?ref=v1"\n}\n'
+        'module "b" {\n  source  = "terraform-aws-modules/s3-bucket/aws"\n  version = "4.1.0"\n}\n'
+        'module "c" {\n  source = "./net"\n}\nmodule "d" {\n  source = "../shared"\n}\n'
+    )
+    assert remote_modules(tmp_path) == [
+        "git::https://example.invalid/net.git?ref=v1",
+        "terraform-aws-modules/s3-bucket/aws",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -360,3 +445,31 @@ def test_the_offline_environment_stops_trivy_from_fetching_modules(tmp_path: Pat
     assert "Loaded module" in log(None), "control: without the offline environment Trivy clones the module"
     blocked = log(OFFLINE_ENV)
     assert "Failed to load module" in blocked and "Loaded module" not in blocked
+
+
+@real
+@pytest.mark.integration
+def test_real_trivy_ignores_in_a_module_outside_the_scan_path_fail_closed(tmp_path: Path) -> None:
+    # Review of #26: Trivy loads `../mod` and honours its #trivy:ignore, with an `ok` status before the fix.
+    repo = tmp_path / "repo"
+    for name in ("demo-shop", "mod", "mod2"):
+        (repo / name).mkdir(parents=True)
+    (repo / "demo-shop" / "main.tf").write_text('module "m" {\n  source = "../mod2"\n}\n')
+    (repo / "mod2" / "main.tf").write_text(PUBLIC_ACL)
+    results, run = scan_iac_with_run(
+        repo / "demo-shop", lock=load_lock(REPO_LOCK), tools_dir=Path(str(TOOLS_DIR)), repo_root=repo
+    )
+    findings = normalize_trivy_config(
+        results,
+        run=Run(repo="o/r", commit=COMMIT, context="pr"),
+        tool=Tool(name="trivy", version=run.version),
+        scan_root="demo-shop",
+    )
+    assert ("mod2/main.tf", "AWS-0086") in {(f.location.path, f.rule_id) for f in findings if f.location}
+
+    (repo / "demo-shop" / "main.tf").write_text('module "m" {\n  source = "../mod"\n}\n')
+    (repo / "mod" / "main.tf").write_text(PUBLIC_ACL.replace("resource ", "#trivy:ignore:*\nresource "))
+    with pytest.raises(ScannerError, match=r"in a module outside the scan path \(mod/main.tf\)"):
+        scan_iac_with_run(
+            repo / "demo-shop", lock=load_lock(REPO_LOCK), tools_dir=Path(str(TOOLS_DIR)), repo_root=repo
+        )
