@@ -13,7 +13,7 @@ def test_python_reads_the_ids_opa_evaluates(opa_binary: Path) -> None:
     bundle = PolicyBundle.load(POLICIES)
     evaluated = OpaRunner.locate(opa_binary).eval("data.sentinel.exposing.rule_ids", bundle.rego_files, {})
     assert exposing_rule_ids(POLICIES) == frozenset(evaluated)
-    assert len(evaluated) == 16
+    assert len(evaluated) == 20
 
 
 def test_the_list_is_part_of_the_policy_bundle() -> None:

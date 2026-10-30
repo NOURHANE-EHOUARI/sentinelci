@@ -24,15 +24,19 @@ rule_ids := {
 	"KSV-0005", # SYS_ADMIN capability
 	"KSV-0006", # Docker socket mounted
 	"KSV-0121", # host root filesystem mounted
+	"KSV-0120", # SYS_MODULE capability (kernel modules)
 	# data stores open to the internet
 	"AWS-0092", # S3 bucket public through its ACL
 	"AWS-0180", # RDS instance publicly accessible
 	"GCP-0001", # storage bucket readable by allUsers
 	"AZU-0007", # storage container public
-	# SSH and RDP open to the internet
+	"AZU-0029", # SQL server firewall open to every address
+	"GCP-0046", # BigQuery dataset readable by allAuthenticatedUsers
+	# SSH, RDP and other sensitive ports open to the internet
 	"AWS-0107", # security group: SSH from 0.0.0.0/0
 	"GCP-0071", # firewall: SSH from the internet
 	"GCP-0070", # firewall: RDP from the internet
 	"AZU-0050", # network security rule: SSH from the internet
 	"AZU-0048", # network security rule: RDP from the internet
+	"AZU-0074", # network security rule: database, FTP or telnet port from any source
 }
