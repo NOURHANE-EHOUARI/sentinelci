@@ -16,7 +16,6 @@ import json
 import os
 import re
 import tempfile
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
@@ -269,6 +268,9 @@ def enrich_command(
     except (EnrichmentError, EvaluationError, OSError, ValueError) as exc:
         typer.echo(f"sentinel enrich: {exc}", err=True)
         raise typer.Exit(EXIT_NO_DECISION) from exc
+    except Exception as exc:  # fail closed: no traceback, no partial output, no exit 0 or 1
+        typer.echo(f"sentinel enrich: unexpected {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
     _write_output(out, dumps_ndjson(enriched), "sentinel enrich")
     sources = sorted(k for k, v in data.sources.model_dump().items() if v is not None) or ["none"]
     typer.echo(
@@ -276,10 +278,8 @@ def enrich_command(
         f"service context: {'yes' if context else 'no'}) -> {out}"
     )
     if reachability is not None:
-        counts = Counter(f.enrichment.reachability for f in enriched if f.enrichment)
-        typer.echo(
-            "reachability: " + ", ".join(f"{counts[v]} {v}" for v in ("imported", "unknown", "not_imported"))
-        )
+        imported = sum(1 for f in enriched if f.enrichment and f.enrichment.reachability == "imported")
+        typer.echo(f"reachability: {imported} imported (the others are left absent: the worst case)")
 
 
 @app.command("score")

@@ -67,19 +67,20 @@ uv run sentinel enrich --findings out/findings.ndjson --snapshot out/enrichment-
 - Unknown stays absent; the risk engine treats absent as the worst case. Without `--snapshot` or `--config`,
   nothing from that source is added.
 - Read `sentinel.yaml` from the base branch in PR mode: a change must not lower its own exposure.
-- `--source DIR` (repeatable) adds `reachability` to PyPI and npm package findings by static import analysis
+- `--source DIR` (repeatable) adds `reachability: imported` to PyPI and npm SCA findings by static import analysis
   (`enrich/reachability.py`). The tree is only read: nothing in it is run, imported or installed, and symlinks
   are never followed.
-  - `imported`: first-party code imports the package (Python AST; JS/TS `import`, `export ... from`,
-    literal `require()` and `import()`).
-  - `not_imported` only with proof: a direct runtime dependency, locked (package-lock.json v2/v3, uv.lock,
-    poetry.lock or a pip-compile annotated requirements.txt) with no other locked package depending on it, a
-    certain import name (PyPI: `enrich/import_names.py`, reviewed), not a package used without an import, its
-    names absent from every file but the dependency declarations, and a complete analysis (no computed import,
-    exec/eval, createRequire, entry-point plugins, symlink, unparsable file or limit reached).
-  - `unknown` otherwise; other ecosystems and OS packages stay absent (worst case).
-  - With several trees the most reachable answer wins: in PR mode pass the base and the head, so a change
-    cannot lower the reachability of its own dependencies.
+  - `imported`: first-party code imports the package (Python AST; JS/TS `import`, `export ... from`, literal
+    `require()` and `import()`, comments ignored), or an imported package depends on it at runtime (uv.lock,
+    poetry.lock, package-lock.json v2/v3, pip-compile `# via` annotations; optional and peer dependencies are
+    not followed).
+  - Nothing otherwise, which the risk engine counts as the worst case. `not_imported` and `unknown` are not
+    claimed: a library can load a package itself through an optional dependency the lockfile does not record.
+  - No answer for CONTAINER findings, `MAL-` advisories or npm packages with install scripts.
+  - With several trees `imported` must hold in all of them: in PR mode pass the base and the head, so a change
+    cannot lower the score of its own dependencies by adding an import.
+  - Files that cannot be read or parsed, are too large, or hold a dotted name of 64 parts or more are skipped
+    (fixed limits, no clock: the same tree always gives the same answer).
 - `kev: {listed: false}` only for CVEs the snapshot's KEV lookup covered (`sources.kev.cves`); otherwise KEV stays
   unknown. Package URLs are compared in canonical form (PyPI names per PEP 503).
 - `sentinel.yaml` is read with a restricted YAML loader: no duplicate keys, merge keys (`<<`), anchors, aliases,

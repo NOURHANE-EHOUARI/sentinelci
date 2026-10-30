@@ -239,14 +239,15 @@ scalars, lists and mappings, and is limited to 64 KiB; component paths are canon
 where a change puts its files decides their path-scoped exposure (a file under an `offline` component is scored
 as offline), so changes to `sentinel.yaml` and new top-level directories deserve a reviewer's eye.
 
-Reachability (B2, `sentinel enrich --source`): static import analysis of the scanned tree for PyPI and npm
-packages, never executing it. `imported` when first-party code imports the package; `not_imported` only with
-every proof (a direct runtime dependency that a lockfile shows no other package depends on, a reviewed import
-name, not a package used without an import, named nowhere but in dependency declarations, and a complete
-analysis of that language); `unknown` otherwise; absent for other ecosystems. In PR mode the base and the head
-are both analysed and the most reachable answer wins, so a change cannot lower its own reachability.
-`reachable` would need call-graph analysis, a stretch goal (§16). Residual risk: static analysis can be evaded by
-deliberately obfuscated code; the proofs make an honest mistake unlikely, not a determined author impossible.
+Reachability (B2, `sentinel enrich --source`): static import analysis of the scanned tree for PyPI and npm SCA
+findings, never executing it. `imported` when first-party code imports the package, or when a lockfile shows that
+an imported package depends on it at runtime; nothing otherwise (the worst case, R = 1.0). `not_imported` is not
+claimed: libraries load packages themselves (FastAPI templates load jinja2, PyJWT's RS256 loads cryptography)
+through optional dependencies a lockfile does not record, so it needs per-library evidence first. CONTAINER
+findings, `MAL-` advisories and npm packages with install scripts get no answer. In PR mode the base and the head
+are both analysed and `imported` must hold in both, so a change cannot lower its own score by adding an import.
+`reachable` would need call-graph analysis, a stretch goal (§16). Residual risk: a deliberately written import that
+nothing uses gives `imported` (R 0.9 instead of 1.0); a missed import only leaves the worst case.
 
 ### 6.2 Risk model
 
