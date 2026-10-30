@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.10 | B4: strict policy profile (`policies/profiles.rego`; any P1 is an SC-006 BLOCK) chosen by the base-branch `sentinel.yaml`; OpenVEX `not_affected` statements (`schemas/vex.v1.json`, `.sentinel/vex.json`), Decision 1.4 (`inputs.vex_digest`, `vex_applied`). |
 | 1.1.9 | Decision 1.3: `inputs.service_context_digest`, the `sentinel.yaml` enrichment used (from the base branch), recorded by `sentinel evaluate --service-context`, stored with `--store` and given back on replay; an invalid `sentinel.yaml` is never recorded (exit 3). |
 | 1.1.5 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
 | 1.1.4 | Enrichment (B2, §6.1): `schemas/enrichment-snapshot.v1.json` (`schema_version` "1.0", `sources.kev.cves`: the CVEs the KEV lookup covered) and `schemas/sentinel-config.v1.json` (`sentinel.yaml`, canonical component paths); `sentinel enrich`. "Not listed in KEV" only for covered CVEs; `sentinel.yaml` read with a restricted YAML loader. |
@@ -304,7 +305,11 @@ analysis kind; a category without a `non_cve` weight counts as E = 1.0.
 Priority-based rules (SC-002, SC-006) read `risk.priority` (B3); an unscored finding counts at its worst case,
 `100 × severity_weight` banded, so CRITICAL and HIGH are P0 until scored. Each finding is reported under its most
 specific rule (SC-001, SC-003 or SC-009 before SC-002/SC-006). Waivers and diff-aware PR mode apply to every finding
-rule. Not yet implemented: SC-004 (A4 attestations), SC-007, SC-008, the strict profile and VEX.
+rule; a not_affected VEX statement covers its package findings the same way (§6.4).
+**Profiles** (`policies/profiles.rego`): `policy_profile` of the base-branch `sentinel.yaml`, given to `sentinel
+evaluate --service-context`; `default` (or none) keeps SC-006 a WARN, `strict` makes any P1 an SC-006 BLOCK (the
+threshold, `p1_block_above: 0`, is policy data). An unknown profile is malformed input (SC-010). Not yet
+implemented: SC-004 (A4 attestations), SC-007, SC-008.
 
 Policy rules use `input.evaluated_at`, never `time.now_ns()`. Reference implementation of the verdict logic
 (verified with OPA 1.21):
@@ -337,7 +342,12 @@ else := "PASS"
 ### 6.4 Waivers and VEX
 
 Waivers in `.sentinel/waivers.yaml` (finding id or vuln + purl, owner, justification, expiry ≤ 90 days), added by
-PR and approved by CODEOWNERS; expired waivers stop applying. OpenVEX statements for "not affected". The AI may
+PR and approved by CODEOWNERS; expired waivers stop applying. OpenVEX statements for "not affected":
+`.sentinel/vex.json` (`schemas/vex.v1.json`, an OpenVEX v0.2.0 subset), read from the base branch like the waivers
+and recorded by digest. A `not_affected` statement (a justification is required) covers a package finding when one
+of its vulnerability ids is one of the finding's ids and one of its products is the finding's package (the purl base
+for every version, or one version when the purl names it); a covered finding counts for no rule and is listed in
+`vex_applied`. Other statuses change nothing. Secrets are never covered. The AI may
 draft a waiver PR; only a human approval makes it effective.
 
 ### 6.5 Decision record and replay
@@ -345,7 +355,7 @@ draft a waiver PR; only a human approval makes it effective.
 Schema: `schemas/decision.v1.json`. Fields: `decision_id`, `evaluated_at`, `subject` (repo, ref, commit, image
 digest, context), `verdict`, `violations` (rule, effect, finding ids, message), `waivers_applied`, `inputs`
 (digests of findings, SBOM, enrichment snapshot, policy bundle, waivers file (since 1.1), base-branch findings
-baseline and tool status (since 1.2, when given), service context `sentinel.yaml` (since 1.3, when given); risk
+baseline and tool status (since 1.2, when given), service context `sentinel.yaml` (since 1.3, when given), VEX document and `vex_applied` (since 1.4, when given); risk
 model version;
 tool versions),
 `engine_version`. The schema enforces verdict consistency (BLOCK ⇒ at least one BLOCK violation; PASS ⇒ none).

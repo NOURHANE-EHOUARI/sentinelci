@@ -551,3 +551,91 @@ def test_a_service_context_missing_from_the_store_cannot_be_replayed(
     blob.unlink()
     code, out = replay(tmp_path, opa_binary, decision["decision_id"])
     assert code == 3, out
+
+
+# ---------------------------------------------------------------- policy profiles (policy_profile)
+
+SCORED_SCA = json.loads((FIXTURES / "finding" / "valid" / "sca-enriched-and-scored.json").read_text("utf-8"))
+P1_RISK = {
+    "score": 55.0,
+    "priority": "P1",
+    "factors": {"S": 1.0, "E": 1.0, "X": 0.55, "R": 1.0},
+    "model_version": "1.0.0",
+}
+P1_SCA = {**SCORED_SCA, "risk": P1_RISK}
+
+
+@pytest.mark.parametrize(
+    ("profile", "effect", "code"), [(None, "WARN", 0), ("default", "WARN", 0), ("strict", "BLOCK", 1)]
+)
+def test_the_strict_profile_of_the_base_sentinel_yaml_blocks_p1(
+    tmp_path: Path, opa_binary: Path, profile: str | None, effect: str, code: int
+) -> None:
+    yaml_text = b"version: 1\nservice: demo-shop\nexposure: internal\n"
+    if profile is not None:
+        yaml_text += f"policy_profile: {profile}\n".encode()
+    got, _, decision = evaluate(
+        tmp_path, opa_binary, ndjson(P1_SCA), service_context=yaml_text, tool_status=TOOLS_OK
+    )
+    assert got == code
+    assert [(v["rule"], v["effect"]) for v in decision["violations"]] == [("SC-006", effect)]
+    replayed, out = replay(tmp_path, opa_binary, decision["decision_id"])
+    assert replayed == 0, out
+
+
+# ---------------------------------------------------------------- VEX (Decision 1.4)
+
+
+def vex_doc(product: str, vuln: str = "CVE-2099-0001") -> bytes:
+    document = json.loads((FIXTURES / "vex" / "valid" / "one-statement.json").read_text("utf-8"))
+    document["statements"][0]["vulnerability"] = {"name": vuln}
+    document["statements"][0]["products"] = [{"@id": product}]
+    return json.dumps(document).encode()
+
+
+UNSCORED_CRITICAL = {k: v for k, v in SCORED_SCA.items() if k not in ("risk", "enrichment")}  # P0: SC-002
+
+
+def test_a_not_affected_statement_turns_a_block_into_a_pass_and_replays(
+    tmp_path: Path, opa_binary: Path
+) -> None:
+    code, _, blocked = evaluate(tmp_path / "a", opa_binary, ndjson(UNSCORED_CRITICAL), tool_status=TOOLS_OK)
+    assert code == 1 and [v["rule"] for v in blocked["violations"]] == ["SC-002"]
+    vex = vex_doc("pkg:pypi/example-lib")
+    code, _, decision = evaluate(
+        tmp_path / "b", opa_binary, ndjson(UNSCORED_CRITICAL), tool_status=TOOLS_OK, vex=vex
+    )
+    assert code == 0
+    assert decision["schema_version"] == "1.4"
+    assert decision["vex_applied"] == [UNSCORED_CRITICAL["id"]]
+    assert decision["inputs"]["vex_digest"] == sha256(vex)
+    decision_schema().validate(decision)
+    assert EvidenceStore(tmp_path / "b" / "store").get(sha256(vex)) == vex
+    code, out = replay(tmp_path / "b", opa_binary, decision["decision_id"])
+    assert code == 0, out
+
+
+@pytest.mark.parametrize(
+    "product", ["pkg:pypi/example-lib@1.2.1", "pkg:pypi/other-lib", "pkg:npm/example-lib"], ids=str
+)
+def test_vex_for_another_version_or_package_changes_nothing(
+    tmp_path: Path, opa_binary: Path, product: str
+) -> None:
+    code, _, decision = evaluate(
+        tmp_path, opa_binary, ndjson(UNSCORED_CRITICAL), tool_status=TOOLS_OK, vex=vex_doc(product)
+    )
+    assert code == 1
+    assert decision["vex_applied"] == []
+
+
+def test_the_default_vex_file_is_read(
+    tmp_path: Path, opa_binary: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / ".sentinel").mkdir()
+    (tmp_path / ".sentinel" / "vex.json").write_bytes(vex_doc("pkg:pypi/example-lib@1.2.0"))
+    monkeypatch.chdir(tmp_path)
+    code, _, decision = evaluate(
+        tmp_path / "run", opa_binary, ndjson(UNSCORED_CRITICAL), tool_status=TOOLS_OK
+    )
+    assert code == 0
+    assert decision["vex_applied"] == [UNSCORED_CRITICAL["id"]]
