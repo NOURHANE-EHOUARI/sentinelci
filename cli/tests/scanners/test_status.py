@@ -240,3 +240,34 @@ def test_cli_refuses_a_time_limit_out_of_range(value: str) -> None:
          "--timeout", value],
     )  # fmt: skip
     assert result.exit_code == 2
+
+
+def _timeout_defaults() -> dict[str, object]:
+    import typer.main
+
+    root = typer.main.get_command(app)
+    found: dict[str, object] = {}
+
+    def walk(command: object, path: str) -> None:
+        for name, sub in getattr(command, "commands", {}).items():
+            walk(sub, f"{path} {name}".strip())
+        for param in getattr(command, "params", []):
+            if param.name == "timeout":
+                found[path] = param.default
+
+    walk(root, "")
+    return found
+
+
+def test_every_scan_command_defaults_to_the_scanner_time_limit() -> None:
+    """Two modules export a DEFAULT_TIMEOUT_S (scanner runs, enrichment requests); a scan command must not
+    pick up the enrichment one (30 s per HTTP request) by a shadowed import, and the reverse."""
+    from sentinelci.enrich.transport import DEFAULT_TIMEOUT_S as FETCH_DEFAULT
+    from sentinelci.scanners.runner import DEFAULT_TIMEOUT_S as SCAN_DEFAULT
+
+    defaults = _timeout_defaults()
+    scans = {path: value for path, value in defaults.items() if path.startswith("scan ")}
+    assert "scan secrets" in scans
+    assert scans == dict.fromkeys(scans, SCAN_DEFAULT)
+    others = {path: value for path, value in defaults.items() if not path.startswith("scan ")}
+    assert others and all(value == FETCH_DEFAULT for value in others.values()), others

@@ -1,0 +1,9 @@
+{
+  "format": "sentinelci-feed-recording/2",
+  "method": "GET",
+  "url": "https://api.first.org/data/v1/epss?cve=CVE-2020-14343,CVE-2021-23337,CVE-2021-28957,CVE-2021-44228,CVE-2021-44906,CVE-2022-22965,CVE-2023-32681",
+  "body_base64": null,
+  "status": 200,
+  "response_gzip_base64": "H4sIAAAAAAAC/5XSPWvDQAwG4L0/Q7MvnHSf8lo6dejWpXRwLxcwOLGJL1lC/nvlkEJd4pJo8km6hxfbJxhLUw4j1PD2CtX1pFK/zlCT1hUc835s+50s4ErLRpNSHqf94fDVtUk6pS9NB3WooN9sxlyglmtdu23lCSdi3ZQG6o8TpKOo8Pz+okiTUYZ8RAHycAH1ShMHq6WkOeR9yrvSdvkyioEIryPxpqYYXqFWxHCu/uCkiNi73zizN/E2zsyW78dRWVn3s+TWRVzA0SM+hhPFeXKpW7h8kZ+6F6fILsyTa+MWkmsX4kO4MWaGE0pnAQ+O3f24VmiNNbPkjuPC38KG+J/X8nl++gZU55r2+QIAAA==",
+  "response_sha256": "42679a7439beee83a2aa6b9ee232ed224074a0f2c145060a518bafca31ba822b"
+}

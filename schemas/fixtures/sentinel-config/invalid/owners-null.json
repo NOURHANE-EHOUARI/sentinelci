@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "service": "demo-shop",
+  "exposure": "internet-facing",
+  "environment": "production",
+  "data_classification": "confidential",
+  "owners": null,
+  "policy_profile": "default",
+  "components": [
+    {
+      "path": "services/shop-api",
+      "exposure": "internal"
+    },
+    {
+      "path": "infra",
+      "exposure": "offline",
+      "data_classification": "internal"
+    }
+  ]
+}

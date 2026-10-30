@@ -10,6 +10,8 @@ JSON Schemas (draft 2020-12) shared by both tracks. See `docs/spec/SPEC.md` sect
 | `verification-result.v1.json` | A6 → platform, B8 |
 | `waivers.v1.json` | people via reviewed PRs (AI drafts only) → B4 gate, platform |
 | `tool-status.v1.json` | A3 pipeline (superset of the `tools verify --report` manifest) → B4 gate (SC-010) |
+| `enrichment-snapshot.v1.json` | B2 fetchers (EPSS, KEV, OSV) → `sentinel enrich`, evidence store, replay |
+| `sentinel-config.v1.json` | `sentinel.yaml` of a scan target, read from the base branch → B2 (exposure), B4 (profile) |
 
 Rules:
 
@@ -21,5 +23,9 @@ Rules:
   requires and forbids the new fields in older minor versions. Current minor versions: decision 1.2 (1.1 added
   `inputs.waivers_digest`; 1.2 adds `inputs.baseline_digest` and `inputs.tool_status_digest`), finding 1.1 (adds
   `other_locations`).
+- Every `pattern` starts with `^(?![^\r\n\u2028\u2029]*[\r\n\u2028\u2029])`: no line break anywhere. Without it,
+  Python (`$` also matches before a final newline; `.` matches `\r`, U+2028, U+2029) and ECMA-262 validators (ajv)
+  disagree, e.g. on `"<64 hex>\n"`. `tests/contracts/test_patterns.py` enforces it and compares both engines. The one
+  exemption is free text (`\S`, waiver owner and justification), which may span lines, like a YAML `>` block.
 - Schemas encode safety rules where possible (no raw secrets, no path traversal, VERIFIED only when every
   verification condition holds, verdict consistent with violations).
