@@ -116,21 +116,22 @@ def kev(*listed: str) -> dict[str, Any]:
     return {"catalogVersion": "2026.11.09", "count": len(entries), "vulnerabilities": entries}
 
 
+OSV_QUERY = f"{OSV_URL}/GHSA-aaaa-bbbb-cccc"
+EPSS_QUERY = f"{EPSS_URL}?cve={CVE}"
+
+
 class Feeds:
-    def __init__(self, kev_answer: tuple[int, Any]) -> None:
-        self.answers = {
-            f"{OSV_URL}/GHSA-aaaa-bbbb-cccc": (200, OSV),
-            f"{EPSS_URL}?cve={CVE}": (200, EPSS),
-            KEV_URL: kev_answer,
-        }
+    def __init__(self, kev_answer: tuple[int, Any], **answers: tuple[int, Any]) -> None:
+        self.answers = {OSV_QUERY: (200, OSV), EPSS_QUERY: (200, EPSS), KEV_URL: kev_answer}
+        self.answers.update({{"osv": OSV_QUERY, "epss": EPSS_QUERY}[k]: v for k, v in answers.items()})
 
     def request(self, method: str, url: str, body: bytes | None = None) -> tuple[int, bytes]:
         status, payload = self.answers.get(url, (404, {}))
         return status, payload if isinstance(payload, bytes) else json.dumps(payload).encode()
 
 
-def fetched_score(kev_answer: tuple[int, Any]) -> float:
-    document, _ = build_snapshot([FINDING], Feeds(kev_answer))
+def fetched_score(kev_answer: tuple[int, Any], **answers: tuple[int, Any]) -> float:
+    document, _ = build_snapshot([FINDING], Feeds(kev_answer, **answers))
     return score(FINDING, dumps_snapshot(document), "internet-facing")
 
 
@@ -145,3 +146,30 @@ def test_nourhanes_table_end_to_end() -> None:
     assert fetched_score((200, kev())) == pytest.approx(46.0), (
         "the one allowed decrease: KEV read, not listed"
     )
+
+
+GARBLED_EPSS = {"status": "OK", "data": [{"cve": CVE, "epss": "x", "percentile": "y", "date": "2026-11-10"}]}
+# A JSON number reaches the range check (a "-0.5" string is already "not a number"). Below 0 is the only
+# out-of-range value that could lower E: the score clamps the percentile into [0, 1].
+NEGATIVE_EPSS = {
+    "status": "OK",
+    "data": [{"cve": CVE, "epss": 0.001, "percentile": -0.5, "date": "2026-11-10"}],
+}
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        {"osv": (503, b"Service Unavailable")},
+        {"osv": (200, {**OSV, "aliases": "CVE-2099-1001"})},
+        {"epss": (503, b"Service Unavailable")},
+        {"epss": (200, GARBLED_EPSS)},
+        {"epss": (200, NEGATIVE_EPSS)},
+        {"epss": (200, {"status": "OK", "data": []})},
+    ],
+    ids=["osv-down", "osv-garbled", "epss-down", "epss-garbled", "epss-out-of-range", "epss-no-entry"],
+)
+def test_other_feed_problems_never_lower_a_score(answers: dict[str, tuple[int, Any]]) -> None:
+    """#23 review: the table without KEV problems. KEV is read and does not list the CVE, so only a correct
+    EPSS percentile, for a CVE that OSV mapped, may lower the score (to 46.0, as in the table above)."""
+    assert fetched_score((200, kev()), **answers) == 100.0
