@@ -492,3 +492,53 @@ def test_an_invalid_vex_document_is_never_recorded(tmp_path: Path, opa_binary: P
     code, out, decision = run_evaluate(tmp_path, b"", "--vex", str(bad), "--opa", str(opa_binary))
     assert code == 3, out
     assert not decision.exists()
+
+
+@pytest.mark.parametrize(
+    ("option", "content"),
+    [
+        ("--service-context", b"version: 1\nservice: demo\nexposure: internal\n"),
+        ("--waivers", b""),
+        ("--vex", (ROOT / "schemas/fixtures/vex/valid/one-statement.json").read_bytes()),
+    ],
+)
+def test_output_may_not_be_an_input(tmp_path: Path, opa_binary: Path, option: str, content: bytes) -> None:
+    """#22 review: `--output sentinel.yaml` deleted the repository's sentinel.yaml before reading it."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    victim = tmp_path / "input.yaml"
+    victim.write_bytes(content)
+    code, out, _ = run_evaluate(
+        tmp_path, b"", "--opa", str(opa_binary), option, str(victim), "--output", str(victim)
+    )
+    assert code == 3, out
+    assert "--output" in out
+    assert victim.read_bytes() == content, "the input is never deleted"
+
+
+def test_output_may_not_be_the_findings_file(tmp_path: Path, opa_binary: Path) -> None:
+    findings = tmp_path / "findings.v1.ndjson"  # the file run_evaluate passes as --findings
+    code, out, _ = run_evaluate(tmp_path, b"", "--opa", str(opa_binary), "--output", str(findings))
+    assert code == 3, out
+    assert findings.exists()
+
+
+def test_output_may_not_be_a_directory(tmp_path: Path, opa_binary: Path) -> None:
+    """#22 review: a directory gave IsADirectoryError and exit 1, the BLOCK code."""
+    (tmp_path / "out-dir").mkdir(parents=True)
+    code, out, _ = run_evaluate(
+        tmp_path, b"", "--opa", str(opa_binary), "--output", str(tmp_path / "out-dir")
+    )
+    assert code == 3, out
+    assert (tmp_path / "out-dir").is_dir()
+
+
+def test_output_may_not_be_the_default_waivers_file(
+    tmp_path: Path, opa_binary: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    waivers = tmp_path / ".sentinel" / "waivers.yaml"
+    waivers.parent.mkdir(parents=True)
+    waivers.write_text("version: 1\nwaivers: []\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    code, out, _ = run_evaluate(tmp_path / "run", b"", "--opa", str(opa_binary), "--output", str(waivers))
+    assert code == 3, out
+    assert waivers.read_text(encoding="utf-8") == "version: 1\nwaivers: []\n"
