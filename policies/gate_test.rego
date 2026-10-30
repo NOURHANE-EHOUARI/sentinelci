@@ -25,6 +25,7 @@ base := {
 	"findings": [],
 	"waivers": [],
 	"tool_status": {"schema_version": 1, "lock_sha256": "x", "tools": {"gitleaks": ok_tool, "trivy": ok_tool}},
+	"risk_model_version": "1.0.0",
 }
 
 without_tool_status := object.remove(base, ["tool_status"])
@@ -439,6 +440,37 @@ test_scored_p2_and_lower_pass if {
 
 test_the_recorded_priority_wins_over_severity if {
 	gate.decision.verdict == "PASS" with input as with_findings([scored(vuln(h("d"), "CRITICAL"), "P3")])
+}
+
+# A recorded priority counts only when the finding was scored with this bundle's risk model: findings scored
+# with another model (a local run, an older bundle) count at their worst case, like unscored ones.
+test_a_priority_from_another_risk_model_counts_at_the_worst_case if {
+	f := object.union(vuln(h("d"), "CRITICAL"), {"risk": {"score": 5, "priority": "P3", "model_version": "0.9.0"}})
+	d := gate.decision with input as with_findings([f])
+	d.verdict == "BLOCK"
+	d.violations == [{
+		"rule": "SC-002",
+		"effect": "BLOCK",
+		"finding_ids": [f.id],
+		"message": "P0 finding not waived (findings scored with another risk model count at their worst-case priority)",
+	}]
+}
+
+test_a_priority_without_a_model_version_counts_at_the_worst_case if {
+	f := object.union(vuln(h("d"), "CRITICAL"), {"risk": {"score": 5, "priority": "P3"}})
+	gate.decision.verdict == "BLOCK" with input as with_findings([f])
+}
+
+test_without_the_bundle_model_version_no_recorded_priority_counts if {
+	f := scored(vuln(h("d"), "CRITICAL"), "P3")
+	gate.decision.verdict == "PASS" with input as with_findings([f])
+	gate.decision.verdict == "BLOCK" with input as object.remove(with_findings([f]), ["risk_model_version"])
+}
+
+test_an_unscored_finding_keeps_the_unscored_note if {
+	f := vuln(h("d"), "CRITICAL")
+	d := gate.decision with input as with_findings([f])
+	d.violations[0].message == "P0 finding not waived (unscored findings count at their worst-case priority)"
 }
 
 # Unscored (no B3 risk yet): the worst case. risk = 100 x S x E x X x R with E, X, R <= 1, so 100 x S bounds it.

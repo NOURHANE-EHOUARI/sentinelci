@@ -328,8 +328,9 @@ analysis kind; a category without a `non_cve` weight counts as E = 1.0.
 | SC-009 | BLOCK | High-severity CI workflow issue introduced by the PR |
 | SC-010 | BLOCK | Scanner failure, timeout or tool-integrity mismatch; a required scanner (`policies/required_tools.rego`) missing from the tool status, or no tool status where one is required (`pr`, `release`); malformed gate input |
 
-Priority-based rules (SC-002, SC-006) read `risk.priority` (B3); an unscored finding counts at its worst case,
-`100 × severity_weight` banded, so CRITICAL and HIGH are P0 until scored. Each finding is reported under its most
+Priority-based rules (SC-002, SC-006) read `risk.priority` (B3), only when `risk.model_version` is the bundle's
+risk model (`inputs.risk_model_version`); an unscored finding, or one scored with another model, counts at its
+worst case, `100 × severity_weight` banded, so CRITICAL and HIGH are P0 until scored. Each finding is reported under its most
 specific rule (SC-001, SC-003 or SC-009 before SC-002/SC-006). Waivers and diff-aware PR mode apply to every finding
 rule. Not yet implemented: SC-004 (A4 attestations), SC-007, SC-008, the strict profile and VEX.
 
