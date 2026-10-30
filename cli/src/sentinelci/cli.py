@@ -27,6 +27,7 @@ from sentinelci.contracts.finding import Finding, Run, RunContext, Tool
 from sentinelci.enrich import (
     EMPTY_SNAPSHOT,
     EnrichmentError,
+    Reachability,
     enrich_finding,
     load_snapshot,
     read_service_context,
@@ -239,6 +240,13 @@ def enrich_command(
             help="Service context, sentinel.yaml (schemas/sentinel-config.v1.json), from the base branch."
         ),
     ] = None,
+    source: Annotated[
+        list[Path] | None,
+        typer.Option(
+            help="Source tree for reachability (repeatable; PR mode: the base and the head checkouts). "
+            "Never run, only read."
+        ),
+    ] = None,
 ) -> None:
     """Add CVSS, EPSS, KEV, fix availability and exposure to findings, offline (SPEC section 6.1).
 
@@ -252,12 +260,16 @@ def enrich_command(
     try:
         data = load_snapshot(snapshot.read_bytes()) if snapshot else load_snapshot(EMPTY_SNAPSHOT)
         context = read_service_context(config) if config else None
+        reachability = Reachability.of_trees(source) if source else None
         enriched = [
-            Finding.model_validate(enrich_finding(f, data, context))
+            Finding.model_validate(enrich_finding(f, data, context, reachability))
             for f in load_findings(findings.read_bytes())
         ]
     except (EnrichmentError, EvaluationError, OSError, ValueError) as exc:
         typer.echo(f"sentinel enrich: {exc}", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    except Exception as exc:  # fail closed: no traceback, no partial output, no exit 0 or 1
+        typer.echo(f"sentinel enrich: unexpected {type(exc).__name__}: {exc}", err=True)
         raise typer.Exit(EXIT_NO_DECISION) from exc
     _write_output(out, dumps_ndjson(enriched), "sentinel enrich")
     sources = sorted(k for k, v in data.sources.model_dump().items() if v is not None) or ["none"]
@@ -265,6 +277,9 @@ def enrich_command(
         f"{len(enriched)} finding(s) enriched (sources: {', '.join(sources)}; "
         f"service context: {'yes' if context else 'no'}) -> {out}"
     )
+    if reachability is not None:
+        imported = sum(1 for f in enriched if f.enrichment and f.enrichment.reachability == "imported")
+        typer.echo(f"reachability: {imported} imported (the others are left absent: the worst case)")
 
 
 @app.command("score")

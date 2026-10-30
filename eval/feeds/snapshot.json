@@ -1,0 +1,306 @@
+{
+  "schema_version": "1.0",
+  "sources": {
+    "epss": {
+      "date": "2026-10-29"
+    },
+    "kev": {
+      "catalog_version": "2026.10.29",
+      "cves": [
+        "CVE-2020-14343",
+        "CVE-2021-23337",
+        "CVE-2021-28957",
+        "CVE-2021-44228",
+        "CVE-2021-44906",
+        "CVE-2022-22965",
+        "CVE-2023-32681"
+      ],
+      "date_released": "2026-10-29T19:09:34.4003Z"
+    },
+    "osv": {
+      "date": "2026-10-29"
+    }
+  },
+  "vulnerabilities": {
+    "CVE-2020-14343": {
+      "aliases": [
+        "GHSA-8q59-q68h-6hv4",
+        "PYSEC-2021-142"
+      ],
+      "cvss": {
+        "score": 9.8,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+        "version": "3.1"
+      },
+      "epss": {
+        "percentile": 0.9329,
+        "score": 0.05984
+      }
+    },
+    "CVE-2021-23337": {
+      "aliases": [
+        "GHSA-35jh-r3h4-6jhm"
+      ],
+      "cvss": {
+        "score": 7.2,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:H",
+        "version": "3.1"
+      },
+      "epss": {
+        "percentile": 0.97595,
+        "score": 0.21333
+      }
+    },
+    "CVE-2021-28957": {
+      "aliases": [
+        "GHSA-jq4v-f5q6-mjqq",
+        "PYSEC-2021-19"
+      ],
+      "cvss": {
+        "score": 6.1,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
+        "version": "3.1"
+      },
+      "epss": {
+        "percentile": 0.90578,
+        "score": 0.04035
+      }
+    },
+    "CVE-2021-44228": {
+      "aliases": [
+        "GHSA-jfh8-c2jp-5v3q"
+      ],
+      "cvss": {
+        "score": 10.0,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H",
+        "version": "3.1"
+      },
+      "epss": {
+        "percentile": 1.0,
+        "score": 0.99999
+      },
+      "kev": {
+        "date_added": "2021-12-10"
+      }
+    },
+    "CVE-2021-44906": {
+      "aliases": [
+        "GHSA-xvch-5gv4-984h"
+      ],
+      "cvss": {
+        "score": 9.8,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+        "version": "3.1"
+      },
+      "epss": {
+        "percentile": 0.91611,
+        "score": 0.04581
+      }
+    },
+    "CVE-2022-22965": {
+      "aliases": [
+        "GHSA-36p3-wjmg-h94x"
+      ],
+      "cvss": {
+        "score": 9.8,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+        "version": "3.1"
+      },
+      "epss": {
+        "percentile": 0.99949,
+        "score": 0.99638
+      },
+      "kev": {
+        "date_added": "2022-04-04"
+      }
+    },
+    "CVE-2023-32681": {
+      "aliases": [
+        "GHSA-j8r2-6x86-q33q",
+        "PYSEC-2023-74"
+      ],
+      "cvss": {
+        "score": 6.1,
+        "vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:C/C:H/I:N/A:N",
+        "version": "3.1"
+      },
+      "epss": {
+        "percentile": 0.87221,
+        "score": 0.02974
+      }
+    },
+    "GHSA-35jh-r3h4-6jhm": {
+      "aliases": [
+        "CVE-2021-23337"
+      ],
+      "cvss": {
+        "score": 7.2,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:H",
+        "version": "3.1"
+      },
+      "fixed_versions": {
+        "pkg:gem/lodash-rails": [
+          "4.17.21"
+        ],
+        "pkg:npm/lodash": [
+          "4.17.21"
+        ],
+        "pkg:npm/lodash-es": [
+          "4.17.21"
+        ]
+      }
+    },
+    "GHSA-36p3-wjmg-h94x": {
+      "aliases": [
+        "CVE-2022-22965"
+      ],
+      "cvss": {
+        "score": 9.8,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:H",
+        "version": "3.1"
+      },
+      "fixed_versions": {
+        "pkg:maven/org.springframework.boot/spring-boot-starter-web": [
+          "2.5.12",
+          "2.6.6"
+        ],
+        "pkg:maven/org.springframework.boot/spring-boot-starter-webflux": [
+          "2.5.12",
+          "2.6.6"
+        ],
+        "pkg:maven/org.springframework/spring-beans": [
+          "5.2.20.RELEASE",
+          "5.3.18"
+        ],
+        "pkg:maven/org.springframework/spring-webflux": [
+          "5.2.20.RELEASE",
+          "5.3.18"
+        ],
+        "pkg:maven/org.springframework/spring-webmvc": [
+          "5.2.20.RELEASE",
+          "5.3.18"
+        ]
+      }
+    },
+    "GHSA-8q59-q68h-6hv4": {
+      "aliases": [
+        "CVE-2020-14343",
+        "PYSEC-2021-142"
+      ],
+      "cvss": {
+        "score": 9.8,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+        "version": "3.1"
+      },
+      "fixed_versions": {
+        "pkg:pypi/pyyaml": [
+          "5.4"
+        ]
+      }
+    },
+    "GHSA-j8r2-6x86-q33q": {
+      "aliases": [
+        "CVE-2023-32681",
+        "PYSEC-2023-74"
+      ],
+      "cvss": {
+        "score": 6.1,
+        "vector": "CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:C/C:H/I:N/A:N",
+        "version": "3.1"
+      },
+      "fixed_versions": {
+        "pkg:pypi/requests": [
+          "2.31.0"
+        ]
+      }
+    },
+    "GHSA-jfh8-c2jp-5v3q": {
+      "aliases": [
+        "CVE-2021-44228"
+      ],
+      "cvss": {
+        "score": 10.0,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H/E:H",
+        "version": "3.1"
+      },
+      "fixed_versions": {
+        "pkg:maven/org.apache.logging.log4j/log4j-core": [
+          "2.12.2",
+          "2.15.0",
+          "2.3.1"
+        ],
+        "pkg:maven/org.ops4j.pax.logging/pax-logging-log4j2": [
+          "1.10.8",
+          "1.11.10",
+          "1.9.2",
+          "2.0.11"
+        ]
+      }
+    },
+    "GHSA-jq4v-f5q6-mjqq": {
+      "aliases": [
+        "CVE-2021-28957",
+        "PYSEC-2021-19"
+      ],
+      "cvss": {
+        "score": 6.1,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
+        "version": "3.1"
+      },
+      "fixed_versions": {
+        "pkg:pypi/lxml": [
+          "4.6.3"
+        ]
+      }
+    },
+    "GHSA-xvch-5gv4-984h": {
+      "aliases": [
+        "CVE-2021-44906"
+      ],
+      "cvss": {
+        "score": 9.8,
+        "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+        "version": "3.1"
+      },
+      "fixed_versions": {
+        "pkg:npm/minimist": [
+          "0.2.4",
+          "1.2.6"
+        ]
+      }
+    },
+    "PYSEC-2021-142": {
+      "aliases": [
+        "CVE-2020-14343",
+        "GHSA-8q59-q68h-6hv4"
+      ],
+      "fixed_versions": {
+        "pkg:pypi/pyyaml": [
+          "5.4"
+        ]
+      }
+    },
+    "PYSEC-2021-19": {
+      "aliases": [
+        "CVE-2021-28957",
+        "GHSA-jq4v-f5q6-mjqq"
+      ],
+      "fixed_versions": {
+        "pkg:pypi/lxml": [
+          "4.6.3"
+        ]
+      }
+    },
+    "PYSEC-2023-74": {
+      "aliases": [
+        "CVE-2023-32681",
+        "GHSA-j8r2-6x86-q33q"
+      ],
+      "fixed_versions": {
+        "pkg:pypi/requests": [
+          "2.31.0"
+        ]
+      }
+    }
+  }
+}

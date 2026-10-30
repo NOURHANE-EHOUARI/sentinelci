@@ -3,22 +3,25 @@
 `HttpTransport` talks only to the three feeds over HTTPS, never follows a redirect, needs no credentials (the
 feeds are public), caps every response at 32 MB, every request at one overall deadline and the whole run at
 a time budget, and retries a transient failure (a timeout, a reset, a retryable status) once.
-`RecordingTransport` saves every response it passes on (raw bytes, base64, with their sha256), and
-`ReplayTransport` answers from those files after checking the digest: the offline fixtures, for demos,
-evaluation and tests. Recordings are evidence inputs: use them only from the base commit or a
-trusted store, since a change that edits them could forge EPSS or KEV answers.
+`RecordingTransport` saves every response it passes on (gzip, base64, with the sha256 of the raw bytes), and
+`ReplayTransport` answers from those files after checking the digest: the offline fixtures (eval/feeds/), for
+demos, evaluation and tests. Recordings are evidence inputs: use them only from the base commit or a trusted
+store, since a change that edits them could forge EPSS or KEV answers.
 """
 
 from __future__ import annotations
 
 import base64
 import binascii
+import gzip
 import hashlib
 import http.client
+import io
 import json
 import time
 import urllib.error
 import urllib.request
+import zlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
@@ -32,7 +35,10 @@ MAX_RESPONSE_BYTES = 32 * 1024 * 1024  # the KEV catalogue is about 2 MB
 RETRIES = 1
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 _CHUNK = 64 * 1024
-_RECORDING_FORMAT = "sentinelci-feed-recording/1"
+# Responses are stored gzip-compressed (mtime 0, so the same answer gives the same file): the KEV catalogue
+# is 1.8 MB raw, a few hundred KB compressed. The sha256 is of the raw bytes.
+_RECORDING_FORMAT = "sentinelci-feed-recording/2"
+MAX_RECORDED_BYTES = MAX_RESPONSE_BYTES
 
 
 class TransportError(Exception):
@@ -177,7 +183,7 @@ class RecordingTransport:
             "url": url,
             "body_base64": None if body is None else base64.b64encode(body).decode("ascii"),
             "status": status,
-            "response_base64": base64.b64encode(data).decode("ascii"),
+            "response_gzip_base64": base64.b64encode(gzip.compress(data, mtime=0)).decode("ascii"),
             "response_sha256": hashlib.sha256(data).hexdigest(),
         }
         path = self.directory / f"{_key(method, url, body)}.json"
@@ -200,14 +206,23 @@ class ReplayTransport:
             record = json.loads(path.read_text(encoding="utf-8"))
             if record["format"] != _RECORDING_FORMAT or record["method"] != method or record["url"] != url:
                 raise ValueError("recording of another request")
-            data = base64.b64decode(record["response_base64"], validate=True)
+            data = _gunzip(base64.b64decode(record["response_gzip_base64"], validate=True))
             status = record["status"]
             if not isinstance(status, int) or isinstance(status, bool):
                 raise ValueError("status is not a number")
         except FileNotFoundError as exc:
             raise TransportError(f"{method} {url}: no recorded response in {self.directory}") from exc
-        except (OSError, ValueError, KeyError, TypeError, binascii.Error) as exc:
+        except (OSError, ValueError, KeyError, TypeError, EOFError, binascii.Error, zlib.error) as exc:
             raise TransportError(f"{method} {url}: unreadable recording {path.name}: {exc}") from exc
         if hashlib.sha256(data).hexdigest() != record.get("response_sha256"):
             raise TransportError(f"{method} {url}: recording {path.name} does not match its sha256")
         return status, data
+
+
+def _gunzip(data: bytes) -> bytes:
+    """Decompress at most MAX_RECORDED_BYTES: a recording cannot be a decompression bomb."""
+    with gzip.GzipFile(fileobj=io.BytesIO(data)) as stream:
+        raw = stream.read(MAX_RECORDED_BYTES + 1)
+    if len(raw) > MAX_RECORDED_BYTES:
+        raise ValueError(f"recording expands beyond {MAX_RECORDED_BYTES} bytes")
+    return raw

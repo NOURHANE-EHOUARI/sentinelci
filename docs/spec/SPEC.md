@@ -227,7 +227,9 @@ score is computed from the OSV vector (highest vector wins). Each feed is all or
 feed out with a warning, never a partial feed; KEV is read before EPSS, and EPSS is left out when KEV could not
 be read (EPSS alone would lower the risk of a listed vulnerability); the KEV catalogue is trusted whole or not at
 all; redirects are never followed. `--record` / `--offline` capture and replay the feed answers (raw bytes and
-their sha256) as offline fixtures; in CI they come from the base commit or a trusted store, like the policies. The NVD fallback for CVSS is not implemented yet: an id without a 3.x vector in OSV keeps an
+their sha256, gzip-compressed) as offline fixtures; in CI they come from the base commit or a trusted store, like the
+policies. `eval/feeds/` holds committed fixtures: 7 real vulnerable packages (Maven, PyPI, npm; KEV-listed and not;
+alias chains), their recordings and the snapshot they give, checked offline by the tests. The NVD fallback for CVSS is not implemented yet: an id without a 3.x vector in OSV keeps an
 unknown CVSS, which the risk engine counts as the worst case.
 
 "Known no" is written only for what was checked: `kev: {listed: false}` only when the KEV lookup covered every
@@ -238,6 +240,16 @@ boundary: it is read with a YAML loader that refuses duplicate keys, anchors and
 scalars, lists and mappings, and is limited to 64 KiB; component paths are canonical and unique. Residual risk:
 where a change puts its files decides their path-scoped exposure (a file under an `offline` component is scored
 as offline), so changes to `sentinel.yaml` and new top-level directories deserve a reviewer's eye.
+
+Reachability (B2, `sentinel enrich --source`): static import analysis of the scanned tree for PyPI and npm SCA
+findings, never executing it. `imported` when first-party code imports the package, or when a lockfile shows that
+an imported package depends on it at runtime; nothing otherwise (the worst case, R = 1.0). `not_imported` is not
+claimed: libraries load packages themselves (FastAPI templates load jinja2, PyJWT's RS256 loads cryptography)
+through optional dependencies a lockfile does not record, so it needs per-library evidence first. CONTAINER
+findings, `MAL-` advisories and npm packages with install scripts get no answer. In PR mode the base and the head
+are both analysed and `imported` must hold in both, so a change cannot lower its own score by adding an import.
+`reachable` would need call-graph analysis, a stretch goal (§16). Residual risk: a deliberately written import that
+nothing uses gives `imported` (R 0.9 instead of 1.0); a missed import only leaves the worst case.
 
 ### 6.2 Risk model
 
@@ -465,7 +477,7 @@ Required: `schema_version`, `id`, `tool`, `rule_id`, `category` (SECRET | SAST |
 LICENSE), `title`, `severity` (CRITICAL | HIGH | MEDIUM | LOW | INFO), `run`. Conditional: SECRET ⇒ `location` +
 `evidence.secret_hash` (raw secrets are never stored); SAST/IAC/PIPELINE ⇒ `location`; SCA/LICENSE ⇒ `package`;
 CONTAINER ⇒ `package` + `image`. Optional blocks `enrichment` (B2) and `risk` (B3). Paths must be relative and
-cannot contain `..`.
+cannot contain `..`. No pattern-checked field (ids, digests, paths, purls) may contain a line break, in any validator.
 
 **Several locations (1.1, additive).** One finding (one `id`) can be seen in several places, e.g. the same secret
 in two files. `location` is the first one by (path, start line); `other_locations` lists every other one, sorted
