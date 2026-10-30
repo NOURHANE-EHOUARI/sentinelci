@@ -149,6 +149,12 @@ def test_nourhanes_table_end_to_end() -> None:
 
 
 GARBLED_EPSS = {"status": "OK", "data": [{"cve": CVE, "epss": "x", "percentile": "y", "date": "2026-11-10"}]}
+# A JSON number reaches the range check (a "-0.5" string is already "not a number"). Below 0 is the only
+# out-of-range value that could lower E: the score clamps the percentile into [0, 1].
+NEGATIVE_EPSS = {
+    "status": "OK",
+    "data": [{"cve": CVE, "epss": 0.001, "percentile": -0.5, "date": "2026-11-10"}],
+}
 
 
 @pytest.mark.parametrize(
@@ -158,9 +164,10 @@ GARBLED_EPSS = {"status": "OK", "data": [{"cve": CVE, "epss": "x", "percentile":
         {"osv": (200, {**OSV, "aliases": "CVE-2099-1001"})},
         {"epss": (503, b"Service Unavailable")},
         {"epss": (200, GARBLED_EPSS)},
+        {"epss": (200, NEGATIVE_EPSS)},
         {"epss": (200, {"status": "OK", "data": []})},
     ],
-    ids=["osv-down", "osv-garbled", "epss-down", "epss-garbled", "epss-no-entry"],
+    ids=["osv-down", "osv-garbled", "epss-down", "epss-garbled", "epss-out-of-range", "epss-no-entry"],
 )
 def test_other_feed_problems_never_lower_a_score(answers: dict[str, tuple[int, Any]]) -> None:
     """#23 review: the table without KEV problems. KEV is read and does not list the CVE, so only a correct
