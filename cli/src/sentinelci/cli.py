@@ -132,14 +132,14 @@ def _write_atomically(path: Path, text: str) -> None:
         raise
 
 
-def _refuse_output(out: Path, sources: list[Path | None], command: str) -> None:
-    """Fail closed before anything is deleted: --out must not be any input file, nor a directory."""
+def _refuse_output(out: Path, sources: list[Path | None], command: str, option: str = "--out") -> None:
+    """Fail closed before anything is deleted: the output must not be any input file, nor a directory."""
     if out.is_dir():
-        typer.echo(f"{command}: --out {out} is a directory; nothing was written", err=True)
+        typer.echo(f"{command}: {option} {out} is a directory; nothing was written", err=True)
         raise typer.Exit(EXIT_NO_DECISION)
     for source in sources:
         if source is not None and out.exists() and source.exists() and out.resolve() == source.resolve():
-            typer.echo(f"{command}: --out {out} is the input file {source}; nothing was written", err=True)
+            typer.echo(f"{command}: {option} {out} is the input file {source}; nothing was written", err=True)
             raise typer.Exit(EXIT_NO_DECISION)
 
 
@@ -276,10 +276,12 @@ def evaluate_command(
     Exit code 0 for PASS or WARN, 1 for BLOCK, 3 when no decision could be made (fail closed). With
     --store, a decision whose evidence cannot be stored is not written either (exit 3).
     """
-    # A stale decision from an earlier run must never be mistaken for this run's result.
-    output.unlink(missing_ok=True)
     if waivers is None and Path(DEFAULT_WAIVERS_PATH).is_file():
         waivers = Path(DEFAULT_WAIVERS_PATH)
+    inputs = [findings, waivers, baseline, tool_status, enrichment_snapshot, service_context, sbom]
+    _refuse_output(output, inputs, "sentinel evaluate", "--output")
+    # A stale decision from an earlier run must never be mistaken for this run's result.
+    output.unlink(missing_ok=True)
     try:
         # Each input is read once: the same bytes are evaluated, digested and stored.
         data = _Inputs(
