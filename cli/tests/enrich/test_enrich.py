@@ -187,10 +187,10 @@ def test_a_null_enrichment_field_is_dropped_not_kept_as_an_empty_object(tmp_path
     assert "enrichment" not in json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_other_enrichment_is_kept_and_enriching_twice_changes_nothing() -> None:
+def test_earlier_enrichment_is_replaced_and_enriching_twice_changes_nothing() -> None:
     finding = {**SCA, "enrichment": {"reachability": "not_imported", "exposure": "offline"}}
     once = enrich_finding(finding, load_snapshot(FULL), SITE)
-    assert once["enrichment"]["reachability"] == "not_imported"
+    assert "reachability" not in once["enrichment"]  # no source tree given: a stale value is never kept
     assert once["enrichment"]["exposure"] == "internet-facing"  # the service context wins
     assert enrich_finding(once, load_snapshot(FULL), SITE) == once
     assert {k: v for k, v in once.items() if k != "enrichment"} == {

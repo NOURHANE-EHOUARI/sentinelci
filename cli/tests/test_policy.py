@@ -531,3 +531,26 @@ def test_output_may_not_be_the_default_waivers_file(
     code, out, _ = run_evaluate(tmp_path / "run", b"", "--opa", str(opa_binary), "--output", str(waivers))
     assert code == 3, out
     assert waivers.read_text(encoding="utf-8") == "version: 1\nwaivers: []\n"
+
+
+SCORED_SCA = json.loads((FINDING_FIXTURES / "sca-enriched-and-scored.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize(("model_version", "sc002"), [("1.0.0", False), ("0.9.0", True)])
+def test_a_recorded_priority_counts_only_from_the_bundles_risk_model(
+    tmp_path: Path, opa_binary: Path, model_version: str, sc002: bool
+) -> None:
+    """A CRITICAL finding scored P3: trusted with this bundle's risk model, P0 (worst case) with another."""
+    finding = {
+        **{k: v for k, v in SCORED_SCA.items() if k != "enrichment"},
+        "risk": {**SCORED_SCA["risk"], "score": 15.0, "priority": "P3", "model_version": model_version},
+    }
+    code, out, output = run_evaluate(tmp_path, ndjson(finding), "--opa", str(opa_binary))
+    assert code == (1 if sc002 else 0), out
+    decision = json.loads(output.read_text(encoding="utf-8"))
+    assert_valid_decision(decision)
+    assert decision["inputs"]["risk_model_version"] == "1.0.0"
+    sc002_violations = [v for v in decision["violations"] if v["rule"] == "SC-002"]
+    assert bool(sc002_violations) is sc002, out
+    if sc002:
+        assert "scored with another risk model" in sc002_violations[0]["message"]

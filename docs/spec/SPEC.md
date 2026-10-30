@@ -222,6 +222,17 @@ gives every finding the exposure of its `sentinel.yaml` component (longest match
 the risk engine counts it as the worst case. `sentinel.yaml` (`schemas/sentinel-config.v1.json`) is read from the
 base branch, like the policies and waivers, so a change cannot lower its own exposure.
 
+Fetchers (B2, `sentinel snapshot`): OSV by id (one extra round for the aliases it reveals), EPSS in batches of
+100 CVEs, and the KEV catalogue filtered to those CVEs; HTTPS to those three hosts only. The CVSS 3.0/3.1 base
+score is computed from the OSV vector (highest vector wins). Each feed is all or nothing: a failure leaves the
+feed out with a warning, never a partial feed; KEV is read before EPSS, and EPSS is left out when KEV could not
+be read (EPSS alone would lower the risk of a listed vulnerability); the KEV catalogue is trusted whole or not at
+all; redirects are never followed. `--record` / `--offline` capture and replay the feed answers (raw bytes and
+their sha256, gzip-compressed) as offline fixtures; in CI they come from the base commit or a trusted store, like the
+policies. `eval/feeds/` holds committed fixtures: 7 real vulnerable packages (Maven, PyPI, npm; KEV-listed and not;
+alias chains), their recordings and the snapshot they give, checked offline by the tests. The NVD fallback for CVSS is not implemented yet: an id without a 3.x vector in OSV keeps an
+unknown CVSS, which the risk engine counts as the worst case.
+
 "Known no" is written only for what was checked: `kev: {listed: false}` only when the KEV lookup covered every
 CVE id of the finding (`sources.kev.cves`), and `fix_available: false` only when OSV knew the vulnerability and
 fixes none of the package (package URLs compared in canonical form). A KEV outage therefore leaves KEV unknown,
@@ -230,6 +241,16 @@ boundary: it is read with a YAML loader that refuses duplicate keys, anchors and
 scalars, lists and mappings, and is limited to 64 KiB; component paths are canonical and unique. Residual risk:
 where a change puts its files decides their path-scoped exposure (a file under an `offline` component is scored
 as offline), so changes to `sentinel.yaml` and new top-level directories deserve a reviewer's eye.
+
+Reachability (B2, `sentinel enrich --source`): static import analysis of the scanned tree for PyPI and npm SCA
+findings, never executing it. `imported` when first-party code imports the package, or when a lockfile shows that
+an imported package depends on it at runtime; nothing otherwise (the worst case, R = 1.0). `not_imported` is not
+claimed: libraries load packages themselves (FastAPI templates load jinja2, PyJWT's RS256 loads cryptography)
+through optional dependencies a lockfile does not record, so it needs per-library evidence first. CONTAINER
+findings, `MAL-` advisories and npm packages with install scripts get no answer. In PR mode the base and the head
+are both analysed and `imported` must hold in both, so a change cannot lower its own score by adding an import.
+`reachable` would need call-graph analysis, a stretch goal (§16). Residual risk: a deliberately written import that
+nothing uses gives `imported` (R 0.9 instead of 1.0); a missed import only leaves the worst case.
 
 ### 6.2 Risk model
 
@@ -277,8 +298,9 @@ analysis kind; a category without a `non_cve` weight counts as E = 1.0.
 | SC-009 | BLOCK | High-severity CI workflow issue introduced by the PR |
 | SC-010 | BLOCK | Scanner failure, timeout or tool-integrity mismatch; a required scanner (`policies/required_tools.rego`) missing from the tool status, or no tool status where one is required (`pr`, `release`); malformed gate input |
 
-Priority-based rules (SC-002, SC-006) read `risk.priority` (B3); an unscored finding counts at its worst case,
-`100 × severity_weight` banded, so CRITICAL and HIGH are P0 until scored. Each finding is reported under its most
+Priority-based rules (SC-002, SC-006) read `risk.priority` (B3), only when `risk.model_version` is the bundle's
+risk model (`inputs.risk_model_version`); an unscored finding, or one scored with another model, counts at its
+worst case, `100 × severity_weight` banded, so CRITICAL and HIGH are P0 until scored. Each finding is reported under its most
 specific rule (SC-001, SC-003 or SC-009 before SC-002/SC-006). Waivers and diff-aware PR mode apply to every finding
 rule. Not yet implemented: SC-004 (A4 attestations), SC-007, SC-008, the strict profile and VEX.
 
