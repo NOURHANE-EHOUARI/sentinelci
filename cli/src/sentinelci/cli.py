@@ -213,14 +213,28 @@ def _write_output(out: Path, text: str, command: str) -> None:
         raise typer.Exit(EXIT_NO_DECISION) from exc
 
 
-def _refuse_output(out: Path, sources: list[Path | None], command: str, option: str = "--out") -> None:
-    """Fail closed before anything is deleted: the output must not be any input file, nor a directory."""
+def _refuse_output(
+    out: Path,
+    sources: list[Path | None],
+    command: str,
+    option: str = "--out",
+    dirs: dict[str, Path | None] | None = None,
+) -> None:
+    """Fail closed before anything is deleted: the output must not be any input file, nor a directory,
+    nor anywhere inside an input directory (`dirs`, by option name: the policy bundle, the evidence store).
+    """
     if out.is_dir():
         typer.echo(f"{command}: {option} {out} is a directory; nothing was written", err=True)
         raise typer.Exit(EXIT_NO_DECISION)
     for source in sources:
         if source is not None and out.exists() and source.exists() and out.resolve() == source.resolve():
             typer.echo(f"{command}: {option} {out} is the input file {source}; nothing was written", err=True)
+            raise typer.Exit(EXIT_NO_DECISION)
+    for dir_option, directory in (dirs or {}).items():
+        if directory is not None and out.resolve().is_relative_to(directory.resolve()):
+            typer.echo(
+                f"{command}: {option} {out} is inside {dir_option} {directory}; nothing was written", err=True
+            )
             raise typer.Exit(EXIT_NO_DECISION)
 
 
@@ -294,10 +308,7 @@ def score_command(
 
     Exit code 0 on success, 3 when the findings or the risk model cannot be read (nothing is written).
     """
-    # Fail closed before anything is deleted: --out must not be the findings file, nor a directory.
-    if out.is_dir() or (out.exists() and findings.exists() and out.resolve() == findings.resolve()):
-        typer.echo(f"sentinel score: --out {out} is the input or a directory; nothing was written", err=True)
-        raise typer.Exit(EXIT_NO_DECISION)
+    _refuse_output(out, [findings], "sentinel score", dirs={"--policy-dir": policy_dir})
     # A stale file from an earlier run must never be read as this run's scores.
     _clear_output(out, "sentinel score")
     try:
@@ -373,8 +384,9 @@ def evaluate_command(
     """
     if waivers is None and Path(DEFAULT_WAIVERS_PATH).is_file():
         waivers = Path(DEFAULT_WAIVERS_PATH)
-    inputs = [findings, waivers, baseline, tool_status, enrichment_snapshot, service_context, sbom]
-    _refuse_output(output, inputs, "sentinel evaluate", "--output")
+    inputs = [findings, waivers, baseline, tool_status, enrichment_snapshot, service_context, sbom, opa]
+    dirs = {"--policy-dir": policy_dir, "--store": store}
+    _refuse_output(output, inputs, "sentinel evaluate", "--output", dirs)
     # A stale decision from an earlier run must never be mistaken for this run's result.
     output.unlink(missing_ok=True)
     try:
