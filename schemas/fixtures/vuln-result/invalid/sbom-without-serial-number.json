@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "decision_id": "0193f2c4-7a1e-7b3c-9d2e-4f5a6b7c8d9e",
+  "findings_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "sbom": {
+    "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "totals": {
+    "findings": 3,
+    "by_severity": {
+      "HIGH": 2,
+      "LOW": 1
+    },
+    "by_category": {
+      "SCA": 2,
+      "CONTAINER": 1
+    }
+  },
+  "tools": {
+    "grype": "0.121.0",
+    "trivy": "0.76.1"
+  }
+}
