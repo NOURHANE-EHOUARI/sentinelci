@@ -533,7 +533,10 @@ test_medium_pipeline_issue_does_not_block if {
 	gate.decision.verdict == "PASS" with input as with_findings([pipeline_issue(h("e"), "MEDIUM")])
 }
 
-iac_issue(id, rule_id, severity) := {"id": id, "category": "IAC", "rule_id": rule_id, "severity": severity}
+iac_issue(id, rule_id, severity) := {
+	"id": id, "category": "IAC", "rule_id": rule_id, "severity": severity,
+	"tool": {"name": "trivy", "version": "0.76.1"},
+}
 
 sc011_violation(ids) := {
 	"rule": "SC-011",
@@ -574,6 +577,14 @@ test_other_misconfigurations_keep_their_priority if {
 test_sc011_is_for_iac_findings_only if {
 	f := scored(object.union(vuln(h("a"), "LOW"), {"rule_id": "KSV-0017"}), "P3")
 	gate.decision.verdict == "PASS" with input as with_findings([f])
+}
+
+# The ids are Trivy's (#29 review): another IaC tool reporting the same rule_id keeps its risk-model priority.
+test_sc011_is_for_trivy_findings_only if {
+	every name in ["checkov", "Trivy", "trivy-fork"] {
+		f := scored(object.union(iac_issue(h("a"), "KSV-0017", "HIGH"), {"tool": {"name": name, "version": "1"}}), "P3")
+		gate.decision.verdict == "PASS" with input as with_findings([f])
+	}
 }
 
 test_an_exposing_misconfiguration_is_reported_once if {

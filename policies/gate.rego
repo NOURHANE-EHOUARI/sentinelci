@@ -304,10 +304,12 @@ block contains v if {
 }
 
 # SC-011: a misconfiguration that exposes the service by itself (policies/exposing.rego), whatever its score: it
-# creates the exposure the risk model's exposure factor would otherwise discount.
+# creates the exposure the risk model's exposure factor would otherwise discount. The ids are Trivy's, so only
+# Trivy findings match: another tool reporting the same rule_id was never checked against the list.
 exposing_ids contains f.id if {
 	some f in input.findings
 	f.category == "IAC"
+	f.tool.name == "trivy"
 	f.rule_id in exposing.rule_ids
 	counts(f)
 }
