@@ -556,7 +556,7 @@ test_every_listed_misconfiguration_blocks_with_sc011_whatever_its_score if {
 test_the_exposing_list_is_the_one_pinned_against_trivy if {
 	exposing.rule_ids == {
 		"KSV-0017", "KSV-0009", "KSV-0010", "KSV-0008", "KSV-0005", "KSV-0006", "KSV-0121",
-		"AWS-0092", "AWS-0180", "GCP-0001", "GCP-0017", "AZU-0007",
+		"AWS-0092", "AWS-0180", "GCP-0001", "AZU-0007",
 		"AWS-0107", "GCP-0071", "GCP-0070", "AZU-0050", "AZU-0048",
 	}
 }
@@ -564,6 +564,9 @@ test_the_exposing_list_is_the_one_pinned_against_trivy if {
 test_other_misconfigurations_keep_their_priority if {
 	# Root filesystem not read-only, open egress: ranked by the risk model, never SC-011.
 	gate.decision.verdict == "PASS" with input as with_findings([scored(iac_issue(h("a"), "KSV-0014", "HIGH"), "P2")])
+
+	# Any Cloud SQL instance with a public IP, provider defaults included (#28 review): not SC-011.
+	gate.decision.verdict == "PASS" with input as with_findings([scored(iac_issue(h("a"), "GCP-0017", "HIGH"), "P2")])
 	d := gate.decision with input as with_findings([scored(iac_issue(h("a"), "AWS-0104", "CRITICAL"), "P1")])
 	[v.rule | some v in d.violations] == ["SC-006"]
 }

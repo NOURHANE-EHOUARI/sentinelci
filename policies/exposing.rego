@@ -9,7 +9,8 @@
 # ones (public HTTPS, EKS defaults, a private bucket) must not, so a Trivy upgrade that renames or drops a
 # check fails that test instead of silently turning SC-011 off. Excluded after checking with the pinned Trivy:
 # GCP-0027 and AZU-0047 (also fire on public HTTPS), AWS-0040/0041 (EKS defaults), AWS-0086/0087/0091/0093
-# (a private bucket without a public access block). Keep one id per line: sentinelci.policy.exposing reads them.
+# (a private bucket without a public access block), GCP-0017 (any Cloud SQL instance with a public IP, provider
+# defaults and an office-only range included). Keep one id per line: sentinelci.policy.exposing reads them.
 package sentinel.exposing
 
 import rego.v1
@@ -27,7 +28,6 @@ rule_ids := {
 	"AWS-0092", # S3 bucket public through its ACL
 	"AWS-0180", # RDS instance publicly accessible
 	"GCP-0001", # storage bucket readable by allUsers
-	"GCP-0017", # Cloud SQL instance open to the internet
 	"AZU-0007", # storage container public
 	# SSH and RDP open to the internet
 	"AWS-0107", # security group: SSH from 0.0.0.0/0
