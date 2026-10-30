@@ -24,5 +24,9 @@ Rules:
   `inputs.waivers_digest`; 1.2 added `inputs.baseline_digest` and `inputs.tool_status_digest`; 1.3 adds
   `inputs.service_context_digest`), finding 1.1 (adds
   `other_locations`).
+- Every `pattern` starts with `^(?![^\r\n\u2028\u2029]*[\r\n\u2028\u2029])`: no line break anywhere. Without it,
+  Python (`$` also matches before a final newline; `.` matches `\r`, U+2028, U+2029) and ECMA-262 validators (ajv)
+  disagree, e.g. on `"<64 hex>\n"`. `tests/contracts/test_patterns.py` enforces it and compares both engines. The one
+  exemption is free text (`\S`, waiver owner and justification), which may span lines, like a YAML `>` block.
 - Schemas encode safety rules where possible (no raw secrets, no path traversal, VERIFIED only when every
   verification condition holds, verdict consistent with violations).

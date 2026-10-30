@@ -12,6 +12,7 @@
 |---|---|
 | 1.1.5 | Decision 1.3: `inputs.service_context_digest`, the `sentinel.yaml` enrichment used (from the base branch), recorded by `sentinel evaluate --service-context`, stored with `--store` and given back on replay; an invalid `sentinel.yaml` is never recorded (exit 3). |
 | 1.1.4 | Enrichment (B2, §6.1): `schemas/enrichment-snapshot.v1.json` (`schema_version` "1.0", `sources.kev.cves`: the CVEs the KEV lookup covered) and `schemas/sentinel-config.v1.json` (`sentinel.yaml`, canonical component paths); `sentinel enrich`. "Not listed in KEV" only for covered CVEs; `sentinel.yaml` read with a restricted YAML loader. |
+| 1.1.3 | Scanner hardening (§5): verify-before-exec, minimal child environment, scanner configuration owned by SentinelCI; repository-controlled suppressions are neutralized or refused (Gitleaks: `.gitleaks.toml`, `gitleaks:allow`, `.gitleaksignore`, and `.gitattributes` `-diff`/`binary` in git mode); merge commits scanned with `--diff-merges=remerge` plus a `first-parent` pass for octopus merges (evil merges), archives opened in dir mode. |
 | 1.1.2 | Tool lock is `tools.lock.toml` (read with the standard library: no extra dependency). A1 split: A1a = lock + `sentinel tools install/verify` (done), A1b = scanner adapters + Opengrep pinning via signature verification. |
 | 1.1.1a | Package fingerprints use the purl base (no version, qualifiers or subpath — same as the gate's waiver matching), agreed in the review of PR #1. "Green CI" may be a local `make check` report while Actions minutes are exhausted. |
 | 1.1.1 | No GitHub Pro: `main` protected by convention + local guard until the repository goes public. |
@@ -163,6 +164,21 @@ Local CLI runs can **push** to the same ingestion API. No self-hosted runners (a
 | 11 | Report | PR comment, evidence artifact | comment, artifact | — |
 | 12 | Deploy | GitOps digest bump → Argo CD → Kyverno | pods | admission deny |
 
+**Scanner hardening (A1).** Every scanner run (1) re-verifies the binary against `tools.lock.toml` right
+before execution, (2) gets a minimal environment (no CI tokens, keys or proxy variables), (3) uses a configuration
+owned by SentinelCI, never one from the scanned repository, and (4) treats crashes, timeouts and missing reports as
+SC-010. Suppression mechanisms that live in the scanned repository are written by the change author, so they are
+neutralized (`--config`, `--ignore-gitleaks-allow`) or refused when the tool offers no way to disable them
+(Gitleaks always loads `<source>/.gitleaksignore`). In git mode, `git log -p` honours the repository's
+`.gitattributes`, where a `-diff` or `binary` attribute would hide a file's patch, so patches are forced to text
+(`--text`, no textconv or external diff) and caller `--log-opts` are restricted to revisions, pathspecs and a few
+harmless options. Merge commits are scanned with `--diff-merges=remerge`, so a secret slipped into a merge
+(an "evil merge") is found while an honest merge of the base branch blames nobody (octopus merges excepted:
+remerge does not diff them, so they get a second `first-parent` pass, which also reports what the other parents
+already had; the PR baseline drops what the base branch has). Each Gitleaks pass gets the full scanner time
+limit, so git mode can take twice as long. Dir mode opens archives (`.zip`, nested up to 3 levels). Legitimate
+exceptions go through waivers (§6.4).
+
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
 (no repo code; signing key / OIDC only here) · `report` (`pull-requests: write`).
@@ -238,13 +254,21 @@ priority_bands: {P0: 70, P1: 50, P2: 30, P3: 10}   # below 10 -> P4
 | Internal service importing it | 0.7 | 0.9 | 61 | P1 |
 | Offline batch job never importing it | 0.5 | 0.4 | 19 | P3 |
 
+Implementation (`sentinel score`, B3): the score is rounded to 0.1 and banded from the rounded value; `factors`
+records S, E, X and R. Missing enrichment never lowers a score (E < 1 only when KEV was read and the CVE is not
+listed, so a KEV outage next to a working EPSS feed cannot lower E; no exposure: X = 1.0; no
+reachability analysis: R = 1.0, while `unknown` is for an analysis that ran and could not decide), so every score
+stays at most `100 × severity_weight`, the bound the gate uses for unscored findings, and a finding with no
+enrichment scores exactly that bound. Every priority band floor lies in (0, 100]. R applies to SCA and CONTAINER only; SAST counts as `SAST_TAINT` until findings carry the
+analysis kind; a category without a `non_cve` weight counts as E = 1.0.
+
 ### 6.3 Rule catalogue
 
 | Rule | Verdict | Condition |
 |---|---|---|
 | SC-001 | BLOCK | Secret detected (new in PR, or anywhere in a release image), not waived |
 | SC-002 | BLOCK | Any P0 finding without valid waiver |
-| SC-003 | BLOCK | KEV-listed vulnerability with a fix, internet-facing service |
+| SC-003 | BLOCK | KEV-listed vulnerability with a fix, internet-facing service (an unknown exposure counts as internet-facing) |
 | SC-004 | BLOCK | Release image missing signature, SBOM or provenance |
 | SC-005 | BLOCK | Invalid waiver (no owner / justification / expiry, or expiry > 90 days) |
 | SC-006 | WARN | P1 findings (BLOCK above threshold in strict profile) |
@@ -252,6 +276,11 @@ priority_bands: {P0: 70, P1: 50, P2: 30, P3: 10}   # below 10 -> P4
 | SC-008 | WARN | Copyleft licence in a distributed component |
 | SC-009 | BLOCK | High-severity CI workflow issue introduced by the PR |
 | SC-010 | BLOCK | Scanner failure, timeout or tool-integrity mismatch; a required scanner (`policies/required_tools.rego`) missing from the tool status, or no tool status where one is required (`pr`, `release`); malformed gate input |
+
+Priority-based rules (SC-002, SC-006) read `risk.priority` (B3); an unscored finding counts at its worst case,
+`100 × severity_weight` banded, so CRITICAL and HIGH are P0 until scored. Each finding is reported under its most
+specific rule (SC-001, SC-003 or SC-009 before SC-002/SC-006). Waivers and diff-aware PR mode apply to every finding
+rule. Not yet implemented: SC-004 (A4 attestations), SC-007, SC-008, the strict profile and VEX.
 
 Policy rules use `input.evaluated_at`, never `time.now_ns()`. Reference implementation of the verdict logic
 (verified with OPA 1.21):
@@ -313,7 +342,9 @@ on either.
 **Nightly replay** (`.github/workflows/replay-nightly.yml`): replays the last successful night's corpus with
 today's engine (`sentinel replay --all`), then records a fresh corpus (`eval/replay/corpus.py`: fixed gate cases
 covering PASS, SC-001, SC-005 and SC-010), replays it in a fresh process and uploads it. `--all` skips decisions
-recorded with another engine or OPA version and fails on any difference, on missing evidence, on an empty
+recorded with another engine or OPA version (after checking that the record's `decision_id` matches its own
+subject, time, inputs and engine version, so an edited version cannot turn a difference into a skip) and fails
+on any difference, on missing evidence, on an empty
 store and when nothing was compared (every decision skipped; the previous-night step accepts that with
 `--allow-all-skipped`, so an engine bump night says so in its summary). Consequence: a change to what the engine decides for the same inputs must come with an engine version bump.
 
@@ -341,7 +372,8 @@ AI runs after the decision is stored, writes only advisory tables, and every out
 | Patch | finding + file + explanation (+ CI logs) | PatchProposal (`schemas/patch-proposal.v1.json`) | B | verified fix rate |
 
 - **Provider interface** `sentinel_ai.providers.LLMProvider` (`complete(system, user, schema)`, `embed(texts)`).
-  Default: local code model via Ollama (7–14B class, quantized). No multi-provider gateway dependency.
+  Default: local models via Ollama, `gemma4:12b-it-qat` for generation and `qwen3-embedding:0.6b` for
+  embeddings, pinned by digest (ADR-0009, measured in `eval/model-selection/`). No multi-provider gateway dependency.
 - **Grounding:** offline CWE catalogue, OSV advisory text, code window; references must come from the context.
 - **Guardrails:** import contract; untrusted text in delimited data blocks; schema validation with one repair
   retry, else "unavailable"; secret redaction before any prompt; model/prompt/input hash logged; injection
@@ -426,7 +458,7 @@ Required: `schema_version`, `id`, `tool`, `rule_id`, `category` (SECRET | SAST |
 LICENSE), `title`, `severity` (CRITICAL | HIGH | MEDIUM | LOW | INFO), `run`. Conditional: SECRET ⇒ `location` +
 `evidence.secret_hash` (raw secrets are never stored); SAST/IAC/PIPELINE ⇒ `location`; SCA/LICENSE ⇒ `package`;
 CONTAINER ⇒ `package` + `image`. Optional blocks `enrichment` (B2) and `risk` (B3). Paths must be relative and
-cannot contain `..`.
+cannot contain `..`. No pattern-checked field (ids, digests, paths, purls) may contain a line break, in any validator.
 
 **Several locations (1.1, additive).** One finding (one `id`) can be seen in several places, e.g. the same secret
 in two files. `location` is the first one by (path, start line); `other_locations` lists every other one, sorted
@@ -589,7 +621,7 @@ schema-constrained outputs and injection isolation (0 verdict changes across [X]
 | 7 | Compose skeleton (postgres+pgvector, redis, seaweedfs, ollama, api, prometheus, grafana; worker with B1, web with B7) | B |
 | 8 | `demo-shop/` skeleton + ground-truth format; first seeds | A9 + B9 |
 | 9 | GitHub Project board: one issue per task id | both |
-| 10 | Choose the local model and measure tokens/second | B |
+| 10 | Choose the local model and measure tokens/second | done (ADR-0009; re-run the benchmark on each laptop) |
 
 ## Appendix — Glossary
 

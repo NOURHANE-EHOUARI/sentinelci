@@ -11,9 +11,9 @@ Severity = Literal["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
 RunContext = Literal["pr", "release", "local"]
 # 1.1 adds `other_locations`; a finding without them may stay 1.0.
 SchemaVersion = Literal["1.0", "1.1"]
-# `relative_path` in the schema, matched like the JSON Schema validator does (re.search, no flags):
-# not absolute, no `..` segment, no line break inside.
-_RELATIVE_PATH = re.compile(r"^(?!/)(?!.*(^|/)\.\.(/|$)).+$")
+# `relative_path` in the schema, character for character (a test keeps them equal): not absolute, no `..`
+# segment, no line break anywhere. The leading guard makes Python and ECMA-262 engines agree.
+_RELATIVE_PATH = re.compile(r"^(?![^\r\n\u2028\u2029]*[\r\n\u2028\u2029])(?!/)(?!.*(^|/)\.\.(/|$)).+$")
 
 
 class _Contract(BaseModel):

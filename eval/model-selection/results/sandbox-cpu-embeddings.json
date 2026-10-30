@@ -1,0 +1,35 @@
+{
+  "machine": "sandbox-4vcpu-16gb-cpu",
+  "platform": "Linux x86_64",
+  "ollama_version": "0.40.8",
+  "settings": {
+    "temperature": 0,
+    "seed": 42,
+    "num_ctx": 8192,
+    "think": false
+  },
+  "generation": [],
+  "embedding": [
+    {
+      "model": "nomic-embed-text",
+      "dimensions": 768,
+      "nn_accuracy": 1.0,
+      "separation": 0.176,
+      "seconds_for_12": 0.5
+    },
+    {
+      "model": "qwen3-embedding:0.6b",
+      "dimensions": 1024,
+      "nn_accuracy": 1.0,
+      "separation": 0.245,
+      "seconds_for_12": 2.12
+    },
+    {
+      "model": "embeddinggemma:300m",
+      "dimensions": 768,
+      "nn_accuracy": 0.917,
+      "separation": 0.216,
+      "seconds_for_12": 0.69
+    }
+  ]
+}

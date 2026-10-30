@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from sentinelci.policy.decision import Subject, dumps_decision, engine_version, evaluate
+from sentinelci.policy.decision import Subject, decision_id_of, dumps_decision, engine_version, evaluate
 from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaRunner
 from sentinelci.policy.store import EvidenceStore
@@ -66,6 +66,26 @@ def differences(recorded: Any, replayed: Any, path: str = "") -> list[str]:
     return [] if same else [f"{path}: {_short(recorded)} -> {_short(replayed)}"]
 
 
+def check_identity(recorded: Mapping[str, Any]) -> None:
+    """The record's decision_id must be the one its own subject, time, inputs and engine version give.
+
+    `--all` skips a record on its own `engine_version` and `tool_versions.opa`: without this check, editing
+    one of them would turn "differs" into "skipped". It catches every edit that does not also recompute the
+    id and rename the file; that, too, is closed once decisions are signed (A4).
+    """
+    try:
+        expected = decision_id_of(
+            recorded["subject"], recorded["evaluated_at"], recorded["inputs"], recorded["engine_version"]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ReplayError(f"recorded decision lacks what its id is made of: {exc}") from exc
+    if recorded.get("decision_id") != expected:
+        raise ReplayError(
+            "decision_id does not match the recorded subject, evaluated_at, inputs and engine_version "
+            f"(expected {expected}): the record was edited after the fact"
+        )
+
+
 def skip_reason(recorded: Mapping[str, Any], opa_version: str) -> str | None:
     """Why `--all` leaves a record out: another engine or OPA version cannot reproduce it by design.
 
@@ -101,6 +121,7 @@ def replay(
     recorded: Mapping[str, Any], *, store: EvidenceStore, opa: OpaRunner, work_dir: Path
 ) -> ReplayResult:
     """Re-evaluate `recorded`; `work_dir` must be an empty directory (the policy bundle is written there)."""
+    check_identity(recorded)
     inputs = recorded.get("inputs")
     subject = recorded.get("subject")
     if not isinstance(inputs, dict) or not isinstance(subject, dict):

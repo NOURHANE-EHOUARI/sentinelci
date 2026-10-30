@@ -3,8 +3,11 @@
 Only what a source actually said is written; anything unknown stays absent, and the risk engine (B3)
 treats absent as the worst case. Package findings (SCA, CONTAINER) get CVSS, EPSS, KEV and fix availability
 from the snapshot entries of their ids (rule_id, cve, aliases, and the aliases of those entries); every
-finding gets the exposure of its component from `sentinel.yaml`.
+finding gets the exposure of its component from `sentinel.yaml` (a finding without a path: the highest
+exposure of the service and its components).
 
+- matched entries: the finding's ids and every alias reachable from them in the snapshot (the alias closure).
+  CVE ids are compared in their canonical upper case (`cve-2099-0001` is CVE-2099-0001).
 - cvss / epss: the highest score / percentile among the matched entries (ties: the smallest id), so the result
   never depends on dictionary order.
 - kev: listed if any matched id is in the catalogue; `listed: false` only when the KEV source was read and
@@ -30,16 +33,34 @@ _CVE = re.compile(r"CVE-[0-9]{4}-[0-9]{4,}")
 MANAGED = ("cvss", "epss", "kev", "fix_available", "exposure")
 
 
-def _matched(finding: Mapping[str, Any], snapshot: Snapshot) -> dict[str, Vulnerability]:
-    """Snapshot entries for the finding's ids, following one level of aliases (GHSA -> CVE for EPSS)."""
+def canonical_id(vuln_id: str) -> str:
+    """A vulnerability id as KEV coverage spells it: CVE ids in upper case, others unchanged."""
+    upper = vuln_id.upper()
+    return upper if _CVE.fullmatch(upper) else vuln_id
+
+
+def finding_ids(finding: Mapping[str, Any]) -> set[str]:
+    """The finding's vulnerability ids (rule_id, cve, aliases), in canonical form."""
     ids = {finding.get("rule_id"), *finding.get("cve", []), *finding.get("aliases", [])}
-    entries = {
-        i: snapshot.vulnerabilities[i] for i in ids if isinstance(i, str) and i in snapshot.vulnerabilities
-    }
-    for entry in list(entries.values()):
-        for alias in entry.aliases or []:
-            if alias in snapshot.vulnerabilities:
-                entries.setdefault(alias, snapshot.vulnerabilities[alias])
+    return {canonical_id(i) for i in ids if isinstance(i, str)}
+
+
+def _matched(finding: Mapping[str, Any], snapshot: Snapshot) -> dict[str, Vulnerability]:
+    """Snapshot entries for the finding's ids and every alias reachable from them (PYSEC -> GHSA -> CVE)."""
+    keys: dict[str, list[str]] = {}
+    for key in snapshot.vulnerabilities:
+        keys.setdefault(canonical_id(key), []).append(key)
+    entries: dict[str, Vulnerability] = {}
+    seen: set[str] = set()
+    pending = sorted(finding_ids(finding))
+    while pending:  # the alias closure: the fetchers follow aliases more than one level deep
+        vuln_id = pending.pop()
+        if vuln_id in seen:
+            continue
+        seen.add(vuln_id)
+        for key in keys.get(vuln_id, []):
+            entries[key] = snapshot.vulnerabilities[key]
+            pending.extend(canonical_id(alias) for alias in entries[key].aliases or [])
     return dict(sorted(entries.items()))
 
 
@@ -52,9 +73,9 @@ def canonical_purl(base: str) -> str:
 
 
 def _cve_ids(finding: Mapping[str, Any], entries: Mapping[str, Vulnerability]) -> set[str]:
-    ids = {finding.get("rule_id"), *finding.get("cve", []), *finding.get("aliases", []), *entries}
+    ids = finding_ids(finding) | set(entries)
     ids.update(alias for entry in entries.values() for alias in entry.aliases or [])
-    return {i for i in ids if isinstance(i, str) and _CVE.fullmatch(i)}
+    return {canonical_id(i) for i in ids if _CVE.fullmatch(canonical_id(i))}
 
 
 def _package_enrichment(finding: Mapping[str, Any], snapshot: Snapshot) -> dict[str, Any]:
@@ -100,15 +121,22 @@ def _within(path: str, component: str) -> bool:
     return path == component or path.startswith(component.rstrip("/") + "/")
 
 
+_EXPOSURE_RANK = {"offline": 0, "internal": 1, "internet-facing": 2}
+
+
 def _exposure(finding: Mapping[str, Any], context: ServiceContext) -> str:
+    """The exposure of the finding's component (longest matching path), else of the service. A finding
+    without a path (a container image) may belong to any component, so it gets the highest of them all."""
     location = finding.get("location")
     path = location.get("path") if isinstance(location, Mapping) else None
     exposure: str = context.exposure
-    if isinstance(path, str):
-        matches = [c for c in context.components or [] if c.exposure is not None and _within(path, c.path)]
-        if matches:
-            best = max(matches, key=lambda c: len(c.path.rstrip("/")))
-            exposure = best.exposure or exposure
+    if not isinstance(path, str):
+        exposures = [context.exposure, *(c.exposure for c in context.components or [] if c.exposure)]
+        return max(exposures, key=_EXPOSURE_RANK.__getitem__)
+    matches = [c for c in context.components or [] if c.exposure is not None and _within(path, c.path)]
+    if matches:
+        best = max(matches, key=lambda c: len(c.path.rstrip("/")))
+        exposure = best.exposure or exposure
     return exposure
 
 
@@ -117,7 +145,8 @@ def enrich_finding(
 ) -> dict[str, Any]:
     """Return a copy of the finding with the enrichment this snapshot and context support (idempotent)."""
     result = copy.deepcopy(dict(finding))
-    enrichment = {k: v for k, v in (result.get("enrichment") or {}).items() if k not in MANAGED}
+    kept = (result.get("enrichment") or {}).items()  # a null field is absent, not an empty object
+    enrichment = {k: v for k, v in kept if k not in MANAGED and v is not None}
     if result.get("category") in PACKAGE_CATEGORIES:
         enrichment.update(_package_enrichment(result, snapshot))
     if context is not None:

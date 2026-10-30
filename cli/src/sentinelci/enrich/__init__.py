@@ -11,6 +11,7 @@ from sentinelci.enrich.models import (
     Snapshot,
     load_service_context,
     load_snapshot,
+    read_service_context,
 )
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "enrich_finding",
     "load_service_context",
     "load_snapshot",
+    "read_service_context",
 ]

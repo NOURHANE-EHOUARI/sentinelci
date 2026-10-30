@@ -6,30 +6,15 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema_version",
-    "decision_id",
-    "evaluated_at",
-    "subject",
-    "verdict",
-    "violations",
-    "waivers_applied",
-    "inputs",
-    "engine_version"
+    "schema_version", "decision_id", "evaluated_at", "subject", "verdict",
+    "violations", "waivers_applied", "inputs", "engine_version"
   ],
   "properties": {
     "schema_version": {
       "description": "Minor versions only add; older documents stay valid. 1.1 adds inputs.waivers_digest (required from 1.1). 1.2 adds inputs.baseline_digest and inputs.tool_status_digest (each present when that input was given). 1.3 adds inputs.service_context_digest (required from 1.3: the sentinel.yaml the decision depended on).",
-      "enum": [
-        "1.0",
-        "1.1",
-        "1.2",
-        "1.3"
-      ]
+      "enum": ["1.0", "1.1", "1.2", "1.3"]
     },
-    "decision_id": {
-      "type": "string",
-      "format": "uuid"
-    },
+    "decision_id": { "type": "string", "format": "uuid" },
     "evaluated_at": {
       "description": "Passed into the policy as input.evaluated_at. Policies never read the clock, so replay is exact.",
       "type": "string",
@@ -38,109 +23,44 @@
     "subject": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "repo",
-        "commit",
-        "context"
-      ],
+      "required": ["repo", "commit", "context"],
       "properties": {
-        "repo": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
-        },
-        "ref": {
-          "type": "string"
-        },
-        "commit": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{40}$"
-        },
-        "image_digest": {
-          "$ref": "#/$defs/oci_digest"
-        },
-        "context": {
-          "enum": [
-            "pr",
-            "release",
-            "local"
-          ]
-        }
+        "repo": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "ref": { "type": "string" },
+        "commit": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[a-f0-9]{40}$" },
+        "image_digest": { "$ref": "#/$defs/oci_digest" },
+        "context": { "enum": ["pr", "release", "local"] }
       }
     },
-    "verdict": {
-      "enum": [
-        "PASS",
-        "WARN",
-        "BLOCK"
-      ]
-    },
+    "verdict": { "enum": ["PASS", "WARN", "BLOCK"] },
     "violations": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "rule",
-          "effect",
-          "finding_ids",
-          "message"
-        ],
+        "required": ["rule", "effect", "finding_ids", "message"],
         "properties": {
-          "rule": {
-            "type": "string",
-            "pattern": "^SC-[0-9]{3}$"
-          },
-          "effect": {
-            "enum": [
-              "WARN",
-              "BLOCK"
-            ]
-          },
-          "finding_ids": {
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/sha256_hex"
-            }
-          },
-          "message": {
-            "type": "string",
-            "minLength": 1
-          }
+          "rule": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])SC-[0-9]{3}$" },
+          "effect": { "enum": ["WARN", "BLOCK"] },
+          "finding_ids": { "type": "array", "items": { "$ref": "#/$defs/sha256_hex" } },
+          "message": { "type": "string", "minLength": 1 }
         }
       }
     },
-    "waivers_applied": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1
-      },
-      "uniqueItems": true
-    },
+    "waivers_applied": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
     "inputs": {
       "description": "Content digests of everything the decision depended on (principle P3: everything is evidence).",
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "findings_digest",
-        "enrichment_snapshot_digest",
-        "policy_bundle_digest",
-        "risk_model_version",
-        "tool_versions"
+        "findings_digest", "enrichment_snapshot_digest", "policy_bundle_digest",
+        "risk_model_version", "tool_versions"
       ],
       "properties": {
-        "findings_digest": {
-          "$ref": "#/$defs/prefixed_sha256"
-        },
-        "sbom_digest": {
-          "$ref": "#/$defs/prefixed_sha256"
-        },
-        "enrichment_snapshot_digest": {
-          "$ref": "#/$defs/prefixed_sha256"
-        },
-        "policy_bundle_digest": {
-          "$ref": "#/$defs/prefixed_sha256"
-        },
+        "findings_digest": { "$ref": "#/$defs/prefixed_sha256" },
+        "sbom_digest": { "$ref": "#/$defs/prefixed_sha256" },
+        "enrichment_snapshot_digest": { "$ref": "#/$defs/prefixed_sha256" },
+        "policy_bundle_digest": { "$ref": "#/$defs/prefixed_sha256" },
         "baseline_digest": {
           "description": "Digest of the base-branch findings (Finding v1 NDJSON) used for diff-aware PR mode, as read. Since 1.2.",
           "$ref": "#/$defs/prefixed_sha256"
@@ -157,224 +77,77 @@
           "description": "Digest of the waivers file as read (schemas/waivers.v1.json); sha256 of empty content when there is none. Since 1.1.",
           "$ref": "#/$defs/prefixed_sha256"
         },
-        "risk_model_version": {
-          "type": "string",
-          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
-        },
+        "risk_model_version": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[0-9]+\\.[0-9]+\\.[0-9]+$" },
         "tool_versions": {
           "type": "object",
           "minProperties": 1,
-          "additionalProperties": {
-            "type": "string",
-            "minLength": 1
-          }
+          "additionalProperties": { "type": "string", "minLength": 1 }
         }
       }
     },
-    "engine_version": {
-      "type": "string",
-      "minLength": 1
-    }
+    "engine_version": { "type": "string", "minLength": 1 }
   },
   "allOf": [
     {
-      "if": {
-        "properties": {
-          "schema_version": {
-            "const": "1.0"
-          }
-        }
-      },
+      "if": { "properties": { "schema_version": { "const": "1.0" } } },
       "then": {
         "properties": {
           "inputs": {
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "waivers_digest"
-                  ]
-                },
-                {
-                  "required": [
-                    "baseline_digest"
-                  ]
-                },
-                {
-                  "required": [
-                    "tool_status_digest"
-                  ]
-                },
-                {
-                  "required": [
-                    "service_context_digest"
-                  ]
-                }
-              ]
-            }
+            "not": { "anyOf": [
+              { "required": ["waivers_digest"] }, { "required": ["baseline_digest"] }, { "required": ["tool_status_digest"] },
+              { "required": ["service_context_digest"] }
+            ] }
           }
         }
       }
     },
     {
-      "if": {
-        "properties": {
-          "schema_version": {
-            "const": "1.1"
-          }
-        }
-      },
+      "if": { "properties": { "schema_version": { "const": "1.1" } } },
       "then": {
         "properties": {
           "inputs": {
-            "required": [
-              "waivers_digest"
-            ],
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "baseline_digest"
-                  ]
-                },
-                {
-                  "required": [
-                    "tool_status_digest"
-                  ]
-                },
-                {
-                  "required": [
-                    "service_context_digest"
-                  ]
-                }
-              ]
-            }
+            "required": ["waivers_digest"],
+            "not": { "anyOf": [
+              { "required": ["baseline_digest"] }, { "required": ["tool_status_digest"] },
+              { "required": ["service_context_digest"] }
+            ] }
           }
         }
       }
     },
     {
-      "if": {
-        "properties": {
-          "schema_version": {
-            "const": "1.2"
-          }
-        }
-      },
+      "if": { "properties": { "schema_version": { "const": "1.2" } } },
       "then": {
-        "properties": {
-          "inputs": {
-            "required": [
-              "waivers_digest"
-            ],
-            "not": {
-              "required": [
-                "service_context_digest"
-              ]
-            }
-          }
-        }
+        "properties": { "inputs": { "required": ["waivers_digest"], "not": { "required": ["service_context_digest"] } } }
       }
     },
     {
-      "if": {
-        "properties": {
-          "schema_version": {
-            "const": "1.3"
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "inputs": {
-            "required": [
-              "waivers_digest",
-              "service_context_digest"
-            ]
-          }
-        }
-      }
+      "if": { "properties": { "schema_version": { "const": "1.3" } } },
+      "then": { "properties": { "inputs": { "required": ["waivers_digest", "service_context_digest"] } } }
     },
     {
-      "if": {
-        "properties": {
-          "verdict": {
-            "const": "BLOCK"
-          }
-        }
-      },
+      "if": { "properties": { "verdict": { "const": "BLOCK" } } },
+      "then": { "properties": { "violations": { "contains": { "properties": { "effect": { "const": "BLOCK" } } } } } }
+    },
+    {
+      "if": { "properties": { "verdict": { "const": "WARN" } } },
       "then": {
         "properties": {
           "violations": {
-            "contains": {
-              "properties": {
-                "effect": {
-                  "const": "BLOCK"
-                }
-              }
-            }
+            "contains": { "properties": { "effect": { "const": "WARN" } } },
+            "items": { "properties": { "effect": { "const": "WARN" } } }
           }
         }
       }
     },
     {
-      "if": {
-        "properties": {
-          "verdict": {
-            "const": "WARN"
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "violations": {
-            "contains": {
-              "properties": {
-                "effect": {
-                  "const": "WARN"
-                }
-              }
-            },
-            "items": {
-              "properties": {
-                "effect": {
-                  "const": "WARN"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "verdict": {
-            "const": "PASS"
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "violations": {
-            "maxItems": 0
-          }
-        }
-      }
+      "if": { "properties": { "verdict": { "const": "PASS" } } },
+      "then": { "properties": { "violations": { "maxItems": 0 } } }
     }
   ],
   "$defs": {
-    "sha256_hex": {
-      "type": "string",
-      "pattern": "^[a-f0-9]{64}$"
-    },
-    "prefixed_sha256": {
-      "type": "string",
-      "pattern": "^sha256:[a-f0-9]{64}$"
-    },
-    "oci_digest": {
-      "type": "string",
-      "pattern": "^sha256:[a-f0-9]{64}$"
-    }
+    "sha256_hex": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[a-f0-9]{64}$" },
+    "prefixed_sha256": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])sha256:[a-f0-9]{64}$" },
+    "oci_digest": { "type": "string", "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])sha256:[a-f0-9]{64}$" }
   }
 }
