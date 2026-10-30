@@ -1,0 +1,328 @@
+name: sentinel-scan
+
+# SentinelCI release gate as a reusable workflow (SPEC section 5, task A3, ADR-0008).
+#
+# Trust model
+# - The pipeline that judges a change comes from the BASE commit: the `sentinel` CLI, tools.lock.toml, the
+#   scanner configuration, the policies and the waivers are checked out at the pull request's base SHA (or at
+#   the pushed commit outside pull requests, which is already on a protected branch). The pull request itself is
+#   checked out only as data to scan. No job ever runs its code.
+# - Each job gets the least privilege it needs. Only `report` can write, and only a pull-request comment.
+# - Tools are installed outside the checkouts ($RUNNER_TEMP) and re-verified against the lock right before
+#   every run. Any scanner, gate or report failure fails the workflow: there is no silent pass (SC-010).
+#
+# Modes
+# - pull_request: diff-aware. Gitleaks scans only the commits of the pull request (base..head), forced to text
+#   patches, so secrets added and removed again inside the pull request are still found.
+# - push / workflow_dispatch: release mode. The working tree at the pushed commit is scanned in full.
+
+on:
+  workflow_call:
+    inputs:
+      path:
+        description: Directory to scan, relative to the repository root (letters, digits, `._/-` only).
+        type: string
+        default: "."
+
+permissions: {}
+
+env:
+  UV_VERSION: "0.11.32"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  scan:
+    name: scan (no secrets, read-only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # check out the pipeline and the change to scan; nothing else
+    steps:
+      - name: Resolve the run context
+        id: context
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SCAN_PATH: ${{ inputs.path }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$SCAN_PATH" =~ ^[A-Za-z0-9._/-]+$ ]] || [[ "/$SCAN_PATH/" == *"/../"* ]]; then
+            echo "::error::inputs.path must be a relative path without '..' or spaces: $SCAN_PATH"
+            exit 1
+          fi
+          if [ "$EVENT" = "pull_request" ]; then
+            {
+              echo "context=pr"
+              echo "head_sha=$HEAD_SHA"
+              echo "base_sha=$BASE_SHA"
+              echo "ref=refs/pull/$PR_NUMBER/head"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "context=release"
+              echo "head_sha=$GITHUB_SHA"
+              echo "base_sha="
+              echo "ref=$GITHUB_REF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out the pipeline (base commit, trusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: pipeline
+          persist-credentials: false
+
+      - name: Check out the change to scan (data only, never executed)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.context.outputs.head_sha }}
+          path: target
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: false
+
+      - name: Install the SentinelCI CLI from the pipeline checkout
+        working-directory: pipeline
+        run: uv sync --locked --no-dev --package sentinelci
+
+      - name: Install the pinned scanners outside the checkouts
+        env:
+          SENTINEL: ${{ github.workspace }}/pipeline/.venv/bin/sentinel
+        run: >-
+          "$SENTINEL" tools install gitleaks
+          --lock pipeline/tools.lock.toml
+          --dest "$RUNNER_TEMP/sentinel-tools"
+
+      - name: List pipeline files changed by the pull request
+        if: steps.context.outputs.context == 'pr'
+        env:
+          BASE_SHA: ${{ steps.context.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.context.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/out"
+          git -C target diff --name-only "$BASE_SHA...$HEAD_SHA" -- \
+            .github/workflows .github/actions tools.lock.toml policies cli .sentinel pyproject.toml uv.lock \
+            eval/feeds ':(glob)**/sentinel.yaml' \
+            > "$RUNNER_TEMP/out/pipeline-changes.txt"
+          echo "pipeline files changed: $(wc -l < "$RUNNER_TEMP/out/pipeline-changes.txt")"
+
+      - name: Scan for secrets (Gitleaks, verified right before it runs)
+        env:
+          SENTINEL: ${{ github.workspace }}/pipeline/.venv/bin/sentinel
+          CONTEXT: ${{ steps.context.outputs.context }}
+          BASE_SHA: ${{ steps.context.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.context.outputs.head_sha }}
+          REF: ${{ steps.context.outputs.ref }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SCAN_PATH: ${{ inputs.path }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/out"
+          common=(
+            --out "$RUNNER_TEMP/out/findings.ndjson"
+            --repo "$REPO" --commit "$HEAD_SHA" --context "$CONTEXT" --ref "$REF" --run-id "$RUN_ID"
+            --repo-root target --lock pipeline/tools.lock.toml --tools-dir "$RUNNER_TEMP/sentinel-tools"
+          )
+          if [ "$CONTEXT" = "pr" ]; then
+            "$SENTINEL" scan secrets target --mode git --log-opts "$BASE_SHA..$HEAD_SHA -- $SCAN_PATH" "${common[@]}"
+          else
+            "$SENTINEL" scan secrets "target/$SCAN_PATH" --mode dir "${common[@]}"
+          fi
+
+      - name: Record the verified toolchain
+        env:
+          SENTINEL: ${{ github.workspace }}/pipeline/.venv/bin/sentinel
+        run: >-
+          "$SENTINEL" tools verify gitleaks
+          --lock pipeline/tools.lock.toml
+          --dest "$RUNNER_TEMP/sentinel-tools"
+          --report "$RUNNER_TEMP/out/tools-manifest.json"
+
+      - name: Upload the scan evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sentinel-scan
+          path: ${{ runner.temp }}/out/
+          if-no-files-found: error
+          retention-days: 14
+
+  gate:
+    name: gate (policy, no repository code)
+    needs: scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read # check out the pipeline; the change itself is never checked out here
+    steps:
+      - name: Check out the pipeline (base commit, trusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: pipeline
+          persist-credentials: false
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: false
+
+      - name: Install the SentinelCI CLI and OPA
+        env:
+          SENTINEL: ${{ github.workspace }}/pipeline/.venv/bin/sentinel
+        run: |
+          set -euo pipefail
+          (cd pipeline && uv sync --locked --no-dev --package sentinelci)
+          "$SENTINEL" tools install opa --lock pipeline/tools.lock.toml --dest "$RUNNER_TEMP/sentinel-tools"
+          "$SENTINEL" tools verify opa --lock pipeline/tools.lock.toml --dest "$RUNNER_TEMP/sentinel-tools" \
+            --report "$RUNNER_TEMP/opa-manifest.json"
+
+      - name: Download the scan evidence
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sentinel-scan
+          path: ${{ runner.temp }}/in
+          digest-mismatch: error
+
+      - name: Evaluate the release gate
+        id: evaluate
+        env:
+          SENTINEL: ${{ github.workspace }}/pipeline/.venv/bin/sentinel
+          CONTEXT: ${{ github.event_name == 'pull_request' && 'pr' || 'release' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          REF: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/head', github.event.pull_request.number) || github.ref }}
+          REPO: ${{ github.repository }}
+        # GitHub runs this with `bash -e`: the exit code is captured with `|| status=$?` so that a BLOCK (1) or
+        # no decision (3) is recorded and the decision is still uploaded; the last step fails the job.
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/decision"
+          mapfile -t versions < <(jq -r '.tools | to_entries[] | "--tool-version=\(.key)=\(.value.version)"' \
+            "$RUNNER_TEMP/in/tools-manifest.json" "$RUNNER_TEMP/opa-manifest.json")
+          # Run from the pipeline checkout: policies and .sentinel/waivers.yaml come from the base commit, so a
+          # pull request cannot waive its own findings (a waiver applies once it is reviewed and merged).
+          cd pipeline
+          status=0
+          "$SENTINEL" evaluate \
+            --findings "$RUNNER_TEMP/in/findings.ndjson" \
+            --repo "$REPO" --commit "$HEAD_SHA" --context "$CONTEXT" --ref "$REF" \
+            --policy-dir policies \
+            --opa "$RUNNER_TEMP/sentinel-tools/bin/opa" \
+            "${versions[@]}" \
+            --output "$RUNNER_TEMP/decision/decision.v1.json" || status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "sentinel evaluate exited with $status (0 PASS/WARN, 1 BLOCK, 3 no decision)"
+
+      - name: Upload the decision record
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sentinel-decision
+          path: ${{ runner.temp }}/decision/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Fail unless the change may ship
+        env:
+          STATUS: ${{ steps.evaluate.outputs.status }}
+        run: |
+          case "$STATUS" in
+            0) echo "verdict allows the change (PASS or WARN)" ;;
+            1) echo "::error::SentinelCI verdict: BLOCK"; exit 1 ;;
+            *) echo "::error::no decision (exit '$STATUS'): treated as BLOCK (SC-010)"; exit 1 ;;
+          esac
+
+  report:
+    name: report (PR comment)
+    needs: [scan, gate]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read # check out the pipeline
+      pull-requests: write # create or update the single SentinelCI comment
+    steps:
+      - name: Check out the pipeline (base commit, trusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: pipeline
+          persist-credentials: false
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: false
+
+      - name: Install the SentinelCI CLI
+        working-directory: pipeline
+        run: uv sync --locked --no-dev --package sentinelci
+
+      - name: Download the evidence (whatever exists)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: sentinel-*
+          path: ${{ runner.temp }}/in
+          digest-mismatch: error
+
+      - name: Render the comment
+        id: render
+        # Exit 3 still writes a fail-closed comment: it is posted, then the last step fails the job.
+        env:
+          SENTINEL: ${{ github.workspace }}/pipeline/.venv/bin/sentinel
+        run: |
+          set -uo pipefail
+          in="$RUNNER_TEMP/in"
+          extra=()
+          if [ -f "$in/sentinel-scan/pipeline-changes.txt" ]; then
+            extra+=(--pipeline-changes "$in/sentinel-scan/pipeline-changes.txt")
+          fi
+          status=0
+          "$SENTINEL" report pr-comment \
+            --decision "$in/sentinel-decision/decision.v1.json" \
+            --findings "$in/sentinel-scan/findings.ndjson" \
+            "${extra[@]}" \
+            --out "$RUNNER_TEMP/comment.md" || status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/comment.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post or update the pull-request comment
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          marker="<!-- sentinelci:pr-comment -->"
+          existing=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" \
+            | head -n 1)
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$existing" -F "body=@$RUNNER_TEMP/comment.md" > /dev/null
+          else
+            gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" -F "body=@$RUNNER_TEMP/comment.md" > /dev/null
+          fi
+
+      - name: Fail if no trustworthy decision could be reported
+        env:
+          STATUS: ${{ steps.render.outputs.status }}
+        run: |
+          if [ "$STATUS" != "0" ]; then
+            echo "::error::the report found no trustworthy decision: treated as BLOCK (SC-010)"
+            exit 1
+          fi
