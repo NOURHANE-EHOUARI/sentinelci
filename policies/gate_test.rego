@@ -2,6 +2,7 @@ package sentinel.gate_test
 
 import rego.v1
 
+import data.sentinel.exposing
 import data.sentinel.gate
 
 secret := {"id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "category": "SECRET", "rule_id": "generic-api-key"}
@@ -457,6 +458,16 @@ test_without_the_bundle_model_version_no_recorded_priority_counts if {
 	gate.decision.verdict == "BLOCK" with input as object.remove(with_findings([f]), ["risk_model_version"])
 }
 
+test_a_violation_mixing_unscored_and_foreign_scores_names_both if {
+	unscored := vuln(h("d"), "CRITICAL")
+	foreign := object.union(vuln(h("e"), "CRITICAL"), {"risk": {"score": 5, "priority": "P3", "model_version": "0.9.0"}})
+	d := gate.decision with input as with_findings([unscored, foreign])
+	d.violations[0].message == concat("", [
+		"P0 finding not waived (findings scored with another risk model and unscored findings ",
+		"count at their worst-case priority)",
+	])
+}
+
 test_an_unscored_finding_keeps_the_unscored_note if {
 	f := vuln(h("d"), "CRITICAL")
 	d := gate.decision with input as with_findings([f])
@@ -520,6 +531,59 @@ test_high_severity_pipeline_issue_blocks_with_sc009 if {
 
 test_medium_pipeline_issue_does_not_block if {
 	gate.decision.verdict == "PASS" with input as with_findings([pipeline_issue(h("e"), "MEDIUM")])
+}
+
+iac_issue(id, rule_id, severity) := {"id": id, "category": "IAC", "rule_id": rule_id, "severity": severity}
+
+sc011_violation(ids) := {
+	"rule": "SC-011",
+	"effect": "BLOCK",
+	"finding_ids": ids,
+	"message": "Misconfiguration that exposes the service by itself",
+}
+
+# SC-011: a privileged pod, a public data store or SSH/RDP open to the internet blocks whatever its score.
+test_every_listed_misconfiguration_blocks_with_sc011_whatever_its_score if {
+	every rule_id in exposing.rule_ids {
+		every sev in ["LOW", "HIGH", "CRITICAL"] {
+			f := scored(iac_issue(h("a"), rule_id, sev), "P3")
+			d := gate.decision with input as with_findings([f])
+			d.violations == [sc011_violation([f.id])]
+		}
+	}
+}
+
+test_the_exposing_list_is_the_one_pinned_against_trivy if {
+	exposing.rule_ids == {
+		"KSV-0017", "KSV-0009", "KSV-0010", "KSV-0008", "KSV-0005", "KSV-0006", "KSV-0121",
+		"AWS-0092", "AWS-0180", "GCP-0001", "GCP-0017", "AZU-0007",
+		"AWS-0107", "GCP-0071", "GCP-0070", "AZU-0050", "AZU-0048",
+	}
+}
+
+test_other_misconfigurations_keep_their_priority if {
+	# Root filesystem not read-only, open egress: ranked by the risk model, never SC-011.
+	gate.decision.verdict == "PASS" with input as with_findings([scored(iac_issue(h("a"), "KSV-0014", "HIGH"), "P2")])
+	d := gate.decision with input as with_findings([scored(iac_issue(h("a"), "AWS-0104", "CRITICAL"), "P1")])
+	[v.rule | some v in d.violations] == ["SC-006"]
+}
+
+test_sc011_is_for_iac_findings_only if {
+	f := scored(object.union(vuln(h("a"), "LOW"), {"rule_id": "KSV-0017"}), "P3")
+	gate.decision.verdict == "PASS" with input as with_findings([f])
+}
+
+test_an_exposing_misconfiguration_is_reported_once if {
+	f := scored(iac_issue(h("a"), "KSV-0017", "HIGH"), "P0")
+	d := gate.decision with input as with_findings([f])
+	d.violations == [sc011_violation([f.id])]
+}
+
+test_waivers_and_pr_mode_apply_to_sc011 if {
+	f := iac_issue(h("a"), "AWS-0092", "HIGH")
+	gate.decision.verdict == "PASS" with input as with_waivers([f], [waiver("w-1", f)])
+	gate.decision.verdict == "PASS" with input as pr_with([f], [f])
+	gate.decision.violations == [sc011_violation([f.id])] with input as pr_with([f], [])
 }
 
 test_each_finding_is_reported_under_its_most_specific_rule if {
