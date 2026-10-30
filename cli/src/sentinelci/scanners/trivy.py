@@ -16,17 +16,22 @@ Trivy also downloads the remote Terraform modules that the scanned code names (`
 sources): network access chosen by the change author, and a result that depends on the network. The run gets
 proxy variables pointing at a closed local port and `GIT_ALLOW_PROTOCOL=none`, so every download fails at once
 and the scan stays offline. Remote modules are therefore not fetched and not evaluated; `remote_modules` lists
-them so the CLI can say so. Version checks and telemetry are disabled.
+them, following local modules transitively, so the CLI can say so. Version checks and telemetry are disabled.
 
 What Trivy reads beyond the scan target is checked too:
-- local Terraform modules outside the scan path (`source = "../mod"`) are loaded by Trivy, and their inline
-  ignores are honoured: after the run, the directory of every file Trivy reports outside the scan path gets
-  the marker check, and a file outside the repository is refused;
+- local Terraform modules outside the scan path (`source = "../mod"`) are loaded by Trivy, transitively,
+  and their inline ignores are honoured, including an ignore above a `module` block, which silences every
+  resource of the called module while the calling module is never reported. Which directories Trivy loads
+  depends on its own evaluation of the sources (HCL escapes, expressions), so it is over-approximated: when
+  the scan tree declares any module, every Terraform file of the repository outside the scan tree gets the
+  marker check before the run. After the run, the directory of every file Trivy reports outside the scan
+  path gets the check too, and a file outside the repository is refused;
 - Trivy does not follow symbolic links, but Terraform and kubectl do: a link that leaves the scan target would
   hide its content, so the target is refused when it has one.
 
 The marker check skips files Trivy never parses as configuration (source code, documentation, images), so a
-tree whose code merely mentions the markers can still be scanned; every other file is checked. The raw report
+tree whose code merely mentions the markers can still be scanned; every other file is checked, and so is any
+name Trivy reads as a Dockerfile whatever its extension (`Dockerfile.txt`, `Containerfile.md`). The raw report
 holds code lines of the scanned files (which may contain credentials): it stays in a private temporary
 directory, and only normalized findings, without code, leave this module.
 """
@@ -56,7 +61,15 @@ NOT_CONFIGURATION = frozenset(
         ".csv", ".ipynb",
     }
 )  # fmt: skip
-_MODULE_SOURCE = re.compile(r'^\s*source\s*=\s*"([^"]+)"', re.MULTILINE)
+# Trivy reads these as Dockerfiles by name, whatever the extension: never skipped by NOT_CONFIGURATION.
+_DOCKERFILE_PREFIXES = ("dockerfile", "containerfile")
+_DOCKERFILE_SUFFIXES = (".dockerfile", ".containerfile")
+_TERRAFORM_SUFFIXES = (".tf", ".tf.json")
+# Best effort, for the remote-module warning only (no security check relies on it): a quoted literal, also
+# inside a one-line block such as `module "a" { source = "../a" }`.
+_MODULE_SOURCE = re.compile(r'(?<![\w.-])source\s*=\s*"([^"]+)"')
+# Any `module` word in a .tf file: a block keyword cannot be escaped, so this over-approximates the blocks.
+_MODULE_WORD = re.compile(rb"(?<![\w.-])module(?![\w-])")
 _CHUNK = 1 << 20
 _OVERLAP = 64
 MAX_REPORTED_FILES = 5
@@ -95,7 +108,29 @@ def _has_marker(path: Path) -> bool:
 
 
 def _may_be_configuration(name: str) -> bool:
-    return Path(name).suffix.lower() not in NOT_CONFIGURATION
+    lower = name.lower()
+    if lower.startswith(_DOCKERFILE_PREFIXES) or lower.endswith(_DOCKERFILE_SUFFIXES):
+        return True
+    return Path(lower).suffix not in NOT_CONFIGURATION
+
+
+def _is_terraform(name: str) -> bool:
+    return name.lower().endswith(_TERRAFORM_SUFFIXES)
+
+
+def _declares_modules(path: Path) -> bool:
+    """Whether a Terraform file may declare a module. Unreadable or unparsable files count as yes."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return True
+    if not path.name.lower().endswith(".tf.json"):
+        return _MODULE_WORD.search(data) is not None
+    try:
+        document = json.loads(data)  # decodes escaped keys such as "\u006dodule"
+    except (ValueError, RecursionError):
+        return True
+    return not isinstance(document, dict) or "module" in document
 
 
 def inline_ignores(root: Path, *, recursive: bool = True) -> list[str]:
@@ -122,15 +157,81 @@ def escaping_links(root: Path) -> list[str]:
     return found
 
 
-def remote_modules(root: Path) -> list[str]:
-    """Terraform module sources under `root` that are not local paths: not fetched, so not evaluated."""
-    sources: set[str] = set()
-    for path in sorted(root.rglob("*.tf")):
-        if ".git" in path.relative_to(root).parts or not path.is_file() or path.is_symlink():
-            continue
-        text = path.read_text(encoding="utf-8", errors="replace")
-        sources.update(s for s in _MODULE_SOURCE.findall(text) if not s.startswith(("./", "../")))
-    return sorted(sources)
+def _terraform_files(root: Path, *, recursive: bool = True, skip: Path | None = None) -> list[Path]:
+    """Terraform files under `root` (`.git` and `skip` excluded, no directory link followed)."""
+    found: list[Path] = []
+    for directory, subdirs, names in os.walk(root, followlinks=False):
+        here = Path(directory)
+        kept = [d for d in subdirs if d != ".git" and (skip is None or (here / d).resolve() != skip)]
+        subdirs[:] = sorted(kept) if recursive else []
+        found.extend(here / name for name in sorted(names) if _is_terraform(name))
+    return found
+
+
+def outside_terraform_ignores(scan_root: Path, repo_root: Path) -> list[str]:
+    """Repository Terraform files outside `scan_root` holding an inline ignore, when the scan tree declares a
+    module: Trivy may load any of them as a local module. A linked file is checked through its target."""
+    scan, repo = scan_root.resolve(), repo_root.resolve()
+    if scan == repo or not any(_declares_modules(path) for path in _terraform_files(scan)):
+        return []
+    found: list[str] = []
+    for path in _terraform_files(repo, skip=scan):
+        name = path.relative_to(repo).as_posix()
+        resolved = path.resolve()
+        if not is_within(resolved, repo):
+            raise ScannerError(f"{name} links outside the repository, and a local module may load it")
+        if resolved.is_file() and _has_marker(resolved):
+            found.append(name)
+    return found
+
+
+def _sources(path: Path) -> list[str]:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return []
+    if not path.name.lower().endswith(".tf.json"):
+        return _MODULE_SOURCE.findall(data.decode("utf-8", errors="replace"))
+    try:
+        document = json.loads(data)
+    except (ValueError, RecursionError):
+        return []
+    sources: list[str] = []
+    pending: list[Any] = [document.get("module") if isinstance(document, dict) else None]
+    while pending:  # iterative: deep documents cannot exhaust the stack
+        node = pending.pop()
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "source" and isinstance(value, str):
+                    sources.append(value)
+                else:
+                    pending.append(value)
+        elif isinstance(node, list):
+            pending.extend(node)
+    return sources
+
+
+def remote_modules(root: Path, repo_root: Path | None = None) -> list[str]:
+    """Module sources that are not local paths, under `root` and in the local modules it reaches
+    (transitively, inside `repo_root`): not fetched, so not evaluated. Best effort, for the job log: literal
+    sources only."""
+    repo = (repo_root or root).resolve()
+    remote: set[str] = set()
+    seen: set[Path] = set()
+    pending = _terraform_files(root)
+    while pending:
+        path = pending.pop()
+        for source in _sources(path):
+            if not source.startswith(("./", "../")):
+                remote.add(source)
+                continue
+            module = (path.parent / source).resolve()
+            outside_scan = is_within(module, repo) and not is_within(module, root)
+            if module in seen or not module.is_dir() or not outside_scan:
+                continue
+            seen.add(module)
+            pending.extend(_terraform_files(module, recursive=False))
+    return sorted(remote)
 
 
 def _listed(items: list[str]) -> str:
@@ -181,6 +282,10 @@ def scan_iac_with_run(
     repo_root = repo_root or target
     source = _relative_target(target, repo_root)
     _refuse_markers(inline_ignores(repo_root / source), "in the scanned tree")
+    _refuse_markers(
+        outside_terraform_ignores(repo_root / source, repo_root),
+        "outside the scan path, in Terraform files a local module of the scanned tree may load",
+    )
     links = escaping_links(repo_root / source)
     if links:
         raise ScannerError(
