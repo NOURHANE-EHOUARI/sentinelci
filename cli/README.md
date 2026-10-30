@@ -14,6 +14,84 @@ The deterministic core of SentinelCI. It runs inside CI and locally with the sam
 
 `risk/`, `policy/`, `enrich/` and `normalize/` must never import `sentinel_ai` (enforced by import-linter).
 
+## `sentinel snapshot` (enrichment fetchers, B2)
+
+```bash
+uv run sentinel snapshot --findings out/findings.ndjson --out out/enrichment-snapshot.json
+uv run sentinel snapshot --findings out/findings.ndjson --out out/enrichment-snapshot.json --record fixtures/feeds
+uv run sentinel snapshot --findings out/findings.ndjson --out out/enrichment-snapshot.json --offline fixtures/feeds
+```
+
+- The only command that uses the network: OSV (`GET /v1/vulns/{id}` for the ids of package findings, then once
+  more for the aliases they reveal), FIRST EPSS (100 CVEs per request) and the CISA KEV catalogue. HTTPS to those
+  three hosts only, no credentials, `--timeout` seconds per request (default 30), 32 MB per response.
+- CVSS comes from the OSV vector: the 3.0/3.1 base score is computed (`enrich/cvss.py`), the highest vector wins;
+  CVSS 2.0 and 4.0 vectors are not scored, so the score stays unknown. Fixed versions come from ECOSYSTEM and
+  SEMVER ranges only (GIT ranges name commits).
+- Each feed is all or nothing: a failed request or an answer the API does not document leaves that feed out, with
+  a warning on stderr; its values stay unknown (worst case for the risk engine). Exit 0 with the partial snapshot.
+- The snapshot is validated against `schemas/enrichment-snapshot.v1.json` and written canonically (sorted keys),
+  so the same feed answers give the same bytes and digest. An unreadable findings file, or a snapshot that
+  fails its contract, writes nothing and exits 3.
+- `--record DIR` saves every response (raw bytes in base64, with their sha256); `--offline DIR` answers from
+  those files only, after checking the digest (a request never recorded, or an altered recording, counts as an
+  outage). This gives the offline fixtures for demos, evaluation and tests. Recordings are inputs like the
+  policies: in CI, use them only from the base commit or a trusted store, since a change that edits them could
+  forge EPSS or KEV answers. Committed fixtures for a fixed finding set live in `eval/feeds/` (gzip-compressed;
+  `uv run python eval/feeds/refresh.py --check` replays them offline).
+- KEV is read before EPSS, and EPSS is left out when KEV could not be read: EPSS alone would lower the risk of a
+  KEV-listed vulnerability. When OSV could not be read, KEV and EPSS are left out too: the findings' aliases are
+  then unknown, and the CVE KEV lists may be one only OSV links to a finding. The KEV catalogue is trusted whole
+  or not at all (every entry, its `count`, at least 1,000 entries).
+- Redirects are never followed. Each request has one overall deadline (enforced on every read, so a slow drip
+  cannot hold it) and is retried once only on a timeout, a reset or a retryable status (429, 5xx), never on a
+  TLS failure or a refused redirect; the whole run stops after 10 minutes. `--timeout` must be in (0, 300].
+  An `--out` that cannot be written, or anything unexpected, exits 3 with nothing written.
+
+## `sentinel enrich` (enrichment, B2)
+
+```bash
+uv run sentinel enrich --findings out/findings.ndjson --snapshot out/enrichment-snapshot.json \
+  --config sentinel.yaml --source . --out out/findings.enriched.ndjson
+# PR mode: --source <base checkout> --source <head checkout>
+```
+
+- Offline: applies an enrichment snapshot (`schemas/enrichment-snapshot.v1.json`) and the service context
+  (`sentinel.yaml`, `schemas/sentinel-config.v1.json`) to findings. Pass the same snapshot to `sentinel evaluate
+  --enrichment-snapshot` so the decision records its digest.
+- Package findings (SCA, CONTAINER): `cvss` and `epss` (highest among the finding's ids and every alias reachable
+  from them in the snapshot; CVE ids compared in upper case), `kev` (only when the KEV feed was read),
+  `fix_available` (true from the finding or OSV, false only when OSV knew the vulnerability and fixes none of the
+  package). Every finding: `exposure` of its `sentinel.yaml` component (longest matching path), else the top-level
+  exposure; a finding without a path (a container image) gets the highest exposure of the service and its
+  components.
+- Unknown stays absent; the risk engine treats absent as the worst case. Without `--snapshot` or `--config`,
+  nothing from that source is added.
+- Read `sentinel.yaml` from the base branch in PR mode: a change must not lower its own exposure.
+- `--source DIR` (repeatable) adds `reachability: imported` to PyPI and npm SCA findings by static import analysis
+  (`enrich/reachability.py`). The tree is only read: nothing in it is run, imported or installed, and symlinks
+  are never followed.
+  - `imported`: first-party code imports the package (Python AST; JS/TS `import`, `export ... from`, literal
+    `require()` and `import()`, comments ignored), or an imported package depends on it at runtime (uv.lock,
+    poetry.lock, package-lock.json v2/v3, pip-compile `# via` annotations; optional and peer dependencies are
+    not followed).
+  - Nothing otherwise, which the risk engine counts as the worst case. `not_imported` and `unknown` are not
+    claimed: a library can load a package itself through an optional dependency the lockfile does not record.
+  - No answer for CONTAINER findings, `MAL-` advisories or npm packages with install scripts.
+  - With several trees `imported` must hold in all of them: in PR mode pass the base and the head, so a change
+    cannot lower the score of its own dependencies by adding an import.
+  - Files that cannot be read or parsed, are too large, or hold a dotted name of 64 parts or more are skipped
+    (fixed limits, no clock: the same tree always gives the same answer).
+- `kev: {listed: false}` only for CVEs the snapshot's KEV lookup covered (`sources.kev.cves`); otherwise KEV stays
+  unknown. Package URLs are compared in canonical form (PyPI names per PEP 503).
+- `sentinel.yaml` is read with a restricted YAML loader: no duplicate keys, merge keys (`<<`), anchors, aliases,
+  dates, binary or set values; at most 64 KiB (never read further). Component paths must be canonical
+  (`services/web`, not `./services/web/`) and unique.
+- Fail closed: an invalid snapshot, `sentinel.yaml` or findings file (including enrichment outside the Finding
+  contract, or nested too deeply), or `--out` naming any input or a directory, writes nothing and exits 3.
+  `sentinel evaluate` refuses an `--enrichment-snapshot` that is not a valid snapshot; with none, both commands use
+  the same empty snapshot, so "no snapshot" has a single digest.
+
 ## `sentinel score` (risk engine, B3)
 
 ```bash
