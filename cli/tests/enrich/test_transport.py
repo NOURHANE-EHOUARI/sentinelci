@@ -5,6 +5,7 @@ a local HTTP server so urllib's own redirect machinery is exercised.
 """
 
 import base64
+import gzip
 import http.client
 import http.server
 import io
@@ -275,6 +276,36 @@ class Answers:
         return self.status, self.body
 
 
+GOOD_GZIP = gzip.compress(b'{"a": 1}' * 100, mtime=0)
+
+
+def corrupt_gzip() -> bytes:
+    """A valid gzip header over a broken deflate stream: zlib.error, not EOFError (#21)."""
+    return GOOD_GZIP[:10] + b"\xff" * 20 + GOOD_GZIP[30:]
+
+
+def test_recordings_do_not_depend_on_when_they_were_made(tmp_path: Path) -> None:
+    """mtime 0 in the gzip header (bytes 4-8), so recording the same answer twice gives the same file."""
+    RecordingTransport(Answers(b"{}"), tmp_path).request("GET", URL)
+    [path] = tmp_path.glob("*.json")
+    member = base64.b64decode(json.loads(path.read_text(encoding="utf-8"))["response_gzip_base64"])
+    assert member[4:8] == b"\x00\x00\x00\x00"
+
+
+def test_a_recording_is_decompressed_only_up_to_the_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The read is bounded: a bomb is refused after MAX_RECORDED_BYTES + 1 bytes, never inflated whole."""
+    sizes: list[int] = []
+    real = gzip.GzipFile.read
+
+    def spy(self: gzip.GzipFile, size: int = -1) -> bytes:
+        sizes.append(size)
+        return real(self, size)
+
+    monkeypatch.setattr(gzip.GzipFile, "read", spy)
+    assert tr._gunzip(GOOD_GZIP) == b'{"a": 1}' * 100
+    assert sizes and all(0 <= s <= tr.MAX_RECORDED_BYTES + 1 for s in sizes)
+
+
 def test_recordings_keep_the_exact_bytes(tmp_path: Path) -> None:
     raw = b'{"x": 1}\xff\xfe not UTF-8'
     RecordingTransport(Answers(raw), tmp_path).request("GET", URL)
@@ -284,14 +315,29 @@ def test_recordings_keep_the_exact_bytes(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "edit",
     [
-        lambda r: r.update(response_base64=base64.b64encode(b"forged").decode()),
+        lambda r: r.update(response_gzip_base64=base64.b64encode(gzip.compress(b"forged")).decode()),
         lambda r: r.update(response_sha256="0" * 64),
         lambda r: r.update(url="https://api.osv.dev/v1/vulns/OTHER"),
         lambda r: r.update(status="200"),
         lambda r: r.pop("format"),
-        lambda r: r.update(response_base64="not base64!"),
+        lambda r: r.update(response_gzip_base64="not base64!"),
+        lambda r: r.update(response_gzip_base64=base64.b64encode(b"not gzip").decode()),
+        lambda r: r.update(format="sentinelci-feed-recording/1"),
+        lambda r: r.update(response_gzip_base64=base64.b64encode(corrupt_gzip()).decode()),
+        lambda r: r.update(response_gzip_base64=base64.b64encode(GOOD_GZIP[:-12]).decode()),
     ],
-    ids=["forged-body", "wrong-digest", "another-request", "status-string", "no-format", "bad-base64"],
+    ids=[
+        "forged-body",
+        "wrong-digest",
+        "another-request",
+        "status-string",
+        "no-format",
+        "bad-base64",
+        "not-gzip",
+        "old-format",
+        "corrupt-deflate",
+        "truncated-gzip",
+    ],
 )
 def test_an_altered_recording_is_an_outage(tmp_path: Path, edit: Any) -> None:
     RecordingTransport(Answers(b"{}"), tmp_path).request("GET", URL)
@@ -344,3 +390,19 @@ def test_cli_exits_3_on_anything_unexpected(tmp_path: Path, monkeypatch: pytest.
     assert code == 3
     assert "unexpected RuntimeError" in out
     assert not (tmp_path / "snapshot.json").exists()
+
+
+def test_recordings_are_compressed_and_deterministic(tmp_path: Path) -> None:
+    body = b'{"vulnerabilities": [' + b'{"cveID": "CVE-2000-00001"},' * 2000 + b"{}]}"
+    for directory in (tmp_path / "a", tmp_path / "b"):
+        RecordingTransport(Answers(body), directory).request("GET", URL)
+    [first], [second] = (list((tmp_path / d).glob("*.json")) for d in ("a", "b"))
+    assert first.read_bytes() == second.read_bytes(), "the same answer gives the same file"
+    assert first.stat().st_size < len(body) / 5
+
+
+def test_a_recording_cannot_be_a_decompression_bomb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    RecordingTransport(Answers(b"x" * 1000), tmp_path).request("GET", URL)
+    monkeypatch.setattr(tr, "MAX_RECORDED_BYTES", 999)
+    with pytest.raises(TransportError, match="unreadable recording"):
+        ReplayTransport(tmp_path).request("GET", URL)

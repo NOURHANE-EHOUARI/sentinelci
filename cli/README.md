@@ -37,7 +37,8 @@ uv run sentinel snapshot --findings out/findings.ndjson --out out/enrichment-sna
   those files only, after checking the digest (a request never recorded, or an altered recording, counts as an
   outage). This gives the offline fixtures for demos, evaluation and tests. Recordings are inputs like the
   policies: in CI, use them only from the base commit or a trusted store, since a change that edits them could
-  forge EPSS or KEV answers.
+  forge EPSS or KEV answers. Committed fixtures for a fixed finding set live in `eval/feeds/` (gzip-compressed;
+  `uv run python eval/feeds/refresh.py --check` replays them offline).
 - KEV is read before EPSS, and EPSS is left out when KEV could not be read: EPSS alone would lower the risk of a
   KEV-listed vulnerability. When OSV could not be read, KEV and EPSS are left out too: the findings' aliases are
   then unknown, and the CVE KEV lists may be one only OSV links to a finding. The KEV catalogue is trusted whole
