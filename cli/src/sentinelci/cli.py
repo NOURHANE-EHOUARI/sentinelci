@@ -353,6 +353,13 @@ def evaluate_command(
         ),
     ] = None,
     enrichment_snapshot: Annotated[Path | None, typer.Option(help="Enrichment snapshot file.")] = None,
+    service_context: Annotated[
+        Path | None,
+        typer.Option(
+            help="The sentinel.yaml given to `sentinel enrich --config`, from the base branch: recorded by "
+            "digest (Decision 1.3)."
+        ),
+    ] = None,
     sbom: Annotated[Path | None, typer.Option(help="SBOM file to record by digest.")] = None,
     opa: Annotated[
         Path | None, typer.Option(help="OPA binary. Default: $SENTINEL_OPA, then opa on PATH.")
@@ -380,6 +387,7 @@ def evaluate_command(
             tool_status=tool_status.read_bytes() if tool_status else None,
             enrichment_snapshot=enrichment_snapshot.read_bytes() if enrichment_snapshot else None,
             sbom=sbom.read_bytes() if sbom else None,
+            service_context=service_context.read_bytes() if service_context else None,
         )
         bundle = PolicyBundle.load(policy_dir)
         decision = evaluate(
@@ -394,6 +402,7 @@ def evaluate_command(
             tool_status_data=data.tool_status,
             enrichment_snapshot=data.enrichment_snapshot,
             sbom=data.sbom,
+            service_context=data.service_context,
         )
         if store is not None:
             _store_evidence(EvidenceStore(store), decision, bundle, data)
@@ -425,6 +434,7 @@ class _Inputs:
     tool_status: bytes | None
     enrichment_snapshot: bytes | None
     sbom: bytes | None
+    service_context: bytes | None
 
 
 def _store_evidence(
@@ -441,6 +451,7 @@ def _store_evidence(
             EMPTY_ENRICHMENT_SNAPSHOT if data.enrichment_snapshot is None else data.enrichment_snapshot
         ),
         "sbom_digest": data.sbom,
+        "service_context_digest": data.service_context,
     }
     for key, blob in stored.items():
         if blob is not None and store.put(blob) != inputs[key]:

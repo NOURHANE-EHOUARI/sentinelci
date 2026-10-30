@@ -19,9 +19,10 @@ Rules:
   that valid ones pass and invalid ones fail. Add a fixture for every new rule you encode.
 - A breaking change creates a new version (`finding.v2.json`) — never edit a released version's meaning.
 - An additive change may bump the minor `schema_version` in the same file (`decision.v1.json` accepts
-  `1.0` to `1.2`): every older document stays valid, and the schema states what the new minor version
-  requires and forbids the new fields in older minor versions. Current minor versions: decision 1.2 (1.1 added
-  `inputs.waivers_digest`; 1.2 adds `inputs.baseline_digest` and `inputs.tool_status_digest`), finding 1.1 (adds
+  `1.0` to `1.3`): every older document stays valid, and the schema states what the new minor version
+  requires and forbids the new fields in older minor versions. Current minor versions: decision 1.3 (1.1 added
+  `inputs.waivers_digest`; 1.2 added `inputs.baseline_digest` and `inputs.tool_status_digest`; 1.3 adds
+  `inputs.service_context_digest`), finding 1.1 (adds
   `other_locations`).
 - Every `pattern` starts with `^(?![^\r\n\u2028\u2029]*[\r\n\u2028\u2029])`: no line break anywhere. Without it,
   Python (`$` also matches before a final newline; `.` matches `\r`, U+2028, U+2029) and ECMA-262 validators (ajv)
