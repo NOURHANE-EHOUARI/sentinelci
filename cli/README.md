@@ -206,3 +206,21 @@ waivers:
   reasons reach the decision record.
 - A file that cannot be read (bad YAML, wrong top-level shape, `version` other than 1) means no decision:
   exit code `3`.
+
+## `sentinel scan pipelines` (CI workflows, A1)
+
+```bash
+uv run sentinel scan pipelines demo-shop --repo-root . --out out/pipelines.ndjson \
+  --repo NOURHANE-EHOUARI/sentinelci --commit "$GITHUB_SHA" --context pr
+```
+
+- zizmor, pinned in `uv.lock`. The binary of the CLI's own environment is checked against its wheel's RECORD right
+  before it runs (never one from `PATH`); a mismatch, or zizmor missing, exits `3` (SC-010).
+- The scanned repository cannot configure or silence it: `--no-config`, `--no-ignores` (a finding covered by an
+  inline `# zizmor: ignore[...]` comment is kept, and its message says so), `--collect=all` (`.gitignore` is not
+  honoured), `--offline`, and a minimal environment.
+- Inputs: every YAML file under `.github/workflows/`, every `action.yml` / `action.yaml`, and any other YAML
+  file with a top-level `jobs:` key. Findings are category PIPELINE, one per rule, file and job (the step is not
+  part of the fingerprint), with the other places in `other_locations`; no workflow code is kept. A HIGH one
+  that the pull request introduces blocks it (SC-009).
+

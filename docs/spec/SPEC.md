@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.14 | A1 CI workflow analysis (§5): `sentinel scan pipelines` runs the zizmor of the CLI's environment, checked against its wheel's RECORD (pinned in `uv.lock`), offline, with the repository's configuration, ignore comments and `.gitignore` never honoured; PIPELINE findings, one per rule, file and job. |
 | 1.1.5 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
 | 1.1.4 | Enrichment (B2, §6.1): `schemas/enrichment-snapshot.v1.json` (`schema_version` "1.0", `sources.kev.cves`: the CVEs the KEV lookup covered) and `schemas/sentinel-config.v1.json` (`sentinel.yaml`, canonical component paths); `sentinel enrich`. "Not listed in KEV" only for covered CVEs; `sentinel.yaml` read with a restricted YAML loader. |
 | 1.1.3 | Scanner hardening (§5): verify-before-exec, minimal child environment, scanner configuration owned by SentinelCI; repository-controlled suppressions are neutralized or refused (Gitleaks: `.gitleaks.toml`, `gitleaks:allow`, `.gitleaksignore`, and `.gitattributes` `-diff`/`binary` in git mode); merge commits scanned with `--diff-merges=remerge` plus a `first-parent` pass for octopus merges (evil merges), archives opened in dir mode. |
@@ -178,6 +179,15 @@ remerge does not diff them, so they get a second `first-parent` pass, which also
 already had; the PR baseline drops what the base branch has). Each Gitleaks pass gets the full scanner time
 limit, so git mode can take twice as long. Dir mode opens archives (`.zip`, nested up to 3 levels). Legitimate
 exceptions go through waivers (§6.4).
+
+zizmor (`sentinel scan pipelines`, findings of category PIPELINE for SC-009) is pinned in `uv.lock` (it publishes no
+checksum file for its binaries); right before each run, the binary of the CLI's own environment is checked against
+its wheel's RECORD, never one from `PATH`. It runs offline with `--no-config` (no `zizmor.yml`), `--no-ignores` and
+`--collect=all` (a workflow listed in `.gitignore` is still audited). With `--no-ignores`, a finding covered by an
+inline `# zizmor: ignore[...]` comment is reported flagged `ignored`; it stays a finding, and its message says the
+comment is not honoured. SentinelCI collects the inputs: every YAML file under `.github/workflows/`, every
+`action.yml` / `action.yaml`, and any other YAML file with a top-level `jobs:` key. Fingerprints use the job
+(`jobs.<id>`) as resource, never the step, so adding a step does not make a job's findings new.
 
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
