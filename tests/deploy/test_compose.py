@@ -5,6 +5,7 @@ The rendered configuration comes from `docker compose config`, so interpolation,
 daemon is needed. Tests skip without the Docker CLI, unless SENTINEL_REQUIRE_DOCKER is set (CI).
 """
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -35,7 +36,7 @@ def _load_make_env() -> ModuleType:
 
 MAKE_ENV = _load_make_env()
 # Recognizable stand-ins: any credential in the rendered config must be one of these, i.e. come from .env.
-DUMMY_ENV = {name: f"dummy-{name.lower()}" for name in MAKE_ENV.VARIABLES}
+DUMMY_ENV = {name: f"dummy-{name.lower()}" for name in sorted(MAKE_ENV.COMPOSE_VARIABLES)}
 
 
 def _render(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -45,7 +46,9 @@ def _render(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
             pytest.fail("SENTINEL_REQUIRE_DOCKER is set but the docker CLI was not found")
         pytest.skip("docker CLI not installed")
     clean = {
-        k: v for k, v in os.environ.items() if k not in MAKE_ENV.VARIABLES and not k.startswith("COMPOSE_")
+        k: v
+        for k, v in os.environ.items()
+        if k not in MAKE_ENV.VARIABLES and k not in MAKE_ENV.DERIVED and not k.startswith("COMPOSE_")
     }
     # --env-file /dev/null: never read the developer's real deploy/compose/.env in tests.
     # Fixed arguments, docker resolved from PATH (S603 is ignored for tests in pyproject.toml).
@@ -115,7 +118,7 @@ def test_credentials_only_come_from_the_env_file(services: dict[str, Any]) -> No
 def test_every_credential_reference_fails_when_unset() -> None:
     # `${VAR:-default}` or a bare `${VAR}` in any one place would start a service with a guessable password.
     text = COMPOSE_FILE.read_text(encoding="utf-8")
-    for name in MAKE_ENV.VARIABLES:
+    for name in sorted(MAKE_ENV.COMPOSE_VARIABLES):
         references = re.findall(r"\$\{" + name + r"([^}]*)\}", text)
         assert references, f"{name} is never used"
         for suffix in references:
@@ -164,7 +167,7 @@ def test_make_env_writes_every_variable_owner_only(tmp_path: Path) -> None:
     assert MAKE_ENV.write_env(target) is True
     lines = target.read_text(encoding="utf-8").splitlines()
     values = dict(line.split("=", 1) for line in lines if not line.startswith("#"))
-    assert set(values) == set(MAKE_ENV.VARIABLES)
+    assert set(values) == set(MAKE_ENV.VARIABLES) | set(MAKE_ENV.DERIVED)
     for value in values.values():
         assert re.fullmatch(r"[A-Za-z0-9_-]{16,}", value), value
     if os.name == "posix":
@@ -173,12 +176,51 @@ def test_make_env_writes_every_variable_owner_only(tmp_path: Path) -> None:
 
 def test_make_env_never_overwrites_existing_credentials(tmp_path: Path) -> None:
     target = tmp_path / ".env"
-    target.write_text("POSTGRES_PASSWORD=keep-me\n", encoding="utf-8")
+    complete = "".join(f"{name}=keep-{name.lower()}\n" for name in [*MAKE_ENV.VARIABLES, *MAKE_ENV.DERIVED])
+    target.write_text(complete, encoding="utf-8")
     assert MAKE_ENV.write_env(target) is False
-    assert target.read_text(encoding="utf-8") == "POSTGRES_PASSWORD=keep-me\n"
+    assert target.read_text(encoding="utf-8") == complete
+
+
+def test_make_env_adds_new_variables_to_an_older_file_without_rotating_any(tmp_path: Path) -> None:
+    """A .env from before B1 has no API token: `make up` must not stop, and running services keep theirs."""
+    target = tmp_path / ".env"
+    target.write_text(
+        "# old\nPOSTGRES_PASSWORD=keep-me\nSENTINEL_API_TOKEN=old-token-0123456789\n", encoding="utf-8"
+    )
+    assert MAKE_ENV.write_env(target) is True
+    text = target.read_text(encoding="utf-8")
+    assert text.startswith("# old\nPOSTGRES_PASSWORD=keep-me\nSENTINEL_API_TOKEN=old-token-0123456789\n")
+    values = dict(
+        line.split("=", 1) for line in text.splitlines() if "=" in line and not line.startswith("#")
+    )
+    assert set(values) == set(MAKE_ENV.VARIABLES) | set(MAKE_ENV.DERIVED)
+    assert values["POSTGRES_PASSWORD"] == "keep-me"  # noqa: S105  (a test value)
+    assert values["SENTINEL_API_TOKEN_SHA256"] == hashlib.sha256(b"old-token-0123456789").hexdigest()
+    assert MAKE_ENV.write_env(target) is False, "a complete file is left alone"
 
 
 def test_make_env_generates_fresh_values(tmp_path: Path) -> None:
     MAKE_ENV.write_env(tmp_path / "a")
     MAKE_ENV.write_env(tmp_path / "b")
     assert (tmp_path / "a").read_text(encoding="utf-8") != (tmp_path / "b").read_text(encoding="utf-8")
+
+
+def test_make_env_writes_the_api_token_with_its_hash(tmp_path: Path) -> None:
+    """Clients send SENTINEL_API_TOKEN; the API only ever receives its SHA-256 (B1)."""
+    target = tmp_path / ".env"
+    MAKE_ENV.write_env(target)
+    values = dict(
+        line.split("=", 1) for line in target.read_text(encoding="utf-8").splitlines() if "=" in line
+    )
+    token = values["SENTINEL_API_TOKEN"]
+    assert len(token) >= 32
+    assert values["SENTINEL_API_TOKEN_SHA256"] == hashlib.sha256(token.encode()).hexdigest()
+
+
+def test_the_api_receives_the_token_hash_never_the_token(services: dict[str, Any]) -> None:
+    environment = services["api"]["environment"]
+    assert environment["SENTINEL_API_TOKEN_SHA256"] == DUMMY_ENV["SENTINEL_API_TOKEN_SHA256"]
+    text = COMPOSE_FILE.read_text(encoding="utf-8")
+    for name in MAKE_ENV.CLIENT_ONLY:
+        assert not re.search(r"\$\{" + name + r"\b(?!_)", text), f"{name} must not reach any container"
