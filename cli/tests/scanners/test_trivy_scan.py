@@ -255,13 +255,21 @@ def test_what_trivy_read_outside_the_scan_path_is_checked(tmp_path: Path) -> Non
         check_outside_reads([{"Target": "../../etc/passwd"}], repo, "demo-shop")
 
 
-def _module_chain(repo: Path, *, ignore: bool) -> None:
-    """Review of #26, repro N1: the scan tree calls ../moda, which calls ../modb under a module ignore."""
+def _module_chain(
+    repo: Path, *, ignore: bool, scan_file: str = "main.tf", moda_file: str = "main.tf"
+) -> None:
+    """Review of #26, repro N1: the scan tree calls ../moda, which calls ../modb under a module ignore. The
+    file names cover OpenTofu (second review of #26, repros A1 to A3)."""
     for name in ("demo-shop", "moda", "modb"):
         (repo / name).mkdir(parents=True)
-    (repo / "demo-shop" / "main.tf").write_text('module "a" { source = "../moda" }\n')
+    call = (
+        '{"module": {"a": {"source": "../moda"}}}'
+        if scan_file.endswith(".json")
+        else 'module "a" { source = "../moda" }\n'
+    )
+    (repo / "demo-shop" / scan_file).write_text(call)
     marker = "#trivy:ignore:*\n" if ignore else ""
-    (repo / "moda" / "main.tf").write_text(f'{marker}module "b" {{\n  source = "../modb"\n}}\n')
+    (repo / "moda" / moda_file).write_text(f'{marker}module "b" {{\n  source = "../modb"\n}}\n')
     (repo / "modb" / "main.tf").write_text(PUBLIC_ACL)
 
 
@@ -292,9 +300,16 @@ def test_a_module_level_ignore_outside_the_scan_path_is_refused_before_the_run(
         ("main.tf.json", '{"module": {"a": {"source": "../moda"}}}'),
         ("main.tf.json", '{"\\u006dodule": {"a": {"source": "../moda"}}}'),  # an escaped JSON key
         ("main.tf.json", '{"module": '),  # unparsable here: assume the worst
+        ("main.tf.json", '[{"module": {"a": {"source": "../moda"}}}]'),  # Trivy loads a top-level array
+        ("main.tofu", 'module "a" { source = "../moda" }\n'),  # OpenTofu files are Terraform to Trivy
+        ("main.tofu.json", '{"module": {"a": {"source": "../moda"}}}'),
+        ("MAIN.TOFU", 'module "a" { source = "../moda" }\n'),
     ],
-    ids=["hcl", "hcl-escaped-source", "json", "json-escaped-key", "json-unparsable"],
-)
+    ids=[
+        "hcl", "hcl-escaped-source", "json", "json-escaped-key", "json-unparsable", "json-array", "tofu",
+        "tofu-json", "tofu-upper-case",
+    ],
+)  # fmt: skip
 def test_any_module_in_the_scan_tree_makes_the_repository_terraform_checked(
     tmp_path: Path, name: str, text: str
 ) -> None:
@@ -303,6 +318,66 @@ def test_any_module_in_the_scan_tree_makes_the_repository_terraform_checked(
     (repo / "demo-shop" / "main.tf").unlink()
     (repo / "demo-shop" / name).write_text(text)
     assert outside_terraform_ignores(repo / "demo-shop", repo) == ["moda/main.tf"]
+
+
+@pytest.mark.parametrize("moda_file", ["main.tofu", "main.tf.json", "main.tofu.json"])
+def test_opentofu_and_json_files_outside_the_scan_tree_are_checked(tmp_path: Path, moda_file: str) -> None:
+    # Second review of #26, repro A2: the module ignore sits in moda/main.tofu.
+    repo = tmp_path / "repo"
+    _module_chain(repo, ignore=True, moda_file=moda_file)
+    assert outside_terraform_ignores(repo / "demo-shop", repo) == [f"moda/{moda_file}"]
+
+
+def test_links_leaving_the_repository_are_refused_when_a_module_may_load_them(tmp_path: Path) -> None:
+    # Second review of #26, repro B1: moda is a directory link to a folder outside the repository.
+    repo = tmp_path / "repo"
+    _module_chain(repo, ignore=False)
+    (repo / "alias").symlink_to(repo / "modb")  # stays inside: its files are checked where they are
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    (tmp_path / "python3.13").write_text("")
+    (repo / ".venv" / "bin" / "python").symlink_to(tmp_path / "python3.13")  # leaves, but no module loads it
+    assert outside_terraform_ignores(repo / "demo-shop", repo) == []
+
+    outside = tmp_path / "outside-moda"
+    (repo / "moda").rename(outside)
+    (outside / "main.tf").write_text('#trivy:ignore:*\nmodule "b" {\n  source = "../repo/modb"\n}\n')
+    (repo / "moda").symlink_to(outside)
+    with pytest.raises(ScannerError, match=r"symbolic links leave the repository \(moda\)"):
+        outside_terraform_ignores(repo / "demo-shop", repo)
+    (repo / "moda").unlink()
+    (repo / "modb" / "extra.tofu").symlink_to(outside / "main.tf")
+    with pytest.raises(ScannerError, match=r"symbolic links leave the repository \(modb/extra\.tofu\)"):
+        outside_terraform_ignores(repo / "demo-shop", repo)
+
+
+def test_a_terraform_named_link_to_a_device_is_never_read(
+    tmp_path: Path,
+    releases: FakeReleases,
+    write_lock: Callable[[str], Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Second review of #26, repro C1: reading demo-shop/zero.tf -> /dev/zero never ends (MemoryError, and
+    # no tool status written).
+    dest, argv_file, _ = fake_trivy(tmp_path, releases, write_lock)
+    repo = tmp_path / "repo"
+    (repo / "demo-shop").mkdir(parents=True)
+    (repo / "demo-shop" / "main.tf").write_text(PUBLIC_ACL)
+    (repo / "demo-shop" / "zero.tf").symlink_to("/dev/zero")
+    read_bytes = Path.read_bytes
+
+    def guarded(path: Path) -> bytes:
+        assert path.name != "zero.tf", "a link to a device must never be read"
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded)
+    assert remote_modules(repo / "demo-shop", repo) == []
+    with pytest.raises(ScannerError, match=r"leave the repository \(demo-shop/zero\.tf\)"):
+        outside_terraform_ignores(repo / "demo-shop", repo)  # the link counts as declaring a module
+    code, output, out, status = _cli(tmp_path, dest, repo / "demo-shop", repo)
+    assert code == 3 and not out.exists() and not argv_file.exists(), output
+    trivy = json.loads(status.read_text())["tools"]["trivy"]
+    assert trivy["status"] == "failed"
+    assert "symbolic links leave the scanned tree (zero.tf)" in trivy["detail"]
 
 
 def test_without_modules_or_outside_the_scan_tree_nothing_else_is_checked(tmp_path: Path) -> None:
@@ -333,7 +408,7 @@ def test_linked_terraform_files_outside_the_scan_tree_are_checked_through_their_
     (repo / "modb" / "extra.tf").unlink()
     (tmp_path / "elsewhere.tf").write_text('resource "aws_s3_bucket" "c" {}\n')
     (repo / "modb" / "extra.tf").symlink_to(tmp_path / "elsewhere.tf")
-    with pytest.raises(ScannerError, match=r"modb/extra\.tf links outside the repository"):
+    with pytest.raises(ScannerError, match=r"symbolic links leave the repository \(modb/extra\.tf\)"):
         outside_terraform_ignores(repo / "demo-shop", repo)
 
 
@@ -359,6 +434,23 @@ def test_remote_modules_are_listed_through_local_modules(tmp_path: Path) -> None
         "registry.example/ns/j/aws",
     ]
     assert remote_modules(repo / "demo-shop") == ["git::https://example.invalid/k.git"], "scan tree only"
+
+
+def test_only_module_sources_are_listed_as_remote_modules(tmp_path: Path) -> None:
+    # Second review of #26, nit: the provider source `hashicorp/aws` was listed as a remote module.
+    (tmp_path / "providers.tf").write_text(
+        'terraform {\n  required_providers {\n    aws = {\n      source  = "hashicorp/aws"\n'
+        '      version = "~> 5.0"\n    }\n  }\n}\n'
+    )
+    (tmp_path / "main.tofu").write_text(
+        'module "net" {\n  # a } in a comment, and a { in a string\n  description = "{"\n'
+        '  source = "git::https://example.invalid/net.git"\n}\n'
+        'resource "x" "y" {\n  source = "not-a-module"\n}\n'
+    )
+    (tmp_path / "more.tofu.json").write_text(
+        json.dumps([{"module": {"k": {"source": "registry.example/ns/k/aws"}}}, {"terraform": {}}])
+    )
+    assert remote_modules(tmp_path) == ["git::https://example.invalid/net.git", "registry.example/ns/k/aws"]
 
 
 def test_remote_modules_are_listed(tmp_path: Path) -> None:
@@ -466,6 +558,21 @@ def test_cli_writes_repository_relative_findings_and_an_ok_status(
     document = json.loads(status.read_text())
     ToolStatus.model_validate(document)
     assert document["tools"]["trivy"]["status"] == "ok"
+
+
+def test_cli_warns_about_remote_modules_after_a_successful_scan(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
+) -> None:
+    dest, _, _ = fake_trivy(tmp_path, releases, write_lock)
+    repo = _repo(tmp_path)
+    (repo / "infra" / "main.tf").write_text(
+        'module "m" {\n  source = "git::https://example.invalid/m.git"\n}\n'
+    )
+    code, output, _, _ = _cli(tmp_path, dest, repo, repo)
+    assert code == 0, output
+    assert (
+        "1 remote Terraform module(s) not fetched or evaluated: git::https://example.invalid/m.git" in output
+    )
 
 
 def test_cli_records_a_refused_scan_and_fails_closed(
@@ -590,10 +697,23 @@ def test_real_trivy_ignores_in_a_module_outside_the_scan_path_fail_closed(tmp_pa
 
 @real
 @pytest.mark.integration
-def test_real_trivy_module_level_ignore_in_an_outside_module_fails_closed(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("scan_file", "moda_file"),
+    [
+        ("main.tf", "main.tf"),
+        ("main.tofu", "main.tf"),
+        ("main.tf", "main.tofu"),
+        ("main.tofu.json", "main.tf"),
+    ],
+    ids=["terraform", "tofu-in-scan-tree", "tofu-in-module", "tofu-json-in-scan-tree"],
+)
+def test_real_trivy_module_level_ignore_in_an_outside_module_fails_closed(
+    tmp_path: Path, scan_file: str, moda_file: str
+) -> None:
     # Review of #26, repro N1: with the real Trivy, the ignore above `module "b"` in ../moda silenced modb.
+    # Second review, repros A1 to A3: Trivy loads OpenTofu files too, so the same chain with .tofu files.
     control = tmp_path / "control"
-    _module_chain(control, ignore=False)
+    _module_chain(control, ignore=False, scan_file=scan_file, moda_file=moda_file)
     results, run = scan_iac_with_run(
         control / "demo-shop", lock=load_lock(REPO_LOCK), tools_dir=Path(str(TOOLS_DIR)), repo_root=control
     )
@@ -606,8 +726,8 @@ def test_real_trivy_module_level_ignore_in_an_outside_module_fails_closed(tmp_pa
     assert ("modb/main.tf", "AWS-0086") in {(f.location.path, f.rule_id) for f in findings if f.location}
 
     repo = tmp_path / "repo"
-    _module_chain(repo, ignore=True)
-    with pytest.raises(ScannerError, match=r"\(moda/main\.tf\)"):
+    _module_chain(repo, ignore=True, scan_file=scan_file, moda_file=moda_file)
+    with pytest.raises(ScannerError, match=rf"\(moda/{moda_file}\)"):
         scan_iac_with_run(
             repo / "demo-shop", lock=load_lock(REPO_LOCK), tools_dir=Path(str(TOOLS_DIR)), repo_root=repo
         )
