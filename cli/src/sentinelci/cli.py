@@ -823,18 +823,19 @@ def scan_iac_cmd(
     """Scan infrastructure as code with the verified Trivy binary (`trivy config`), offline."""
     _clear(out, tool_status_out)
     root = repo_root or target
-    remote = remote_modules(target, root) if target.is_dir() else []
-    if remote:  # not fetched, so not evaluated: say so in the job log
-        typer.echo(
-            f"warning: {len(remote)} remote Terraform module(s) not fetched or evaluated: "
-            + ", ".join(remote),
-            err=True,
-        )
 
     def scan(tool_lock: ToolLock) -> tuple[list[Finding], ToolRun]:
         results, tool_run = scan_iac_with_run(
             target, lock=tool_lock, tools_dir=tools_dir, repo_root=root, platform=platform, timeout_s=timeout
         )
+        # Listed once the tree passed the checks (no link leaving it): not fetched, so not evaluated.
+        remote = remote_modules(target, root) if target.is_dir() else []
+        if remote:
+            typer.echo(
+                f"warning: {len(remote)} remote Terraform module(s) not fetched or evaluated: "
+                + ", ".join(remote),
+                err=True,
+            )
         findings = normalize_trivy_config(
             results,
             run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
