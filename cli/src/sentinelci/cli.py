@@ -66,6 +66,7 @@ from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
 from sentinelci.scanners.installer import VerificationReport, install_tools, verify_tools
 from sentinelci.scanners.lock import LOCK_FILE_NAME, load_lock
+from sentinelci.supplychain.sbom import SOURCE_KINDS, SourceKind, generate_sbom
 
 EXIT_UNTRUSTED_INPUT = 3
 DEFAULT_TOOLS_DIR = Path(".sentinel/tools")
@@ -795,6 +796,60 @@ def report_pr_comment(
         raise typer.Exit(EXIT_UNTRUSTED_INPUT) from exc
     out.write_text(render_pr_comment(inputs), encoding="utf-8", newline="\n")
     typer.echo(f"verdict {inputs.decision.verdict}: comment written to {out}")
+
+
+# ---------------------------------------------------------------- supply chain (A4)
+
+
+@app.command("sbom")
+def sbom_command(
+    target: Annotated[Path, typer.Argument(help="Source tree, or the image the build wrote to a file.")],
+    name: Annotated[str, typer.Option(help="Name of the SBOM's subject, e.g. demo-shop/shop-api.")],
+    cyclonedx: Annotated[Path, typer.Option(help="Destination of the CycloneDX JSON SBOM.")],
+    spdx: Annotated[Path, typer.Option(help="Destination of the SPDX JSON SBOM.")],
+    source: Annotated[
+        str, typer.Option(help=f"What the target is: {', '.join(SOURCE_KINDS)} (never a registry pull).")
+    ] = "dir",
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    tools_dir: Annotated[
+        Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
+    ] = DEFAULT_TOOLS_DIR,
+    platform: PlatformOption = None,
+) -> None:
+    """Write the CycloneDX and SPDX SBOMs of a source tree or a built image with the pinned Syft (offline).
+
+    Exit code 3, with neither file written, when Syft fails, does not match tools.lock.toml, or writes
+    something other than a CycloneDX document with a serialNumber and an SPDX document.
+    """
+    if source not in SOURCE_KINDS:
+        raise typer.BadParameter(f"--source must be one of {', '.join(SOURCE_KINDS)}")
+    for out in (cyclonedx, spdx):  # checked before anything is deleted
+        if out.resolve().is_relative_to(target.resolve()) or out.is_dir():
+            typer.echo(
+                f"sentinel sbom: {out} is inside the target {target} or a directory; nothing was written",
+                err=True,
+            )
+            raise typer.Exit(EXIT_NO_DECISION)
+    if cyclonedx.resolve() == spdx.resolve():
+        typer.echo("sentinel sbom: --cyclonedx and --spdx are the same file; nothing was written", err=True)
+        raise typer.Exit(EXIT_NO_DECISION)
+    for out in (cyclonedx, spdx):
+        out.unlink(missing_ok=True)  # a failed run must never leave an older SBOM behind
+    kind: SourceKind = source  # narrowed by the membership check above
+    try:
+        sbom = generate_sbom(
+            target, kind=kind, name=name, lock=load_lock(lock), tools_dir=tools_dir, platform=platform
+        )
+        for out, data in ((cyclonedx, sbom.cyclonedx), (spdx, sbom.spdx)):
+            out.parent.mkdir(parents=True, exist_ok=True)
+            _write_atomically(out, data.decode("utf-8"))
+    except (ToolIntegrityError, ScannerError, OSError, UnicodeDecodeError) as exc:
+        for out in (cyclonedx, spdx):
+            out.unlink(missing_ok=True)
+        raise _fail_closed(exc) from exc
+    typer.echo(
+        f"syft {sbom.run.version}: {sbom.packages} package(s), {sbom.serial_number} -> {cyclonedx}, {spdx}"
+    )
 
 
 if __name__ == "__main__":

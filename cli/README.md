@@ -206,3 +206,22 @@ waivers:
   reasons reach the decision record.
 - A file that cannot be read (bad YAML, wrong top-level shape, `version` other than 1) means no decision:
   exit code `3`.
+
+## `sentinel sbom` (SBOMs, A4)
+
+```bash
+uv run sentinel sbom demo-shop --name demo-shop --cyclonedx out/sbom.cdx.json --spdx out/sbom.spdx.json
+uv run sentinel sbom out/image.tar --source oci-archive --name demo-shop/shop-api \
+  --cyclonedx out/image.cdx.json --spdx out/image.spdx.json
+```
+
+- The pinned Syft, verified against `tools.lock.toml` right before it runs, in a private working directory and home
+  with `supplychain/configs/syft.yaml` passed explicitly: the target's `.syft.yaml` is never loaded, so the scanned
+  repository cannot hide a package. Offline (no enrichment, remote license lookup, Go tooling or git clone; the
+  proxy variables point at a closed port), packages only (no file catalog with machine paths).
+- `--source`: `dir` (default; `--base-path` stops links above the tree), `oci-dir`, `oci-archive` or
+  `docker-archive`, the file the build wrote. Never a registry pull.
+- Exit code `3`, with neither file written, when Syft fails or does not match the lock, or writes something other
+  than a CycloneDX document with a `serialNumber` (what `sentinel attest` binds, ADR-0010) and an SPDX document.
+  An output inside the target, a directory, or the same file for both is refused before anything is deleted.
+

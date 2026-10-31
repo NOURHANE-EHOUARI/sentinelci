@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.13 | A4 SBOMs (§7): `sentinel sbom` writes CycloneDX and SPDX JSON with the pinned Syft, offline and never configured by the scanned repository (private working directory and home, SentinelCI's `supplychain/configs/syft.yaml` passed explicitly, no network lookup, packages only); an output inside the target is refused before anything is deleted. |
 | 1.1.5 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
 | 1.1.4 | Enrichment (B2, §6.1): `schemas/enrichment-snapshot.v1.json` (`schema_version` "1.0", `sources.kev.cves`: the CVEs the KEV lookup covered) and `schemas/sentinel-config.v1.json` (`sentinel.yaml`, canonical component paths); `sentinel enrich`. "Not listed in KEV" only for covered CVEs; `sentinel.yaml` read with a restricted YAML loader. |
 | 1.1.3 | Scanner hardening (§5): verify-before-exec, minimal child environment, scanner configuration owned by SentinelCI; repository-controlled suppressions are neutralized or refused (Gitleaks: `.gitleaks.toml`, `gitleaks:allow`, `.gitleaksignore`, and `.gitattributes` `-diff`/`binary` in git mode); merge commits scanned with `--diff-merges=remerge` plus a `first-parent` pass for octopus merges (evil merges), archives opened in dir mode. |
@@ -376,7 +377,11 @@ store and when nothing was compared (every decision skipped; the previous-night 
 
 ## 7. Supply-chain integrity and deploy-time enforcement
 
-- **SBOM:** Syft → CycloneDX JSON (primary) + SPDX JSON, for source and image.
+- **SBOM:** Syft → CycloneDX JSON (primary) + SPDX JSON, for source and image (`sentinel sbom`: the pinned Syft,
+  verified before it runs, in a private working directory and home with SentinelCI's own configuration passed
+  explicitly, so the scanned repository's `.syft.yaml` is never loaded; offline, no remote lookup or tooling;
+  packages only; images read from the file the build wrote, never pulled; `--base-path` stops links above the
+  tree; a CycloneDX document without `serialNumber` or an SPDX document that is not one fails closed).
 - **Signing:** Cosign v3 (Sigstore bundle format). Private mode: key pair, no transparency-log upload. GitHub mode:
   keyless, identity = release workflow path + ref. Always sign digests, never tags.
 - **Attestations:** SLSA provenance, CycloneDX SBOM, vulnerability scan, release decision.
