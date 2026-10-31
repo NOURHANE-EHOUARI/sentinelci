@@ -1,0 +1,6 @@
+# Custom data for Trivy's misconfiguration checks (`trivy config --config-data <this directory>`).
+# KSV0125 reports every image outside this list. Only the kind cluster's local registry is trusted
+# (ADR-0006: Kubernetes demos pull from it); public registries stay reported.
+ksv0125:
+  trusted_registries:
+    - "registry.local"

@@ -1,0 +1,8 @@
+# shop-api settings. INTENTIONALLY VULNERABLE benchmark file (SentinelCI ground truth GT-SECRET-001).
+# The token below is FAKE: random text in the GitHub token format. It grants no access anywhere.
+app:
+  name: shop-api
+  debug: false
+github:
+  org: example-shop
+  token: ghp_SentinelFakeToken4DemoOnly9xQ2mZ7kL3vB
