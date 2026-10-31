@@ -13,11 +13,14 @@ A Trivy bump must re-run these tests: `VERIFIED_WITH` records the version they l
 that needs no Trivy fails as soon as `tools.lock.toml` names another one.
 
 Trivy 0.76.1 blind spots, which no listed id can catch (SC-011 is narrower than its name):
-- SSH from 0.0.0.0/0 written as `aws_vpc_security_group_ingress_rule` (AWS provider v5) reports nothing;
-  `aws_security_group_rule` and inline `ingress` blocks do report AWS-0107;
+- a rule whose parent resource is not declared in the same configuration (a literal id or a variable, such
+  as a group passed into a module) is not evaluated: SSH from 0.0.0.0/0 in an
+  `aws_vpc_security_group_ingress_rule` (AWS provider v5), an Azure SQL firewall rule open to every address
+  (AZU-0029) and a bucket IAM binding to `allUsers` (GCP-0001) then report nothing;
+  `aws_security_group_rule` reports AWS-0107 either way;
 - KSV-0121 covers hostPath `/`, `/etc` and `/proc`, not `/var/run`, the containerd socket or
   `/var/lib/kubelet`;
-- `capabilities.add: [ALL]` reports KSV-0022 only, not KSV-0005;
+- `capabilities.add: [ALL]` reports KSV-0022 only, not KSV-0005 or KSV-0120;
 - an S3 bucket policy with `Principal = "*"` does not report AWS-0092.
 
 The configurations are written at run time: no deliberately insecure file is committed outside `demo-shop/`.
