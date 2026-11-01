@@ -46,7 +46,11 @@ curl -s 'http://127.0.0.1:8000/api/v1/findings?severity=CRITICAL'
 ```
 
 Every finding must be a valid Finding v1 document of that run (same `repo`, `commit` and `context`). A run's
-findings are recorded once: a second upload is refused (409), so recorded evidence is never replaced.
+findings are recorded once: a second upload is refused (409), so recorded evidence is never replaced; after a lost
+response, compare `findings_sha256` from `GET /api/v1/runs/<run id>` with your file's sha256. The database itself
+refuses any change to a recorded run or its findings. Bodies are capped before authentication: 64 KiB for JSON,
+`SENTINEL_API_MAX_UPLOAD_BYTES` (32 MiB by default) for a findings upload. To rotate the token, delete both
+`SENTINEL_API_TOKEN` lines from `.env` and run `make compose-env`.
 
 ## Security rules (tested in `tests/deploy/test_compose.py`)
 

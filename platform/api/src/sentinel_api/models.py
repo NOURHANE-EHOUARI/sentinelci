@@ -50,7 +50,8 @@ class RunFinding(Base):
 
     run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True)
     finding_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    # Copies of document fields, for filtering; the document itself stays exactly as uploaded.
+    # Copies of document fields, for filtering. The document is kept as JSON (JSONB keeps neither key order
+    # nor bytes); the exact upload is identified by `runs.findings_sha256`.
     category: Mapped[str] = mapped_column(String(16), index=True)
     severity: Mapped[str] = mapped_column(String(16), index=True)
     tool: Mapped[str] = mapped_column(Text, index=True)

@@ -39,6 +39,10 @@ CLIENT_ONLY = frozenset({"SENTINEL_API_TOKEN"})
 COMPOSE_VARIABLES = (set(VARIABLES) | set(DERIVED)) - CLIENT_ONLY
 
 
+class EnvError(ValueError):
+    """The existing file is inconsistent; nothing is written."""
+
+
 def _existing(path: Path) -> dict[str, str] | None:
     try:
         text = path.read_text(encoding="utf-8")
@@ -60,6 +64,9 @@ def write_env(path: Path = ENV_FILE) -> bool:
         values.setdefault(name, generate())
     for name, derive in DERIVED.items():
         values.setdefault(name, derive(values))
+        if values[name] != derive(values):
+            # E.g. only the token line was deleted to rotate it: the old hash would refuse every write.
+            raise EnvError(f"{name} in {path} does not match its source; delete both lines to rotate them")
     missing = [name for name in [*VARIABLES, *DERIVED] if existing is None or name not in existing]
     if not missing:
         return False
@@ -82,5 +89,9 @@ def write_env(path: Path = ENV_FILE) -> bool:
 
 
 if __name__ == "__main__":
-    created = write_env()
+    try:
+        created = write_env()
+    except EnvError as exc:
+        print(f"make_env: {exc}", file=sys.stderr)
+        raise SystemExit(3) from exc
     print(f"{'wrote' if created else 'kept existing'} {ENV_FILE}", file=sys.stderr)

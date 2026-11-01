@@ -25,13 +25,15 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Self:
-        hashes = frozenset(
-            h.strip() for h in os.environ.get("SENTINEL_API_TOKEN_SHA256", "").split(",") if h.strip()
-        )
-        if bad := sorted(h for h in hashes if not _SHA256_HEX.fullmatch(h)):
-            raise ConfigError(
-                f"SENTINEL_API_TOKEN_SHA256 holds a value that is not a lowercase sha256: {bad[0][:12]}…"
-            )
+        entries = [h.strip() for h in os.environ.get("SENTINEL_API_TOKEN_SHA256", "").split(",") if h.strip()]
+        for position, entry in enumerate(entries, start=1):
+            if not _SHA256_HEX.fullmatch(entry):
+                # The position only: the likeliest mistake is pasting the token itself, and logs must never
+                # show any part of it.
+                raise ConfigError(
+                    f"SENTINEL_API_TOKEN_SHA256 entry {position} is not a lowercase sha256 (64 hex digits)"
+                )
+        hashes = frozenset(entries)
         limit = os.environ.get("SENTINEL_API_MAX_UPLOAD_BYTES", "")
         if limit and not limit.isdigit():
             raise ConfigError("SENTINEL_API_MAX_UPLOAD_BYTES must be a number of bytes")

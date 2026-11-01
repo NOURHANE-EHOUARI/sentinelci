@@ -8,9 +8,12 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
+import psycopg.errors
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
 
@@ -28,6 +31,26 @@ _COMMIT = r"^[a-f0-9]{40}$"
 _SHA256 = r"^[a-f0-9]{64}$"
 _LINE = r"^[^\r\n\u2028\u2029]*$"
 NDJSON_TYPE = "application/x-ndjson"
+MAX_OFFSET = 1_000_000
+
+
+class ErrorOut(BaseModel):
+    """Every error except 422, which keeps FastAPI's list of validation errors (`HTTPValidationError`)."""
+
+    detail: str
+
+
+def _errors(*codes: int) -> dict[int | str, dict[str, Any]]:
+    """The documented error responses of a route (schemas/openapi.yaml must list every status it returns)."""
+    reasons = {
+        401: "No valid ingestion token (`Authorization: Bearer <token>`).",
+        404: "No such run or finding.",
+        409: "This run's findings are already recorded; compare `findings_sha256` from `GET /runs/{run_id}`.",
+        413: "The request body is larger than the limit.",
+        415: f"The findings upload is not `{NDJSON_TYPE}`.",
+        503: "No database is configured.",
+    }
+    return {code: {"model": ErrorOut, "description": reasons[code]} for code in codes}
 
 
 class RunCreate(BaseModel):
@@ -81,6 +104,7 @@ class Occurrence(BaseModel):
 
 class FindingDetail(BaseModel):
     finding: dict[str, Any]
+    occurrence_count: int
     occurrences: list[Occurrence]
 
 
@@ -104,7 +128,11 @@ def _run_out(run: Run) -> RunOut:
 
 
 @router.post(
-    "/runs", status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_writer)], tags=["runs"]
+    "/runs",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_writer)],
+    tags=["runs"],
+    responses=_errors(401, 413, 503),
 )
 def create_run(body: RunCreate, session: SessionDep) -> RunOut:
     """Record a pipeline run. Its findings are uploaded next, once."""
@@ -115,7 +143,7 @@ def create_run(body: RunCreate, session: SessionDep) -> RunOut:
     return _run_out(run)
 
 
-@router.get("/runs/{run_id}", tags=["runs"])
+@router.get("/runs/{run_id}", tags=["runs"], responses=_errors(404, 503))
 def get_run(run_id: uuid.UUID, session: SessionDep) -> RunOut:
     run = session.get(Run, run_id)
     if run is None:
@@ -137,12 +165,18 @@ async def _read_body(request: Request, limit: int) -> bytes:
     return b"".join(chunks)
 
 
+def _invalid(message: str, lineno: int | None = None) -> RequestValidationError:
+    """A 422 with the same body as every other one in the API (FastAPI's list of validation errors)."""
+    loc: tuple[str | int, ...] = ("body",) if lineno is None else ("body", lineno)
+    return RequestValidationError([{"type": "finding_invalid", "loc": loc, "msg": message, "input": None}])
+
+
 def _parse(body: bytes, run: Run) -> list[dict[str, Any]]:
     """Finding v1 documents of exactly this run, or 422 with the first problem (nothing is stored)."""
     try:
         findings = load_findings(body)
     except EvaluationError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+        raise _invalid(str(exc)) from exc
     # load_findings skips blank lines; recover each finding's line number the same way.
     lines = [n for n, line in enumerate(body.decode("utf-8").split("\n"), start=1) if line.strip()]
     expected = {"repo": run.repo, "commit": run.commit, "context": run.context}
@@ -150,47 +184,65 @@ def _parse(body: bytes, run: Run) -> list[dict[str, Any]]:
     seen: dict[str, int] = {}
     for lineno, finding in zip(lines, findings, strict=True):
         if (first := seen.setdefault(finding["id"], lineno)) != lineno:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT,
+            raise _invalid(
                 f"findings line {lineno}: finding {finding['id']} appears twice (first on line {first})",
+                lineno,
             )
         reported = finding["run"]
         mismatch = any(reported.get(k) != v for k, v in expected.items()) or any(
             k in reported and reported[k] != v for k, v in optional.items()
         )
         if mismatch:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT,
-                f"findings line {lineno}: the finding belongs to another run",
-            )
+            raise _invalid(f"findings line {lineno}: the finding belongs to another run", lineno)
     return findings
 
 
 def _store(session: Session, run_id: uuid.UUID, body: bytes) -> UploadResult:
-    # Lock the run row: two concurrent uploads must not both see "no findings yet".
+    # The row lock makes a second upload wait, then see the first one's result (409 before any parsing).
+    already_recorded = HTTPException(status.HTTP_409_CONFLICT, "this run's findings are already recorded")
     run = session.get(Run, run_id, with_for_update=True)
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no such run")
     if run.findings_sha256 is not None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "this run's findings are already recorded")
+        raise already_recorded
     findings = _parse(body, run)
-    session.add_all(
-        RunFinding(
-            run_id=run.id,
-            finding_id=f["id"],
-            category=f["category"],
-            severity=f["severity"],
-            tool=f["tool"]["name"],
-            rule_id=f["rule_id"],
-            document=f,
+    try:
+        session.add_all(
+            RunFinding(
+                run_id=run.id,
+                finding_id=f["id"],
+                category=f["category"],
+                severity=f["severity"],
+                tool=f["tool"]["name"],
+                rule_id=f["rule_id"],
+                document=f,
+            )
+            for f in findings
         )
-        for f in findings
-    )
-    run.findings_sha256 = hashlib.sha256(body).hexdigest()
-    run.findings_uploaded_at = datetime.now(UTC)
-    run.finding_count = len(findings)
+        session.flush()
+        # Recorded once, whatever the lock does: only the update that finds the run unrecorded may commit. The
+        # database refuses any later change to a recorded run (migration 0002).
+        digest = hashlib.sha256(body).hexdigest()
+        recorded = session.execute(
+            update(Run)
+            .where(Run.id == run_id, Run.findings_sha256.is_(None))
+            .values(
+                findings_sha256=digest, findings_uploaded_at=datetime.now(UTC), finding_count=len(findings)
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if recorded.rowcount != 1:  # type: ignore[attr-defined]
+            session.rollback()
+            raise already_recorded
+    except DBAPIError as exc:
+        # Without the lock (or if it is ever bypassed), the trigger of migration 0002 refuses findings for a
+        # run another upload has just recorded: the same answer as the check above.
+        session.rollback()
+        if isinstance(exc.orig, psycopg.errors.RaiseException) and "is recorded" in str(exc.orig):
+            raise already_recorded from exc
+        raise
     session.commit()
-    return UploadResult(run_id=run.id, finding_count=run.finding_count, findings_sha256=run.findings_sha256)
+    return UploadResult(run_id=run_id, finding_count=len(findings), findings_sha256=digest)
 
 
 @router.post(
@@ -198,6 +250,7 @@ def _store(session: Session, run_id: uuid.UUID, body: bytes) -> UploadResult:
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require_writer)],
     tags=["runs"],
+    responses=_errors(401, 404, 409, 413, 415, 503),
     openapi_extra={
         "requestBody": {"required": True, "content": {NDJSON_TYPE: {"schema": {"type": "string"}}}}
     },
@@ -211,7 +264,7 @@ async def upload_findings(run_id: uuid.UUID, request: Request, session: SessionD
     return await run_in_threadpool(_store, session, run_id, body)
 
 
-@router.get("/findings", tags=["findings"])
+@router.get("/findings", tags=["findings"], responses=_errors(503))
 def list_findings(
     session: SessionDep,
     repo: Annotated[str | None, Query(pattern=_REPO, max_length=200)] = None,
@@ -220,7 +273,7 @@ def list_findings(
     severity: Severity | None = None,
     tool: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    offset: Annotated[int, Query(ge=0, le=MAX_OFFSET)] = 0,
 ) -> FindingPage:
     """Findings as each run reported them, newest run first."""
     query = select(RunFinding).join(Run)
@@ -242,20 +295,29 @@ def list_findings(
     return FindingPage(items=items, total=total, limit=limit, offset=offset)
 
 
-@router.get("/findings/{finding_id}", tags=["findings"])
-def get_finding(finding_id: Annotated[str, Path(pattern=_SHA256)], session: SessionDep) -> FindingDetail:
-    """One finding (its fingerprint), as the latest run reported it, with every run that reported it."""
-    rows = session.execute(
-        select(RunFinding, Run)
-        .join(Run)
-        .where(RunFinding.finding_id == finding_id)
-        .order_by(Run.created_at.desc(), Run.id)
-    ).all()
-    if not rows:
+@router.get("/findings/{finding_id}", tags=["findings"], responses=_errors(404, 503))
+def get_finding(
+    finding_id: Annotated[str, Path(pattern=_SHA256)],
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> FindingDetail:
+    """One finding (its fingerprint), as the latest run reported it, and the newest runs that reported it."""
+    newest_first = (Run.created_at.desc(), Run.id)
+    matching = select(RunFinding).join(Run).where(RunFinding.finding_id == finding_id)
+    latest = session.scalars(matching.order_by(*newest_first).limit(1)).first()
+    if latest is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no such finding")
+    total = session.scalar(select(func.count()).select_from(matching.subquery())) or 0
+    runs = session.scalars(
+        select(Run)
+        .join(RunFinding)
+        .where(RunFinding.finding_id == finding_id)
+        .order_by(*newest_first)
+        .limit(limit)
+    )
     occurrences = [
         Occurrence(run_id=run.id, repo=run.repo, commit=run.commit, context=run.context,  # type: ignore[arg-type]
                    created_at=run.created_at)
-        for _, run in rows
+        for run in runs
     ]  # fmt: skip
-    return FindingDetail(finding=rows[0][0].document, occurrences=occurrences)
+    return FindingDetail(finding=latest.document, occurrence_count=total, occurrences=occurrences)

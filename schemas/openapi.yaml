@@ -2,7 +2,7 @@
 openapi: 3.1.0
 info:
   title: SentinelCI API
-  version: 0.2.0
+  version: 1.0.0
 paths:
   /healthz:
     get:
@@ -40,12 +40,32 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RunOut'
+        '401':
+          description: 'No valid ingestion token (`Authorization: Bearer <token>`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '413':
+          description: The request body is larger than the limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '503':
+          description: No database is configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
         '422':
           description: Validation Error
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/v1/runs/{run_id}:
     get:
       tags:
@@ -67,6 +87,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RunOut'
+        '404':
+          description: No such run or finding.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '503':
+          description: No database is configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
         '422':
           description: Validation Error
           content:
@@ -81,6 +113,8 @@ paths:
       description: 'Record the run''s findings: Finding v1 NDJSON, all of them in
         one upload, all or nothing.'
       operationId: upload_findings_api_v1_runs__run_id__findings_post
+      security:
+      - HTTPBearer: []
       parameters:
       - name: run_id
         in: path
@@ -96,6 +130,43 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UploadResult'
+        '401':
+          description: 'No valid ingestion token (`Authorization: Bearer <token>`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '404':
+          description: No such run or finding.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '409':
+          description: This run's findings are already recorded; compare `findings_sha256`
+            from `GET /runs/{run_id}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '413':
+          description: The request body is larger than the limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '415':
+          description: The findings upload is not `application/x-ndjson`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '503':
+          description: No database is configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
         '422':
           description: Validation Error
           content:
@@ -189,6 +260,7 @@ paths:
         required: false
         schema:
           type: integer
+          maximum: 1000000
           minimum: 0
           default: 0
           title: Offset
@@ -199,6 +271,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/FindingPage'
+        '503':
+          description: No database is configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
         '422':
           description: Validation Error
           content:
@@ -210,8 +288,8 @@ paths:
       tags:
       - findings
       summary: Get Finding
-      description: One finding (its fingerprint), as the latest run reported it, with
-        every run that reported it.
+      description: One finding (its fingerprint), as the latest run reported it, and
+        the newest runs that reported it.
       operationId: get_finding_api_v1_findings__finding_id__get
       parameters:
       - name: finding_id
@@ -221,6 +299,15 @@ paths:
           type: string
           pattern: ^[a-f0-9]{64}$
           title: Finding Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 100
+          title: Limit
       responses:
         '200':
           description: Successful Response
@@ -228,6 +315,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/FindingDetail'
+        '404':
+          description: No such run or finding.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '503':
+          description: No database is configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
         '422':
           description: Validation Error
           content:
@@ -236,12 +335,26 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
+    ErrorOut:
+      properties:
+        detail:
+          type: string
+          title: Detail
+      type: object
+      required:
+      - detail
+      title: ErrorOut
+      description: Every error except 422, which keeps FastAPI's list of validation
+        errors (`HTTPValidationError`).
     FindingDetail:
       properties:
         finding:
           additionalProperties: true
           type: object
           title: Finding
+        occurrence_count:
+          type: integer
+          title: Occurrence Count
         occurrences:
           items:
             $ref: '#/components/schemas/Occurrence'
@@ -250,6 +363,7 @@ components:
       type: object
       required:
       - finding
+      - occurrence_count
       - occurrences
       title: FindingDetail
     FindingItem:
@@ -475,3 +589,7 @@ components:
       - msg
       - type
       title: ValidationError
+  securitySchemes:
+    HTTPBearer:
+      type: http
+      scheme: bearer

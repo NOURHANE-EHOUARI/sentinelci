@@ -4,16 +4,24 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from typing import Annotated
 
-from fastapi import HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+# Declares the scheme in the OpenAPI document (`securitySchemes.HTTPBearer`). auto_error=False: a missing or
+# malformed header reaches require_writer, which answers 401 with the same body as a wrong token.
+_bearer = HTTPBearer(auto_error=False)
 
 
-def require_writer(request: Request) -> None:
+def require_writer(
+    request: Request, credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)]
+) -> None:
     """Allow the request only with `Authorization: Bearer <token>` for a configured token (fail closed)."""
-    scheme, _, token = request.headers.get("Authorization", "").partition(" ")
     allowed: frozenset[str] = request.app.state.settings.token_sha256
-    if scheme.lower() == "bearer" and token.strip():
-        digest = hashlib.sha256(token.strip().encode("utf-8")).hexdigest()
+    token = credentials.credentials.strip() if credentials is not None else ""
+    if token:
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
         # Compare with every configured hash, in constant time, without stopping at the first match.
         matches = [hmac.compare_digest(digest, known) for known in sorted(allowed)]
         if any(matches):

@@ -43,6 +43,14 @@ def create_run(client: TestClient, headers: dict[str, str], **fields: str) -> st
     return run_id
 
 
+def message(response: Any) -> str:
+    """The message of a 422, which has FastAPI's shape everywhere: `detail` is a list of errors."""
+    detail = response.json()["detail"]
+    assert isinstance(detail, list) and len(detail) == 1, detail
+    msg: str = detail[0]["msg"]
+    return msg
+
+
 def upload(client: TestClient, headers: dict[str, str], run_id: str, body: bytes) -> Any:
     return client.post(f"/api/v1/runs/{run_id}/findings", content=body, headers={**headers, **NDJSON})
 
@@ -193,7 +201,7 @@ def test_a_bad_upload_stores_nothing(
     run_id = create_run(client, headers)
     response = upload(client, headers, run_id, body)
     assert response.status_code == 422, response.text
-    assert expected in response.json()["detail"]
+    assert expected in message(response)
     assert client.get("/api/v1/findings").json()["total"] == 0, "all or nothing"
     assert client.get(f"/api/v1/runs/{run_id}").json()["findings_sha256"] is None
 
@@ -220,7 +228,7 @@ def test_findings_of_another_run_are_refused(
     response = upload(client, headers, run_id, ndjson(same, other))
 
     assert response.status_code == 422, response.text
-    assert "line 2: the finding belongs to another run" in response.json()["detail"]
+    assert "line 2: the finding belongs to another run" in message(response)
     assert client.get("/api/v1/findings").json()["total"] == 0
 
 
@@ -323,3 +331,267 @@ def test_findings_are_paginated_in_a_stable_order(client: TestClient, headers: d
 )
 def test_bad_query_parameters_are_refused(client: TestClient, params: dict[str, str]) -> None:
     assert client.get("/api/v1/findings", params=params).status_code == 422
+
+
+# ---------------------------------------------------------------- #38 review: contract
+
+
+def test_writes_declare_the_bearer_scheme_and_reads_do_not(client: TestClient) -> None:
+    document = client.app.openapi()  # type: ignore[attr-defined]
+    assert document["components"]["securitySchemes"]["HTTPBearer"] == {"type": "http", "scheme": "bearer"}
+    operations = {(m.upper(), p): op for p, item in document["paths"].items() for m, op in item.items()}
+    for key in [("POST", "/api/v1/runs"), ("POST", "/api/v1/runs/{run_id}/findings")]:
+        assert operations[key]["security"] == [{"HTTPBearer": []}], key
+    for key, op in operations.items():
+        if key[0] == "GET":
+            assert "security" not in op, key
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "codes"),
+    [
+        ("POST", "/api/v1/runs", {"201", "401", "413", "422", "503"}),
+        ("GET", "/api/v1/runs/{run_id}", {"200", "404", "422", "503"}),
+        ("POST", "/api/v1/runs/{run_id}/findings", {"201", "401", "404", "409", "413", "415", "422", "503"}),
+        ("GET", "/api/v1/findings", {"200", "422", "503"}),
+        ("GET", "/api/v1/findings/{finding_id}", {"200", "404", "422", "503"}),
+    ],
+)
+def test_every_status_a_route_returns_is_in_the_contract(
+    client: TestClient, method: str, path: str, codes: set[str]
+) -> None:
+    document = client.app.openapi()  # type: ignore[attr-defined]
+    assert set(document["paths"][path][method.lower()]["responses"]) == codes
+
+
+def test_every_error_body_has_the_documented_shape(client: TestClient, headers: dict[str, str]) -> None:
+    """401, 404, 409, 413, 415 carry `{"detail": str}`; every 422 carries FastAPI's list of errors."""
+    run_id = create_run(client, headers)
+    upload(client, headers, run_id, ndjson(SECRET))
+    plain = [
+        client.post("/api/v1/runs", json=RUN),
+        client.get(f"/api/v1/runs/{'0' * 8}-0000-4000-8000-{'0' * 12}"),
+        upload(client, headers, run_id, ndjson(SCA)),
+        client.post(f"/api/v1/runs/{run_id}/findings", content=b"x", headers={**headers}),
+    ]
+    assert [r.status_code for r in plain] == [401, 404, 409, 415]
+    assert all(isinstance(r.json()["detail"], str) for r in plain)
+    other = create_run(client, headers)
+    invalid = [
+        upload(client, headers, other, b"{broken\n"),
+        client.post("/api/v1/runs", json={**RUN, "commit": "x"}, headers=headers),
+        client.get("/api/v1/findings", params={"limit": 0}),
+    ]
+    assert [r.status_code for r in invalid] == [422, 422, 422]
+    for response in invalid:
+        detail = response.json()["detail"]
+        assert isinstance(detail, list) and all({"loc", "msg", "type"} <= set(e) for e in detail), detail
+
+
+def test_the_contract_version_is_the_apis_own(client: TestClient) -> None:
+    from sentinel_api.main import API_VERSION
+    from sentinelci import __version__ as engine_version
+
+    document = client.app.openapi()  # type: ignore[attr-defined]
+    assert document["info"]["version"] == API_VERSION == "1.0.0"
+    assert client.get("/healthz").json() == {"status": "ok", "engine_version": engine_version}
+
+
+# ---------------------------------------------------------------- #38 review: bodies before authentication
+
+
+@pytest.mark.parametrize("chunked", [False, True], ids=["content-length", "chunked"])
+def test_an_unauthenticated_large_body_is_refused_before_it_is_read(
+    client: TestClient, chunked: bool
+) -> None:
+    body = b'{"repo": "' + b"x" * (1024 * 1024) + b'"}'
+    content: Any = iter([body[: len(body) // 2], body[len(body) // 2 :]]) if chunked else body
+    response = client.post("/api/v1/runs", content=content, headers={"Content-Type": "application/json"})
+    assert response.status_code == 413, response.text
+    small = client.post("/api/v1/runs", json=RUN)
+    assert small.status_code == 401
+
+
+def test_a_json_body_at_the_limit_is_still_read(database_url: str, headers: dict[str, str]) -> None:
+    from sentinel_api.limits import MAX_JSON_BYTES
+
+    assert MAX_JSON_BYTES == 64 * 1024, "the limit documented in deploy/compose/README.md"
+    body = json.dumps({**RUN, "ref": "r" * 200}).encode()
+    padded = body[:-1] + b" " * (MAX_JSON_BYTES - len(body)) + b"}"
+    assert len(padded) == MAX_JSON_BYTES
+    with _client(database_url, headers) as client:
+        accepted = client.post(
+            "/api/v1/runs", content=padded, headers={**headers, "Content-Type": "application/json"}
+        )
+        refused = client.post(
+            "/api/v1/runs", content=padded + b" ", headers={**headers, "Content-Type": "application/json"}
+        )
+    assert (accepted.status_code, refused.status_code) == (201, 413)
+
+
+# ---------------------------------------------------------------- #38 review: once per run
+
+
+def _client(database_url: str, headers: dict[str, str], **settings: Any) -> TestClient:
+    from sentinel_api.config import Settings
+    from sentinel_api.main import create_app
+
+    token_hash = hashlib.sha256(headers["Authorization"].removeprefix("Bearer ").encode()).hexdigest()
+    return TestClient(
+        create_app(Settings(database_url=database_url, token_sha256=frozenset({token_hash}), **settings))
+    )
+
+
+def test_two_concurrent_uploads_record_one(
+    client: TestClient, headers: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both requests pass the "not recorded yet" check before either commits; exactly one may win."""
+    import threading
+    import time
+
+    from fastapi import HTTPException
+
+    import sentinel_api.api as api
+
+    run_id = create_run(client, headers)
+    real_parse = api._parse
+
+    def slow_parse(body: bytes, run: Any) -> list[dict[str, Any]]:
+        time.sleep(0.5)
+        return real_parse(body, run)
+
+    monkeypatch.setattr(api, "_parse", slow_parse)
+    factory = client.app.state.sessions  # type: ignore[attr-defined]
+    outcomes: list[int] = []
+
+    def store(body: bytes) -> None:
+        with factory() as session:
+            try:
+                api._store(session, __import__("uuid").UUID(run_id), body)
+                outcomes.append(201)
+            except HTTPException as exc:
+                outcomes.append(exc.status_code)
+
+    threads = [threading.Thread(target=store, args=(ndjson(d),)) for d in (SECRET, SCA)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert sorted(outcomes) == [201, 409]
+    run = client.get(f"/api/v1/runs/{run_id}").json()
+    assert (
+        client.get("/api/v1/findings", params={"run_id": run_id}).json()["total"] == run["finding_count"] == 1
+    )
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "UPDATE runs SET findings_sha256 = repeat('0', 64) WHERE id = %s",
+        "UPDATE runs SET finding_count = 99 WHERE id = %s",
+        "UPDATE runs SET findings_sha256 = NULL, findings_uploaded_at = NULL WHERE id = %s",
+    ],
+    ids=["hash", "count", "unrecord"],
+)
+def test_recorded_evidence_cannot_be_changed_in_the_database(
+    client: TestClient, headers: dict[str, str], database_url: str, statement: str
+) -> None:
+    import psycopg
+
+    run_id = create_run(client, headers)
+    upload(client, headers, run_id, ndjson(SECRET))
+    with (
+        psycopg.connect(database_url) as conn,
+        pytest.raises(psycopg.errors.RaiseException, match="recorded"),
+    ):
+        conn.execute(statement, (run_id,))
+
+
+def test_findings_cannot_be_added_to_a_recorded_run_in_the_database(
+    client: TestClient, headers: dict[str, str], database_url: str
+) -> None:
+    import psycopg
+
+    run_id = create_run(client, headers)
+    upload(client, headers, run_id, ndjson(SECRET))
+    with (
+        psycopg.connect(database_url) as conn,
+        pytest.raises(psycopg.errors.RaiseException, match="recorded"),
+    ):
+        conn.execute(
+            "INSERT INTO findings (run_id, finding_id, category, severity, tool, rule_id, document)"
+            " VALUES (%s, %s, 'SCA', 'LOW', 'x', 'x', '{}')",
+            (run_id, "f" * 64),
+        )
+
+
+# ---------------------------------------------------------------- #38 review: queries and boundaries
+
+
+def test_a_huge_offset_is_refused_not_a_server_error(client: TestClient) -> None:
+    assert client.get("/api/v1/findings", params={"offset": 2**63}).status_code == 422
+    assert client.get("/api/v1/findings", params={"offset": 1_000_000}).status_code == 200
+
+
+def test_findings_are_listed_newest_run_first(client: TestClient, headers: dict[str, str]) -> None:
+    older = create_run(client, headers)
+    upload(client, headers, older, ndjson(SECRET))
+    newer = create_run(client, headers, commit="c" * 40)
+    upload(client, headers, newer, ndjson(finding("secret-in-config.json", commit="c" * 40)))
+    assert [i["run_id"] for i in client.get("/api/v1/findings").json()["items"]] == [newer, older]
+
+
+def test_occurrences_are_bounded_and_counted(client: TestClient, headers: dict[str, str]) -> None:
+    runs = []
+    for n in range(3):
+        commit = f"{n:x}" * 40
+        runs.append(create_run(client, headers, commit=commit))
+        upload(client, headers, runs[-1], ndjson(finding("secret-in-config.json", commit=commit)))
+    body = client.get(f"/api/v1/findings/{SECRET['id']}", params={"limit": 2}).json()
+    assert body["occurrence_count"] == 3
+    assert [o["run_id"] for o in body["occurrences"]] == runs[::-1][:2]
+    assert body["finding"]["run"]["commit"] == "2" * 40
+    assert client.get(f"/api/v1/findings/{SECRET['id']}", params={"limit": 501}).status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("authorization", "expected"),
+    [("bearer {t}", 201), ("BEARER {t}", 201), ("Basic {t}", 401), ("{t}", 401), ("Bearer {t}x", 401)],
+    ids=["lowercase", "uppercase", "other-scheme", "no-scheme", "longer"],
+)
+def test_the_scheme_is_case_insensitive_and_required(
+    client: TestClient, headers: dict[str, str], authorization: str, expected: int
+) -> None:
+    token = headers["Authorization"].removeprefix("Bearer ")
+    response = client.post("/api/v1/runs", json=RUN, headers={"Authorization": authorization.format(t=token)})
+    assert response.status_code == expected, response.text
+
+
+@pytest.mark.parametrize("chunked", [False, True], ids=["content-length", "chunked"])
+def test_an_upload_exactly_at_the_limit_is_accepted(
+    database_url: str, headers: dict[str, str], chunked: bool
+) -> None:
+    body = ndjson(SECRET)
+    with _client(database_url, headers, max_upload_bytes=len(body)) as client:
+        for extra, expected in [(b"\n", 413), (b"", 201)]:
+            run_id = create_run(client, headers)
+            data = body + extra
+            content: Any = iter([data[:10], data[10:]]) if chunked else data
+            response = client.post(
+                f"/api/v1/runs/{run_id}/findings", content=content, headers={**headers, **NDJSON}
+            )
+            assert response.status_code == expected, (len(data), response.text)
+
+
+@pytest.mark.parametrize("media_type", ["Application/X-NDJSON", "application/x-ndjson; charset=utf-8"])
+def test_the_media_type_is_matched_as_http_says(
+    client: TestClient, headers: dict[str, str], media_type: str
+) -> None:
+    run_id = create_run(client, headers)
+    response = client.post(
+        f"/api/v1/runs/{run_id}/findings",
+        content=ndjson(SECRET),
+        headers={**headers, "Content-Type": media_type},
+    )
+    assert response.status_code == 201, response.text

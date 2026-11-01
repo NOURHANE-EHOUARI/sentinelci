@@ -11,7 +11,11 @@ from sqlalchemy.orm import sessionmaker
 
 from sentinel_api.api import router
 from sentinel_api.config import Settings, sqlalchemy_url
+from sentinel_api.limits import BodyLimit
 from sentinelci import __version__ as engine_version
+
+# The version of the API contract (schemas/openapi.yaml), not of the engine: it changes only with the API.
+API_VERSION = "1.0.0"
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -27,7 +31,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if engine is not None:
                 engine.dispose()
 
-    app = FastAPI(title="SentinelCI API", version=engine_version, lifespan=lifespan)
+    app = FastAPI(title="SentinelCI API", version=API_VERSION, lifespan=lifespan)
+    # Outermost: bodies are capped before routing, parsing or authentication.
+    app.add_middleware(BodyLimit, upload_limit=lambda: settings.max_upload_bytes)
     app.state.settings = settings
     app.state.sessions = sessionmaker(engine, expire_on_commit=False) if engine is not None else None
 

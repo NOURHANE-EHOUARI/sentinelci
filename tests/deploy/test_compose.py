@@ -176,7 +176,9 @@ def test_make_env_writes_every_variable_owner_only(tmp_path: Path) -> None:
 
 def test_make_env_never_overwrites_existing_credentials(tmp_path: Path) -> None:
     target = tmp_path / ".env"
-    complete = "".join(f"{name}=keep-{name.lower()}\n" for name in [*MAKE_ENV.VARIABLES, *MAKE_ENV.DERIVED])
+    values = {name: f"keep-{name.lower()}" for name in MAKE_ENV.VARIABLES}
+    values |= {name: derive(values) for name, derive in MAKE_ENV.DERIVED.items()}
+    complete = "".join(f"{name}={value}\n" for name, value in values.items())
     target.write_text(complete, encoding="utf-8")
     assert MAKE_ENV.write_env(target) is False
     assert target.read_text(encoding="utf-8") == complete
@@ -221,6 +223,26 @@ def test_make_env_writes_the_api_token_with_its_hash(tmp_path: Path) -> None:
 def test_the_api_receives_the_token_hash_never_the_token(services: dict[str, Any]) -> None:
     environment = services["api"]["environment"]
     assert environment["SENTINEL_API_TOKEN_SHA256"] == DUMMY_ENV["SENTINEL_API_TOKEN_SHA256"]
-    text = COMPOSE_FILE.read_text(encoding="utf-8")
-    for name in MAKE_ENV.CLIENT_ONLY:
-        assert not re.search(r"\$\{" + name + r"\b(?!_)", text), f"{name} must not reach any container"
+
+
+def test_the_client_token_never_reaches_a_container() -> None:
+    """#38 review: a canary token in the environment must not appear anywhere in the rendered config.
+
+    Rendering catches every way to reference it (`${VAR}`, `$VAR`, `${VAR:?...}`), unlike a text search.
+    """
+    canary = "canary-client-token-must-stay-on-the-host"
+    result = _render({**DUMMY_ENV, **{name: canary for name in MAKE_ENV.CLIENT_ONLY}})
+    assert result.returncode == 0, result.stderr
+    assert canary not in result.stdout
+
+
+def test_make_env_refuses_a_hash_that_does_not_match_the_token(tmp_path: Path) -> None:
+    """#38 review: deleting only the token line to rotate it would keep the old hash: every write gets 401."""
+    target = tmp_path / ".env"
+    MAKE_ENV.write_env(target)
+    lines = [line for line in target.read_text(encoding="utf-8").splitlines(keepends=True)
+             if not line.startswith("SENTINEL_API_TOKEN=")]  # fmt: skip
+    target.write_text("".join(lines), encoding="utf-8")
+    with pytest.raises(MAKE_ENV.EnvError, match="delete both"):
+        MAKE_ENV.write_env(target)
+    assert target.read_text(encoding="utf-8") == "".join(lines), "nothing is written"
