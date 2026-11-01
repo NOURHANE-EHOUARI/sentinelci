@@ -1,0 +1,21 @@
+# INTENTIONALLY VULNERABLE benchmark dependencies (A9). Every version is pinned; three are known-vulnerable on
+# purpose and listed in demo-shop/ground-truth/findings.yaml:
+#   GT-SCA-001  pyyaml 5.3.1     CVE-2020-14343, code execution through full_load / FullLoader
+#   GT-SCA-002  requests 2.30.0  CVE-2023-32681, Proxy-Authorization header leaked on an HTTPS redirect
+#   GT-SCA-003  lxml 4.6.2       CVE-2021-28957, XSS through the HTML cleaner; declared, never imported
+# Resolved for Python 3.9 (the image's base) with:
+#   uv pip compile --python-version 3.9 --exclude-newer 2026-10-01T00:00:00Z
+certifi==2026.7.22
+    # via requests
+charset-normalizer==3.5.2
+    # via requests
+idna==3.20
+    # via requests
+lxml==4.6.2
+    # via -r requirements.in
+pyyaml==5.3.1
+    # via -r requirements.in
+requests==2.30.0
+    # via -r requirements.in
+urllib3==2.6.3
+    # via requests
