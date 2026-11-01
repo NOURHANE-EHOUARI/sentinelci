@@ -206,3 +206,24 @@ waivers:
   reasons reach the decision record.
 - A file that cannot be read (bad YAML, wrong top-level shape, `version` other than 1) means no decision:
   exit code `3`.
+
+## `sentinel scan sast` (SAST, A1)
+
+```bash
+uv run sentinel scan sast demo-shop --repo-root . --out out/sast.ndjson \
+  --repo NOURHANE-EHOUARI/sentinelci --commit "$GITHUB_SHA" --context pr
+```
+
+- The pinned Opengrep, verified against `tools.lock.toml` right before it runs. Opengrep publishes no checksum
+  file, so its pin was taken after checking each asset's keyless signature (the lock records the certificate,
+  the signature and the signer identity, for reviewers).
+- SentinelCI's own rules only (`scanners/configs/opengrep/`: Python, JavaScript and TypeScript), each pinned by
+  code it must flag and code it must leave alone (`test_opengrep_rules.py`). The scanned repository cannot add,
+  change or silence a rule: `# nosemgrep` comments, `.semgrepignore`, `.gitignore`, `.semgrep.yml`, the 1 MB size
+  limit and the per-file time-out have no effect. A link that leaves the target, or loops, exits `3`.
+- Findings are category SAST, fingerprinted by rule, path and the normalized matched code (a moved line keeps
+  its id). The same code twice in a file is one finding with `other_locations`. No code is kept: the messages
+  are the rules' fixed text.
+- Exit code `3` (SC-010), and no findings file, when Opengrep fails, reports an error, names a rule that is not
+  SentinelCI's, or does not match the lock. A file parsed only in part is named in a warning.
+

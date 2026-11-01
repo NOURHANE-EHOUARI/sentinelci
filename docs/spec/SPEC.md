@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.15 | A1 SAST (§5): `sentinel scan sast` runs the pinned Opengrep (no checksum file upstream: pinned by hash after checking each asset's keyless signature, recorded in `tools.lock.toml` with its signer identity) with SentinelCI's own rules only (`configs/opengrep/`, each pinned by cases it must flag and leave alone), offline, with `nosemgrep` comments, `.semgrepignore`, `.gitignore`, the size and per-file time limits and repository rule files never honoured, and links leaving the tree refused; findings are category SAST with the §13.1 SAST fingerprint. |
 | 1.1.6 | A9 first seeds (§17): 5 fake secrets, 6 IaC, 3 CI-workflow seeds and 4 clean controls in `demo-shop/`, with a draft ground-truth format (`demo-shop/ground-truth/`, final schema owned by B9) checked against the pinned Gitleaks, Trivy and zizmor. SentinelCI's Trivy configuration trusts only the kind registry for KSV0125. |
 | 1.1.5 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
 | 1.1.4 | Enrichment (B2, §6.1): `schemas/enrichment-snapshot.v1.json` (`schema_version` "1.0", `sources.kev.cves`: the CVEs the KEV lookup covered) and `schemas/sentinel-config.v1.json` (`sentinel.yaml`, canonical component paths); `sentinel enrich`. "Not listed in KEV" only for covered CVEs; `sentinel.yaml` read with a restricted YAML loader. |
@@ -179,6 +180,18 @@ remerge does not diff them, so they get a second `first-parent` pass, which also
 already had; the PR baseline drops what the base branch has). Each Gitleaks pass gets the full scanner time
 limit, so git mode can take twice as long. Dir mode opens archives (`.zip`, nested up to 3 levels). Legitimate
 exceptions go through waivers (§6.4).
+
+Opengrep (`sentinel scan sast`, findings of category SAST) publishes no checksum file: each release asset is signed
+keyless by its release workflow. It is pinned by hash in `tools.lock.toml` after checking each asset's signature
+against its certificate, the certificate against Sigstore's Fulcio CA at signing time, and its identity
+(`signer_identity`, the GitHub Actions issuer); a reviewer re-checks with the transparency log. It runs SentinelCI's
+own rules only (`configs/opengrep/*.yaml`, each pinned by cases it must flag and cases it must leave alone; fixed
+messages, so no code reaches a finding), from a private working directory and home, offline. The scanned repository
+cannot silence it: `--disable-nosem` (a match under a `# nosemgrep` comment is reported, flagged, and its message
+says the comment is not honoured), `--x-ignore-semgrepignore-files`, `--no-git-ignore`, `--max-target-bytes=0` (no
+file is skipped for its size) and `--timeout=0` (no rule is dropped for a slow file; the run keeps the scanner time
+limit); repository rule files are never loaded, and a link that leaves the scan target, or loops, is refused. Any
+error Opengrep reports above warning level fails closed; a file parsed only in part is named in the job log.
 
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
@@ -644,7 +657,7 @@ schema-constrained outputs and injection isolation (0 verdict changes across [X]
 | 3 | Contracts: finding, decision, patch proposal, verification result + fixtures + tests | done |
 | 4 | Spec v1.1 + ADRs in `docs/` | done |
 | 5 | Repository settings: require SHA-pinned actions, read-only default workflow token, Dependabot alerts (branch protection deferred to the public phase, convention + local guard meanwhile) | to do (owner) |
-| 6 | Choose and pin tool versions in `tools.lock.toml` | done (A1a; Opengrep pending) |
+| 6 | Choose and pin tool versions in `tools.lock.toml` | done (A1a; Opengrep by signature, A1) |
 | 7 | Compose skeleton (postgres+pgvector, redis, seaweedfs, ollama, api, prometheus, grafana; worker with B1, web with B7) | B |
 | 8 | `demo-shop/` skeleton + ground-truth format; first seeds | A9 first seeds done (draft format v1); B9 to do |
 | 9 | GitHub Project board: one issue per task id | both |

@@ -126,3 +126,64 @@ def test_missing_or_malformed_file_is_rejected(tmp_path: Path) -> None:
     broken.write_text("schema_version = [", encoding="utf-8")
     with pytest.raises(ToolIntegrityError):
         load_lock(broken)
+
+
+def _signed_lock(binary_sha: str) -> str:
+    """A tool with no checksum file whose assets are signed keyless (like Opengrep)."""
+    return (
+        raw_tool_lock(binary_sha)
+        .replace(
+            'archive = "none"',
+            'archive = "none"\n'
+            'signer_identity = "https://github.com/example/rawtool/.github/workflows/release.yml@refs/tags/v1.0.0"\n'
+            'signer_issuer = "https://token.actions.githubusercontent.com"',
+        )
+        .replace(
+            'checksums_url = "https://github.com/example/rawtool/releases/download/v1.0.0/rawtool-linux-amd64.sha256"',
+            'certificate_url = "https://github.com/example/rawtool/releases/download/v1.0.0/rawtool-linux-amd64.cert"\n'
+            'signature_url = "https://github.com/example/rawtool/releases/download/v1.0.0/rawtool-linux-amd64.sig"',
+        )
+    )
+
+
+def test_opengrep_is_pinned_by_its_signed_assets() -> None:
+    opengrep = load_lock(REPO_LOCK).tools["opengrep"]
+    assert opengrep.checksums_url is None and opengrep.signer_identity == (
+        "https://github.com/opengrep/opengrep/.github/workflows/rolling-release.yml@refs/heads/release-v1.33.1"
+    )
+    for artifact in opengrep.artifacts.values():
+        assert (artifact.certificate_url, artifact.signature_url) == (
+            f"{artifact.url}.cert",
+            f"{artifact.url}.sig",
+        )
+
+
+def test_a_signed_entry_loads(write_lock: Callable[[str], Path]) -> None:
+    tool = load_lock(write_lock(_signed_lock(GOOD_SHA))).tools["rawtool"]
+    assert tool.signer_issuer == "https://token.actions.githubusercontent.com"
+    assert all(artifact.signed for artifact in tool.artifacts.values())
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "reason"),
+    [
+        ('signer_identity = "https://github.com/example/rawtool/', 'signer_identity = "https://github.com/evil/rawtool/',
+         "a workflow of another repository"),
+        ("token.actions.githubusercontent.com", "accounts.google.com", "another OIDC issuer"),
+        ('signer_issuer = "https://token.actions.githubusercontent.com"\n', "",
+         "an identity without its issuer"),
+        ('signature_url = "https://github.com/example/rawtool/releases/download/v1.0.0/rawtool-linux-amd64.sig"',
+         "", "a certificate without its signature"),
+        ("v1.0.0/rawtool-linux-amd64.cert", "v0.9.0/rawtool-linux-amd64.cert",
+         "a certificate of another release"),
+        ('signer_identity = "https://github.com/example/rawtool/.github/workflows/release.yml@refs/tags/v1.0.0"\n'
+         'signer_issuer = "https://token.actions.githubusercontent.com"', "", "signed assets but no signer"),
+    ],
+)  # fmt: skip
+def test_an_invalid_signed_entry_is_rejected(
+    write_lock: Callable[[str], Path], old: str, new: str, reason: str
+) -> None:
+    content = _signed_lock(GOOD_SHA)
+    assert old in content, reason
+    with pytest.raises(ToolIntegrityError):
+        load_lock(write_lock(content.replace(old, new, 1)))

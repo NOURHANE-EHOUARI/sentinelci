@@ -8,10 +8,10 @@
 # 2026-10-28. To upgrade a tool: open a PR that changes the version, URLs and hashes together, and link the
 # upstream checksum file in the PR description so the reviewer can check every value.
 #
-# Not pinned here yet:
-# - opengrep: publishes keyless Cosign signatures but no checksum file; it will be pinned once
-#   `sentinel tools pin` verifies the signature and records the digest (follow-up of task A1).
-# - checkov (PyPI) and zizmor (PyPI): installed through uv with hash-locked versions.
+# Opengrep publishes no checksum file: each asset is signed keyless (Sigstore) by its release workflow. Its
+# hashes were taken from the assets after verifying each signature (see the opengrep entry).
+#
+# Not pinned here: checkov (PyPI) and zizmor (PyPI), installed through uv with hash-locked versions.
 
 schema_version = 1
 
@@ -168,3 +168,41 @@ sha256 = "8802bd39bc14b58a705e6b3d4f4dd14f7f24ee657f0362c737338be243190c7e"
 url = "https://github.com/open-policy-agent/opa/releases/download/v1.21.4/opa_darwin_arm64_static"
 checksums_url = "https://github.com/open-policy-agent/opa/releases/download/v1.21.4/opa_darwin_arm64_static.sha256"
 sha256 = "4c105208a9282f590385bccbe600875c011f0894ccf9431782dfe855e1f99aa6"
+
+# SAST (stage 2). No checksum file: every asset is signed keyless by the release workflow below. On 2026-11-01
+# each signature was checked against its certificate, and each certificate against Sigstore's Fulcio CA (from
+# sigstore/root-signing's trusted_root.json) at signing time, with this SAN and the GitHub Actions issuer. A
+# reviewer re-checks each asset with the transparency log too:
+#   cosign verify-blob --cert <asset>.cert --signature <asset>.sig \
+#     --certificate-identity <signer_identity> --certificate-oidc-issuer <signer_issuer> <asset>
+[tools.opengrep]
+version = "1.33.1"
+homepage = "https://github.com/opengrep/opengrep"
+binary = "opengrep"
+archive = "none"
+signer_identity = "https://github.com/opengrep/opengrep/.github/workflows/rolling-release.yml@refs/heads/release-v1.33.1"
+signer_issuer = "https://token.actions.githubusercontent.com"
+
+[tools.opengrep.artifacts.linux-amd64]
+url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_manylinux_x86"
+certificate_url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_manylinux_x86.cert"
+signature_url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_manylinux_x86.sig"
+sha256 = "46e8133cc490f9f50518061590ce2f6be5a08afaeda034471c0ceda4b3899808"
+
+[tools.opengrep.artifacts.linux-arm64]
+url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_manylinux_aarch64"
+certificate_url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_manylinux_aarch64.cert"
+signature_url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_manylinux_aarch64.sig"
+sha256 = "d1433f63a90b8bc0b6ad4b498a13b372b856ce9a754a43484ba4920fe2d76dcf"
+
+[tools.opengrep.artifacts.darwin-amd64]
+url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_osx_x86"
+certificate_url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_osx_x86.cert"
+signature_url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_osx_x86.sig"
+sha256 = "c3bd18e0d898d44e28419d95dad57c8928bb46ab32889a0ee1f72a87ad9627af"
+
+[tools.opengrep.artifacts.darwin-arm64]
+url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_osx_arm64"
+certificate_url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_osx_arm64.cert"
+signature_url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_osx_arm64.sig"
+sha256 = "a17c1881bb40e3214266a7a291cf4f2ae3bc56c1715628b5712d2ec816bc3e2d"
