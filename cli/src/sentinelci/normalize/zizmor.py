@@ -1,10 +1,13 @@
 """zizmor JSON v1 -> Finding v1, category PIPELINE (task A2, SPEC §13.1).
 
-One finding per (rule, file, job): the fingerprint is `sha256(rule | path | resource)`, the resource being the
-job (`jobs.<id>`) or, outside jobs, the workflow's top-level key (`on`, `permissions`, `runs` of an action).
-Steps are left out on purpose: adding a step must not make every later finding of the job look new in a pull
-request. The other occurrences of the same rule in the same job go to `other_locations` (Finding 1.1). No
-workflow code is kept: zizmor's `feature` text never reaches a finding.
+The resource is the job (`jobs.<id>`) or, outside jobs, the workflow's top-level key (`on`, `permissions`,
+`runs` of an action). A finding about the job or the workflow itself is one per (rule, file, resource):
+`sha256(rule | path | resource)`. A finding below it, in a step, also hashes the code it is about, zizmor's
+`feature` text of the primary location (an action reference, a `run:` script), whitespace-normalized:
+`sha256(rule | path | resource | sha256(code))`. So a new expression in a job that already had one is a new
+finding, which SC-009 can block, while a moved line or an added step keeps every id. The step index is never
+part of it. Occurrences with the same fingerprint go to `other_locations` (Finding 1.1). No workflow code is
+kept: the `feature` text is only hashed.
 """
 
 import posixpath
@@ -14,7 +17,7 @@ from typing import Any
 
 from sentinelci.contracts.finding import Finding, Location, Run, Tool
 from sentinelci.normalize.errors import NormalizationError
-from sentinelci.normalize.fingerprint import config_fingerprint
+from sentinelci.normalize.fingerprint import pipeline_fingerprint
 from sentinelci.normalize.paths import to_repo_relative
 
 # zizmor severities; an unknown one counts as the worst a CI workflow issue can be here (fail closed).
@@ -49,10 +52,18 @@ def _route(location: Mapping[str, Any]) -> list[str]:
     return route
 
 
-def _resource(route: list[str]) -> str:
+def _resource(route: list[str]) -> tuple[str, bool]:
+    """(resource, whether the route goes below it): `jobs.<id>`, the top-level key, or `workflow`."""
     if len(route) >= 2 and route[0] == "jobs":
-        return f"jobs.{route[1]}"
-    return route[0] if route else "workflow"
+        return f"jobs.{route[1]}", len(route) > 2
+    return (route[0], len(route) > 1) if route else ("workflow", False)
+
+
+def _code(location: Mapping[str, Any], index: int) -> str:
+    feature = location.get("concrete", {}).get("feature")
+    if not isinstance(feature, str) or not feature.strip():
+        raise NormalizationError(f"zizmor finding {index} has no source text (feature) to identify it")
+    return feature
 
 
 def _primary(item: Mapping[str, Any], index: int) -> Mapping[str, Any]:
@@ -101,7 +112,9 @@ def normalize_zizmor(
         _determinations(item, index)
         location = _primary(item, index)
         path, start, end = _place(location, index, scan_root)
-        fingerprint = config_fingerprint(rule, path, _resource(_route(location)))
+        resource, below = _resource(_route(location))
+        code = _code(location, index) if below else None
+        fingerprint = pipeline_fingerprint(rule, path, resource, code)
         groups[fingerprint].append((path, start, end, item))
 
     findings: list[Finding] = []
@@ -110,8 +123,10 @@ def normalize_zizmor(
         path, start, end, item = hits[0]
         distinct = list(dict.fromkeys((p, s, e) for p, s, e, _ in hits))
         others = [Location(path=p, start_line=s, end_line=e) for p, s, e in distinct[1:]]
-        raw_severity, confidence = _determinations(item, 0)
-        severity = max((SEVERITIES[_determinations(hit[3], 0)[0]] for hit in hits), key=_rank)
+        # Severity and its source come from the same occurrence: the most severe one (first on a tie).
+        worst = max(hits, key=lambda hit: _rank(SEVERITIES[_determinations(hit[3], 0)[0]]))[3]
+        raw_severity, confidence = _determinations(worst, 0)
+        severity = SEVERITIES[raw_severity]
         url = item.get("url")
         notes = [f"Confidence {confidence.lower()}."]
         if any(hit[3].get("ignored") for hit in hits):

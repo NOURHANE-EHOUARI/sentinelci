@@ -1,7 +1,7 @@
 """The demo-shop benchmark (SPEC section 17): every seed is documented, scanners find exactly the seeds.
 
 - Structure tests always run: ids, paths, lines, fake secrets, and each seeded file names its ground-truth id.
-- zizmor runs always (it is a dev dependency).
+- zizmor runs always (a dependency of the CLI, installed by `uv sync`).
 - Gitleaks and Trivy run as integration tests when SENTINEL_TOOLS_DIR points to a `sentinel tools install`
   directory, through the verified runner, with SentinelCI's own scanner configuration.
 

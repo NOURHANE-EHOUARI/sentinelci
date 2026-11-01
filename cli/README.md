@@ -214,13 +214,20 @@ uv run sentinel scan pipelines demo-shop --repo-root . --out out/pipelines.ndjso
   --repo NOURHANE-EHOUARI/sentinelci --commit "$GITHUB_SHA" --context pr
 ```
 
-- zizmor, pinned in `uv.lock`. The binary of the CLI's own environment is checked against its wheel's RECORD right
-  before it runs (never one from `PATH`); a mismatch, or zizmor missing, exits `3` (SC-010).
+- zizmor, a runtime dependency of the CLI (`uv.lock`). Right before it runs, the binary of the CLI's own
+  environment (never one from `PATH`) must be one that a wheel pinned in `tools.lock.toml` carries
+  (`[python_tools.zizmor]`, at the pinned version): another version, a replaced binary, or zizmor missing
+  exits `3` (SC-010).
 - The scanned repository cannot configure or silence it: `--no-config`, `--no-ignores` (a finding covered by an
   inline `# zizmor: ignore[...]` comment is kept, and its message says so), `--collect=all` (`.gitignore` is not
   honoured), `--offline`, and a minimal environment.
-- Inputs: every YAML file under `.github/workflows/`, every `action.yml` / `action.yaml`, and any other YAML
-  file with a top-level `jobs:` key. Findings are category PIPELINE, one per rule, file and job (the step is not
-  part of the fingerprint), with the other places in `other_locations`; no workflow code is kept. A HIGH one
-  that the pull request introduces blocks it (SC-009).
+- Inputs: what GitHub runs (every YAML file under `.github/workflows/`, every `action.yml` / `action.yaml`,
+  `.github/dependabot.yml`) must load (`--strict-collection`), or exit `3`. Any other YAML file with a top-level
+  `jobs:` key is audited too; one zizmor cannot load as a GitHub workflow (another CI's file) is skipped, named
+  in a warning, and never counted as audited. `--persona=regular`: zizmor's default audits.
+- Findings are category PIPELINE. A finding about a job or the workflow is one per rule, file and job; one inside
+  the steps also hashes the code it is about (an action reference, a `run:` script), so a new expression in a
+  job is a new finding while a moved line or an added step keeps the id. The same code twice in a job is one
+  finding with `other_locations`. No workflow code is kept (only its hash). A HIGH one that the pull request
+  introduces blocks it (SC-009).
 

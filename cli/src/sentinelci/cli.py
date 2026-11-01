@@ -777,19 +777,20 @@ def scan_pipelines_cmd(
     repo_root: Annotated[
         Path | None, typer.Option(help="Repository root (default: the target itself).")
     ] = None,
+    lock: LockOption = Path(LOCK_FILE_NAME),
 ) -> None:
-    """Audit CI workflows with the verified zizmor of this environment (offline, never configured by the
-    scanned repository): findings of category PIPELINE, for rule SC-009."""
+    """Audit CI workflows with the zizmor of this environment, checked against tools.lock.toml (offline, never
+    configured by the scanned repository): findings of category PIPELINE, for rule SC-009."""
     out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
     root = repo_root or target
     try:
         if not target.is_dir():
             raise ScannerError(f"{target} is not a directory")
         scan_root = target.resolve().relative_to(root.resolve()).as_posix()
-        raw, tool_run, audited = scan_pipelines_with_run(target)
-        version = tool_run.version if tool_run is not None else "not run"
+        scan = scan_pipelines_with_run(target, lock=load_lock(lock))
+        version = scan.run.version if scan.run is not None else "not run"
         findings = normalize_zizmor(
-            raw,
+            scan.results,
             run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
             tool=Tool(name="zizmor", version=version),
             scan_root=scan_root,
@@ -800,7 +801,15 @@ def scan_pipelines_cmd(
         raise _fail_closed(exc) from exc
     out.parent.mkdir(parents=True, exist_ok=True)
     write_ndjson(findings, out)
-    typer.echo(f"zizmor {version}: {len(audited)} workflow(s), {len(findings)} finding(s) written to {out}")
+    if scan.skipped:  # never counted as audited: say which ones, in the job log
+        typer.echo(
+            f"warning: {len(scan.skipped)} file(s) with a `jobs:` key are not GitHub workflows zizmor can "
+            f"load, not audited: {', '.join(scan.skipped)}",
+            err=True,
+        )
+    typer.echo(
+        f"zizmor {version}: {len(scan.audited)} file(s) audited, {len(findings)} finding(s) written to {out}"
+    )
 
 
 # ---------------------------------------------------------------- report

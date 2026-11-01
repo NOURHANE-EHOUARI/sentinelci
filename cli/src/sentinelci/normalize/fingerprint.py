@@ -50,5 +50,16 @@ def sast_fingerprint(rule_id: str, path: str, snippet: str) -> str:
 
 
 def config_fingerprint(rule_id: str, path: str, resource: str) -> str:
-    """IAC / PIPELINE: sha256(rule id | path | resource or job identifier)."""
+    """IAC, and PIPELINE at job or workflow level: sha256(rule id | path | resource or job identifier)."""
     return sha256_hex(_SEP.join((rule_id, path, resource)))
+
+
+def pipeline_fingerprint(rule_id: str, path: str, job: str, code: str | None) -> str:
+    """PIPELINE inside a job's steps: sha256(rule id | path | job | sha256(normalized code)), where code is
+    the source text the finding is about (an action reference, a `run:` script). A job holds many steps, so
+    the job alone is too coarse: a new expression in a job that already had one must be a new finding. Line
+    moves and added steps keep it. Without code (a job- or workflow-level finding, one per job by nature),
+    this is `config_fingerprint`."""
+    if code is None:
+        return config_fingerprint(rule_id, path, job)
+    return sha256_hex(_SEP.join((rule_id, path, job, sha256_hex(normalize_snippet(code)))))

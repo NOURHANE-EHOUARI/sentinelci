@@ -10,7 +10,7 @@
 
 | Version | Change |
 |---|---|
-| 1.1.14 | A1 CI workflow analysis (§5): `sentinel scan pipelines` runs the zizmor of the CLI's environment, checked against its wheel's RECORD (pinned in `uv.lock`), offline, with the repository's configuration, ignore comments and `.gitignore` never honoured; PIPELINE findings, one per rule, file and job. |
+| 1.1.14 | A1 CI workflow analysis (§5): `sentinel scan pipelines` runs the zizmor of the CLI's environment (a runtime dependency pinned in `uv.lock`), checked against the binary hashes pinned in `tools.lock.toml` (`[python_tools.zizmor]`), offline, with the repository's configuration, ignore comments and `.gitignore` never honoured. Workflows, actions and Dependabot must load; other files with a `jobs:` key are skipped and reported when zizmor cannot load them. PIPELINE fingerprint (§13.1) changed: a finding inside a job's steps also hashes the code it is about, so a new expression in a job is a new finding (IAC unchanged). |
 | 1.1.6 | A9 first seeds (§17): 5 fake secrets, 6 IaC, 3 CI-workflow seeds and 4 clean controls in `demo-shop/`, with a draft ground-truth format (`demo-shop/ground-truth/`, final schema owned by B9) checked against the pinned Gitleaks, Trivy and zizmor. SentinelCI's Trivy configuration trusts only the kind registry for KSV0125. |
 | 1.1.5 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
 | 1.1.4 | Enrichment (B2, §6.1): `schemas/enrichment-snapshot.v1.json` (`schema_version` "1.0", `sources.kev.cves`: the CVEs the KEV lookup covered) and `schemas/sentinel-config.v1.json` (`sentinel.yaml`, canonical component paths); `sentinel enrich`. "Not listed in KEV" only for covered CVEs; `sentinel.yaml` read with a restricted YAML loader. |
@@ -181,14 +181,21 @@ already had; the PR baseline drops what the base branch has). Each Gitleaks pass
 limit, so git mode can take twice as long. Dir mode opens archives (`.zip`, nested up to 3 levels). Legitimate
 exceptions go through waivers (§6.4).
 
-zizmor (`sentinel scan pipelines`, findings of category PIPELINE for SC-009) is pinned in `uv.lock` (it publishes no
-checksum file for its binaries); right before each run, the binary of the CLI's own environment is checked against
-its wheel's RECORD, never one from `PATH`. It runs offline with `--no-config` (no `zizmor.yml`), `--no-ignores` and
-`--collect=all` (a workflow listed in `.gitignore` is still audited). With `--no-ignores`, a finding covered by an
-inline `# zizmor: ignore[...]` comment is reported flagged `ignored`; it stays a finding, and its message says the
-comment is not honoured. SentinelCI collects the inputs: every YAML file under `.github/workflows/`, every
-`action.yml` / `action.yaml`, and any other YAML file with a top-level `jobs:` key. Fingerprints use the job
-(`jobs.<id>`) as resource, never the step, so adding a step does not make a job's findings new.
+zizmor (`sentinel scan pipelines`, findings of category PIPELINE for SC-009) is a runtime dependency of the CLI,
+installed from its PyPI wheel (`uv.lock`; it publishes no checksum file for its binaries). Right before each run,
+the binary of the CLI's own environment, never one from `PATH`, must be one that a wheel pinned in `tools.lock.toml`
+(`[python_tools.zizmor]`) carries, at the pinned version; those hashes were read from the wheels whose sha256
+`uv.lock` pins, and a test keeps the two files in step. It runs offline with `--no-config` (no `zizmor.yml`),
+`--no-ignores` and `--collect=all` (a workflow listed in `.gitignore` is still audited), and `--persona=regular`,
+zizmor's default audits (the pedantic and auditor personas are for manual review, too noisy for a blocking gate).
+With `--no-ignores`, a finding covered by an inline `# zizmor: ignore[...]` comment is reported flagged `ignored`;
+it stays a finding, and its message says the comment is not honoured. SentinelCI collects the inputs: what GitHub
+runs (every YAML file under `.github/workflows/`, every `action.yml` / `action.yaml`, `.github/dependabot.yml`) must
+load (`--strict-collection`), or the scan fails (SC-010); any other YAML file with a top-level `jobs:` key is
+audited too, and one that zizmor cannot load as a GitHub workflow (another CI's file) is skipped and named in the
+job log, never counted as audited. Fingerprints (§13.1) use the job (`jobs.<id>`) and, for a finding inside a step,
+the code it is about, never the step's position, so adding a step does not make a job's findings new, while a new
+expression in a job is a new finding.
 
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
@@ -509,7 +516,12 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
   architectures and Grype/Trivy qualifier differences keep the same fingerprint. Waivers use the same purl base.
 - SAST: `sha256(rule id | path | hash of normalized snippet)` — survives line shifts.
 - SECRET: `sha256(rule id | sha256(secret value))`.
-- IAC / PIPELINE: `sha256(rule id | path | resource or job id)`.
+- IAC: `sha256(rule id | path | resource)`.
+- PIPELINE: about a job or the workflow itself, `sha256(rule id | path | job id or top-level key)`; inside a job's
+  steps (or an action's), `sha256(rule id | path | job id | sha256(normalized code))`, the code being the source
+  text the finding is about (an action reference, a `run:` script; normalized like a SAST snippet). A job holds
+  many steps: a new expression in a job that already had one must be a new finding, and a waiver must not cover
+  it. Line moves, re-indentation and added steps keep the fingerprint; the step's position is never part of it.
 
 ### 13.2 Other contracts
 

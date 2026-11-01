@@ -1,11 +1,13 @@
 """`sentinel scan pipelines`: zizmor, verified, never configured or silenced by the scanned repository (A1).
 
-zizmor is installed by `make setup` (uv.lock), so these tests run the real one; failure modes are simulated by
-replacing the process call or the installed distribution.
+zizmor is a runtime dependency of the CLI (uv.lock), so these tests run the real one; failure modes are
+simulated by replacing the process call, the installed distribution or the environment's binary.
 """
 
 import json
+import shutil
 import subprocess
+import tomllib
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 from typing import Any
@@ -16,8 +18,18 @@ from typer.testing import CliRunner
 import sentinelci.scanners.zizmor as zizmor
 from sentinelci.cli import app
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
-from sentinelci.scanners.zizmor import collect_workflows, scan_pipelines_with_run, verified_zizmor
+from sentinelci.scanners.lock import ToolLock, load_lock
+from sentinelci.scanners.zizmor import (
+    Inputs,
+    PipelineScan,
+    collect_inputs,
+    scan_pipelines_with_run,
+    verified_zizmor,
+)
 
+ROOT = Path(__file__).resolve().parents[3]
+REPO_LOCK = ROOT / "tools.lock.toml"
+LOCK = load_lock(REPO_LOCK)
 INJECTION = """name: label
 on:
   issues:
@@ -39,6 +51,21 @@ jobs:
     steps:
       - run: echo ok
 """
+CIRCLECI = """version: 2.1
+jobs:
+  build:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+"""
+DEPENDABOT = """version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule: {interval: weekly}
+    insecure-external-code-execution: allow
+"""
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -57,8 +84,11 @@ def test_collection_follows_what_github_runs(tmp_path: Path) -> None:
     for name, text in {
         ".github/workflows/ci.yml": CLEAN,
         ".github/workflows/odd.yaml": "not a workflow at all\n",  # under workflows/: always audited
+        ".github/dependabot.yml": DEPENDABOT,  # review of #37, should fix 3
         "examples/bad.yml": CLEAN,  # a workflow kept elsewhere: has `jobs:`
+        "ci/config.yml": CIRCLECI,  # another CI's file with `jobs:`: tried, may be skipped
         "deploy/values.yaml": "replicas: 2\n",  # not a workflow
+        "deploy/dependabot.yml": DEPENDABOT,  # GitHub only reads .github/dependabot.yml
         "actions/setup/action.yml": "runs:\n  using: composite\n  steps: []\n",
         ".git/hooks/ci.yml": CLEAN,
         "README.md": "jobs: not yaml\n",
@@ -66,12 +96,11 @@ def test_collection_follows_what_github_runs(tmp_path: Path) -> None:
         (repo / name).parent.mkdir(parents=True, exist_ok=True)
         (repo / name).write_text(text)
     (repo / "linked.yml").symlink_to(repo / "examples" / "bad.yml")
-    assert collect_workflows(repo) == [
-        ".github/workflows/ci.yml",
-        ".github/workflows/odd.yaml",
-        "actions/setup/action.yml",
-        "examples/bad.yml",
-    ]
+    assert collect_inputs(repo) == Inputs(
+        strict=[".github/dependabot.yml", ".github/workflows/ci.yml", ".github/workflows/odd.yaml",
+                "actions/setup/action.yml"],
+        lenient=["ci/config.yml", "examples/bad.yml"],
+    )  # fmt: skip
 
 
 def test_ignore_comments_and_repository_config_are_not_honoured(tmp_path: Path) -> None:
@@ -79,14 +108,63 @@ def test_ignore_comments_and_repository_config_are_not_honoured(tmp_path: Path) 
     for config in (repo / "zizmor.yml", repo / ".github" / "zizmor.yml"):
         config.write_text("rules:\n  template-injection:\n    disable: true\n")
     (repo / ".gitignore").write_text(".github/workflows/label.yml\n")  # listed, yet still audited
-    results, run, audited = scan_pipelines_with_run(repo)
-    assert audited == [".github/workflows/label.yml"]
-    assert "template-injection" in _rules(results)
+    scan = scan_pipelines_with_run(repo, lock=LOCK)
+    assert (scan.audited, scan.skipped) == ([".github/workflows/label.yml"], [])
+    assert "template-injection" in _rules(scan.results)
     # Still reported, flagged `ignored` because of the comments: the normalizer keeps it (tested there).
-    assert all(item.get("ignored") for item in results if item["ident"] == "template-injection")
+    assert all(item.get("ignored") for item in scan.results if item["ident"] == "template-injection")
+    run = scan.run
     assert run is not None and run.returncode in zizmor.FINDINGS_EXIT_CODES and run.stdout == ""
-    for flag in ("--offline", "--no-config", "--no-ignores", "--collect=all", "--format=json"):
+    for flag in (
+        "--offline",
+        "--no-config",
+        "--no-ignores",
+        "--collect=all",
+        "--strict-collection",
+        "--format=json",
+    ):
         assert flag in run.args
+
+
+def test_dependabot_is_audited(tmp_path: Path) -> None:
+    # Review of #37, should fix 3: a repository with only a Dependabot file reported "zizmor not run".
+    repo = tmp_path / "repo"
+    (repo / ".github").mkdir(parents=True)
+    (repo / ".github" / "dependabot.yml").write_text(DEPENDABOT)
+    scan = scan_pipelines_with_run(repo, lock=LOCK)
+    assert scan.audited == [".github/dependabot.yml"]
+    assert "dependabot-execution" in _rules(scan.results)
+
+
+def test_a_workflow_github_runs_that_zizmor_cannot_load_fails_closed(tmp_path: Path) -> None:
+    # Review of #37, should fix 4: without --strict-collection it was skipped and still counted as audited.
+    repo = _repo(tmp_path)
+    (repo / ".github" / "workflows" / "ok.yml").write_text(CLEAN)
+    (repo / ".github" / "workflows" / "w.yml").write_text(
+        INJECTION.replace("  # zizmor", "\n        shell: 42  # z")
+    )
+    with pytest.raises(ScannerError, match=r"cannot load \.github/workflows/w\.yml, which GitHub runs"):
+        scan_pipelines_with_run(repo, lock=LOCK)
+
+
+def test_another_cis_file_is_skipped_and_reported_never_counted_as_audited(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    for name, text in {
+        "ci/config.yml": CIRCLECI,
+        "ci/other.yml": CIRCLECI,
+        "examples/label.yml": INJECTION,
+    }.items():
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text(text)
+    scan = scan_pipelines_with_run(repo, lock=LOCK)
+    assert scan.skipped == ["ci/config.yml", "ci/other.yml"]
+    assert scan.audited == ["examples/label.yml"]
+    assert "template-injection" in _rules(scan.results)
+    assert scan.run is not None and "ci/config.yml" not in scan.run.args
+    (repo / "examples" / "label.yml").unlink()
+    assert scan_pipelines_with_run(repo, lock=LOCK) == PipelineScan(
+        results=[], run=None, audited=[], skipped=["ci/config.yml", "ci/other.yml"]
+    )
 
 
 def test_zizmor_gets_a_minimal_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -101,7 +179,7 @@ def test_zizmor_gets_a_minimal_environment(tmp_path: Path, monkeypatch: pytest.M
 
     monkeypatch.setattr(zizmor.subprocess, "run", spy)
     repo = _repo(tmp_path)
-    scan_pipelines_with_run(repo)
+    scan_pipelines_with_run(repo, lock=LOCK)
     assert "GITHUB_TOKEN" not in seen["env"] and "ZIZMOR_CONFIG" not in seen["env"]
     assert Path(seen["cwd"]) == repo, "relative paths: the findings point into the audited tree"
 
@@ -111,55 +189,106 @@ def test_nothing_to_audit_runs_nothing_but_still_checks_the_binary(
 ) -> None:
     repo = tmp_path / "empty"
     repo.mkdir()
-    assert scan_pipelines_with_run(repo) == ([], None, [])
+    assert scan_pipelines_with_run(repo, lock=LOCK) == PipelineScan(
+        results=[], run=None, audited=[], skipped=[]
+    )
 
     def missing(name: str) -> Any:
         raise PackageNotFoundError(name)
 
     monkeypatch.setattr(zizmor, "distribution", missing)
     with pytest.raises(ToolIntegrityError, match="not installed"):
-        scan_pipelines_with_run(repo)
+        scan_pipelines_with_run(repo, lock=LOCK)
 
 
-def test_a_binary_that_does_not_match_its_record_never_runs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A copy of the environment whose zizmor was replaced after installation."""
-    real = verified_zizmor()
+def _environment_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, binary: bytes | None) -> Path:
+    """A bin directory standing for the environment, with this `zizmor` in it (the real one if None)."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    fake = bin_dir / "zizmor"
-    fake.write_text("#!/bin/sh\necho '[]'\n")
-    fake.chmod(0o755)
+    target = bin_dir / "zizmor"
+    if binary is None:
+        shutil.copy2(verified_zizmor(LOCK).path, target)
+    else:
+        target.write_bytes(binary)
+        target.chmod(0o755)
+    monkeypatch.setattr(zizmor.sys, "executable", str(bin_dir / "python"))
+    return target
 
-    class Entry:
-        name = "zizmor"
-        hash = type("Hash", (), {"mode": "sha256", "value": "wrong"})()
 
+def test_a_replaced_binary_never_runs_even_with_its_record_rewritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of #37, should fix 1: RECORD sits in the installed tree, so it vouched for itself. The binary is
+    now checked against tools.lock.toml, whose hashes come from the wheels uv.lock pins."""
+    _environment_with(tmp_path, monkeypatch, b"#!/bin/sh\necho '[]'\n")
+    with pytest.raises(
+        ToolIntegrityError, match=r"is not a zizmor 1\.31\.1 binary pinned in tools\.lock\.toml"
+    ):
+        scan_pipelines_with_run(_repo(tmp_path), lock=LOCK)
+
+
+def test_the_genuine_binary_is_accepted_wherever_the_environment_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _environment_with(tmp_path, monkeypatch, None)
+    assert "template-injection" in _rules(scan_pipelines_with_run(_repo(tmp_path), lock=LOCK).results)
+
+
+def test_another_installed_version_never_runs(monkeypatch: pytest.MonkeyPatch) -> None:
     class Dist:
-        version = real.version
-        files = (Entry(),)
-
-        def locate_file(self, entry: object) -> Path:
-            return fake
+        version = "1.30.0"
 
     monkeypatch.setattr(zizmor, "distribution", lambda name: Dist())
-    monkeypatch.setattr(zizmor.sys, "executable", str(bin_dir / "python"))
-    with pytest.raises(ToolIntegrityError, match=r"does not match zizmor .*RECORD"):
-        scan_pipelines_with_run(_repo(tmp_path))
+    with pytest.raises(
+        ToolIntegrityError, match=r"zizmor 1\.30\.0 is installed, but tools\.lock\.toml pins 1\.31\.1"
+    ):
+        verified_zizmor(LOCK)
 
 
-def test_the_binary_must_be_the_one_of_this_environment(
+def test_the_binary_must_be_a_regular_file_of_this_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(zizmor.sys, "executable", str(tmp_path / "elsewhere" / "python"))
-    with pytest.raises(ToolIntegrityError, match="RECORD does not list"):
-        verified_zizmor()
+    with pytest.raises(ToolIntegrityError, match="is not the zizmor binary of this environment"):
+        verified_zizmor(LOCK)
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "elsewhere" / "zizmor").symlink_to(Path(zizmor.__file__))  # a link is never followed
+    with pytest.raises(ToolIntegrityError, match="is not the zizmor binary of this environment"):
+        verified_zizmor(LOCK)
+
+
+def test_a_lock_without_zizmor_refuses_to_run() -> None:
+    lock = ToolLock.model_validate({**LOCK.model_dump(), "python_tools": {}})
+    with pytest.raises(ToolIntegrityError, match=r"pins no zizmor \(\[python_tools\.zizmor\]\)"):
+        verified_zizmor(lock)
+
+
+def test_the_lock_pins_the_wheels_uv_lock_installs() -> None:
+    """tools.lock.toml and uv.lock name the same zizmor: same version, and every wheel pinned here has the
+    hash uv.lock checks at install time (so its binary_sha256, read from that wheel, is vouched for by
+    uv.lock)."""
+    uv_lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+    (package,) = [p for p in uv_lock["package"] if p["name"] == "zizmor"]
+    uv_wheels = {w["url"].rsplit("/", 1)[-1]: w["hash"].removeprefix("sha256:") for w in package["wheels"]}
+    pinned = LOCK.python_tools["zizmor"]
+    assert pinned.version == package["version"]
+    assert {wheel.file: wheel.sha256 for wheel in pinned.wheels}.items() <= uv_wheels.items()
+    platforms = {
+        "manylinux_2_28_x86_64",
+        "manylinux_2_24_aarch64",
+        "macosx_10_12_x86_64",
+        "macosx_11_0_arm64",
+    }
+    assert all(any(tag in wheel.file for wheel in pinned.wheels) for tag in platforms)
+    cli = tomllib.loads((ROOT / "cli" / "pyproject.toml").read_text(encoding="utf-8"))
+    assert f"zizmor=={pinned.version}" in cli["project"]["dependencies"], (
+        "the CLI installs exactly this version"
+    )
 
 
 class _Completed:
-    def __init__(self, returncode: int, stdout: str) -> None:
-        self.returncode, self.stdout, self.stderr = returncode, stdout, "zizmor said no"
+    def __init__(self, returncode: int, stdout: str, stderr: str = "zizmor said no") -> None:
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
 
 
 @pytest.mark.parametrize(
@@ -180,7 +309,16 @@ def test_failures_are_scanner_errors(
 ) -> None:
     monkeypatch.setattr(zizmor.subprocess, "run", lambda *a, **k: _Completed(returncode, stdout))
     with pytest.raises(ScannerError, match=message):
-        scan_pipelines_with_run(_repo(tmp_path))
+        scan_pipelines_with_run(_repo(tmp_path), lock=LOCK)
+
+
+def test_an_unloadable_file_that_was_not_an_input_is_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stderr = "fatal: no audit was performed\nfailed to load file://somewhere/else.yml as workflow\n"
+    monkeypatch.setattr(zizmor.subprocess, "run", lambda *a, **k: _Completed(1, "", stderr))
+    with pytest.raises(ScannerError, match="exited with code 1"):
+        scan_pipelines_with_run(_repo(tmp_path), lock=LOCK)
 
 
 def test_a_timeout_is_a_scanner_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -189,12 +327,12 @@ def test_a_timeout_is_a_scanner_error(tmp_path: Path, monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(zizmor.subprocess, "run", slow)
     with pytest.raises(ScannerError, match="timed out"):
-        scan_pipelines_with_run(_repo(tmp_path), timeout_s=1)
+        scan_pipelines_with_run(_repo(tmp_path), lock=LOCK, timeout_s=1)
 
 
 def _cli(target: Path, out: Path, repo_root: Path | None = None) -> tuple[int, str]:
     args = ["scan", "pipelines", str(target), "--out", str(out), "--repo", "o/r", "--commit", "0" * 40,
-            "--context", "pr"]  # fmt: skip
+            "--context", "pr", "--lock", str(REPO_LOCK)]  # fmt: skip
     if repo_root is not None:
         args += ["--repo-root", str(repo_root)]
     result = CliRunner().invoke(app, args)
@@ -205,6 +343,8 @@ def test_cli_writes_repository_relative_pipeline_findings(tmp_path: Path) -> Non
     repo = tmp_path / "repo"
     (repo / "demo-shop" / "examples").mkdir(parents=True)
     (repo / "demo-shop" / "examples" / "label.yml").write_text(INJECTION)
+    (repo / "demo-shop" / "ci").mkdir()
+    (repo / "demo-shop" / "ci" / "config.yml").write_text(CIRCLECI)
     out = tmp_path / "out" / "pipelines.ndjson"
     code, output = _cli(repo / "demo-shop", out, repo)
     assert code == 0, output
@@ -212,7 +352,8 @@ def test_cli_writes_repository_relative_pipeline_findings(tmp_path: Path) -> Non
     assert {f["category"] for f in findings} == {"PIPELINE"}
     assert {f["location"]["path"] for f in findings} == {"demo-shop/examples/label.yml"}
     assert "template-injection" in {f["rule_id"] for f in findings}
-    assert "1 workflow(s)" in output
+    assert "1 file(s) audited" in output
+    assert "not audited: ci/config.yml" in output
 
 
 def test_cli_failure_leaves_no_findings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
