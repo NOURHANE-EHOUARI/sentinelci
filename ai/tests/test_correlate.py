@@ -438,3 +438,34 @@ def test_the_run_model_refuses_what_the_schema_cannot_express(change: Any) -> No
     document = correlate_run(_ndjson(FINDINGS)).document()
     with pytest.raises(ValueError, match=r"sorted|two groups|did not run"):
         Correlation.model_validate(change(document))
+
+
+def test_an_embedding_group_records_the_linkage_of_its_merge() -> None:
+    pair = [located("SAST", "r1", "a.py", 1), located("SAST", "r2", "b.py", 1)]
+    vectors = {pair[0]["rule_id"]: [1.0, 0.0], pair[1]["rule_id"]: [0.8, 0.6]}
+    embed = lambda texts: [vectors[text.split()[1]] for text in texts]  # noqa: E731 (keyed by rule id)
+    (group,) = correlate(pair, embed=embed, threshold=0.5)
+    assert (group.stage, group.similarity) == ("embedding", 0.8)
+
+
+def test_a_key_longer_than_the_contract_allows_is_dropped() -> None:
+    path = "a/" * 1100 + "m.yaml"
+    (group,) = correlate([located("IAC", "KSV-0014", path, 20), located("IAC", "KSV-0014", path, 41)])
+    assert group.key is None and not [e.message for e in SCHEMA.iter_errors(group.document())]
+
+
+def test_the_run_model_refuses_a_finding_in_two_groups() -> None:
+    x, y = "1" * 64, "2" * 64
+    single = {"schema_version": "1.0", "group_id": group_id([x]), "finding_ids": [x], "stage": "dedup",
+              "labelled_by": "template", "title": "t", "root_cause": "r", "single_fix": None}  # fmt: skip
+    pair = single | {"group_id": group_id([x, y]), "finding_ids": [x, y], "stage": "structural"}
+    groups = sorted([single, pair], key=lambda g: g["group_id"])
+    correlator = {"version": "0.1.0", "stages": ["dedup", "structural"]}
+    document = {
+        "schema_version": "1.0",
+        "findings_sha256": "7" * 64,
+        "correlator": correlator,
+        "groups": groups,
+    }
+    with pytest.raises(ValueError, match="in two groups"):
+        Correlation.model_validate(document)
