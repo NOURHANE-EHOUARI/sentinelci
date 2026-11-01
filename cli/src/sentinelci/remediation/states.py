@@ -24,6 +24,8 @@ TRANSITIONS: dict[State, frozenset[State]] = {
 
 def advance(current: State, target: State, *, attempt: int) -> State:
     """The next state, or RemediationError: an illegal transition never happens silently."""
+    if current in TERMINAL:
+        raise RemediationError(f"a remediation that is {current} is over")
     if target not in TRANSITIONS[current]:
         raise RemediationError(f"a remediation cannot go from {current} to {target}")
     if current == "REJECTED" and target == "PATCH_READY" and attempt >= MAX_ATTEMPTS:

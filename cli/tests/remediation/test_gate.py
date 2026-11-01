@@ -1,5 +1,6 @@
 """The verification gate, the remediation states and the `sentinel remediate` commands (SPEC §9)."""
 
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -13,8 +14,8 @@ from sentinelci.cli import app
 from sentinelci.contracts.finding import Finding
 from sentinelci.contracts.remediation import PatchProposal, VerificationResult
 from sentinelci.normalize.ndjson import dumps_ndjson
-from sentinelci.remediation.gate import verify_proposal
-from sentinelci.remediation.proposal import RemediationError, build_proposal
+from sentinelci.remediation.gate import check_proposal, verify_proposal
+from sentinelci.remediation.proposal import RemediationError, build_proposal, proposal_id_of, unified_diff
 from sentinelci.remediation.states import advance, after_verification
 
 from .conftest import NOW, ROOT, SEED, SEED_PATH, iac_finding, seed_findings
@@ -115,7 +116,10 @@ def test_the_states_follow_section_9_only() -> None:
     assert state == "PATCH_READY"
     for current, target in (("PROPOSED", "VERIFIED"), ("VERIFIED", "PATCH_READY"), ("FAILED", "PROPOSED"),
                             ("PR_OPEN", "REJECTED"), ("PATCH_READY", "VERIFYING")):  # fmt: skip
-        with pytest.raises(RemediationError, match=f"from {current} to {target}"):
+        over = current in ("VERIFIED", "FAILED")  # a terminal state says so
+        with pytest.raises(
+            RemediationError, match=f"{current} is over" if over else f"from {current} to {target}"
+        ):
             advance(current, target, attempt=1)  # type: ignore[arg-type]
     with pytest.raises(RemediationError, match="no retry left after attempt 3"):
         advance("REJECTED", "PATCH_READY", attempt=3)
@@ -130,9 +134,15 @@ def _write_findings(path: Path, findings: list[Finding]) -> Path:
     return path
 
 
-def _decision(tmp_path: Path, verdict: str) -> Path:
-    fixture = json.loads((ROOT / "schemas" / "fixtures" / "decision" / "valid" / "pass-pr.json").read_text())
+def _decision(tmp_path: Path, verdict: str, after: Path | None = None, **changes: Any) -> Path:
+    """A pr-context decision that saw the tool status, made on `after` (its findings digest)."""
+    fixture = json.loads(
+        (ROOT / "schemas/fixtures/decision/valid/pass-pr-v1.2-with-baseline-and-tool-status.json").read_text()
+    )
     fixture["verdict"] = verdict
+    if after is not None:
+        fixture["inputs"]["findings_digest"] = "sha256:" + hashlib.sha256(after.read_bytes()).hexdigest()
+    fixture["subject"].update(changes)
     if verdict != "PASS":
         violation = {
             "rule": "SC-009",
@@ -141,7 +151,7 @@ def _decision(tmp_path: Path, verdict: str) -> Path:
             "message": "CI workflow issue",
         }
         fixture["violations"] = [violation]
-    path = tmp_path / f"decision-{verdict}.json"
+    path = tmp_path / f"decision-{verdict}-{len(list(tmp_path.glob('decision-*')))}.json"
     path.write_text(json.dumps(fixture))
     return path
 
@@ -172,12 +182,53 @@ def test_cli_proposes_then_verifies_the_seed_fix(tmp_path: Path) -> None:
         run = runner.invoke(app, args)
         return run.exit_code, run.output, dest
 
-    code, output, dest = verify(_decision(tmp_path, "WARN"), "--pull-request", "7")
+    code, output, dest = verify(_decision(tmp_path, "WARN", after), "--pull-request", "7")
     assert code == 0 and output.startswith("VERIFIED (attempt 1)"), output
     assert json.loads(dest.read_text())["pull_request"] == 7
-    code, output, dest = verify(_decision(tmp_path, "BLOCK"))
+    code, output, dest = verify(_decision(tmp_path, "BLOCK", after))
     assert code == 1 and "REJECTED (attempt 1): the decision is BLOCK" in output
     assert json.loads(dest.read_text())["outcome"] == "REJECTED"
+
+    # #41 review, blocking 1: the decision must be the patched scan's, in pr context, with the tool status.
+    empty = _write_findings(tmp_path / "empty.ndjson", [])
+    for decision, scan, reason in (
+        (_decision(tmp_path, "PASS"), after, "not made on the patched findings"),
+        (_decision(tmp_path, "PASS", after), empty, "not made on the patched findings"),
+        (_decision(tmp_path, "PASS", after, context="release"), after, "pr-context decision"),
+    ):
+        args = ["remediate", "verify", "--proposal", str(out), "--before", str(before),
+                "--after", str(scan), "--decision", str(decision), "--build-ok", "--tests-ok",
+                "--out", str(tmp_path / "r.json")]  # fmt: skip
+        run = runner.invoke(app, args)
+        assert run.exit_code == 3 and reason in run.output and not (tmp_path / "r.json").exists(), run.output
+
+    # #41 review, blocking 2, through the CLI: a proposal that is not what its id says verifies nothing.
+    tampered = tmp_path / "tampered.json"
+    tampered.write_text(
+        proposal.model_copy(update={"diff": proposal.diff.replace("true", "false")}).model_dump_json()
+    )
+    run = runner.invoke(app, ["remediate", "verify", "--proposal", str(tampered), "--before", str(before),
+                              "--after", str(after), "--decision", str(_decision(tmp_path, "PASS", after)),
+                              "--build-ok", "--tests-ok", "--out", str(tmp_path / "t.json")])  # fmt: skip
+    assert run.exit_code == 3 and "id does not match" in run.output, run.output
+
+    # #41 review, nit 3: --out is never an input (it would be deleted first).
+    kept = after.read_bytes()
+    run = runner.invoke(app, ["remediate", "verify", "--proposal", str(out), "--before", str(before),
+                              "--after", str(after), "--decision", str(_decision(tmp_path, "PASS", after)),
+                              "--build-ok", "--tests-ok", "--out", str(after)])  # fmt: skip
+    assert run.exit_code == 3 and "--out is one of the inputs" in run.output and after.read_bytes() == kept
+    run = runner.invoke(app, ["remediate", "kubernetes", "--findings", str(before), "--repo-root", str(repo),
+                              "--out", str(before)])  # fmt: skip
+    assert run.exit_code == 3 and before.exists()
+
+    # #41 review, nit 2: a new HIGH finding elsewhere is new.
+    elsewhere = iac_finding("KSV-0014", path="demo-shop/infra/k8s/other.yaml", severity="HIGH")
+    worse = _write_findings(
+        tmp_path / "worse.ndjson", [*(f for f in seed_findings() if f.id not in fixed), elsewhere]
+    )
+    code, output, _ = verify(_decision(tmp_path, "PASS", worse), "--after", str(worse))
+    assert code == 1 and "1 new finding(s)" in output, output
 
 
 def test_cli_with_nothing_fixable_writes_no_proposal(tmp_path: Path) -> None:
@@ -204,3 +255,82 @@ def test_cli_untrusted_inputs_verify_nothing(tmp_path: Path, broken: str) -> Non
             "--out", str(out)]  # fmt: skip
     result = CliRunner().invoke(app, args)
     assert result.exit_code == 3 and "FAIL CLOSED" in result.output and not out.exists()
+
+
+# ---------------------------------------------------------------- #41 review: what "gone" and "new" mean
+
+
+def test_a_target_reported_under_a_new_fingerprint_is_still_there() -> None:
+    """Blocking 3: a renamed container gives the same rule a new fingerprint in the same file."""
+    moved = iac_finding("KSV-0017", severity="LOW").model_copy(update={"id": "e" * 64})
+    result = _verify(after={EXISTING.id: EXISTING, moved.id: moved})
+    assert result.outcome == "REJECTED" and not result.target_resolved and result.new_findings == []
+
+
+def test_a_finding_of_the_same_rule_left_as_it_was_does_not_hold_the_target() -> None:
+    """A base finding the proposal did not claim, unchanged, is not the target moving."""
+    unclaimed = iac_finding("KSV-0017", severity="HIGH").model_copy(update={"id": "d" * 64})
+    target = iac_finding("KSV-0017", severity="HIGH").model_copy(update={"id": TARGET})
+    before = {TARGET: target, unclaimed.id: unclaimed, EXISTING.id: EXISTING}
+    result = _verify(before=before, after={unclaimed.id: unclaimed, EXISTING.id: EXISTING})
+    assert result.outcome == "VERIFIED" and result.target_resolved
+
+
+def test_a_base_finding_that_got_worse_is_new() -> None:
+    """Nit 5: the same fingerprint, LOW before and CRITICAL after, counts as a new MEDIUM+ finding."""
+    low = EXISTING.model_copy(update={"severity": "LOW"})
+    critical = EXISTING.model_copy(update={"severity": "CRITICAL"})
+    target = iac_finding("KSV-0017", severity="HIGH").model_copy(update={"id": TARGET})
+    result = _verify(before={TARGET: target, low.id: low}, after={critical.id: critical})
+    assert result.outcome == "REJECTED" and result.new_findings == [EXISTING.id]
+
+
+def _seed_proposal(tmp_path: Path) -> PatchProposal:
+    from sentinelci.remediation.kubernetes import propose
+
+    repo = tmp_path / "repo"
+    (repo / SEED_PATH).parent.mkdir(parents=True)
+    shutil.copy(SEED, repo / SEED_PATH)
+    plan = propose(seed_findings(), repo, created_at=NOW)
+    assert plan.proposal is not None
+    return plan.proposal
+
+
+def _rebuilt(proposal: PatchProposal, **changes: Any) -> PatchProposal:
+    """The proposal with other content and the id that content gives: well formed, like a hostile one."""
+    changed = proposal.model_copy(update=changes)
+    identity = proposal_id_of(changed.strategy, changed.attempt, changed.finding_ids, changed.diff)
+    return changed.model_copy(update={"proposal_id": identity})
+
+
+WORKFLOW = ".github/workflows/ci.yml"
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda p: p.model_copy(update={"diff": p.diff.replace("true", "false")}), "id does not match"),
+        (lambda p: _rebuilt(p, finding_ids=["f" * 64]), "claims findings the base scan does not have"),
+        (lambda p: _rebuilt(p, diff=unified_diff(WORKFLOW, "permissions: {}\n", "permissions: write-all\n"),
+                            files=[WORKFLOW]), "where none of its findings was found"),
+        (lambda p: _rebuilt(p, diff=p.diff.replace(f"a/{SEED_PATH}", "a/../../etc/passwd")
+                            .replace(f"b/{SEED_PATH}", "b/../../etc/passwd")), "outside the repository"),
+        (lambda p: _rebuilt(p, diff="x"), "not a plain edit"),
+        (lambda p: _rebuilt(p, diff=f"diff --git a/{SEED_PATH} b/{SEED_PATH}\ndeleted file mode 100644\n"
+                            f"--- a/{SEED_PATH}\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n"), "more than edit"),
+        (lambda p: _rebuilt(p, diff=f"diff --git a/{SEED_PATH} b/x.yaml\nrename from {SEED_PATH}\n"),
+         "renames or copies"),
+        (lambda p: _rebuilt(p, diff=p.diff + p.diff), "each of its files once"),
+    ],
+    ids=["id-mismatch", "unknown-finding", "unflagged-file", "dotdot", "garbage", "delete", "rename",
+         "twice"],
+)  # fmt: skip
+def test_the_gate_refuses_a_proposal_it_could_never_verify_honestly(
+    tmp_path: Path, change: Any, message: str
+) -> None:
+    """#41 review, blocking 2: each of these gave VERIFIED with the real after-scan."""
+    proposal = _seed_proposal(tmp_path)
+    before = {finding.id: finding for finding in seed_findings()}
+    check_proposal(proposal, before)  # the real proposal passes
+    with pytest.raises(RemediationError, match=message):
+        check_proposal(change(proposal), before)
