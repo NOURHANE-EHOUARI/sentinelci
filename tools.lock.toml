@@ -11,7 +11,7 @@
 # Not pinned here yet:
 # - opengrep: publishes keyless Cosign signatures but no checksum file; it will be pinned once
 #   `sentinel tools pin` verifies the signature and records the digest (follow-up of task A1).
-# - checkov (PyPI) and zizmor (PyPI): installed through uv with hash-locked versions.
+# - zizmor (PyPI): installed through uv with hash-locked versions. Checkov is not used (ADR-0012).
 
 schema_version = 1
 

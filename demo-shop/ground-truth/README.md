@@ -35,7 +35,7 @@ Matching rules for the harness:
 
 - A seed is **detected** when any listed `(tool, rule)` reports it in the seed's file. Secrets also match on
   the line, because Gitleaks reports exact lines. Other tools point at different lines for the same resource:
-  Trivy at the attribute, Checkov at the block.
+  Trivy at the attribute.
 - Other findings in a seeded file are real but unlisted issues. They count neither as hits nor as false
   positives. Only controls measure false positives.
 - Every seeded file names its ground-truth id in a comment, so a reader of the file knows it is deliberate.
@@ -51,5 +51,6 @@ Fields planned for later tasks, optional today: `relevance` (0–3, for NDCG@10 
 - zizmor on every CI example;
 - the pinned Gitleaks and Trivy with SentinelCI's own configuration, when `SENTINEL_TOOLS_DIR` is set.
 
-Gitleaks must report exactly the secret seeds: 5 out of 5, and nothing on the controls. Checkov detections
-were verified with Checkov 3.4.0. They are checked automatically once its adapter is pinned (A1).
+Gitleaks must report exactly the secret seeds: 5 out of 5, and nothing on the controls. A seed that no pinned
+tool detects has `detections: []` and a `known_miss` saying why (GT-IAC-004, ADR-0012). It counts as a miss in
+the evaluation. The Trivy test checks that it is still missed, so a tool upgrade that catches it shows up.
