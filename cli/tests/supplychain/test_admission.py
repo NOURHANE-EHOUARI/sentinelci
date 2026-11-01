@@ -203,6 +203,11 @@ def release(crane: Path, registry: str, tmp_path_factory: pytest.TempPathFactory
             else:
                 signed = _with(signed, kind, path, value)
             attach(target, keys["release.key"], signed)
+        two = image("a-second-source-commit")  # every source of the repository, not just one
+        signed = copy.deepcopy(predicates(work, two))
+        dependencies = signed["provenance"]["buildDefinition"]["resolvedDependencies"]
+        dependencies.append({**dependencies[0], "digest": {"gitCommit": "e" * 40}})
+        attach(two, keys["release.key"], signed)
         block = image("block")
         blocked = decision_bytes(
             subject__image_digest=parse_image(block).digest, verdict="BLOCK", violations=blocking
@@ -235,6 +240,7 @@ EXPECTED = {
     "another-repository": ("fail", "decision: from another repository"),
     "another-builder": ("fail", "provenance: not built by the release workflow"),
     "another-commit": ("fail", "provenance: not built from the decision's commit"),
+    "a-second-source-commit": ("fail", "provenance: not built from the decision's commit"),
     "vuln-another-decision": ("fail", "vulnerability scan: does not name this decision"),
     "vuln-other-findings": ("fail", "vulnerability scan: not the decision's findings"),
     "vuln-other-sbom": ("fail", "vulnerability scan: not the decision's SBOM"),
