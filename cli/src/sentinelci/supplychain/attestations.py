@@ -11,9 +11,9 @@ import re
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError
 
 from sentinelci.contracts.decision import Decision
 from sentinelci.report.pr_comment import ReportError, parse_findings
@@ -76,34 +76,62 @@ class SbomRef(_Strict):
     serial_number: str = Field(pattern=r"^urn:uuid:[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$")
 
 
+_LINE_BREAKS = frozenset("\r\n\u2028\u2029")
+
+
+def _one_line(value: str) -> str:
+    if _LINE_BREAKS.intersection(value):
+        raise ValueError("must be a single line")
+    return value
+
+
+# Each listed severity or category occurs at least once (the schema's positive_count).
+PositiveCount = Annotated[int, Field(ge=1)]
+ToolName = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")]
+ToolVersion = Annotated[str, Field(min_length=1), AfterValidator(_one_line)]
+
+
 class Totals(_Strict):
     findings: int = Field(ge=0)
-    by_severity: dict[Literal["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"], int]
-    by_category: dict[Literal["SECRET", "SAST", "SCA", "CONTAINER", "IAC", "PIPELINE", "LICENSE"], int]
+    by_severity: dict[Literal["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"], PositiveCount]
+    by_category: dict[
+        Literal["SECRET", "SAST", "SCA", "CONTAINER", "IAC", "PIPELINE", "LICENSE"], PositiveCount
+    ]
 
 
 class VulnResult(_Strict):
-    """`schemas/vuln-result.v1.json` as a read model (the contract fixtures pin the two together)."""
+    """`schemas/vuln-result.v1.json` as a read model. The contract fixtures pin the two together: every valid
+    fixture is accepted here and every invalid one refused. The only extra rule is `problem()`, the sums JSON
+    Schema cannot express. (A JSON number such as `3.0` is an integer to JSON Schema but refused here: the
+    producer never writes one, and refusing errs on the safe side.)"""
 
-    schema_version: Literal[1]
+    schema_version: Literal["1.0"]
     decision_id: str = Field(pattern=r"^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$")
     findings_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
     sbom: SbomRef
     totals: Totals
-    tools: dict[str, str] = Field(min_length=1)
+    tools: dict[ToolName, ToolVersion] = Field(min_length=1)
 
-    def consistent(self) -> bool:
-        """Each count is positive and each map sums to the total (what JSON Schema cannot say)."""
-        counts = [*self.totals.by_severity.values(), *self.totals.by_category.values()]
-        return (
-            all(count >= 1 for count in counts)
-            and sum(self.totals.by_severity.values()) == self.totals.findings
-            and sum(self.totals.by_category.values()) == self.totals.findings
-            and all(
-                re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", name) and version
-                for name, version in self.tools.items()
-            )
-        )
+    def problem(self) -> str | None:
+        """Why the totals do not add up, or None: each map must sum to `totals.findings`."""
+        for name, counts in (
+            ("by_severity", self.totals.by_severity),
+            ("by_category", self.totals.by_category),
+        ):
+            total = sum(counts.values())
+            if total != self.totals.findings:
+                return f"totals.{name} adds up to {total}, not totals.findings ({self.totals.findings})"
+        return None
+
+
+def contract_errors(exc: ValidationError, *, limit: int = 3) -> str:
+    """The first validation errors as `field.path: message`, for a one-line reason."""
+    errors = []
+    for error in exc.errors():
+        where = ".".join(str(part) for part in error["loc"])
+        errors.append(f"{where}: {error['msg']}" if where else error["msg"])
+    more = f" (and {len(errors) - limit} more)" if len(errors) > limit else ""
+    return "; ".join(errors[:limit]) + more
 
 
 def load_decision(data: bytes, *, source: str = "decision") -> Decision:
@@ -153,7 +181,7 @@ def vuln_result(decision: Decision, findings_data: bytes, sbom_data: bytes) -> d
     severities = Counter(finding.severity for finding in findings.values())
     categories = Counter(finding.category for finding in findings.values())
     result = {
-        "schema_version": 1,
+        "schema_version": "1.0",
         "decision_id": decision.decision_id,
         "findings_digest": decision.inputs.findings_digest,
         "sbom": {"digest": decision.inputs.sbom_digest, "serial_number": sbom_serial_number(sbom)},
@@ -164,7 +192,15 @@ def vuln_result(decision: Decision, findings_data: bytes, sbom_data: bytes) -> d
         },
         "tools": dict(sorted(decision.inputs.tool_versions.items())),
     }
-    VulnResult.model_validate_json(json.dumps(result))  # the producer never writes what the contract refuses
+    # The producer never signs what the contract, or `sentinel verify`, would refuse.
+    try:
+        problem = VulnResult.model_validate_json(json.dumps(result)).problem()
+    except ValidationError as exc:
+        raise AttestationError(
+            f"the decision's inputs give a vulnerability result the contract refuses: {contract_errors(exc)}"
+        ) from exc
+    if problem is not None:
+        raise AttestationError(f"the vulnerability result would be inconsistent: {problem}")
     return result
 
 

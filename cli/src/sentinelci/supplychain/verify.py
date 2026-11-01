@@ -19,6 +19,7 @@ from sentinelci.supplychain.attestations import (
     AttestationError,
     Image,
     VulnResult,
+    contract_errors,
     load_decision,
 )
 from sentinelci.supplychain.cosign import Verified, Verifier
@@ -69,13 +70,17 @@ def _decision(predicate: Any) -> tuple[Decision | None, str]:
 def _vuln(predicate: Any) -> tuple[VulnResult | None, str]:
     if predicate is None:
         return None, "no verified vulnerability attestation"
-    result = predicate.get("scanner", {}).get("result") if isinstance(predicate, dict) else None
+    scanner = predicate.get("scanner") if isinstance(predicate, dict) else None
+    result = scanner.get("result") if isinstance(scanner, dict) else None
     try:
         parsed = VulnResult.model_validate_json(json.dumps(result))
-    except (ValidationError, TypeError) as exc:
+    except ValidationError as exc:
+        return None, f"scanner.result is not a vuln-result v1: {contract_errors(exc)}"[:300]
+    except (TypeError, ValueError) as exc:  # not serializable as JSON
         return None, f"scanner.result is not a vuln-result v1: {exc}"[:300]
-    if not parsed.consistent():
-        return None, "scanner.result totals do not add up"
+    problem = parsed.problem()
+    if problem is not None:
+        return None, f"scanner.result {problem}"
     return parsed, ""
 
 
@@ -83,13 +88,17 @@ def _source(predicate: Any, repo: str) -> list[tuple[str, Any]]:
     """(uri, gitCommit) of the provenance's source dependencies in `repo`."""
     try:
         dependencies = predicate["buildDefinition"]["resolvedDependencies"]
-        return [
-            (dep["uri"], dep.get("digest", {}).get("gitCommit"))
-            for dep in dependencies
-            if isinstance(dep, dict) and str(dep.get("uri", "")).startswith(f"git+{GITHUB}/{repo}@")
-        ]
     except (KeyError, TypeError):
         return []
+    if not isinstance(dependencies, list):
+        return []
+    sources: list[tuple[str, Any]] = []
+    for dep in dependencies:
+        if not isinstance(dep, dict) or not str(dep.get("uri", "")).startswith(f"git+{GITHUB}/{repo}@"):
+            continue
+        digest = dep.get("digest")
+        sources.append((dep["uri"], digest.get("gitCommit") if isinstance(digest, dict) else None))
+    return sources
 
 
 def _builder(predicate: Any) -> Any:

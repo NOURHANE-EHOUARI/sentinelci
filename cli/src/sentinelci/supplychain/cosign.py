@@ -25,7 +25,20 @@ STATEMENT_TYPES = frozenset({"https://in-toto.io/Statement/v0.1", "https://in-to
 IN_TOTO_PAYLOAD = "application/vnd.in-toto+json"
 MAX_BUNDLE_BYTES = 64 << 20
 _ENV_KEY = re.compile(r"env://(?P<var>[A-Z_][A-Z0-9_]{0,63})")
+_PUBLIC_KEY = re.compile(r"-----BEGIN PUBLIC KEY-----\r?\n[A-Za-z0-9+/=\r\n]+-----END PUBLIC KEY-----")
 _TIMEOUT_S = 120
+
+
+def check_public_key(path: Path) -> None:
+    """A readable PEM public key, or AttestationError: a missing or garbled key means the verification could
+    not run, which is not the same answer as "this image is not trusted". The key's content is never
+    echoed."""
+    try:
+        text = path.read_text(encoding="ascii")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise AttestationError(f"the public key {path} cannot be read ({type(exc).__name__})") from exc
+    if _PUBLIC_KEY.search(text) is None:
+        raise AttestationError(f"{path} is not a PEM public key (-----BEGIN PUBLIC KEY-----)")
 
 
 @dataclass(frozen=True)

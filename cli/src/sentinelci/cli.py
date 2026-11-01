@@ -67,7 +67,7 @@ from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
 from sentinelci.scanners.installer import VerificationReport, install_tools, verify_tools
 from sentinelci.scanners.lock import LOCK_FILE_NAME, load_lock
 from sentinelci.supplychain.attestations import KINDS, AttestationError, parse_image, release_predicates
-from sentinelci.supplychain.cosign import Signer, Verifier
+from sentinelci.supplychain.cosign import Signer, Verifier, check_public_key
 from sentinelci.supplychain.verify import ATTESTATIONS_DIR, verify_evidence
 
 EXIT_UNTRUSTED_INPUT = 3
@@ -881,6 +881,7 @@ def verify_command(
     """
     try:
         target = parse_image(image)
+        check_public_key(key)  # a broken setup is "could not run" (3), not "this image is bad" (1)
         verifier = Verifier(key, load_lock(lock), tools_dir, platform)
         report = verify_evidence(target, evidence, verifier, repo=repo, builder_id=builder_id)
     except (AttestationError, ToolIntegrityError, ScannerError) as exc:

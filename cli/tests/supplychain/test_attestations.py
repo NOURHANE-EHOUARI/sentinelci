@@ -60,7 +60,7 @@ def test_the_four_predicates_of_a_release() -> None:
     assert vuln["scanner"]["uri"] == "pkg:github/NOURHANE-EHOUARI/sentinelci@0.1.0"
     assert vuln["invocation"]["builder.id"] == BUILDER
     assert vuln["scanner"]["result"] == {
-        "schema_version": 1,
+        "schema_version": "1.0",
         "decision_id": "0193f2c4-7a1e-7b3c-9d2e-4f5a6b7c8d9f",
         "findings_digest": sha(findings_bytes()),
         "sbom": {"digest": sha(sbom_bytes()), "serial_number": SERIAL},
@@ -153,7 +153,7 @@ def test_an_image_reference() -> None:
 
 def _accepted(path: Path) -> bool:
     try:
-        return VulnResult.model_validate_json(path.read_bytes()).consistent()
+        return VulnResult.model_validate_json(path.read_bytes()).problem() is None
     except ValidationError:
         return False
 
@@ -178,4 +178,33 @@ def test_the_read_model_refuses_the_invalid_contract_fixtures(path: Path) -> Non
 def test_totals_must_add_up(totals: dict[str, Any]) -> None:
     document = json.loads((VULN_FIXTURES / "valid" / "release-with-findings.json").read_text())
     document["totals"] = totals
-    assert not VulnResult.model_validate_json(json.dumps(document)).consistent()
+    problem = VulnResult.model_validate_json(json.dumps(document)).problem()
+    assert problem is not None and "adds up to 2, not totals.findings (3)" in problem
+
+
+@pytest.mark.parametrize(
+    ("tool_versions", "message"),
+    [
+        (
+            {"gitleaks": "8.30.1", "Trivy": "0.76.1"},
+            r"contract refuses: tools\.Trivy\.\[key\]: String should match",
+        ),
+        ({"trivy": "0.76.1\n"}, r"contract refuses: tools\.trivy: Value error, must be a single line"),
+        ({"trivy": "0.76\u2028.1"}, "must be a single line"),
+    ],
+    ids=["tool-name-not-lowercase", "version-with-a-newline", "version-with-a-line-separator"],
+)
+def test_the_signer_refuses_a_result_the_contract_or_verify_would_refuse(
+    tool_versions: dict[str, str], message: str
+) -> None:
+    """Review of #35, should fix 2: a Decision v1 allows any tool name and version, the vuln-result does
+    not."""
+    with pytest.raises(AttestationError, match=message):
+        predicates(decision_data=decision_bytes(inputs__tool_versions=tool_versions))
+
+
+def test_the_signer_refuses_a_result_verify_would_find_inconsistent(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Counting cannot give totals that do not add up today; the check keeps it so if the counting changes.
+    monkeypatch.setattr(VulnResult, "problem", lambda self: "totals.by_severity adds up to 2")
+    with pytest.raises(AttestationError, match=r"would be inconsistent: totals\.by_severity adds up to 2"):
+        predicates()

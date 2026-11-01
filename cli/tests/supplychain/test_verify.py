@@ -90,6 +90,12 @@ def _set(path: str, value: Any) -> Callable[[Any], None]:
 OTHER_SOURCE = "git+https://github.com/x/y@main"
 DEPENDENCY = "buildDefinition.resolvedDependencies.0"
 BLOCK = [{"rule": "SC-001", "effect": "BLOCK", "finding_ids": ["c" * 64], "message": "Hard-coded secret"}]
+VULN_UNAVAILABLE = [
+    "vulnerability scan: names this decision",
+    "vulnerability scan: the decision's findings",
+    "vulnerability scan: the decision's SBOM",
+    "SBOM: the one the vulnerability scan names",
+]
 
 
 @pytest.mark.parametrize(
@@ -108,6 +114,15 @@ BLOCK = [{"rule": "SC-001", "effect": "BLOCK", "finding_ids": ["c" * 64], "messa
          ["provenance: built from the decision's commit"]),
         (lambda: _with("provenance", _set(f"{DEPENDENCY}.uri", OTHER_SOURCE)),
          ["provenance: built from the decision's commit"]),
+        (lambda: _with("provenance", _set(f"{DEPENDENCY}.uri", f"git+https://github.com/{REPO}-fork@main")),
+         ["provenance: built from the decision's commit"]),
+        (lambda: _with("provenance", lambda p: p["buildDefinition"]["resolvedDependencies"].append(
+            {"uri": f"git+https://github.com/{REPO}@refs/heads/dev", "digest": {"gitCommit": "0" * 40}})),
+         ["provenance: built from the decision's commit"]),
+        (lambda: _with("provenance", _set(f"{DEPENDENCY}.digest", "sha1:" + "0" * 40)),
+         ["provenance: built from the decision's commit"]),
+        (lambda: _with("provenance", _set("buildDefinition.resolvedDependencies", 3)),
+         ["provenance: built from the decision's commit"]),
         (lambda: _with("vuln", _set("scanner.result.decision_id", "00000000-0000-0000-0000-000000000000")),
          ["vulnerability scan: names this decision"]),
         (lambda: _with("vuln", _set("scanner.result.findings_digest", "sha256:" + "9" * 64)),
@@ -117,18 +132,60 @@ BLOCK = [{"rule": "SC-001", "effect": "BLOCK", "finding_ids": ["c" * 64], "messa
         (lambda: _with("sbom", _set("serialNumber", "urn:uuid:00000000-0000-0000-0000-000000000000")),
          ["SBOM: the one the vulnerability scan names"]),
         (lambda: _with("sbom", _set("bomFormat", "SPDX")), ["SBOM: the one the vulnerability scan names"]),
-        (lambda: _with("vuln", _set("scanner.result.totals.findings", 4)),
-         ["vulnerability scan: names this decision", "vulnerability scan: the decision's findings",
-          "vulnerability scan: the decision's SBOM", "SBOM: the one the vulnerability scan names"]),
+        (lambda: _with("vuln", _set("scanner.result.totals.findings", 4)), VULN_UNAVAILABLE),
+        (lambda: _with("vuln", _set("scanner", ["x"])), VULN_UNAVAILABLE),
+        (lambda: _with("vuln", _set("scanner.result.tools", {"Trivy": "0.76.1"})), VULN_UNAVAILABLE),
     ],
     ids=[
         "block", "pr-context", "another-image", "another-repository", "another-builder", "another-commit",
-        "another-source", "another-decision", "other-findings", "other-sbom-digest", "other-sbom",
-        "not-cyclonedx", "totals-do-not-add-up",
+        "another-source", "a-fork", "a-second-source", "digest-not-an-object", "dependencies-not-a-list",
+        "another-decision", "other-findings", "other-sbom-digest", "other-sbom", "not-cyclonedx",
+        "totals-do-not-add-up", "scanner-not-an-object", "tool-name-not-lowercase",
     ],
 )  # fmt: skip
 def test_each_binding_is_checked(outcomes: Callable[[], dict[str, Verified]], expected: list[str]) -> None:
     assert failed(outcomes()) == expected
+
+
+@pytest.mark.parametrize(
+    ("edit", "reason"),
+    [
+        (_set("scanner.result.totals.findings", 4), "scanner.result totals.by_severity adds up to 3, not"),
+        (_set("scanner.result.tools", {"Trivy": "0.76.1"}), "tools.Trivy.[key]: String should match pattern"),
+        (_set("scanner", ["x"]), "scanner.result is not a vuln-result v1: Input should be an object"),
+    ],
+    ids=["totals", "tool-name", "scanner-not-an-object"],
+)
+def test_a_malformed_vulnerability_result_says_why(edit: Callable[[Any], None], reason: str) -> None:
+    """Review of #35, should fix 2 and nit 2: the reason names the problem, and nothing raises."""
+    checks = trust_checks(parse_image(IMAGE), _with("vuln", edit), repo=REPO, builder_id=BUILDER)
+    details = {check.detail for check in checks if check.name == VULN_UNAVAILABLE[0]}
+    assert len(details) == 1 and reason in details.pop()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        None,
+        "",
+        "not a key\n",
+        "-----BEGIN ENCRYPTED SIGSTORE PRIVATE KEY-----\nAAAA\n"
+        "-----END ENCRYPTED SIGSTORE PRIVATE KEY-----\n",
+    ],
+    ids=["missing", "empty", "garbage", "a-private-key"],
+)
+def test_a_missing_or_unreadable_public_key_means_verify_could_not_run(
+    tmp_path: Path, content: str | None
+) -> None:
+    """Review of #35, nit 1: exit 3 (could not run), not 1 (this image is not trusted). Cosign never
+    starts."""
+    key = tmp_path / "cosign.pub"
+    if content is not None:
+        key.write_text(content)
+    result = verify(key, tmp_path / "evidence")
+    assert result.exit_code == 3, result.output
+    assert "FAIL CLOSED" in result.output and "AAAA" not in result.output
+    assert f"{key} is not a PEM public key" in result.output or "cannot be read" in result.output
 
 
 def test_a_missing_attestation_fails_closed() -> None:

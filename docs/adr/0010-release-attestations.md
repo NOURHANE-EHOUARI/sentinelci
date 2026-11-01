@@ -20,8 +20,11 @@ signed predicate is not byte-identical to the file it came from.
 
 ## Decision
 
-1. **Four attestations per release image**, each an in-toto statement with exactly one subject: the image name
-   and its manifest digest. They are signed by the `attest` job only, and only for a decision that is not BLOCK.
+1. **Four attestations per release image**, each an in-toto statement with exactly one subject: the image's
+   manifest digest, with the last segment of its name (`shop-api`) as the subject name. Trust is per digest:
+   the name is informational, and `sentinel verify` ignores it, so the same content under another name is the
+   same release (content addressing). They are signed by the `attest` job only, and only for a decision that
+   is not BLOCK.
 
    | Attestation | Predicate type | Predicate |
    |---|---|---|
@@ -62,7 +65,9 @@ signed predicate is not byte-identical to the file it came from.
 5. **Keys.** Private mode (now): a key pair, `--key` names the private key file or `env://VAR`; only that
    variable and `COSIGN_PASSWORD` reach the Cosign process (the runner's minimal environment drops the rest);
    no transparency log (`--tlog-upload=false` when signing, `--insecure-ignore-tlog` when verifying, because
-   there is no log entry to check). GitHub mode (after going public): keyless, the identity being the release
+   there is no log entry to check). Cosign 3.1.4 marks `--tlog-upload` and `--use-signing-config` deprecated
+   (a warning on every attest): a Cosign bump that removes them means passing a `--signing-config` with no
+   transparency log services instead, which the real-Cosign tests would show. GitHub mode (after going public): keyless, the identity being the release
    workflow; `sentinel verify` then takes `--certificate-identity` and `--certificate-oidc-issuer` instead of
    `--key`.
 

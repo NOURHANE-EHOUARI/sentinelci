@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": "1.0",
   "decision_id": "0193f2c4-7a1e-7b3c-9d2e-4f5a6b7c8d9e",
   "findings_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
   "sbom": {
