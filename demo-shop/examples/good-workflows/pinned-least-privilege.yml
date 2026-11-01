@@ -1,0 +1,27 @@
+# Clean control GT-CLEAN-004: actions pinned by commit SHA, read-only token, no persisted credentials,
+# untrusted input passed through environment variables.
+name: test
+
+on:
+  pull_request:
+
+permissions:
+  contents: read # check out the code; nothing else
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Show the pull-request title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          printf 'Testing: %s\n' "$TITLE"

@@ -11,6 +11,7 @@
 | Version | Change |
 |---|---|
 | 1.1.7 | A3b evidence (§5, §6.5): every scan writes a tool status (`sentinel scan secrets --tool-status-out`), so a failed, timed-out or tampered scanner becomes a recorded BLOCK (SC-010) instead of a bare red job. PR mode scans the base commit's tree as the baseline. The gate stores its evidence (`--store`), uploaded as the `sentinel-evidence` artifact; the PR comment names it in its replay line and shows "N new" only for the baseline the gate used. The nightly replay also replays the last release decisions of `demo-shop.yml` on main. The gate scores findings with the base risk model before deciding, and every scanner run has a time limit the scan job outlives. |
+| 1.1.6 | A9 first seeds (§17): 5 fake secrets, 6 IaC, 3 CI-workflow seeds and 4 clean controls in `demo-shop/`, with a draft ground-truth format (`demo-shop/ground-truth/`, final schema owned by B9) checked against the pinned Gitleaks, Trivy and zizmor. SentinelCI's Trivy configuration trusts only the kind registry for KSV0125. |
 | 1.1.5 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
 | 1.1.4 | Enrichment (B2, §6.1): `schemas/enrichment-snapshot.v1.json` (`schema_version` "1.0", `sources.kev.cves`: the CVEs the KEV lookup covered) and `schemas/sentinel-config.v1.json` (`sentinel.yaml`, canonical component paths); `sentinel enrich`. "Not listed in KEV" only for covered CVEs; `sentinel.yaml` read with a restricted YAML loader. |
 | 1.1.3 | Scanner hardening (§5): verify-before-exec, minimal child environment, scanner configuration owned by SentinelCI; repository-controlled suppressions are neutralized or refused (Gitleaks: `.gitleaks.toml`, `gitleaks:allow`, `.gitleaksignore`, and `.gitattributes` `-diff`/`binary` in git mode); merge commits scanned with `--diff-merges=remerge` plus a `first-parent` pass for octopus merges (evil merges), archives opened in dir mode. |
@@ -312,10 +313,14 @@ analysis kind; a category without a `non_cve` weight counts as E = 1.0.
 | SC-008 | WARN | Copyleft licence in a distributed component |
 | SC-009 | BLOCK | High-severity CI workflow issue introduced by the PR |
 | SC-010 | BLOCK | Scanner failure, timeout or tool-integrity mismatch; a required scanner (`policies/required_tools.rego`) missing from the tool status, or no tool status where one is required (`pr`, `release`); malformed gate input |
+| SC-011 | BLOCK | Misconfiguration that exposes the service by itself, introduced by the PR (privileged pod, host namespaces, root mounts or kernel modules; a public bucket, database or dataset; SSH, RDP or database ports open to the internet): a short list of Trivy rule ids in `policies/exposing.rego`, matched on Trivy findings only, whatever the finding's score |
 
-Priority-based rules (SC-002, SC-006) read `risk.priority` (B3); an unscored finding counts at its worst case,
-`100 × severity_weight` banded, so CRITICAL and HIGH are P0 until scored. Each finding is reported under its most
-specific rule (SC-001, SC-003 or SC-009 before SC-002/SC-006). Waivers and diff-aware PR mode apply to every finding
+Priority-based rules (SC-002, SC-006) read `risk.priority` (B3), only when `risk.model_version` is the bundle's
+risk model (`inputs.risk_model_version`); an unscored finding, or one scored with another model, counts at its
+worst case, `100 × severity_weight` banded, so CRITICAL and HIGH are P0 until scored. Each finding is reported under its most
+specific rule (SC-001, SC-003, SC-009 or SC-011 before SC-002/SC-006). SC-011 exists because the exposure factor
+X discounts a misconfiguration by its service's exposure, while a privileged pod or a public bucket creates the
+exposure itself; every other misconfiguration keeps its risk-model priority (IaC weight 0.5). Waivers and diff-aware PR mode apply to every finding
 rule. Not yet implemented: SC-004 (A4 attestations), SC-007, SC-008, the strict profile and VEX.
 
 Policy rules use `input.evaluated_at`, never `time.now_ns()`. Reference implementation of the verdict logic
@@ -658,7 +663,7 @@ schema-constrained outputs and injection isolation (0 verdict changes across [X]
 | 5 | Repository settings: require SHA-pinned actions, read-only default workflow token, Dependabot alerts (branch protection deferred to the public phase, convention + local guard meanwhile) | to do (owner) |
 | 6 | Choose and pin tool versions in `tools.lock.toml` | done (A1a; Opengrep pending) |
 | 7 | Compose skeleton (postgres+pgvector, redis, seaweedfs, ollama, api, prometheus, grafana; worker with B1, web with B7) | B |
-| 8 | `demo-shop/` skeleton + ground-truth format; first seeds | A9 + B9 |
+| 8 | `demo-shop/` skeleton + ground-truth format; first seeds | A9 first seeds done (draft format v1); B9 to do |
 | 9 | GitHub Project board: one issue per task id | both |
 | 10 | Choose the local model and measure tokens/second | done (ADR-0009; re-run the benchmark on each laptop) |
 

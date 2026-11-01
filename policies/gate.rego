@@ -20,6 +20,8 @@ package sentinel.gate
 
 import rego.v1
 
+import data.sentinel.exposing
+
 import data.sentinel.config
 
 now := time.parse_rfc3339_ns(input.evaluated_at)
@@ -251,9 +253,12 @@ counts(f) if {
 # A finding without a usable severity is treated as the worst of all.
 worst_case_priority := {"CRITICAL": "P0", "HIGH": "P0", "MEDIUM": "P2", "LOW": "P3", "INFO": "P4"}
 
+# A recorded priority counts only when the finding was scored with this bundle's risk model
+# (input.risk_model_version, from risk-model.yaml): findings scored elsewhere count at their worst case.
 scored_priority(f) := p if {
 	p := object.get(f, ["risk", "priority"], null)
 	p in {"P0", "P1", "P2", "P3", "P4"}
+	object.get(f, ["risk", "model_version"], null) == input.risk_model_version
 }
 
 priority(f) := scored_priority(f)
@@ -298,9 +303,30 @@ block contains v if {
 	v := {"rule": "SC-009", "effect": "BLOCK", "finding_ids": sort(pipeline_ids), "message": "High-severity CI workflow issue"}
 }
 
+# SC-011: a misconfiguration that exposes the service by itself (policies/exposing.rego), whatever its score: it
+# creates the exposure the risk model's exposure factor would otherwise discount. The ids are Trivy's, so only
+# Trivy findings match: another tool reporting the same rule_id was never checked against the list.
+exposing_ids contains f.id if {
+	some f in input.findings
+	f.category == "IAC"
+	f.tool.name == "trivy"
+	f.rule_id in exposing.rule_ids
+	counts(f)
+}
+
+block contains v if {
+	count(exposing_ids) > 0
+	v := {
+		"rule": "SC-011",
+		"effect": "BLOCK",
+		"finding_ids": sort(exposing_ids),
+		"message": "Misconfiguration that exposes the service by itself",
+	}
+}
+
 # SC-002 (P0, BLOCK) and SC-006 (P1, WARN) for findings no more specific rule already blocks, so each finding is
 # reported once, under its most specific rule.
-specific_ids := (secret_ids | kev_ids) | pipeline_ids
+specific_ids := ((secret_ids | kev_ids) | pipeline_ids) | exposing_ids
 
 priority_ids[p] contains f.id if {
 	some f in input.findings
@@ -309,10 +335,21 @@ priority_ids[p] contains f.id if {
 	p := priority(f)
 }
 
-unscored_note(found) := " (unscored findings count at their worst-case priority)" if {
+# Why findings in a violation count at their worst case: unscored, scored with another risk model, or both.
+worst_case_reasons(found) := {reason |
 	some f in input.findings
 	f.id in found
 	not scored_priority(f)
+	reason := worst_case_reason(f)
+}
+
+worst_case_reason(f) := "unscored findings" if object.get(f, ["risk", "priority"], null) == null
+
+worst_case_reason(f) := "findings scored with another risk model" if object.get(f, ["risk", "priority"], null) != null
+
+unscored_note(found) := sprintf(" (%s count at their worst-case priority)", [concat(" and ", sort(reasons))]) if {
+	reasons := worst_case_reasons(found)
+	count(reasons) > 0
 } else := ""
 
 block contains v if {

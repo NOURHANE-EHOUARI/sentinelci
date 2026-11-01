@@ -1,0 +1,24 @@
+# INTENTIONALLY VULNERABLE CI example (GT-PIPELINE-003). Never copy into .github/workflows: it would run.
+# Every permission, actions referenced by mutable branches and tags (the March 2026 trivy-action compromise
+# moved tags like these), credentials left in the checkout, and all secrets passed to a reusable workflow.
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions: write-all
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@main
+      - uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+      - run: make release
+  publish:
+    needs: build
+    uses: example-org/shared-workflows/.github/workflows/publish.yml@main
+    secrets: inherit
