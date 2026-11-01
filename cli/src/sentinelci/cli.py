@@ -61,6 +61,7 @@ from sentinelci.policy.replay import ReplayResult, check_identity, replay, skip_
 from sentinelci.policy.store import EvidenceStore, StoreError
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
 from sentinelci.report.pr_comment import ReportError, load_inputs, render_no_decision, render_pr_comment
+from sentinelci.report.upload import RunInfo, UploadError, platform_from, upload
 from sentinelci.risk import RiskModel, RiskModelError, score_finding
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
@@ -474,6 +475,51 @@ def _load_record(path: Path, decision_id: str | None = None) -> dict[str, Any]:
 def _replay_record(recorded: dict[str, Any], evidence: EvidenceStore, runner: OpaRunner) -> ReplayResult:
     with tempfile.TemporaryDirectory(prefix="sentinel-replay-") as work:
         return replay(recorded, store=evidence, opa=runner, work_dir=Path(work))
+
+
+EXIT_UPLOAD_FAILED = 4  # never 1 or 3: an upload is a report, its failure says nothing about the verdict
+
+
+@app.command("upload")
+def upload_command(
+    findings: Annotated[Path, typer.Option(help="The findings NDJSON of one run (as the scan wrote it).")],
+    api_url: Annotated[
+        str, typer.Option(help="The platform, https:// (or http://localhost for a local platform).")
+    ],
+    repo: Annotated[str, typer.Option(help="Repository as owner/name.")],
+    commit: Annotated[str, typer.Option(help="Commit SHA that was scanned.")],
+    context: Annotated[RunContext, typer.Option(help="Run context.")],
+    ref: Annotated[str | None, typer.Option(help="Git ref that was scanned.")] = None,
+    run_id: Annotated[str | None, typer.Option(help="CI run identifier.")] = None,
+    resume: Annotated[
+        str | None, typer.Option(help="Finish the upload of a run the platform already created (its id).")
+    ] = None,
+) -> None:
+    """Send one run's findings to the SentinelCI platform (B1 ingestion API), after the decision.
+
+    The token comes only from the SENTINEL_API_TOKEN environment variable. Exit code 0 when the platform
+    recorded exactly these findings (also when it already had them), 4 when it did not: an upload never
+    changes the verdict, which was decided before.
+    """
+    run = RunInfo(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id)
+    try:
+        platform = platform_from(api_url)
+        uploaded = upload(findings.read_bytes(), run, platform, resume=resume)
+    except (OSError, UploadError) as exc:
+        typer.echo(
+            f"sentinel upload: {exc}\nthe findings were not uploaded (the verdict is unchanged)", err=True
+        )
+        raise typer.Exit(EXIT_UPLOAD_FAILED) from exc
+    typer.echo(
+        json.dumps(
+            {
+                "run_id": uploaded.run_id,
+                "finding_count": uploaded.finding_count,
+                "findings_sha256": uploaded.findings_sha256,
+                "already_recorded": uploaded.already_recorded,
+            }
+        )
+    )
 
 
 @app.command("replay")

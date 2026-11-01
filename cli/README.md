@@ -206,3 +206,28 @@ waivers:
   reasons reach the decision record.
 - A file that cannot be read (bad YAML, wrong top-level shape, `version` other than 1) means no decision:
   exit code `3`.
+
+## `sentinel upload` (findings to the platform, M1)
+
+Sends one run's findings to the SentinelCI platform (the B1 ingestion API, `schemas/openapi.yaml`): first
+`POST /api/v1/runs`, then the NDJSON exactly as the scan wrote it.
+
+```bash
+SENTINEL_API_TOKEN=... uv run sentinel upload --findings out/findings.ndjson --api-url http://localhost:8000 \
+  --repo NOURHANE-EHOUARI/sentinelci --commit <sha> --context local
+```
+
+- **A report, never a decision.** It runs after the verdict and never changes it: exit `0` when the platform
+  recorded exactly these findings (also when it already had them), `4` when it did not. It never exits with
+  the gate's codes, `1` or `3`.
+- **The token** comes only from `SENTINEL_API_TOKEN`. It is never an argument and is never printed, not even
+  in an error. In CI the step runs only in a job that runs no repository code.
+- **The URL** is `https://`, or `http://` on the loopback (`localhost`, `127.0.0.1`, `[::1]`). It holds no
+  credentials, query or fragment. A redirect is refused, because it would carry the token elsewhere.
+- **The findings are checked first**, as the API checks them: Finding v1, each id once, each about the run
+  given by `--repo/--commit/--context` (and `--ref/--run-id` when the findings carry them). A bad file never
+  leaves an empty run behind.
+- **The platform's `findings_sha256`** must be the sha256 of the bytes sent.
+- **Resuming.** After a failure the message names the run, and `--resume <run id>` finishes it without
+  creating another. A run that already holds other findings is refused.
+
