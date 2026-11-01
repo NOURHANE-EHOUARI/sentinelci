@@ -44,6 +44,7 @@ from sentinelci.enrich.transport import (
 )
 from sentinelci.normalize.errors import NormalizationError
 from sentinelci.normalize.gitleaks import load_gitleaks_report, normalize_gitleaks
+from sentinelci.normalize.grype import load_grype_report, normalize_grype
 from sentinelci.normalize.ndjson import dumps_ndjson, write_ndjson
 from sentinelci.policy.bundle import BundleError, PolicyBundle
 from sentinelci.policy.decision import (
@@ -64,6 +65,7 @@ from sentinelci.report.pr_comment import ReportError, load_inputs, render_no_dec
 from sentinelci.risk import RiskModel, RiskModelError, score_finding
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
+from sentinelci.scanners.grype import scan_sca
 from sentinelci.scanners.installer import VerificationReport, install_tools, verify_tools
 from sentinelci.scanners.lock import LOCK_FILE_NAME, load_lock
 from sentinelci.supplychain.sbom import SOURCE_KINDS, SourceKind, generate_sbom
@@ -617,6 +619,30 @@ def normalize_gitleaks_cmd(
     typer.echo(f"{len(findings)} finding(s) written to {out}")
 
 
+@normalize_app.command("grype")
+def normalize_grype_cmd(
+    report: Annotated[Path, typer.Argument(help="Grype JSON report (-o json) of a source tree's SBOM.")],
+    out: Annotated[Path, typer.Option(help="Destination NDJSON file.")],
+    repo: Annotated[str, typer.Option(help="Repository as owner/name.")],
+    commit: Annotated[str, typer.Option(help="Commit SHA that was scanned.")],
+    context: Annotated[RunContext, typer.Option(help="Run context.")],
+    ref: Annotated[str | None, typer.Option(help="Git ref that was scanned.")] = None,
+    run_id: Annotated[str | None, typer.Option(help="CI run identifier.")] = None,
+    scan_root: Annotated[
+        str, typer.Option(help="The scanned directory, relative to the repository root.")
+    ] = ".",
+) -> None:
+    """Normalize a Grype report into SCA findings. A report that shows a silenced match fails closed."""
+    out.unlink(missing_ok=True)  # a failed run must never leave an older findings file behind
+    try:
+        run = Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id)
+        findings = normalize_grype(load_grype_report(report), run=run, scan_root=scan_root)
+    except NormalizationError as exc:
+        raise _fail_closed(exc) from exc
+    write_ndjson(findings, out)
+    typer.echo(f"{len(findings)} finding(s) written to {out}")
+
+
 # ---------------------------------------------------------------- tools
 
 
@@ -762,6 +788,76 @@ def scan_secrets_cmd(
     out.parent.mkdir(parents=True, exist_ok=True)
     write_ndjson(findings, out)
     typer.echo(f"gitleaks {tool_run.version}: {len(findings)} finding(s) written to {out}")
+
+
+@scan_app.command("sca")
+def scan_sca_cmd(
+    target: Annotated[
+        Path, typer.Argument(help="Source tree to scan (the repository or a directory in it).")
+    ],
+    out: Annotated[Path, typer.Option(help="Destination NDJSON file.")],
+    repo: Annotated[str, typer.Option(help="Repository as owner/name.")],
+    commit: Annotated[str, typer.Option(help="Commit SHA that was scanned.")],
+    context: Annotated[RunContext, typer.Option(help="Run context.")],
+    db_dir: Annotated[
+        Path,
+        typer.Option(
+            "--db-dir",
+            help="Grype's vulnerability database directory, prepared before the scan (never fetched).",
+        ),
+    ],
+    ref: Annotated[str | None, typer.Option(help="Git ref that was scanned.")] = None,
+    run_id: Annotated[str | None, typer.Option(help="CI run identifier.")] = None,
+    repo_root: Annotated[
+        Path | None, typer.Option(help="Repository root (default: the target itself).")
+    ] = None,
+    allow_stale_db: Annotated[
+        bool,
+        typer.Option(
+            "--allow-stale-db",
+            help="Accept a database built over 5 days ago (replays and tests: it misses new advisories).",
+        ),
+    ] = False,
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    tools_dir: Annotated[
+        Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
+    ] = (DEFAULT_TOOLS_DIR),
+    platform: PlatformOption = None,
+) -> None:
+    """Vulnerable dependencies: the verified Syft's SBOM of the tree, matched by the verified Grype, offline.
+
+    The scan never downloads: the database is the directory given in --db-dir. Exit code 3, with no findings
+    file written, when a tool fails or is tampered with, the database is missing, invalid or stale, or the
+    report shows a silenced match.
+    """
+    out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
+    root = repo_root or target
+    try:
+        scan = scan_sca(
+            target,
+            repo_root=root,
+            name=repo,
+            db_dir=db_dir,
+            lock=load_lock(lock),
+            tools_dir=tools_dir,
+            platform=platform,
+            allow_stale_db=allow_stale_db,
+        )
+        findings = normalize_grype(
+            scan.report,
+            run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
+            scan_root=scan.scan_root,
+        )
+    except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
+        raise _fail_closed(exc) from exc
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_ndjson(findings, out)
+    database = scan.database
+    typer.echo(
+        f"grype {scan.grype.version} on the SBOM of syft {scan.sbom.run.version} ({scan.sbom.packages} "
+        f"package(s)), database {database.schema_version} built {database.built}: {len(findings)} finding(s) "
+        f"written to {out}"
+    )
 
 
 # ---------------------------------------------------------------- report

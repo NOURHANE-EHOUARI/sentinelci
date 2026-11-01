@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.24 | A1 SCA (§5 stage 3, §13.1): `sentinel scan sca` runs the pinned Syft (one run writes CycloneDX, SPDX and syft-json) and the pinned Grype on that SBOM, offline, with SentinelCI's `scanners/configs/grype.yaml` from a private directory, against a prepared database (`--db-dir`; over five days old fails closed unless `--allow-stale-db`). `sentinel normalize grype` turns a source-tree report into SCA findings: rule id and fingerprint vuln id = Grype's matched id, related CVEs in `cve`, other ids in `aliases`; Negligible counts as LOW and Unknown as HIGH; one finding per purl base with every place; no CVSS / EPSS / KEV copied (enrichment is B2's snapshot); a report that shows a silenced match, an invalid database or an image source fails closed. Golden file: B's real Grype 0.121.0 report on demo-shop. |
 | 1.1.13 | A4 SBOMs (§7): `sentinel sbom` writes CycloneDX and SPDX JSON with the pinned Syft, offline and never configured by the scanned repository (private working directory and home, SentinelCI's `supplychain/configs/syft.yaml` passed explicitly, no network lookup, no file catalog); images come from the OCI layout the build wrote, and both SBOMs must name the image's manifest digest; an output inside the target is refused before anything is deleted. |
 | 1.1.6 | A9 first seeds (§17): 5 fake secrets, 6 IaC, 3 CI-workflow seeds and 4 clean controls in `demo-shop/`, with a draft ground-truth format (`demo-shop/ground-truth/`, final schema owned by B9) checked against the pinned Gitleaks, Trivy and zizmor. SentinelCI's Trivy configuration trusts only the kind registry for KSV0125. |
 | 1.1.5 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
@@ -178,8 +179,12 @@ harmless options. Merge commits are scanned with `--diff-merges=remerge`, so a s
 (an "evil merge") is found while an honest merge of the base branch blames nobody (octopus merges excepted:
 remerge does not diff them, so they get a second `first-parent` pass, which also reports what the other parents
 already had; the PR baseline drops what the base branch has). Each Gitleaks pass gets the full scanner time
-limit, so git mode can take twice as long. Dir mode opens archives (`.zip`, nested up to 3 levels). Legitimate
-exceptions go through waivers (§6.4).
+limit, so git mode can take twice as long. Dir mode opens archives (`.zip`, nested up to 3 levels). Grype never
+reads the scanned repository: it matches the Syft SBOM, from a private working directory with SentinelCI's
+configuration, offline, against a database the pipeline prepared; a database built more than five days ago fails
+the scan (SC-010), and a report whose recorded configuration hides matches (ignore rules beyond Grype's built-in
+kernel-header rules, VEX, exclusions, `only-fixed`, `by-cve`) is refused. Legitimate exceptions go through
+waivers (§6.4).
 
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
@@ -503,6 +508,9 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
 - SCA / CONTAINER: `sha256(category | vuln id | purl base)` where *purl base* = the purl without version,
   qualifiers or subpath (same definition as `purl_base` in `policies/gate.rego`). After a bump the finding disappears; base-image point releases, other
   architectures and Grype/Trivy qualifier differences keep the same fingerprint. Waivers use the same purl base.
+  The *vuln id* is the scanner's id of the record that matched, which is also the finding's `rule_id` (a GHSA for
+  a Grype language match, stable when a CVE is assigned later); the related CVE ids go to `cve` and the other ids
+  to `aliases`, through which enrichment (B2) and correlation (A7) join tools.
 - SAST: `sha256(rule id | path | hash of normalized snippet)` — survives line shifts.
 - SECRET: `sha256(rule id | sha256(secret value))`.
 - IAC / PIPELINE: `sha256(rule id | path | resource or job id)`.

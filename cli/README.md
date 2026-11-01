@@ -207,6 +207,36 @@ waivers:
 - A file that cannot be read (bad YAML, wrong top-level shape, `version` other than 1) means no decision:
   exit code `3`.
 
+## `sentinel scan sca` (dependency vulnerabilities, A1)
+
+```bash
+GRYPE_DB_CACHE_DIR=.sentinel/grype-db .sentinel/tools/bin/grype db update   # daily, before the scan (network)
+uv run sentinel scan sca . --db-dir .sentinel/grype-db --out out/sca.ndjson \
+  --repo NOURHANE-EHOUARI/sentinelci --commit "$(git rev-parse HEAD)" --context local
+uv run sentinel normalize grype grype.json --scan-root demo-shop --out out/sca.ndjson \
+  --repo NOURHANE-EHOUARI/sentinelci --commit "$(git rev-parse HEAD)" --context local
+```
+
+- One Syft run, as for `sentinel sbom`, also writes Syft's own format; the pinned Grype matches that SBOM. Grype
+  never reads the scanned tree, and runs from a private working directory and home with
+  `scanners/configs/grype.yaml` passed explicitly, so a `.grype.yaml` (ignore rules, VEX, `only-fixed`) or a
+  `GRYPE_*` variable cannot hide a vulnerability.
+- Offline: the database is the directory given in `--db-dir` (Grype's cache directory, filled beforehand), checked
+  against its own hash; nothing is downloaded during the scan. A database built more than five days ago fails the
+  scan; `--allow-stale-db` accepts it, for replays and tests only. The summary line names the database (schema
+  and build time).
+- Findings (category SCA): one per (vulnerability id, purl base). `rule_id` is Grype's id of the matched record
+  (a GHSA for a language package), related CVE ids are in `cve`, other ids in `aliases`. Every file the package
+  was found in is a place (`location`, then `other_locations`), relative to the repository root
+  (`--repo-root`, or `--scan-root` for `normalize grype`). Severity is Grype's; Negligible counts as LOW and
+  Unknown as HIGH, with the raw value in `severity_source`. The report's CVSS, EPSS and KEV are not copied:
+  `sentinel enrich` adds them from the dated snapshot.
+- Exit code `3`, with no findings file, when a tool fails or does not match the lock, the database is missing,
+  invalid or stale, the report names another Grype version, or its recorded configuration shows anything that
+  hides matches (ignore rules beyond Grype's built-in kernel-header rules, VEX, exclusions, `only-fixed`,
+  `only-notfixed`, `ignore-wontfix`, a distro override, `by-cve`). An image report is refused by
+  `normalize grype` (CONTAINER findings need the image digest: the image adapter).
+
 ## `sentinel sbom` (SBOMs, A4)
 
 ```bash
