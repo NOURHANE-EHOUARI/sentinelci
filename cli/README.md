@@ -206,3 +206,23 @@ waivers:
   reasons reach the decision record.
 - A file that cannot be read (bad YAML, wrong top-level shape, `version` other than 1) means no decision:
   exit code `3`.
+
+## `sentinel remediate` (verified remediation loop, A6)
+
+```bash
+uv run sentinel remediate kubernetes --findings out/findings.ndjson --repo-root . --out out/proposal.json
+git apply --check <(jq -r .diff out/proposal.json)   # the bot applies it on a branch and opens a PR
+uv run sentinel remediate verify --proposal out/proposal.json --before out/base.ndjson \
+  --after out/patched.ndjson --decision out/patched-decision.json --build-ok --tests-ok --out out/result.json
+```
+
+- `kubernetes` proposes (`schemas/patch-proposal.v1.json`), it never applies. It hardens the workloads of the
+  manifests that Trivy flagged, for the rule ids it knows (each edit checked against the pinned Trivy), and
+  leaves alone what would change the application (hostPath volumes, image tags, resource limits, added
+  capabilities). Comments, key order and quoting are kept; a file it cannot edit without reformatting is
+  named in a warning and left alone. With nothing to fix, it writes no file and exits `0`.
+- `verify` writes a `VerificationResult` (`schemas/verification-result.v1.json`): VERIFIED only if the patched
+  commit builds, its tests pass, every target fingerprint is gone, no new finding of severity MEDIUM or higher
+  appeared, and its decision is not BLOCK. Exit `0` VERIFIED, `1` REJECTED (a retry is left) or FAILED (the
+  third attempt), `3` when an input cannot be trusted (nothing is written).
+
