@@ -225,9 +225,10 @@ uv run sentinel scan pipelines demo-shop --repo-root . --out out/pipelines.ndjso
   `.github/dependabot.yml`) must load (`--strict-collection`), or exit `3`. Any other YAML file with a top-level
   `jobs:` key is audited too; one zizmor cannot load as a GitHub workflow (another CI's file) is skipped, named
   in a warning, and never counted as audited. `--persona=regular`: zizmor's default audits.
-- Findings are category PIPELINE. A finding about a job or the workflow is one per rule, file and job; one inside
-  the steps also hashes the code it is about (an action reference, a `run:` script), so a new expression in a
-  job is a new finding while a moved line or an added step keeps the id. The same code twice in a job is one
-  finding with `other_locations`. No workflow code is kept (only its hash). A HIGH one that the pull request
-  introduces blocks it (SC-009).
+- Findings are category PIPELINE. A finding about a whole job or file is one per rule, file and job; any other
+  also hashes the code it is about: the line holding the expression or action reference, a trigger or
+  permission's value, a Dependabot entry's setting with its `package-ecosystem`. So a new expression, trigger or
+  Dependabot entry is a new finding, while a moved line, an added step or an edit to another line of the same
+  script keeps the id. The same code twice in a job is one finding with `other_locations`. No workflow code is
+  kept (only its hash). A HIGH one that the pull request introduces blocks it (SC-009).
 

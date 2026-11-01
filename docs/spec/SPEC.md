@@ -10,7 +10,7 @@
 
 | Version | Change |
 |---|---|
-| 1.1.14 | A1 CI workflow analysis (§5): `sentinel scan pipelines` runs the zizmor of the CLI's environment (a runtime dependency pinned in `uv.lock`), checked against the binary hashes pinned in `tools.lock.toml` (`[python_tools.zizmor]`), offline, with the repository's configuration, ignore comments and `.gitignore` never honoured. Workflows, actions and Dependabot must load; other files with a `jobs:` key are skipped and reported when zizmor cannot load them. PIPELINE fingerprint (§13.1) changed: a finding inside a job's steps also hashes the code it is about, so a new expression in a job is a new finding (IAC unchanged). |
+| 1.1.14 | A1 CI workflow analysis (§5): `sentinel scan pipelines` runs the zizmor of the CLI's environment (a runtime dependency pinned in `uv.lock`), checked against the binary hashes pinned in `tools.lock.toml` (`[python_tools.zizmor]`), offline, with the repository's configuration, ignore comments and `.gitignore` never honoured. Workflows, actions and Dependabot must load; other files with a `jobs:` key are skipped and reported when zizmor cannot load them. PIPELINE fingerprint (§13.1) changed: a finding below a job or a top-level key also hashes the code it is about (the expression's line, a trigger's value, a Dependabot entry's ecosystem), so a new expression, trigger or entry is a new finding (IAC unchanged). |
 | 1.1.6 | A9 first seeds (§17): 5 fake secrets, 6 IaC, 3 CI-workflow seeds and 4 clean controls in `demo-shop/`, with a draft ground-truth format (`demo-shop/ground-truth/`, final schema owned by B9) checked against the pinned Gitleaks, Trivy and zizmor. SentinelCI's Trivy configuration trusts only the kind registry for KSV0125. |
 | 1.1.5 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
 | 1.1.4 | Enrichment (B2, §6.1): `schemas/enrichment-snapshot.v1.json` (`schema_version` "1.0", `sources.kev.cves`: the CVEs the KEV lookup covered) and `schemas/sentinel-config.v1.json` (`sentinel.yaml`, canonical component paths); `sentinel enrich`. "Not listed in KEV" only for covered CVEs; `sentinel.yaml` read with a restricted YAML loader. |
@@ -517,11 +517,20 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
 - SAST: `sha256(rule id | path | hash of normalized snippet)` — survives line shifts.
 - SECRET: `sha256(rule id | sha256(secret value))`.
 - IAC: `sha256(rule id | path | resource)`.
-- PIPELINE: about a job or the workflow itself, `sha256(rule id | path | job id or top-level key)`; inside a job's
-  steps (or an action's), `sha256(rule id | path | job id | sha256(normalized code))`, the code being the source
-  text the finding is about (an action reference, a `run:` script; normalized like a SAST snippet). A job holds
-  many steps: a new expression in a job that already had one must be a new finding, and a waiver must not cover
-  it. Line moves, re-indentation and added steps keep the fingerprint; the step's position is never part of it.
+- PIPELINE: about a whole job or file, `sha256(rule id | path | job id, or "workflow" for the file)`; any other
+  finding (below a job, or at or below a top-level key), `sha256(rule id | path | job id or top-level key |
+  sha256(normalized code))`, the code being the source text the finding is about, normalized like a SAST snippet
+  with the spaces inside `${{ }}` dropped:
+  - an expression or an action reference: only the line(s) of the step holding it, so an edit to another line
+    of the same `run:` script keeps the id;
+  - a top-level key itself: its value (`on: pull_request_target` is the trigger, as in the list and mapping
+    forms, which give the same id);
+  - a Dependabot entry: the flagged line and the entry's `package-ecosystem`. Two entries of the same ecosystem
+    with the same setting (in different directories) still share one id, the second as an `other_location`;
+  - otherwise the text zizmor points at (a step, a permission).
+  A job holds many steps: a new expression, trigger or Dependabot entry must be a new finding, and a waiver
+  must not cover it. Line moves, re-indentation and added steps keep the fingerprint; a position (a step or
+  entry index) is never part of it.
 
 ### 13.2 Other contracts
 

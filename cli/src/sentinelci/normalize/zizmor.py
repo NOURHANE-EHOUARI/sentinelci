@@ -1,13 +1,18 @@
 """zizmor JSON v1 -> Finding v1, category PIPELINE (task A2, SPEC §13.1).
 
-The resource is the job (`jobs.<id>`) or, outside jobs, the workflow's top-level key (`on`, `permissions`,
-`runs` of an action). A finding about the job or the workflow itself is one per (rule, file, resource):
-`sha256(rule | path | resource)`. A finding below it, in a step, also hashes the code it is about, zizmor's
-`feature` text of the primary location (an action reference, a `run:` script), whitespace-normalized:
-`sha256(rule | path | resource | sha256(code))`. So a new expression in a job that already had one is a new
-finding, which SC-009 can block, while a moved line or an added step keeps every id. The step index is never
-part of it. Occurrences with the same fingerprint go to `other_locations` (Finding 1.1). No workflow code is
-kept: the `feature` text is only hashed.
+The resource is the job (`jobs.<id>`) or, outside jobs, the file's top-level key (`on`, `permissions`, `runs`
+of an action, `updates` of Dependabot). A finding about a whole job or a whole file is one per job or file by
+nature: `sha256(rule | path | resource)`. Any other finding also hashes the code it is about, the source text
+zizmor points at, whitespace-normalized: `sha256(rule | path | resource | sha256(code))`. That code is
+- for an expression or an action reference (zizmor's subfeature), only the line(s) holding it, so an edit to
+  another line of the same `run:` script keeps the id;
+- for a top-level key itself, its value: `on: pull_request_target` is the trigger, like its list and mapping
+  forms;
+- for a Dependabot entry, its text and the entry's `package-ecosystem`, so a second entry is a new finding;
+- otherwise, zizmor's `feature` text of the primary location.
+So a new expression, trigger or entry is a new finding, which SC-009 can block, while a moved line or an added
+step keeps every id. Positions (a step or entry index) are never part of it. Occurrences with the same
+fingerprint go to `other_locations` (Finding 1.1). No workflow code is kept: the text is only hashed.
 """
 
 import posixpath
@@ -52,18 +57,58 @@ def _route(location: Mapping[str, Any]) -> list[str]:
     return route
 
 
-def _resource(route: list[str]) -> tuple[str, bool]:
-    """(resource, whether the route goes below it): `jobs.<id>`, the top-level key, or `workflow`."""
+def _resource(route: list[str]) -> str:
+    """`jobs.<id>`, the top-level key, or `workflow` (the whole file)."""
     if len(route) >= 2 and route[0] == "jobs":
-        return f"jobs.{route[1]}", len(route) > 2
-    return (route[0], len(route) > 1) if route else ("workflow", False)
+        return f"jobs.{route[1]}"
+    return route[0] if route else "workflow"
 
 
-def _code(location: Mapping[str, Any], index: int) -> str:
+def _feature(location: Mapping[str, Any], index: int) -> str:
     feature = location.get("concrete", {}).get("feature")
     if not isinstance(feature, str) or not feature.strip():
         raise NormalizationError(f"zizmor finding {index} has no source text (feature) to identify it")
     return feature
+
+
+def _subfeature_lines(location: Mapping[str, Any], feature: str) -> str:
+    """The line(s) of `feature` holding zizmor's subfeature (an expression, an action reference), or the
+    whole feature without one. zizmor gives the fragment and a byte offset to search from."""
+    kind = location.get("symbolic", {}).get("feature_kind")
+    subfeature = kind.get("Subfeature") if isinstance(kind, dict) else None
+    fragment = subfeature.get("fragment") if isinstance(subfeature, dict) else None
+    raw = fragment.get("Raw") if isinstance(fragment, dict) else None
+    after = subfeature.get("after") if isinstance(subfeature, dict) else None
+    if not isinstance(raw, str) or not raw.strip() or not isinstance(after, int) or after < 0:
+        return feature  # a pattern or no fragment: the whole text, the narrower id is never guessed
+    text, needle = feature.encode("utf-8"), raw.encode("utf-8")
+    at = text.find(needle, after)
+    if at < 0:
+        return feature
+    end = text.find(b"\n", at + len(needle))
+    return text[text.rfind(b"\n", 0, at) + 1 : end if end >= 0 else len(text)].decode("utf-8")
+
+
+def _ecosystem(item: Mapping[str, Any], entry: str, index: int) -> str:
+    """The `package-ecosystem` line of Dependabot entry `entry` (`[n]`), from the finding's locations."""
+    for location in item.get("locations") or []:
+        if _route(location) == ["updates", entry, "package-ecosystem"]:
+            return _feature(location, index)
+    raise NormalizationError(f"zizmor finding {index} does not say which Dependabot entry it is about")
+
+
+def _code(item: Mapping[str, Any], location: Mapping[str, Any], route: list[str], index: int) -> str | None:
+    """The source text the finding is about, or None for a finding about a whole job or file."""
+    if not route or (route[0] == "jobs" and len(route) <= 2):
+        return None
+    code = _subfeature_lines(location, _feature(location, index))
+    if len(route) == 1:  # the top-level key itself: its value is what the finding is about
+        key, colon, value = code.partition(":")
+        if colon and key.strip() == route[0] and value.strip():
+            code = value
+    if route[0] == "updates" and len(route) >= 2 and route[2:] != ["package-ecosystem"]:
+        code += "\n" + _ecosystem(item, route[1], index)  # a Dependabot entry is told apart by its ecosystem
+    return code
 
 
 def _primary(item: Mapping[str, Any], index: int) -> Mapping[str, Any]:
@@ -102,7 +147,7 @@ def _place(location: Mapping[str, Any], index: int, scan_root: str) -> tuple[str
 def normalize_zizmor(
     results: Sequence[Mapping[str, Any]], *, run: Run, tool: Tool, scan_root: str = "."
 ) -> list[Finding]:
-    """Convert zizmor's JSON v1 findings into Finding v1 records (one per rule, file and job). `scan_root`
+    """Convert zizmor's JSON v1 findings into Finding v1 records (one per fingerprint). `scan_root`
     is the scanned directory relative to the repository root, so paths come out repository-relative."""
     groups: dict[str, list[tuple[str, int, int, Mapping[str, Any]]]] = defaultdict(list)
     for index, item in enumerate(results):
@@ -112,9 +157,8 @@ def normalize_zizmor(
         _determinations(item, index)
         location = _primary(item, index)
         path, start, end = _place(location, index, scan_root)
-        resource, below = _resource(_route(location))
-        code = _code(location, index) if below else None
-        fingerprint = pipeline_fingerprint(rule, path, resource, code)
+        route = _route(location)
+        fingerprint = pipeline_fingerprint(rule, path, _resource(route), _code(item, location, route, index))
         groups[fingerprint].append((path, start, end, item))
 
     findings: list[Finding] = []

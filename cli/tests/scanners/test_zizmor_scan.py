@@ -4,6 +4,7 @@ zizmor is a runtime dependency of the CLI (uv.lock), so these tests run the real
 simulated by replacing the process call, the installed distribution or the environment's binary.
 """
 
+import dataclasses
 import json
 import shutil
 import subprocess
@@ -15,6 +16,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+import sentinelci.cli as cli_module
 import sentinelci.scanners.zizmor as zizmor
 from sentinelci.cli import app
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
@@ -163,7 +165,7 @@ def test_another_cis_file_is_skipped_and_reported_never_counted_as_audited(tmp_p
     assert scan.run is not None and "ci/config.yml" not in scan.run.args
     (repo / "examples" / "label.yml").unlink()
     assert scan_pipelines_with_run(repo, lock=LOCK) == PipelineScan(
-        results=[], run=None, audited=[], skipped=["ci/config.yml", "ci/other.yml"]
+        results=[], run=None, audited=[], skipped=["ci/config.yml", "ci/other.yml"], version="1.31.1"
     )
 
 
@@ -190,7 +192,7 @@ def test_nothing_to_audit_runs_nothing_but_still_checks_the_binary(
     repo = tmp_path / "empty"
     repo.mkdir()
     assert scan_pipelines_with_run(repo, lock=LOCK) == PipelineScan(
-        results=[], run=None, audited=[], skipped=[]
+        results=[], run=None, audited=[], skipped=[], version="1.31.1"
     )
 
     def missing(name: str) -> Any:
@@ -354,6 +356,34 @@ def test_cli_writes_repository_relative_pipeline_findings(tmp_path: Path) -> Non
     assert "template-injection" in {f["rule_id"] for f in findings}
     assert "1 file(s) audited" in output
     assert "not audited: ci/config.yml" in output
+
+
+def test_cli_summary_names_the_verified_version_even_when_every_file_is_skipped(tmp_path: Path) -> None:
+    """Review of #37, nit 3: "zizmor not run: 0 file(s) audited", although the binary was verified and ran."""
+    repo = tmp_path / "repo"
+    (repo / "ci").mkdir(parents=True)
+    (repo / "ci" / "config.yml").write_text(CIRCLECI)
+    code, output = _cli(repo, tmp_path / "out.ndjson")
+    assert code == 0, output
+    assert "zizmor 1.31.1: 0 file(s) audited, 1 skipped, 0 finding(s)" in output
+    (repo / "ci" / "config.yml").unlink()
+    (repo / ".github" / "workflows").mkdir(parents=True)
+    (repo / ".github" / "workflows" / "clean.yml").write_text(CLEAN)
+    code, output = _cli(repo, tmp_path / "out.ndjson")
+    assert code == 0 and "zizmor 1.31.1: 1 file(s) audited, 0 finding(s)" in output, output
+
+
+def test_cli_findings_carry_the_version_that_ran(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real = cli_module.scan_pipelines_with_run
+    monkeypatch.setattr(
+        cli_module,
+        "scan_pipelines_with_run",
+        lambda *a, **k: dataclasses.replace(real(*a, **k), version="1.31.1+probe"),
+    )
+    out = tmp_path / "out.ndjson"
+    code, output = _cli(_repo(tmp_path), out)
+    assert code == 0 and "zizmor 1.31.1+probe: 1 file(s) audited" in output, output
+    assert {json.loads(line)["tool"]["version"] for line in out.read_text().splitlines()} == {"1.31.1+probe"}
 
 
 def test_cli_failure_leaves_no_findings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

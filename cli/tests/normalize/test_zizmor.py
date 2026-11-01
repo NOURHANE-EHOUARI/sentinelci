@@ -249,23 +249,153 @@ CODE = '|\n  echo "New issue: ${{ github.event.issue.title }}"\n'
 
 
 @pytest.mark.parametrize(
-    ("route", "resource", "code"),
+    ("route", "feature", "resource", "code"),
     [
-        ([{"Key": "permissions"}], "permissions", None),
-        ([{"Key": "on"}, {"Key": "pull_request_target"}], "on", CODE),
-        ([{"Key": "runs"}, {"Key": "steps"}, {"Index": 0}], "runs", CODE),
-        ([], "workflow", None),
-        ([{"Key": "jobs"}, {"Key": "deploy"}], "jobs.deploy", None),
-        ([{"Key": "jobs"}, {"Key": "deploy"}, {"Key": "steps"}, {"Index": 2}, {"Key": "uses"}],
+        ([{"Key": "permissions"}], "permissions: write-all", "permissions", "write-all"),
+        ([{"Key": "on"}], "on: pull_request_target", "on", "pull_request_target"),
+        ([{"Key": "on"}, {"Key": "pull_request_target"}], "pull_request_target", "on", "pull_request_target"),
+        ([{"Key": "on"}, {"Index": 1}], "pull_request_target", "on", "pull_request_target"),
+        ([{"Key": "on"}], "on:\n  workflow_run:\n", "on", "workflow_run:"),
+        ([{"Key": "on"}], "on:", "on", "on:"),
+        ([{"Key": "permissions"}], "contents: write", "permissions", "contents: write"),
+        ([{"Key": "runs"}, {"Key": "steps"}, {"Index": 0}], CODE, "runs", CODE),
+        ([], CODE, "workflow", None),
+        ([{"Key": "jobs"}], CODE, "jobs", None),
+        ([{"Key": "jobs"}, {"Key": "deploy"}], CODE, "jobs.deploy", None),
+        ([{"Key": "jobs"}, {"Key": "deploy"}, {"Key": "permissions"}], "permissions: write-all",
+         "jobs.deploy", "permissions: write-all"),
+        ([{"Key": "jobs"}, {"Key": "deploy"}, {"Key": "steps"}, {"Index": 2}, {"Key": "uses"}], CODE,
          "jobs.deploy", CODE),
     ],
-    ids=["workflow-permissions", "trigger", "composite-action-step", "whole-file", "job", "step"],
+    ids=["workflow-permissions", "scalar-trigger", "mapping-trigger", "list-trigger", "trigger-block",
+         "key-alone", "another-key", "composite-action-step", "whole-file", "all-jobs", "whole-job",
+         "job-permissions", "step"],
 )  # fmt: skip
-def test_the_resource_is_the_job_or_the_top_level_key_and_code_below_it(
-    route: list[dict[str, Any]], resource: str, code: str | None
+def test_only_a_whole_job_or_file_goes_without_code(
+    route: list[dict[str, Any]], feature: str, resource: str, code: str | None
 ) -> None:
+    """Review of #37 (blocking): a top-level key's own value is hashed (a scalar `on:` swapped to another
+    trigger is a new finding, and its three forms are one id); only a whole job or file goes without code."""
     item = _first()
     _primary(item)["symbolic"]["route"]["route"] = route
-    _primary(item)["concrete"]["feature"] = CODE
+    _primary(item)["symbolic"]["feature_kind"] = "Normal"
+    _primary(item)["concrete"]["feature"] = feature
     finding = normalize_zizmor([item], run=RUN, tool=TOOL)[0]
     assert finding.id == pipeline_fingerprint("template-injection", INJECTION, resource, code)
+
+
+SCRIPT = '|\n  echo start\n  echo "body ${{ github.event.issue.body }}" \\\n    >> "$GITHUB_STEP_SUMMARY"\n'
+
+
+def _subfeature(feature: str, fragment: Any, after: int = 0) -> str:
+    item = _first()
+    _primary(item)["concrete"]["feature"] = feature
+    _primary(item)["symbolic"]["feature_kind"] = {"Subfeature": {"after": after, "fragment": fragment}}
+    return normalize_zizmor([item], run=RUN, tool=TOOL)[0].id
+
+
+def _id(code: str) -> str:
+    return pipeline_fingerprint("template-injection", INJECTION, "jobs.label", code)
+
+
+def test_an_expression_is_identified_by_its_own_line_only() -> None:
+    """Review of #37 (should fix 1): the whole `run:` script was hashed, so any edit to it made the injection
+    new and broke its waiver. Only the line holding zizmor's fragment is hashed now."""
+    line = '  echo "body ${{ github.event.issue.body }}" \\'
+    fragment = {"Raw": "github.event.issue.body"}
+    assert _subfeature(SCRIPT, fragment) == _id(line)
+    assert _subfeature(SCRIPT.replace("echo start", "echo start now"), fragment) == _id(line)
+    assert _subfeature(SCRIPT.replace("|", "|-"), fragment) == _id(line)
+    assert _subfeature(
+        SCRIPT.replace("${{ github", "${{github").replace("body }}", "body}}"), fragment
+    ) == _id(line)
+
+
+def test_the_fragment_is_searched_from_zizmors_byte_offset() -> None:
+    """zizmor's offset counts bytes: a non-ASCII character before it must not skip the fragment."""
+    script = '|\n  echo "é ${{ github.event.issue.body }}"\n  echo "${{ github.event.issue.body }}"\n'
+    second = script.encode().index(b'  echo "${{')
+    fragment = {"Raw": "github.event.issue.body"}
+    assert _subfeature(script, fragment, after=second) == _id('  echo "${{ github.event.issue.body }}"')
+    assert _subfeature(script, fragment, after=0) == _id('  echo "é ${{ github.event.issue.body }}"')
+
+
+def test_a_fragment_over_several_lines_keeps_all_of_them() -> None:
+    script = "|\n  echo start\n  echo ${{ format('{0}',\n    github.event.issue.body) }}\n  echo end\n"
+    fragment = {"Raw": "format('{0}',\n    github.event.issue.body)"}
+    assert _subfeature(script, fragment) == _id("  echo ${{ format('{0}',\n    github.event.issue.body) }}")
+
+
+@pytest.mark.parametrize(
+    ("fragment", "after"),
+    [({"Raw": "github.event.issue.title"}, 0), ({"Raw": "github.event.issue.body"}, 400),
+     ({"Regex": "github.event.issue.body"}, 0), ({"Raw": ""}, 0),
+     ({"Raw": "github.event.issue.body"}, -1000)],
+    ids=["not-in-the-text", "after-the-text", "a-pattern", "empty", "negative-offset"],
+)  # fmt: skip
+def test_without_a_fragment_to_find_the_whole_text_is_hashed(fragment: Any, after: int) -> None:
+    assert _subfeature(SCRIPT, fragment, after) == _id(SCRIPT)
+
+
+def _dependabot(route: list[dict[str, Any]], feature: str, related: list[dict[str, Any]]) -> dict[str, Any]:
+    item = _first()
+    item["ident"] = "dependabot-execution"
+    primary = _primary(item)
+    primary["symbolic"]["route"]["route"] = route
+    primary["symbolic"]["feature_kind"] = "Normal"
+    primary["concrete"]["feature"] = feature
+    item["locations"] = [primary, *related]
+    return item
+
+
+def _ecosystem(entry: int, name: str) -> dict[str, Any]:
+    location = copy.deepcopy(_primary(_first()))
+    location["symbolic"]["kind"] = "Related"
+    location["symbolic"]["route"]["route"] = [
+        {"Key": "updates"},
+        {"Index": entry},
+        {"Key": "package-ecosystem"},
+    ]
+    location["concrete"]["feature"] = f"package-ecosystem: {name}"
+    return location
+
+
+EXECUTION = "    insecure-external-code-execution: allow"
+
+
+def _entry(entry: int) -> list[dict[str, Any]]:
+    return [{"Key": "updates"}, {"Index": entry}, {"Key": "insecure-external-code-execution"}]
+
+
+def test_a_dependabot_entry_is_identified_by_its_ecosystem() -> None:
+    """Review of #37 (blocking): the entry index was dropped and the flagged line is the same in every entry,
+    so a second entry shared the first one's id. Its `package-ecosystem` (a Related location) is hashed
+    too."""
+    pip = normalize_zizmor([_dependabot(_entry(0), EXECUTION, [_ecosystem(0, "pip")])], run=RUN, tool=TOOL)
+    both = normalize_zizmor(
+        [
+            _dependabot(_entry(0), EXECUTION, [_ecosystem(0, "pip")]),
+            _dependabot(_entry(1), EXECUTION, [_ecosystem(0, "pip"), _ecosystem(1, "npm")]),
+        ],
+        run=RUN,
+        tool=TOOL,
+    )
+    assert len(both) == 2 and pip[0].id in {f.id for f in both}
+    expected = pipeline_fingerprint(
+        "dependabot-execution", INJECTION, "updates", f"{EXECUTION}\npackage-ecosystem: pip"
+    )
+    assert pip[0].id == expected
+
+
+def test_a_finding_on_the_ecosystem_line_hashes_it_once() -> None:
+    route = [{"Key": "updates"}, {"Index": 0}, {"Key": "package-ecosystem"}]
+    (finding,) = normalize_zizmor([_dependabot(route, "package-ecosystem: pip", [])], run=RUN, tool=TOOL)
+    assert finding.id == pipeline_fingerprint(
+        "dependabot-execution", INJECTION, "updates", "package-ecosystem: pip"
+    )
+
+
+def test_a_dependabot_entry_without_its_ecosystem_fails_closed() -> None:
+    item = _dependabot(_entry(1), EXECUTION, [_ecosystem(0, "pip")])
+    with pytest.raises(NormalizationError, match="which Dependabot entry"):
+        normalize_zizmor([item], run=RUN, tool=TOOL)

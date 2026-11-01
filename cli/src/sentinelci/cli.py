@@ -788,11 +788,10 @@ def scan_pipelines_cmd(
             raise ScannerError(f"{target} is not a directory")
         scan_root = target.resolve().relative_to(root.resolve()).as_posix()
         scan = scan_pipelines_with_run(target, lock=load_lock(lock))
-        version = scan.run.version if scan.run is not None else "not run"
         findings = normalize_zizmor(
             scan.results,
             run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
-            tool=Tool(name="zizmor", version=version),
+            tool=Tool(name="zizmor", version=scan.version),
             scan_root=scan_root,
         )
     except ValueError as exc:
@@ -807,8 +806,10 @@ def scan_pipelines_cmd(
             f"load, not audited: {', '.join(scan.skipped)}",
             err=True,
         )
+    skipped = f", {len(scan.skipped)} skipped" if scan.skipped else ""
     typer.echo(
-        f"zizmor {version}: {len(scan.audited)} file(s) audited, {len(findings)} finding(s) written to {out}"
+        f"zizmor {scan.version}: {len(scan.audited)} file(s) audited{skipped}, {len(findings)} finding(s) "
+        f"written to {out}"
     )
 
 

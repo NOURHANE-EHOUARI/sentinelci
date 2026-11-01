@@ -77,6 +77,7 @@ class PipelineScan:
     run: ToolRun | None  # None when there was nothing to audit
     audited: list[str]
     skipped: list[str]  # found by their `jobs:` key, but zizmor cannot load them as GitHub workflows
+    version: str  # of the verified binary, checked even when nothing was audited
 
 
 def verified_zizmor(lock: ToolLock) -> VerifiedBinary:
@@ -187,7 +188,7 @@ def scan_pipelines_with_run(
         files.remove(unloadable)  # another CI's file with a `jobs:` key: not a GitHub workflow
         skipped.append(unloadable)
     if not files:
-        return PipelineScan(results=[], run=None, audited=[], skipped=sorted(skipped))
+        return PipelineScan(results=[], run=None, audited=[], skipped=sorted(skipped), version=binary.version)
     if completed.returncode not in FINDINGS_EXIT_CODES:
         tail = completed.stderr.strip()[-2000:]
         raise ScannerError(f"zizmor exited with code {completed.returncode}: {tail}")
@@ -211,4 +212,6 @@ def scan_pipelines_with_run(
         stderr=completed.stderr,
         duration_s=time.monotonic() - started,
     )
-    return PipelineScan(results=results, run=run, audited=files, skipped=sorted(skipped))
+    return PipelineScan(
+        results=results, run=run, audited=files, skipped=sorted(skipped), version=binary.version
+    )
