@@ -184,7 +184,8 @@ def test_the_image_signature_is_a_cosign_sign_statement_about_this_digest(
 def test_verify_reads_the_registry_without_evidence_and_http_only_when_asked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flag: list[str]
 ) -> None:
-    """The test registry is on 127.0.0.1, which Cosign reaches over HTTP anyway: the flag is checked here."""
+    """The test registry is on 127.0.0.1, which Cosign reaches over HTTP anyway: the flag is checked here, on
+    a local registry name (plain HTTP is refused for any other host)."""
     seen: dict[str, Any] = {}
 
     def fake(image: Any, verifier: Any, registry: Registry, environ: Any, **kwargs: Any) -> Any:
@@ -194,7 +195,8 @@ def test_verify_reads_the_registry_without_evidence_and_http_only_when_asked(
     monkeypatch.setattr(cli, "verify_registry", fake)
     public = tmp_path / "k.pub"
     public.write_text("-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n", encoding="ascii")
-    args = ["verify", IMAGE, "--key", str(public), "--repo", "o/r", "--builder-id", "b",
+    local = f"kind-registry:5000/demo-shop/shop-api@sha256:{IMAGE_HEX}"
+    args = ["verify", local, "--key", str(public), "--repo", "o/r", "--builder-id", "b",
             "--lock", str(ROOT / "tools.lock.toml"), *flag]  # fmt: skip
     assert CliRunner().invoke(cli.app, args).exit_code == 3
     assert seen["registry"] == Registry(allow_http=bool(flag))

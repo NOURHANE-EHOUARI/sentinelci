@@ -85,8 +85,8 @@ def registry_for(image: Image, *, allow_http: bool) -> Registry:
             raise AttestationError(
                 f"{image.name} names no registry host: plain HTTP (--registry-http) needs a local registry"
             )
-        name, port = host
-        local = name == "localhost" or _is_loopback(name) or ("." not in name and port is not None)
+        name = host
+        local = _is_loopback(name) or "." not in name  # a single label: localhost, or kind-registry:5000
         if not local:
             raise AttestationError(
                 "plain HTTP (--registry-http) is for a local registry only (loopback, or a single-label "
@@ -95,13 +95,13 @@ def registry_for(image: Image, *, allow_http: bool) -> Registry:
     return Registry(allow_http=allow_http)
 
 
-def _registry_host(image: Image) -> tuple[str, str | None] | None:
-    """(host, port) of the image's registry, or None when the name has none (a Docker Hub repository)."""
+def _registry_host(image: Image) -> str | None:
+    """The host of the image's registry, without its port, or None when the name has none: its first part is
+    a registry only with a dot, a port or as `localhost` (otherwise it is a Docker Hub repository)."""
     first, slash, _ = image.name.partition("/")
     if not slash or not ("." in first or ":" in first or first == "localhost"):
         return None
-    name, colon, port = first.partition(":")
-    return name, port if colon else None
+    return first.partition(":")[0]
 
 
 def _repository(image: Image) -> str:
