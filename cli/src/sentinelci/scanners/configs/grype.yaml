@@ -29,3 +29,9 @@ db:
   auto-update: false
   validate-by-hash-on-start: true
   require-update-check: false
+  # A scan refuses a database built more than five days ago (GRYPE_DB_VALIDATE_AGE=false only for replays).
+  max-allowed-built-age: 120h
+  # Where `sentinel tools grype-db` downloads the database from, with the system's certificate authorities.
+  # The scan itself never downloads.
+  update-url: "https://grype.anchore.io/databases"
+  ca-cert: ""

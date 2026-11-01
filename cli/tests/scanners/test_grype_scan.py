@@ -2,8 +2,8 @@
 
 Unit tests pin a fake `syft` and a fake `grype` in one test lock. Integration tests use the real binaries
 and run only when SENTINEL_TOOLS_DIR points to a `sentinel tools install` directory; the ones that match
-need a Grype database too (SENTINEL_GRYPE_DB_DIR, a directory `grype db update` filled), which these tests
-never download.
+need a Grype database too (SENTINEL_GRYPE_DB_DIR, a directory `sentinel tools grype-db` filled), which these
+tests never download.
 """
 
 import copy
@@ -263,6 +263,9 @@ def test_the_configuration_hides_nothing_and_stays_offline() -> None:
         "  enable: false",
         "  auto-update: false",
         "  validate-by-hash-on-start: true",
+        "  max-allowed-built-age: 120h",
+        '  update-url: "https://grype.anchore.io/databases"',
+        '  ca-cert: ""',
     ):
         assert line in CONFIG.splitlines(), line
 
@@ -316,7 +319,7 @@ real = pytest.mark.skipif(
     not TOOLS_DIR, reason="set SENTINEL_TOOLS_DIR to a `sentinel tools install` directory"
 )
 with_database = pytest.mark.skipif(
-    not (TOOLS_DIR and GRYPE_DB), reason="set SENTINEL_GRYPE_DB_DIR to a directory `grype db update` filled"
+    not (TOOLS_DIR and GRYPE_DB), reason="set SENTINEL_GRYPE_DB_DIR to a `sentinel tools grype-db` directory"
 )
 
 
@@ -335,7 +338,10 @@ def test_real_grype_without_a_database_fails_closed_offline(tmp_path: Path) -> N
 @real
 @pytest.mark.integration
 def test_real_grype_loads_sentinelcis_configuration_over_a_local_one(tmp_path: Path) -> None:
-    (tmp_path / ".grype.yaml").write_text("only-fixed: true\nby-cve: true\nexclude: ['./x']\n")
+    (tmp_path / ".grype.yaml").write_text(
+        "only-fixed: true\nby-cve: true\nexclude: ['./x']\n"
+        "db:\n  update-url: https://attacker.example/databases\n  max-allowed-built-age: 8760h\n"
+    )
     with as_file(files("sentinelci.scanners.configs").joinpath("grype.yaml")) as config:
         run = run_verified_tool(
             "grype",
@@ -352,6 +358,8 @@ def test_real_grype_loads_sentinelcis_configuration_over_a_local_one(tmp_path: P
         "exclude: []",
         "timestamp: false",
         "  auto-update: false",
+        "  update-url: 'https://grype.anchore.io/databases'",
+        "  max-allowed-built-age: 120h0m0s",
     ):
         assert line in loaded, line
 

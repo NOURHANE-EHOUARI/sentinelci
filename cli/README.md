@@ -210,7 +210,7 @@ waivers:
 ## `sentinel scan sca` (dependency vulnerabilities, A1)
 
 ```bash
-GRYPE_DB_CACHE_DIR=.sentinel/grype-db .sentinel/tools/bin/grype db update   # daily, before the scan (network)
+uv run sentinel tools grype-db --db-dir .sentinel/grype-db --report out/grype-db.json  # before the scan (network)
 uv run sentinel scan sca . --db-dir .sentinel/grype-db --out out/sca.ndjson \
   --repo NOURHANE-EHOUARI/sentinelci --commit "$(git rev-parse HEAD)" --context local
 uv run sentinel normalize grype grype.json --scan-root demo-shop --out out/sca.ndjson \
@@ -223,8 +223,17 @@ uv run sentinel normalize grype grype.json --scan-root demo-shop --out out/sca.n
   `GRYPE_*` variable cannot hide a vulnerability.
 - Offline: the database is the directory given in `--db-dir` (Grype's cache directory, filled beforehand), checked
   against its own hash; nothing is downloaded during the scan. A database built more than five days ago fails the
-  scan; `--allow-stale-db` accepts it, for replays and tests only. The summary line names the database (schema
-  and build time).
+  scan; `--allow-stale-db` accepts it, for replays and tests only. The summary line names the database (schema,
+  build time and checksum).
+- `sentinel tools grype-db` fills that directory, and is the only step that uses the network. It runs the
+  verified Grype with the same configuration, which pins the update URL (`https://grype.anchore.io/databases`):
+  the latest database, or `--archive`, either a local file (Grype imports a private copy, digested first, with
+  no network) or an `https://` URL that names its digest (`?checksum=sha256:<hex>`, checked by Grype; no
+  credentials in the URL). The download sees the job's proxy and CA variables (`HTTPS_PROXY`, `NO_PROXY`,
+  `SSL_CERT_FILE`, …) and nothing else of its environment. Whatever the update exits with, the result counts only
+  if `grype db status`, run offline afterwards, calls the database valid; otherwise exit code `3` and no
+  `--report`. The report records the Grype binary, the database (schema, build time, checksum) and a local
+  archive's digest.
 - Findings (category SCA): one per (vulnerability id, purl base). `rule_id` is Grype's id of the matched record
   (a GHSA for a language package), related CVE ids are in `cve`, other ids in `aliases`. Every file the package
   was found in is a place (`location`, then `other_locations`), relative to the repository root

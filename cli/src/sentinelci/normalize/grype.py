@@ -167,6 +167,17 @@ def _database(descriptor: Mapping[str, Any]) -> GrypeDatabase:
     status = _object(db.get("status"), "Grype report descriptor.db.status")
     if status.get("valid") is not True:
         raise NormalizationError("Grype's vulnerability database was not valid for this report")
+    return database_of_status(status)
+
+
+def database_of_status(value: object) -> GrypeDatabase:
+    """The database a Grype status object describes: a report's `descriptor.db.status`, or the output of
+    `grype db status -o json`. Anything but `valid: true` is refused, with Grype's own error."""
+    status = _object(value, "Grype database status")
+    if status.get("valid") is not True:
+        error = status.get("error")
+        reason = f": {error[:300]}" if isinstance(error, str) and error.strip() else ""
+        raise NormalizationError(f"Grype's vulnerability database is not valid{reason}")
     origin = status.get("from")
     checksums = parse_qs(urlsplit(origin).query).get("checksum", []) if isinstance(origin, str) else []
     checksum = checksums[0] if len(checksums) == 1 and _SHA256.fullmatch(checksums[0]) else None

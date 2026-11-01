@@ -65,7 +65,7 @@ from sentinelci.report.pr_comment import ReportError, load_inputs, render_no_dec
 from sentinelci.risk import RiskModel, RiskModelError, score_finding
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
-from sentinelci.scanners.grype import scan_sca
+from sentinelci.scanners.grype import scan_sca, update_database
 from sentinelci.scanners.installer import VerificationReport, install_tools, verify_tools
 from sentinelci.scanners.lock import LOCK_FILE_NAME, load_lock
 from sentinelci.supplychain.sbom import SOURCE_KINDS, SourceKind, generate_sbom
@@ -717,6 +717,71 @@ def tools_verify(
         typer.echo(f"verified {entry.name} {entry.version} sha256={entry.binary_sha256}")
 
 
+@tools_app.command("grype-db")
+def tools_grype_db(
+    db_dir: Annotated[
+        Path, typer.Option("--db-dir", help="Directory to fill: what `sentinel scan sca --db-dir` reads.")
+    ],
+    archive: Annotated[
+        str | None,
+        typer.Option(
+            "--archive",
+            help="Import this database instead of downloading the latest: a local archive, or an https URL "
+            "ending in ?checksum=sha256:<hex>.",
+        ),
+    ] = None,
+    report: Annotated[
+        Path | None, typer.Option("--report", help="Write the prepared database's evidence (JSON) here.")
+    ] = None,
+    allow_stale_db: Annotated[
+        bool,
+        typer.Option("--allow-stale-db", help="Accept a database built over 5 days ago (replays and tests)."),
+    ] = False,
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    tools_dir: Annotated[
+        Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
+    ] = DEFAULT_TOOLS_DIR,
+    platform: PlatformOption = None,
+) -> None:
+    """Prepare Grype's vulnerability database with the verified Grype and SentinelCI's configuration.
+
+    The only step of an SCA scan that uses the network (through the job's proxy, if any). Exit code 3, with no
+    report written, unless Grype's own status check then calls the database valid.
+    """
+    if report is not None:
+        report.unlink(missing_ok=True)  # an older report must never vouch for a failed update
+    try:
+        prepared = update_database(
+            db_dir,
+            lock=load_lock(lock),
+            tools_dir=tools_dir,
+            platform=platform,
+            archive=archive,
+            allow_stale_db=allow_stale_db,
+        )
+    except (ToolIntegrityError, ScannerError) as exc:
+        raise _fail_closed(exc) from exc
+    database = prepared.database
+    if report is not None:
+        evidence = {
+            "schema_version": 1,
+            "grype": {"version": prepared.grype.version, "binary_sha256": prepared.grype.binary_sha256},
+            "database": {
+                "schema_version": database.schema_version,
+                "built": database.built,
+                "checksum": database.checksum,
+            },
+            "archive_sha256": prepared.archive_sha256,
+        }
+        report.parent.mkdir(parents=True, exist_ok=True)
+        text = json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+        report.write_text(text, encoding="utf-8", newline="\n")
+    typer.echo(
+        f"grype {prepared.grype.version}: database {database.schema_version} built {database.built} "
+        f"(checksum {database.checksum or 'not reported'}) ready in {db_dir}"
+    )
+
+
 @policy_app.command("capabilities")
 def policy_capabilities(
     out: Annotated[Path, typer.Option("--out", "-o", help="Where to write the capabilities document.")],
@@ -855,8 +920,8 @@ def scan_sca_cmd(
     database = scan.database
     typer.echo(
         f"grype {scan.grype.version} on the SBOM of syft {scan.sbom.run.version} ({scan.sbom.packages} "
-        f"package(s)), database {database.schema_version} built {database.built}: {len(findings)} finding(s) "
-        f"written to {out}"
+        f"package(s)), database {database.schema_version} built {database.built} "
+        f"(checksum {database.checksum or 'not reported'}): {len(findings)} finding(s) written to {out}"
     )
 
 
