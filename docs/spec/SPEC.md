@@ -192,7 +192,7 @@ Terraform or OpenTofu file (`.tf`, `.tofu` and their `.json` forms) of the repos
 check before the run, and a directory or Terraform file link in the repository that leaves it is refused; after the
 run, a file Trivy read outside the repository is refused, and the directories it read outside the scan path get the
 marker check. Trivy does not follow symbolic links while Terraform and kubectl do, so a link that leaves the scan
-path is refused too. The marker check skips only files Trivy never parses (source code, documentation, images),
+path is refused too (a link loop counts as leaving, on every Python version). The marker check skips only files Trivy never parses (source code, documentation, images),
 never a name Trivy reads as a Dockerfile (`Dockerfile.*`, `Containerfile.*`, `*.dockerfile`). Telemetry and version
 checks are off. Legitimate exceptions go through waivers (§6.4).
 

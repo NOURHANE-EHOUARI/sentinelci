@@ -38,6 +38,7 @@ holds code lines of the scanned files (which may contain credentials): it stays 
 directory, and only normalized findings, without code, leave this module.
 """
 
+import errno
 import json
 import os
 import re
@@ -156,16 +157,26 @@ def inline_ignores(root: Path, *, recursive: bool = True) -> list[str]:
     return found
 
 
+def _loops(path: Path) -> bool:
+    """Whether resolving `path` meets a link loop (the same answer on every Python version)."""
+    try:
+        os.path.realpath(path, strict=True)
+    except OSError as exc:
+        return exc.errno == errno.ELOOP
+    return False
+
+
 def escaping_links(root: Path, *, terraform_only: bool = False) -> list[str]:
     """Symbolic links under `root` (directories, and files: only Terraform ones with `terraform_only`) whose
-    target is outside `root`."""
+    target is outside `root`, or that loop: nothing can read a loop, and Python 3.12 and 3.13 resolve one
+    differently, so it is refused on both rather than placed by guess."""
     found: list[str] = []
     for directory, subdirs, names in os.walk(root, followlinks=False):
         subdirs[:] = sorted(d for d in subdirs if d != ".git")
         files = [name for name in names if _is_terraform(name)] if terraform_only else names
         for name in sorted([*subdirs, *files]):
             path = Path(directory, name)
-            if path.is_symlink() and not is_within(path, root):
+            if path.is_symlink() and (_loops(path) or not is_within(path, root)):
                 found.append(path.relative_to(root).as_posix())
     return found
 
