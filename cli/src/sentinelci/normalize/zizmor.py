@@ -7,8 +7,13 @@ zizmor points at, whitespace-normalized: `sha256(rule | path | resource | sha256
 - for an expression or an action reference (zizmor's subfeature), only the line(s) holding it, so an edit to
   another line of the same `run:` script keeps the id;
 - for a top-level key itself, its value: `on: pull_request_target` is the trigger, like its list and mapping
-  forms;
-- for a Dependabot entry, its text and the entry's `package-ecosystem`, so a second entry is a new finding;
+  forms (a quoted key, `"on":`, is the same key);
+- for a Dependabot entry, its text and the entry's `package-ecosystem`, so a second entry is a new finding.
+  zizmor gives no ecosystem for an insufficient `cooldown`: two entries with the same short cooldown then
+  share one id (SPEC 13.1);
+- for a finding zizmor gives no route but an expression (`overprovisioned-secrets`, `unredacted-secrets`),
+  that `${{ ... }}` expression; the same expression in another job of the file shares the id, since zizmor
+  names no job for it. A finding about the whole file (workflow-level `excessive-permissions`) has no code;
 - otherwise, zizmor's `feature` text of the primary location.
 So a new expression, trigger or entry is a new finding, which SC-009 can block, while a moved line or an added
 step keeps every id. Positions (a step or entry index) are never part of it. Occurrences with the same
@@ -90,21 +95,30 @@ def _subfeature_lines(location: Mapping[str, Any], feature: str) -> str:
 
 
 def _ecosystem(item: Mapping[str, Any], entry: str, index: int) -> str:
-    """The `package-ecosystem` line of Dependabot entry `entry` (`[n]`), from the finding's locations."""
-    for location in item.get("locations") or []:
-        if _route(location) == ["updates", entry, "package-ecosystem"]:
+    """The `package-ecosystem` line of Dependabot entry `entry` (`[n]`), from the finding's locations, or ""
+    when zizmor gives none at all (an insufficient `cooldown`: two entries with the same short cooldown then
+    share one id, a limit named in SPEC 13.1). An ecosystem given for another entry only is refused."""
+    locations = item.get("locations") or []
+    routes = [_route(location) for location in locations]
+    for location, route in zip(locations, routes, strict=True):
+        if route == ["updates", entry, "package-ecosystem"]:
             return _feature(location, index)
-    raise NormalizationError(f"zizmor finding {index} does not say which Dependabot entry it is about")
+    if any(route[2:] == ["package-ecosystem"] for route in routes):
+        raise NormalizationError(f"zizmor finding {index} does not say which Dependabot entry it is about")
+    return ""
 
 
 def _code(item: Mapping[str, Any], location: Mapping[str, Any], route: list[str], index: int) -> str | None:
     """The source text the finding is about, or None for a finding about a whole job or file."""
-    if not route or (route[0] == "jobs" and len(route) <= 2):
+    if not route:  # the whole file, or an expression zizmor gives no route for (overprovisioned-secrets)
+        feature = _feature(location, index).strip()
+        return feature if feature.startswith("${{") and feature.endswith("}}") else None
+    if route[0] == "jobs" and len(route) <= 2:
         return None
     code = _subfeature_lines(location, _feature(location, index))
     if len(route) == 1:  # the top-level key itself: its value is what the finding is about
         key, colon, value = code.partition(":")
-        if colon and key.strip() == route[0] and value.strip():
+        if colon and key.strip().strip("\"'") == route[0] and value.strip():  # `"on":` is `on:`
             code = value
     if route[0] == "updates" and len(route) >= 2 and route[2:] != ["package-ecosystem"]:
         code += "\n" + _ecosystem(item, route[1], index)  # a Dependabot entry is told apart by its ecosystem

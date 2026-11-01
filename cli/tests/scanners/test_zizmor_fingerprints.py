@@ -127,3 +127,62 @@ def test_a_changed_or_added_expression_is_new_and_the_unchanged_one_keeps_its_id
     added = BODY.replace("echo end", 'echo "title ${{ github.event.issue.title }}"\n          echo end')
     head = _workflow(tmp_path, SCRIPT.format(run=added))["template-injection"]
     assert len(head) == 2 and base < head
+
+
+COOLDOWN = """version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule: {interval: weekly}
+    cooldown:
+      default-days: 1
+"""
+SECRETS = """name: w
+on: push
+permissions: {{}}
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo {run}
+"""
+
+
+@pytest.mark.parametrize("cooldown", ["default-days: 1", "semver-major-days: 30"])
+def test_an_insufficient_dependabot_cooldown_is_a_finding_not_a_scan_failure(
+    tmp_path: Path, cooldown: str
+) -> None:
+    """Review 3 of #37: zizmor gives no `package-ecosystem` location for a short cooldown."""
+    ids = _ids(tmp_path, ".github/dependabot.yml", COOLDOWN.replace("default-days: 1", cooldown))
+    assert list(ids) == ["dependabot-cooldown"] and len(ids["dependabot-cooldown"]) == 1
+
+
+def test_a_different_secrets_expression_in_the_same_file_is_a_new_finding(tmp_path: Path) -> None:
+    """Review 3 of #37: overprovisioned-secrets has route [] (no job), so it is not a whole-file finding."""
+    base = _workflow(tmp_path, SECRETS.format(run='"${{ toJSON(secrets) }}"'))["overprovisioned-secrets"]
+    head = _workflow(
+        tmp_path,
+        SECRETS.format(
+            run="\"${{ toJSON(secrets) }} ${{ secrets[format('X{0}', github.event.issue.title)] }}\""
+        ),
+    )["overprovisioned-secrets"]
+    assert len(base) == 1 and len(head) == 2 and base < head
+
+
+def test_the_whole_file_excessive_permissions_survives_edits(tmp_path: Path) -> None:
+    two_jobs = "on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo {x}\n" + (
+        "  b:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo b\n"
+    )
+    before = _ids(tmp_path, ".github/workflows/w.yml", two_jobs.format(x="a"))["excessive-permissions"]
+    after = _ids(tmp_path, ".github/workflows/w.yml", "# c\n" + two_jobs.format(x="changed"))[
+        "excessive-permissions"
+    ]
+    assert len(before) == 3 and before == after
+
+
+@pytest.mark.parametrize("key", ['"on"', "'on'"])
+def test_a_quoted_on_key_is_the_same_trigger(tmp_path: Path, key: str) -> None:
+    """Review 3 of #37, nit 2: `"on":` avoids YAML 1.1's on -> true, and is the same trigger."""
+    plain = _workflow(tmp_path, WORKFLOW.format(trigger="pull_request_target"))["dangerous-triggers"]
+    quoted = WORKFLOW.format(trigger="pull_request_target").replace("\non:", f"\n{key}:")
+    assert _workflow(tmp_path, quoted)["dangerous-triggers"] == plain and len(plain) == 1

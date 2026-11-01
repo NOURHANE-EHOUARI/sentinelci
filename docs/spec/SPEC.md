@@ -526,8 +526,17 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
   - a top-level key itself: its value (`on: pull_request_target` is the trigger, as in the list and mapping
     forms, which give the same id);
   - a Dependabot entry: the flagged line and the entry's `package-ecosystem`. Two entries of the same ecosystem
-    with the same setting (in different directories) still share one id, the second as an `other_location`;
+    with the same setting (in different directories) still share one id, the second as an `other_location`.
+    zizmor names no ecosystem for an insufficient `cooldown`, so two entries with the same short cooldown share
+    one (MEDIUM) id;
+  - an expression zizmor gives no route for (`overprovisioned-secrets`, `unredacted-secrets`): the `${{ }}`
+    expression itself (job id "workflow"). The same expression in another job shares the id, as zizmor names no
+    job; a finding about the whole file (the workflow-level `excessive-permissions`) hashes no code;
   - otherwise the text zizmor points at (a step, a permission).
+
+  The same line in two steps of one job (or of one action) is one finding, the second place an `other_location`:
+  the job is the trust boundary, since code run by the first step already controls the later steps of the job
+  (`$GITHUB_ENV`, the workspace).
   A job holds many steps: a new expression, trigger or Dependabot entry must be a new finding, and a waiver
   must not cover it. Line moves, re-indentation and added steps keep the fingerprint; a position (a step or
   entry index) is never part of it.
