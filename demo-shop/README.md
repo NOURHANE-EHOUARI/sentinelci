@@ -25,7 +25,7 @@ planned: `sentinel.yaml`, `.sentinel/waivers.yaml`.
 | Secrets (all fake) | 5 | settings, `.npmrc`, Terraform provider, Kubernetes Secret, GitOps values | Gitleaks 5/5 |
 | Infrastructure as code | 6 | Terraform (S3, security group, RDS, IAM), Kubernetes, Dockerfile | Trivy 5/6, Checkov 6/6 |
 | CI workflows (never executed) | 3 | `examples/bad-workflows/` | zizmor 3/3 |
-| Dependencies | 8 | `requirements.txt` (shop-api), `package.json` (web), `pom.xml` (reports): 2 CISA KEV, 3 never imported | Syft 8/8 purls; Grype: needs its database |
+| Dependencies | 8 | `requirements.txt` (shop-api), `package.json` (web), `pom.xml` (reports): 2 CISA KEV, 3 never imported | Syft 8/8 purls; Grype 8/8 (database of 2026-11-01) |
 | Clean controls | 4 | placeholders, sensitive variable, hardened deployment, pinned workflow | no detection |
 
 Still to come: container image seeds (A9, with the release pipeline), and application code, SAST seeds and
