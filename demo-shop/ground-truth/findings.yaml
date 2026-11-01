@@ -1,8 +1,8 @@
 # Ground truth of the demo-shop benchmark (SPEC section 17).
 # Format: see README.md in this directory. Draft v1 proposed by A9; B9 owns the final schema.
 # Paths are relative to demo-shop/. Detections were verified with the pinned tools:
-# Gitleaks 8.30.1, Trivy 0.76.1 (embedded checks, SentinelCI configuration), zizmor 1.31.1, and
-# Checkov 3.4.0 (not pinned yet: its adapter is part of A1).
+# Gitleaks 8.30.1, Trivy 0.76.1 (embedded checks plus SentinelCI's own, SentinelCI configuration),
+# zizmor 1.31.1, and Checkov 3.4.0 (not pinned yet: its adapter is part of A1).
 version: 1
 
 seeds:
@@ -102,9 +102,11 @@ seeds:
     category: IAC
     title: IAM policy allowing every action on every resource
     location: {path: infra/terraform/iam.tf, line: 8}
-    # Trivy 0.76.1 does not flag this policy (jsonencode or aws_iam_policy_document): a known per-tool gap.
+    # Trivy 0.76.1's embedded checks do not flag this policy (jsonencode or aws_iam_policy_document); SentinelCI's
+    # own Trivy check SENTINEL-AWS-0001 (cli/src/sentinelci/scanners/configs/trivy-checks) does.
     expected:
       detections:
+        - {tool: trivy, rule: SENTINEL-AWS-0001}
         - {tool: checkov, rule: CKV_AWS_62}
         - {tool: checkov, rule: CKV_AWS_355}
 
