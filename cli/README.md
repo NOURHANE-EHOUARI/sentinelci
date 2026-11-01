@@ -218,11 +218,25 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
 
 - `kubernetes` proposes (`schemas/patch-proposal.v1.json`), it never applies. It hardens the workloads of the
   manifests that Trivy flagged, for the rule ids it knows (each edit checked against the pinned Trivy), and
-  leaves alone what would change the application (hostPath volumes, image tags, resource limits, added
-  capabilities). Comments, key order and quoting are kept; a file it cannot edit without reformatting is
-  named in a warning and left alone. With nothing to fix, it writes no file and exits `0`.
+  leaves alone what the fix would have to choose for the application (hostPath volumes, image tags, resource
+  limits, added capabilities). Comments, key order and quoting are kept, and so are `---` / `...` markers; a
+  file it cannot edit without reformatting, with CRLF line endings, or with a workload kind it does not edit
+  is named in a warning and left alone. With nothing to fix, it writes no file and exits `0`.
+  - **It can change how a workload runs**: a non-root UID/GID (10001; a UID or GID above 10000 is kept), a
+    read-only root file system and dropped capabilities can stop a workload that writes into its image, owns
+    files by another UID or needs a capability. The proposal's rationale says so. `--build-ok` and
+    `--tests-ok` come from the build and unit tests, which do not run the workload: there is no cluster
+    deploy test yet.
 - `verify` writes a `VerificationResult` (`schemas/verification-result.v1.json`): VERIFIED only if the patched
-  commit builds, its tests pass, every target fingerprint is gone, no new finding of severity MEDIUM or higher
-  appeared, and its decision is not BLOCK. Exit `0` VERIFIED, `1` REJECTED (a retry is left) or FAILED (the
-  third attempt), `3` when an input cannot be trusted (nothing is written).
+  commit builds, its tests pass, every target is gone, no new finding of severity MEDIUM or higher appeared,
+  and its decision is not BLOCK. Exit `0` VERIFIED, `1` REJECTED (a retry is left) or FAILED (the third
+  attempt), `3` when an input cannot be trusted (nothing is written). In detail:
+  - a target is gone when its fingerprint is gone and no new fingerprint of the same tool and rule appears in
+    its file (a renamed container moves a finding, it does not fix it); a base finding that rises to MEDIUM or
+    higher counts as new;
+  - exit `3` for a proposal whose id does not match its content, that claims findings `--before` does not
+    have, or whose diff does anything but edit, in place, the files those findings are in;
+  - exit `3` for a decision not made on `--after` (`inputs.findings_digest`), not in pr context, or without the
+    tool status: a scan that failed or was skipped must not vouch for the patch;
+  - `--out` can never be one of the inputs.
 

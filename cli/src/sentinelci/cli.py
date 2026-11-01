@@ -64,7 +64,7 @@ from sentinelci.policy.opa import OpaError, OpaRunner
 from sentinelci.policy.replay import ReplayResult, check_identity, replay, skip_reason
 from sentinelci.policy.store import EvidenceStore, StoreError
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
-from sentinelci.remediation.gate import verify_proposal
+from sentinelci.remediation.gate import check_proposal, verify_proposal
 from sentinelci.remediation.kubernetes import propose as propose_kubernetes
 from sentinelci.remediation.proposal import RemediationError
 from sentinelci.report.pr_comment import (
@@ -823,6 +823,13 @@ def _now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
 
 
+def _refuse_input_as_output(out: Path, inputs: list[Path], command: str) -> None:
+    """Exit 3, before anything is deleted, when `out` is an input: clearing it would lose the evidence."""
+    if any(out.resolve() == path.resolve() for path in inputs):
+        typer.echo(f"{command}: --out is one of the inputs; nothing was written", err=True)
+        raise typer.Exit(EXIT_NO_DECISION)
+
+
 def _read_findings(path: Path, what: str) -> dict[str, Finding]:
     try:
         return parse_findings(path.read_bytes(), source=what)
@@ -847,6 +854,7 @@ def remediate_kubernetes(
 
     Exit code 0 with a proposal, or with nothing to propose (no file written); 3 when the input is unusable.
     """
+    _refuse_input_as_output(out, [findings], "sentinel remediate kubernetes")
     out.unlink(missing_ok=True)
     try:
         plan = propose_kubernetes(
@@ -884,15 +892,28 @@ def remediate_verify(
     gone, no new finding of severity MEDIUM or higher appeared, and the decision is not BLOCK.
 
     Exit code 0 when VERIFIED, 1 when REJECTED or FAILED (the result is written either way), 3 when the inputs
-    cannot be trusted (nothing is written).
+    cannot be trusted (nothing is written): a proposal whose id does not match its content, that claims
+    findings the base scan does not have or edits anything but where they are; a decision that was not made in
+    pr context, on the patched findings, with the tool status.
     """
+    _refuse_input_as_output(out, [proposal, before, after, decision], "sentinel remediate verify")
     out.unlink(missing_ok=True)
     try:
         applied = PatchProposal.model_validate_json(proposal.read_bytes())
         record = Decision.model_validate_json(decision.read_bytes())
+        after_data = after.read_bytes()
+        if record.inputs.findings_digest != "sha256:" + hashlib.sha256(after_data).hexdigest():
+            raise RemediationError("the decision was not made on the patched findings (--after)")
+        if record.subject.context != "pr" or record.inputs.tool_status_digest is None:
+            raise RemediationError(
+                "the decision must be a pr-context decision that saw the tool status (a scan that failed "
+                "must not vouch for the patch)"
+            )
+        base_findings = _read_findings(before, "base findings")
+        check_proposal(applied, base_findings)
         result = verify_proposal(
             applied,
-            before=_read_findings(before, "base findings"),
+            before=base_findings,
             after=_read_findings(after, "patched findings"),
             build_ok=build,
             tests_ok=tests,

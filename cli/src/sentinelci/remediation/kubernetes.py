@@ -2,9 +2,16 @@
 
 It hardens the workloads of a manifest for the Trivy findings it knows how to resolve, and only those: each
 rule id maps to one edit, checked against the pinned Trivy (the edit makes that rule's finding disappear and
-adds none). What changes what the application does is never touched (a hostPath volume, an image tag,
-resource limits, an added capability): those findings stay, and the verification gate rejects a proposal
-that claims them.
+adds none). What the fix would have to choose for the application is not touched (a hostPath volume, an image
+tag, resource limits, an added capability): those findings stay open.
+
+Some edits can still change how the application runs: a non-root UID/GID (10001), a read-only root file
+system, and dropping all capabilities can stop a workload that writes into its image, owns files by another
+UID or needs a capability. A UID or GID already above 10000 is kept. The proposal's rationale names these
+edits, and the gate's build and test results do not cover them (no cluster deploy test yet).
+
+Only the kinds below are edited (their pod templates); a file with another kind that holds containers is left
+alone, so no finding on it is claimed.
 
 Manifests are edited with a round-trip YAML parser, so comments, key order and quoting stay as they were and
 the diff shows only the hardening. A file whose layout the parser cannot reproduce exactly is left alone
@@ -72,6 +79,19 @@ def _pod_non_root(pod: CommentedMap, container: CommentedMap) -> None:
         _context(container)["runAsUser"] = NON_ROOT_ID
 
 
+def _above_host_ids(key: str) -> Edit:
+    """`key` (runAsUser / runAsGroup) set to 10001 when missing or 10000 or below; a higher id is kept, since
+    files in the image may belong to it."""
+
+    def edit(pod: CommentedMap, container: CommentedMap) -> None:
+        value = _context_of(container).get(key)
+        number = isinstance(value, int) and not isinstance(value, bool)  # ruamel gives a ScalarInt
+        if value is None or (number and value <= 10000):
+            _context(container)[key] = NON_ROOT_ID
+
+    return edit
+
+
 def _set(key: str, value: Any) -> Edit:
     def edit(pod: CommentedMap, container: CommentedMap) -> None:
         _context(container)[key] = value
@@ -105,9 +125,9 @@ FIXES: dict[str, tuple[str, Edit]] = {
     "KSV-0012": ("runAsNonRoot: true", _non_root),
     "KSV-0014": ("readOnlyRootFilesystem: true", _set("readOnlyRootFilesystem", True)),
     "KSV-0017": ("privileged: false", _not_privileged),
-    "KSV-0020": (f"runAsUser: {NON_ROOT_ID}", _set("runAsUser", NON_ROOT_ID)),
-    "KSV-0105": (f"runAsUser: {NON_ROOT_ID}", _set("runAsUser", NON_ROOT_ID)),
-    "KSV-0021": (f"runAsGroup: {NON_ROOT_ID}", _set("runAsGroup", NON_ROOT_ID)),
+    "KSV-0020": (f"runAsUser: {NON_ROOT_ID}", _above_host_ids("runAsUser")),
+    "KSV-0105": (f"runAsUser: {NON_ROOT_ID}", _above_host_ids("runAsUser")),
+    "KSV-0021": (f"runAsGroup: {NON_ROOT_ID}", _above_host_ids("runAsGroup")),
     "KSV-0030": ("seccompProfile RuntimeDefault", _seccomp),
     "KSV-0104": ("seccompProfile RuntimeDefault", _seccomp),
     "KSV-0118": ("pod securityContext runAsNonRoot: true", _pod_non_root),
@@ -139,8 +159,12 @@ def _round_trip(text: str) -> tuple[YAML, list[Any]]:
     """The parser settings that reproduce `text` exactly, with its documents."""
     if not text.endswith("\n"):
         raise NotFixable("the file does not end with a newline")
+    if "\r" in text:
+        raise NotFixable("CRLF line endings: a diff of the LF text would not apply")
     for style in _INDENTS:
         yaml = _yaml(*style)
+        yaml.explicit_start = text.startswith("---\n")  # many manifests start every document with ---
+        yaml.explicit_end = text.endswith("\n...\n")
         try:
             documents = list(yaml.load_all(text))
         except YAMLError as exc:
@@ -152,21 +176,34 @@ def _round_trip(text: str) -> tuple[YAML, list[Any]]:
     raise NotFixable("its layout cannot be kept exactly (comments, indentation or quoting would change)")
 
 
+# kind -> the path from the document to its pod spec.
+_POD_SPEC_PATHS: dict[str, tuple[str, ...]] = {
+    "Pod": ("spec",),
+    "Deployment": ("spec", "template", "spec"), "StatefulSet": ("spec", "template", "spec"),
+    "DaemonSet": ("spec", "template", "spec"), "ReplicaSet": ("spec", "template", "spec"),
+    "ReplicationController": ("spec", "template", "spec"), "Job": ("spec", "template", "spec"),
+    "CronJob": ("spec", "jobTemplate", "spec", "template", "spec"), "PodTemplate": ("template", "spec"),
+}  # fmt: skip
+
+
+def _holds_containers(node: Any) -> bool:
+    if isinstance(node, dict):
+        return "containers" in node or any(_holds_containers(value) for value in node.values())
+    return isinstance(node, list) and any(_holds_containers(item) for item in node)
+
+
 def _pod_specs(document: Any) -> list[Any]:
-    """The pod specs of a workload: Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, Job or CronJob."""
+    """The pod spec of a workload of a kind in `_POD_SPEC_PATHS`. Another kind that holds containers is
+    NotFixable: its findings would be claimed but never resolved."""
     if not isinstance(document, dict):
         return []
-    kind, spec = document.get("kind"), document.get("spec")
-    paths = {
-        "Pod": (),
-        "Deployment": ("template", "spec"), "StatefulSet": ("template", "spec"),
-        "DaemonSet": ("template", "spec"), "ReplicaSet": ("template", "spec"), "Job": ("template", "spec"),
-        "CronJob": ("jobTemplate", "spec", "template", "spec"),
-    }  # fmt: skip
-    if kind not in paths or not isinstance(spec, dict):
+    kind = document.get("kind")
+    if kind not in _POD_SPEC_PATHS:
+        if _holds_containers(document):
+            raise NotFixable(f"kind {kind} is not supported")
         return []
-    node: Any = spec
-    for key in paths[kind]:
+    node: Any = document
+    for key in _POD_SPEC_PATHS[kind]:
         node = node.get(key) if isinstance(node, dict) else None
     return [node] if isinstance(node, dict) else []
 
@@ -178,7 +215,8 @@ def fix_manifest(text: str, rule_ids: Iterable[str]) -> FixedManifest:
         label, edit = FIXES[rule]
         edits.setdefault(label, edit)  # one edit can resolve several rules
     yaml, documents = _round_trip(text)
-    for pod in (pod for document in documents for pod in _pod_specs(document)):
+    pods = [pod for document in documents for pod in _pod_specs(document)]  # NotFixable before any edit
+    for pod in pods:
         containers = [*(pod.get("initContainers") or []), *(pod.get("containers") or [])]
         for container in (c for c in containers if isinstance(c, CommentedMap)):
             for edit in edits.values():
@@ -222,7 +260,7 @@ def propose(
             skipped[path] = "not a regular file inside the repository"
             continue
         try:
-            old = file.read_text(encoding="utf-8")
+            old = file.read_bytes().decode("utf-8")  # as stored: CRLF is not turned into LF
             fixed = fix_manifest(old, {f.rule_id for f in flagged})
         except UnicodeDecodeError:
             skipped[path] = "not UTF-8 text"
@@ -240,8 +278,10 @@ def propose(
         return KubernetesPlan(proposal=None, skipped=skipped)
     rationale = (
         f"Harden the workloads of {len(changes)} manifest(s): {'; '.join(sorted(labels))}. Left as they are: "
-        "changes to what the application does (hostPath volumes, image tags, resource limits, added "
-        "capabilities); their findings stay open."
+        "what the fix would have to choose for the application (hostPath volumes, image tags, resource "
+        "limits, added capabilities); their findings stay open. Check before merging: a non-root UID/GID, a "
+        "read-only root file system and dropped capabilities can stop a workload that writes into its "
+        "image, owns files by another UID or needs a capability; the build and tests do not run it."
     )
     proposal = build_proposal(
         strategy="deterministic:kubernetes",
