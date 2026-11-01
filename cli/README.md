@@ -227,11 +227,25 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
     files by another UID or needs a capability. The proposal's rationale says so. `--build-ok` and
     `--tests-ok` come from the build and unit tests, which do not run the workload: there is no cluster
     deploy test yet.
-- `dockerfile` does the same for Dockerfiles: the final stage runs as `USER 10001:10001` (a last `USER root` is
-  replaced, otherwise the line goes right before CMD/ENTRYPOINT), COPY replaces ADD for local files (not for a
-  URL, a git source, an archive ADD extracts or an ADD-only flag), and `apt-get install` gets
-  `--no-install-recommends`. The base image's tag or digest, a HEALTHCHECK and a script piped to a shell are
-  left alone. A file with an `escape` directive or a heredoc is left alone.
+- `dockerfile` does the same for Dockerfiles:
+  - **USER.** `USER 10001:10001` is added to the final stage after its last RUN and USER, before the next
+    CMD/ENTRYPOINT or at the end, so every RUN still runs as the user it ran as. A USER line is never
+    rewritten. The final stage is the last FROM: an image built with `--target` an earlier stage is not
+    changed (Trivy checks the last stage too).
+  - **ADD → COPY**, only when ADD would do nothing more. ADD unpacks a local tar by its content, so every
+    source must be in the repository (next to the Dockerfile, then at the root) and be a directory or a plain
+    file that is neither a tar nor compressed. A URL, a git source, a glob, a variable, a missing source or an
+    ADD-only flag keeps ADD (COPY's `--chown`, `--chmod`, `--link` and `--exclude` are fine). A zip is copied:
+    ADD never unpacks one.
+  - **apt-get.** `apt-get install` gets `--no-install-recommends`.
+  - **What it leaves alone.** An instruction that carries a finding the edit does not resolve is not edited:
+    Trivy names a Dockerfile finding by its instruction's text, so the other finding would get a new
+    fingerprint. Only the findings an edit resolved are claimed; a file where nothing could be resolved is
+    reported as "nothing this fixer can resolve". The base image's tag or digest, a HEALTHCHECK and a script
+    piped to a shell are left alone too, and so is a file with an `escape` directive, a heredoc or CRLF line
+    endings.
+  - **It can change what the image does**: files it writes at run time must be writable by UID 10001, and an
+    image that needs root at run time breaks. The rationale says so.
 - `verify` writes a `VerificationResult` (`schemas/verification-result.v1.json`): VERIFIED only if the patched
   commit builds, its tests pass, every target is gone, no new finding of severity MEDIUM or higher appeared,
   and its decision is not BLOCK. Exit `0` VERIFIED, `1` REJECTED (a retry is left) or FAILED (the third

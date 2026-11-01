@@ -240,7 +240,7 @@ def propose(findings: Sequence[Finding], repo_root: Path, *, attempt: int = 1, c
         findings,
         repo_root,
         select=_fixable,
-        fix=fix_manifest,
+        fix=lambda text, rule_ids, _context: fix_manifest(text, rule_ids),
         strategy="deterministic:kubernetes",
         rationale=_rationale,
         attempt=attempt,

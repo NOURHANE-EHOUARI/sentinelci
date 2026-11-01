@@ -1,10 +1,14 @@
 """The deterministic Dockerfile fixer (task A6, SPEC §9): only safe edits and minimal diffs, each checked
 against the real Trivy (opt-in with SENTINEL_TOOLS_DIR, like the other real-tool tests)."""
 
+import gzip
+import hashlib
 import json
 import os
 import shutil
 import subprocess
+import tarfile
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -12,10 +16,11 @@ from jsonschema import Draft202012Validator
 from typer.testing import CliRunner
 
 from sentinelci.cli import app
+from sentinelci.contracts.finding import Finding, Location
 from sentinelci.contracts.remediation import PatchProposal
 from sentinelci.normalize.ndjson import dumps_ndjson
 from sentinelci.remediation.dockerfile import FIXES, fix_dockerfile, propose
-from sentinelci.remediation.proposal import NotFixable
+from sentinelci.remediation.proposal import FixContext, NotFixable
 
 from .conftest import NOW, ROOT, iac_finding
 
@@ -68,18 +73,39 @@ def test_the_seed_runs_as_non_root_and_nothing_else_changes(
 @pytest.mark.parametrize(
     ("dockerfile", "expected"),
     [
-        ("FROM a\nRUN make\nUSER root\nCMD x\n", "FROM a\nRUN make\nUSER 10001:10001\nCMD x\n"),
-        ("FROM a\nuser 0:0  # as root\nCMD x\n", "FROM a\nuser 10001:10001\nCMD x\n"),
+        ("FROM a\nRUN make\nUSER root\nCMD x\n", "FROM a\nRUN make\nUSER root\nUSER 10001:10001\nCMD x\n"),
+        ("FROM a\nuser 0:0\nCMD x\n", "FROM a\nuser 0:0\nUSER 10001:10001\nCMD x\n"),
+        ("FROM a\nUSER\troot\nCMD x\n", "FROM a\nUSER\troot\nUSER 10001:10001\nCMD x\n"),
+        # #42 review, should fix 1: every RUN keeps running as the user it ran as.
+        ("FROM a\nUSER root\nRUN mkdir /srv\nCMD x\n",
+         "FROM a\nUSER root\nRUN mkdir /srv\nUSER 10001:10001\nCMD x\n"),
+        ("FROM a\nCMD x\nRUN make\n", "FROM a\nCMD x\nRUN make\nUSER 10001:10001\n"),
+        ("FROM a\nRUN make\nCMD x\nUSER root\n", "FROM a\nRUN make\nCMD x\nUSER root\nUSER 10001:10001\n"),
         ("FROM a\nUSER app\nCMD x\n", "FROM a\nUSER app\nCMD x\n"),
         ("FROM a\nRUN make\n", "FROM a\nRUN make\nUSER 10001:10001\n"),
         ("FROM b AS build\nUSER root\nRUN make\nFROM a\nCOPY --from=build /x /x\nENTRYPOINT [\"/x\"]\n",
          "FROM b AS build\nUSER root\nRUN make\nFROM a\nCOPY --from=build /x /x\nUSER 10001:10001\n"
          "ENTRYPOINT [\"/x\"]\n"),
     ],
-    ids=["user-root", "user-zero-lowercase", "already-non-root", "no-cmd", "multi-stage"],
+    ids=["user-root", "user-zero-lowercase", "user-tab", "run-after-user-root", "run-after-cmd",
+         "user-root-after-cmd", "already-non-root", "no-cmd", "multi-stage"],
 )  # fmt: skip
 def test_the_final_stage_runs_as_non_root(dockerfile: str, expected: str) -> None:
     assert fix_dockerfile(dockerfile, ["DS-0002"]).text == expected
+
+
+def _context(root: Path) -> FixContext:
+    """A build context with every kind of ADD source: ADD unpacks a local tar by its content (#42 review)."""
+    (root / "app.py").write_text("print('x')\n")
+    (root / "src").mkdir()
+    (root / "data").write_text("x")
+    for name in ("vendor.tar.gz", "vendor"):  # a tar is a tar whatever its name
+        with tarfile.open(root / name, "w:gz" if name.endswith(".gz") else "w") as archive:
+            archive.add(root / "data", arcname="data")
+    (root / "notes.gz").write_bytes(gzip.compress(b"not a tar"))
+    with zipfile.ZipFile(root / "config.zip", "w") as archive:  # ADD never unpacks a zip
+        archive.writestr("a", "b")
+    return FixContext(path="Dockerfile", repo_root=root, others=[])
 
 
 @pytest.mark.parametrize(
@@ -87,25 +113,37 @@ def test_the_final_stage_runs_as_non_root(dockerfile: str, expected: str) -> Non
     [
         ("ADD app.py /app/\n", "COPY app.py /app/\n"),
         ("add --chown=10001 src/ /src/\n", "copy --chown=10001 src/ /src/\n"),
+        ("ADD --exclude=*.md . /app\n", "COPY --exclude=*.md . /app\n"),
+        ("ADD config.zip /opt/\n", "COPY config.zip /opt/\n"),
         ("ADD https://example.com/x.sh /x.sh\n", None),
         ("ADD vendor.tar.gz /opt/\n", None),
+        ("ADD vendor /opt/\n", None),
+        ("ADD notes.gz /opt/\n", None),
+        ("ADD missing.txt /opt/\n", None),
+        ("ADD *.py /app/\n", None),
+        ("ADD $SRC /app/\n", None),
         ("ADD --checksum=sha256:00 https://example.com/x /x\n", None),
         ("ADD git@github.com:o/r.git /r\n", None),
-        ("ADD --unpack=true dist /opt/\n", None),  # an ADD-only flag on a local source
+        ("ADD --unpack=true src /opt/\n", None),  # an ADD-only flag on a local source
+        ("ADD app.py vendor /opt/\n", None),  # one source is a tar
     ],
     ids=[
-        "local-file",
-        "lowercase-with-chown",
-        "url",
-        "archive-extracted",
-        "checksum-flag",
-        "git-source",
-        "add-only-flag",
+        "local-file", "lowercase-with-chown", "exclude-flag", "zip", "url", "archive-by-name",
+        "archive-by-content", "compressed", "missing", "glob", "variable", "checksum-flag", "git-source",
+        "add-only-flag", "one-source-a-tar",
     ],
-)
-def test_add_becomes_copy_only_where_it_does_nothing_more(line: str, expected: str | None) -> None:
+)  # fmt: skip
+def test_add_becomes_copy_only_where_it_does_nothing_more(
+    tmp_path: Path, line: str, expected: str | None
+) -> None:
     dockerfile = f"FROM a\n{line}CMD x\n"
-    assert fix_dockerfile(dockerfile, ["DS-0005"]).text == f"FROM a\n{expected or line}CMD x\n"
+    fixed = fix_dockerfile(dockerfile, ["DS-0005"], _context(tmp_path))
+    assert fixed.text == f"FROM a\n{expected or line}CMD x\n"
+    assert (("DS-0005", 2) in fixed.left_open) is (expected is None), "what stays ADD is not claimed"
+
+
+def test_without_a_context_no_add_source_can_be_checked() -> None:
+    assert fix_dockerfile("FROM a\nADD app.py /app/\nCMD x\n", ["DS-0005"]).text.count("ADD") == 1
 
 
 @pytest.mark.parametrize(
@@ -216,12 +254,110 @@ def test_real_trivy_each_edit_resolves_its_rule_and_adds_none(tmp_path: Path) ->
     cases = [(name, rule) for name in sources for rule in sorted(before[name] & FIXES.keys())]
     assert {rule for _, rule in cases} == set(FIXES), "every rule the fixer knows is checked"
     for name, rule in cases:
-        (tmp_path / "after" / f"{name}-{rule}").mkdir(parents=True)
-        (tmp_path / "after" / f"{name}-{rule}" / "Dockerfile").write_text(
-            fix_dockerfile(sources[name], [rule]).text
-        )
+        case = tmp_path / "after" / f"{name}-{rule}"
+        (case / "src").mkdir(parents=True)
+        (case / "app.py").write_text("print('x')\n")  # RICH's ADD sources: plain local files
+        context = FixContext(path="Dockerfile", repo_root=case, others=[])
+        (case / "Dockerfile").write_text(fix_dockerfile(sources[name], [rule], context).text)
     after = _trivy(tmp_path / "after", tmp_path / "cache")
     for name, rule in cases:
         reported = after.get(f"{name}-{rule}", set())
         assert rule not in reported, f"{rule} still reported on {name}"
         assert reported <= before[name], f"{rule} on {name} added {reported - before[name]}"
+
+
+# ---------------------------------------------------------------- #42 review: claim only what is resolved
+
+
+def _at(rule: str, line: int, path: str = "svc/Dockerfile", severity: str = "MEDIUM") -> Finding:
+    """A Trivy finding on one line; its id differs per line, as #26's do (the resource is the line's text)."""
+    base = iac_finding(rule, path, severity)
+    identity = hashlib.sha256(f"{rule}|{path}|{line}".encode()).hexdigest()
+    return base.model_copy(
+        update={"id": identity, "location": Location(path=path, start_line=line, end_line=line)}
+    )
+
+
+def _service(tmp_path: Path, dockerfile: str) -> Path:
+    service = tmp_path / "svc"
+    service.mkdir()
+    (service / "Dockerfile").write_text(dockerfile)
+    (service / "app.py").write_text("print('x')\n")
+    (service / "data").write_text("x")
+    with tarfile.open(service / "vendor", "w") as archive:  # ADD unpacks it by content; COPY would not
+        archive.add(service / "data", arcname="data")
+    return tmp_path
+
+
+def test_a_tar_without_an_archive_name_stays_added(tmp_path: Path) -> None:
+    """#42 review, blocking 1."""
+    repo = _service(tmp_path, "FROM a\nADD vendor /opt/\nADD app.py /app/\nUSER app\nCMD x\n")
+    findings = [_at("DS-0005", 2), _at("DS-0005", 3)]
+    plan = propose(findings, repo, created_at=NOW)
+    assert plan.proposal is not None
+    assert "+COPY vendor" not in plan.proposal.diff and "+COPY app.py /app/" in plan.proposal.diff
+    assert plan.proposal.finding_ids == [findings[1].id], "the ADD left as it is is not claimed"
+
+
+def test_a_run_that_carries_another_finding_is_left_alone(tmp_path: Path) -> None:
+    """#42 review, should fix 2: Trivy names a finding by its RUN's text, so the edit would rename DS-0021."""
+    repo = _service(tmp_path, "FROM a\nRUN apt-get update && apt-get install curl\nUSER app\nCMD x\n")
+    plan = propose([_at("DS-0029", 2), _at("DS-0021", 2, severity="HIGH")], repo, created_at=NOW)
+    assert plan.proposal is None and plan.skipped["svc/Dockerfile"] == "nothing this fixer can resolve"
+
+
+def test_only_the_resolved_findings_are_claimed(tmp_path: Path) -> None:
+    """#42 review, should fix 3: one RUN is held by another finding, the other is fixed."""
+    dockerfile = "FROM a\nRUN sudo apt-get install -y x\nRUN apt-get install -y y\nUSER root\nCMD x\n"
+    repo = _service(tmp_path, dockerfile)
+    held, fixed, root = _at("DS-0029", 2), _at("DS-0029", 3), _at("DS-0002", 4, severity="HIGH")
+    plan = propose([held, fixed, root, _at("DS-0010", 2, severity="CRITICAL")], repo, created_at=NOW)
+    assert plan.proposal is not None and plan.proposal.finding_ids == sorted([fixed.id, root.id])
+    assert "-RUN sudo" not in plan.proposal.diff and "+RUN apt-get install --no-install-recommends -y y" in (
+        plan.proposal.diff
+    )
+
+
+def test_a_crlf_dockerfile_is_left_alone(tmp_path: Path) -> None:
+    """#42 review, should fix 4: a diff of the LF text would not apply."""
+    (tmp_path / "Dockerfile").write_bytes(b'FROM alpine:3.20\r\nRUN echo hi\r\nCMD ["sh"]\r\n')
+    plan = propose([iac_finding("DS-0002", "Dockerfile", "HIGH")], tmp_path, created_at=NOW)
+    assert plan.proposal is None and "CRLF" in plan.skipped["Dockerfile"]
+
+
+@pytest.mark.parametrize(
+    ("line", "heredoc"),
+    [('RUN echo "a << b"\n', True), ("RUN echo $((1 << 3))\n", False), ("RUN <<EOF\n", True),
+     ("COPY <<-'X' /a\n", True)],
+)  # fmt: skip
+def test_only_a_heredoc_marker_counts_as_a_heredoc(line: str, heredoc: bool) -> None:
+    """#42 review, nit 2 (still conservative: `<< b` in a string looks like one)."""
+    text = f"FROM a\n{line}CMD x\n"
+    if heredoc:
+        with pytest.raises(NotFixable, match="heredoc"):
+            fix_dockerfile(text, ["DS-0002"])
+    else:
+        assert "USER 10001:10001" in fix_dockerfile(text, ["DS-0002"]).text
+
+
+def test_an_add_that_carries_another_finding_is_left_alone(tmp_path: Path) -> None:
+    """#42 review, should fix 2, for ADD: the other finding would be renamed by the edit."""
+    repo = _service(tmp_path, "FROM a\nADD app.py /app/\nUSER app\nCMD x\n")
+    plan = propose([_at("DS-0005", 2), _at("DS-0013", 2)], repo, created_at=NOW)
+    assert plan.proposal is None and plan.skipped["svc/Dockerfile"] == "nothing this fixer can resolve"
+
+
+@pytest.mark.parametrize("source", ["$SRC", "app*.py", "../outside.txt"])
+def test_a_source_that_is_not_one_plain_file_of_the_repository_stays_added(
+    tmp_path: Path, source: str
+) -> None:
+    """A variable or a glob is expanded by the build (to a tar, maybe), even when a file has that name; a
+    source outside the repository is not ours to judge."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (tmp_path / "outside.txt").write_text("x")
+    if not source.startswith("../"):
+        (repo / source).write_text("x")  # a file with that very name exists
+    text = f"FROM a\nADD {source} /app/\nCMD x\n"
+    context = FixContext(path="Dockerfile", repo_root=repo, others=[])
+    assert fix_dockerfile(text, ["DS-0005"], context).text == text

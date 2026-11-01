@@ -100,7 +100,7 @@ def _link(file: Path) -> None:
         (b"kind: Pod\nspec: [unclosed\n", "not valid YAML"),
         (b"kind: Pod\nspec: {}", "does not end with a newline"),
         (b"kind: \xff\n", "not UTF-8"),
-        (b"kind: Pod\nspec:\n  containers: []\n", "already hardened"),
+        (b"kind: Pod\nspec:\n  containers: []\n", "nothing this fixer can resolve"),
         (b"kind: Pod\r\nspec:\r\n  hostPID: true\r\n  containers: []\r\n", "CRLF"),
         (
             b"kind: Deployment\nspec: {}\n---\nkind: Unknown\nspec:\n  containers: []\n",
