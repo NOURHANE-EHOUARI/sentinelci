@@ -1,0 +1,11 @@
+# Clean control GT-CLEAN-001: placeholders only, the real values come from the environment.
+app:
+  name: shop-api
+  debug: false
+github:
+  org: example-shop
+  token: ${GITHUB_TOKEN}
+database:
+  url: postgresql://shop:${DB_PASSWORD}@db:5432/shop
+payments:
+  api_key: changeme
