@@ -17,6 +17,7 @@ signature check here requires a statement of that type.
 
 import base64
 import binascii
+import ipaddress
 import json
 import os
 import re
@@ -60,7 +61,8 @@ def check_public_key(path: Path) -> None:
 @dataclass(frozen=True)
 class Registry:
     """How Cosign reaches the image's registry. Plain HTTP only when asked (a local registry, such as the
-    kind cluster's); credentials only from `DOCKER_CONFIG` (the directory of a Docker config.json), if set."""
+    kind cluster's: see `registry_for`); credentials only from `DOCKER_CONFIG` (the directory of a Docker
+    config.json), if set."""
 
     allow_http: bool = False
 
@@ -71,6 +73,48 @@ class Registry:
     def env(environ: Mapping[str, str]) -> dict[str, str]:
         config = environ.get("DOCKER_CONFIG")
         return {"DOCKER_CONFIG": config} if config else {}
+
+
+def registry_for(image: Image, *, allow_http: bool) -> Registry:
+    """The registry settings for `image`. Plain HTTP is for a local registry only: a loopback host, or a
+    single-label host with a port (kind's `kind-registry:5000`). Anywhere else it would send the image and,
+    with `DOCKER_CONFIG`, the registry credentials across the network in clear, so it is refused."""
+    if allow_http:
+        host = _registry_host(image)
+        if host is None:
+            raise AttestationError(
+                f"{image.name} names no registry host: plain HTTP (--registry-http) needs a local registry"
+            )
+        name, port = host
+        local = name == "localhost" or _is_loopback(name) or ("." not in name and port is not None)
+        if not local:
+            raise AttestationError(
+                "plain HTTP (--registry-http) is for a local registry only (loopback, or a single-label "
+                f"host with a port such as kind-registry:5000), not {name}"
+            )
+    return Registry(allow_http=allow_http)
+
+
+def _registry_host(image: Image) -> tuple[str, str | None] | None:
+    """(host, port) of the image's registry, or None when the name has none (a Docker Hub repository)."""
+    first, slash, _ = image.name.partition("/")
+    if not slash or not ("." in first or ":" in first or first == "localhost"):
+        return None
+    name, colon, port = first.partition(":")
+    return name, port if colon else None
+
+
+def _repository(image: Image) -> str:
+    """The image's repository, without a tag (`host:5000/demo-shop/api:v1` -> `host:5000/demo-shop/api`)."""
+    head, slash, last = image.name.rpartition("/")
+    return f"{head}{slash}{last.partition(':')[0]}"
+
+
+def _is_loopback(name: str) -> bool:
+    try:
+        return ipaddress.ip_address(name).is_loopback
+    except ValueError:
+        return False
 
 
 def _last_line(text: str) -> str:
@@ -137,6 +181,25 @@ class Signer:
             )
             out.write_bytes(bundle.read_bytes())
 
+    def public_key(self, environ: Mapping[str, str]) -> str:
+        """The PEM public key of the signing key (`cosign public-key`): what the registry is checked with."""
+        key, env = self._key_env(environ)
+        with tempfile.TemporaryDirectory(prefix="sentinel-public-key-") as private:
+            run = run_verified_tool(
+                "cosign",
+                ["public-key", "--key", key],
+                lock=self.lock,
+                tools_dir=self.tools_dir,
+                cwd=Path(private),
+                platform=self.platform,
+                timeout_s=_TIMEOUT_S,
+                extra_env=env,
+            )
+        match = _PUBLIC_KEY.search(run.stdout)
+        if match is None:
+            raise AttestationError("cosign public-key printed no PEM public key")
+        return match.group(0) + "\n"
+
     def _push(
         self, args: list[str], image: Image, registry: Registry, environ: Mapping[str, str], work: Path
     ) -> None:
@@ -181,6 +244,19 @@ class Verified:
 
     predicate: Any | None
     problem: str | None
+
+
+@dataclass(frozen=True)
+class Attached:
+    """What the key signed about an image in its registry, for one type: distinct predicates by canonical
+    JSON, or why Cosign verified none (`reason`)."""
+
+    predicates: dict[str, Any]
+    reason: str | None
+
+
+def canonical(predicate: Any) -> str:
+    return json.dumps(predicate, sort_keys=True, separators=(",", ":"))
 
 
 def statement_of(bundle_data: bytes) -> dict[str, Any]:
@@ -317,28 +393,67 @@ class Verifier:
             return Verified(None, f"no image signature (cosign sign) about this digest; signed: {types}")
         return Verified(len(signed), None)
 
-    def verify_in_registry(
+    def attached(
         self, image: Image, predicate_type: str, registry: Registry, environ: Mapping[str, str]
-    ) -> Verified:
-        """The attestations of `predicate_type` attached to the image, verified by Cosign then re-checked. A
-        retried attest job attaches the same statement again (the predicates never read the clock), which is
-        one attestation; two different ones of the same type are ambiguous and trusted for neither."""
+    ) -> Attached:
+        """The distinct statements of `predicate_type` the key signed about the image in its registry, after
+        Cosign's check and ours (type, one subject, this digest). AttestationError when one is malformed."""
         run = self._registry(["verify-attestation", "--type", predicate_type], image, registry, environ)
         if run.returncode != 0:
-            return Verified(None, f"missing or not signed by the key: {_last_line(run.stderr)}")
+            return Attached({}, _last_line(run.stderr))
         predicates: dict[str, Any] = {}
         try:
             for line in (line for line in run.stdout.splitlines() if line.strip()):
-                statement = statement_of_envelope(json.loads(line))
-                predicate = check_statement(statement, image, predicate_type)
-                predicates[json.dumps(predicate, sort_keys=True)] = predicate
-        except (AttestationError, ValueError) as exc:
+                predicate = check_statement(statement_of_envelope(json.loads(line)), image, predicate_type)
+                predicates[canonical(predicate)] = predicate
+        except ValueError as exc:
+            raise AttestationError(f"unreadable Cosign output: {exc}") from exc
+        return Attached(predicates, None if predicates else "Cosign verified no statement")
+
+    def verify_in_registry(
+        self, image: Image, predicate_type: str, registry: Registry, environ: Mapping[str, str]
+    ) -> Verified:
+        """The attestation of `predicate_type` attached to the image, verified by Cosign then re-checked. A
+        re-run of the attest job attaches the same statement again (the predicates read neither the clock nor
+        the run attempt), which is one attestation; two different ones of the same type are ambiguous and
+        trusted for neither."""
+        try:
+            found = self.attached(image, predicate_type, registry, environ)
+        except AttestationError as exc:
             return Verified(None, str(exc)[:300])
-        if len(predicates) != 1:
-            count = len(predicates)
-            return Verified(None, f"{count} different attestations of this type: ambiguous" if count else
-                            "Cosign verified no statement")  # fmt: skip
-        return Verified(next(iter(predicates.values())), None)
+        if found.reason is not None:
+            return Verified(None, f"missing or not signed by the key: {found.reason}")
+        if len(found.predicates) != 1:
+            return Verified(None, f"{len(found.predicates)} different attestations of this type: ambiguous")
+        return Verified(next(iter(found.predicates.values())), None)
+
+
+def refuse_another_release(
+    signer: Signer,
+    image: Image,
+    statements: Mapping[str, tuple[str, Any]],
+    registry: Registry,
+    environ: Mapping[str, str],
+) -> None:
+    """Before anything is signed: AttestationError when the registry already holds, for one of the release's
+    types, a statement the same key signed about this digest that differs from the one about to be attached.
+
+    A digest has one release per registry. A second, different one would make every later verification
+    ambiguous (NOT TRUSTED), while Kyverno, which reads one statement per type, could still admit the image:
+    the two verifiers would disagree. Attaching the same statements again (a re-run) is allowed."""
+    with tempfile.TemporaryDirectory(prefix="sentinel-release-check-") as private:
+        public_key = Path(private) / "release.pub"
+        public_key.write_text(signer.public_key(environ), encoding="ascii")
+        verifier = Verifier(public_key, signer.lock, signer.tools_dir, signer.platform)
+        for kind, (predicate_type, predicate) in statements.items():
+            found = verifier.attached(image, predicate_type, registry, environ)
+            if set(found.predicates) - {canonical(predicate)}:
+                raise AttestationError(
+                    f"the registry already holds a different {kind} attestation of {image.digest}, signed by "
+                    "this key: a digest has one release per registry. Remove the old release first (on a "
+                    f"registry without the referrers API: crane delete {_repository(image)}:"
+                    f"sha256-{image.digest_hex}), then attest again"
+                )
 
 
 def default_environ() -> Mapping[str, str]:
