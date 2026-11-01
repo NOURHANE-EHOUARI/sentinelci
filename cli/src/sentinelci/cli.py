@@ -810,6 +810,13 @@ def sbom_command(
     source: Annotated[
         str, typer.Option(help=f"What the target is: {', '.join(SOURCE_KINDS)} (never a registry pull).")
     ] = "dir",
+    image_digest: Annotated[
+        str | None,
+        typer.Option(
+            help="For an image source (required there): the manifest digest the build produced, "
+            "sha256:<hex>. Both SBOMs must name it."
+        ),
+    ] = None,
     lock: LockOption = Path(LOCK_FILE_NAME),
     tools_dir: Annotated[
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
@@ -834,11 +841,21 @@ def sbom_command(
         typer.echo("sentinel sbom: --cyclonedx and --spdx are the same file; nothing was written", err=True)
         raise typer.Exit(EXIT_NO_DECISION)
     for out in (cyclonedx, spdx):
-        out.unlink(missing_ok=True)  # a failed run must never leave an older SBOM behind
+        try:
+            out.unlink(missing_ok=True)  # a failed run must never leave an older SBOM behind
+        except OSError as exc:
+            typer.echo(f"sentinel sbom: cannot use {out}: {exc}; nothing was written", err=True)
+            raise typer.Exit(EXIT_NO_DECISION) from exc
     kind: SourceKind = source  # narrowed by the membership check above
     try:
         sbom = generate_sbom(
-            target, kind=kind, name=name, lock=load_lock(lock), tools_dir=tools_dir, platform=platform
+            target,
+            kind=kind,
+            name=name,
+            lock=load_lock(lock),
+            tools_dir=tools_dir,
+            image_digest=image_digest,
+            platform=platform,
         )
         for out, data in ((cyclonedx, sbom.cyclonedx), (spdx, sbom.spdx)):
             out.parent.mkdir(parents=True, exist_ok=True)
