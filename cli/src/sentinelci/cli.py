@@ -67,8 +67,8 @@ from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
 from sentinelci.scanners.installer import VerificationReport, install_tools, verify_tools
 from sentinelci.scanners.lock import LOCK_FILE_NAME, load_lock
 from sentinelci.supplychain.attestations import KINDS, AttestationError, parse_image, release_predicates
-from sentinelci.supplychain.cosign import Signer, Verifier, check_public_key
-from sentinelci.supplychain.verify import ATTESTATIONS_DIR, verify_evidence
+from sentinelci.supplychain.cosign import Registry, Signer, Verifier, check_public_key
+from sentinelci.supplychain.verify import ATTESTATIONS_DIR, verify_evidence, verify_registry
 
 EXIT_UNTRUSTED_INPUT = 3
 DEFAULT_TOOLS_DIR = Path(".sentinel/tools")
@@ -803,6 +803,13 @@ def report_pr_comment(
 # ---------------------------------------------------------------- supply chain (A4, ADR-0010)
 
 EXIT_UNTRUSTED = 1
+RegistryHttpOption = Annotated[
+    bool,
+    typer.Option(
+        "--registry-http",
+        help="Reach the image's registry over plain HTTP: only for a local registry (kind's, a test one).",
+    ),
+]
 
 
 @app.command("attest")
@@ -813,6 +820,15 @@ def attest_command(
     sbom: Annotated[Path, typer.Option(help="The CycloneDX JSON SBOM the decision recorded.")],
     key: Annotated[str, typer.Option(help="Cosign private key: a file, or env://VAR.")],
     out: Annotated[Path, typer.Option(help="Evidence directory: the bundles go to <out>/attestations/.")],
+    push: Annotated[
+        bool,
+        typer.Option(
+            "--push",
+            help="Also sign the image and attach the four attestations to it in its registry (cosign sign "
+            "and cosign attest), where Kyverno and `sentinel verify` without --evidence read them.",
+        ),
+    ] = False,
+    registry_http: RegistryHttpOption = False,
     lock: LockOption = Path(LOCK_FILE_NAME),
     tools_dir: Annotated[
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
@@ -824,7 +840,8 @@ def attest_command(
     Runs in the release workflow's attest job (the GitHub Actions variables give the provenance). Exit code 3,
     with nothing signed, when the inputs don't belong together: a BLOCK or non-release decision, a decision
     about another image, findings or an SBOM the decision did not record, or a run on another repository or
-    commit.
+    commit. With --push, a registry failure is exit code 3 too: the registry may then hold part of the set,
+    which neither `sentinel verify` nor Kyverno trusts, until a complete run attaches the rest.
     """
     directory = out / ATTESTATIONS_DIR
     bundles = [directory / f"{kind}.sigstore.json" for kind in KINDS]
@@ -842,6 +859,11 @@ def attest_command(
         directory.mkdir(parents=True, exist_ok=True)
         for (kind, predicate_type), bundle in zip(KINDS.items(), bundles, strict=True):
             signer.attest(target, predicate_type, predicates[kind], bundle, os.environ)
+        if push:
+            registry = Registry(allow_http=registry_http)
+            signer.sign_image(target, registry, os.environ)
+            for kind, predicate_type in KINDS.items():
+                signer.attest_image(target, predicate_type, predicates[kind], registry, os.environ)
         signed = True
     except (AttestationError, OSError, ToolIntegrityError, ScannerError) as exc:
         typer.echo(f"sentinel attest: {exc}; nothing was signed", err=True)
@@ -850,7 +872,8 @@ def attest_command(
         if not signed:  # all four or none, whatever stopped the run; an earlier run's bundles go too
             for bundle in bundles:
                 bundle.unlink(missing_ok=True)
-    typer.echo(f"signed {len(bundles)} attestations of {target.name}@{target.digest} -> {directory}")
+    pushed = f"; image signed and the {len(KINDS)} attached in its registry" if push else ""
+    typer.echo(f"signed {len(bundles)} attestations of {target.reference} -> {directory}{pushed}")
 
 
 @app.command("verify")
@@ -866,8 +889,13 @@ def verify_command(
         ),
     ],
     evidence: Annotated[
-        Path, typer.Option(help="Evidence directory written by `sentinel attest` (offline verification).")
-    ],
+        Path | None,
+        typer.Option(
+            help="Evidence directory written by `sentinel attest` (offline verification). Without it, the "
+            "image's own signature and the attestations attached to it are read from its registry."
+        ),
+    ] = None,
+    registry_http: RegistryHttpOption = False,
     lock: LockOption = Path(LOCK_FILE_NAME),
     tools_dir: Annotated[
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
@@ -883,7 +911,11 @@ def verify_command(
         target = parse_image(image)
         check_public_key(key)  # a broken setup is "could not run" (3), not "this image is bad" (1)
         verifier = Verifier(key, load_lock(lock), tools_dir, platform)
-        report = verify_evidence(target, evidence, verifier, repo=repo, builder_id=builder_id)
+        if evidence is not None:
+            report = verify_evidence(target, evidence, verifier, repo=repo, builder_id=builder_id)
+        else:
+            registry = Registry(allow_http=registry_http)
+            report = verify_registry(target, verifier, registry, os.environ, repo=repo, builder_id=builder_id)
     except (AttestationError, ToolIntegrityError, ScannerError) as exc:
         typer.echo(f"sentinel verify: {exc}\nFAIL CLOSED: the image is not trusted.", err=True)
         raise typer.Exit(EXIT_NO_DECISION) from exc

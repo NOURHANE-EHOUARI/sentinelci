@@ -168,3 +168,29 @@ sha256 = "8802bd39bc14b58a705e6b3d4f4dd14f7f24ee657f0362c737338be243190c7e"
 url = "https://github.com/open-policy-agent/opa/releases/download/v1.21.4/opa_darwin_arm64_static"
 checksums_url = "https://github.com/open-policy-agent/opa/releases/download/v1.21.4/opa_darwin_arm64_static.sha256"
 sha256 = "4c105208a9282f590385bccbe600875c011f0894ccf9431782dfe855e1f99aa6"
+
+
+# OCI registry client and a local registry for the registry-mode tests (`crane registry serve`, `crane append`)
+# and for copying release images by digest (A4, A5). Release assets of google/go-containerregistry.
+[tools.crane]
+version = "0.22.1"
+homepage = "https://github.com/google/go-containerregistry"
+checksums_url = "https://github.com/google/go-containerregistry/releases/download/v0.22.1/checksums.txt"
+binary = "crane"
+archive = "tar.gz"
+
+[tools.crane.artifacts.linux-amd64]
+url = "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz"
+sha256 = "0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0"
+
+[tools.crane.artifacts.linux-arm64]
+url = "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_arm64.tar.gz"
+sha256 = "898c0cff975f898a33e8c4580bdafb0e7c02c7faa33374e946762f97c4ab7110"
+
+[tools.crane.artifacts.darwin-amd64]
+url = "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Darwin_x86_64.tar.gz"
+sha256 = "6fedd06a648c11335f0e8b9547e4783002c30e9336047fec292942cd518bb799"
+
+[tools.crane.artifacts.darwin-arm64]
+url = "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Darwin_arm64.tar.gz"
+sha256 = "2231fc8df8806d20d680ff1225db44e095a55dd6ac1ae8eced4faf4b278b78fb"

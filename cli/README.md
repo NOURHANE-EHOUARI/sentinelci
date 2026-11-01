@@ -238,3 +238,27 @@ uv run sentinel verify registry.local/demo-shop/shop-api@sha256:<digest> --evide
 - Exit code `0` trusted, `1` not trusted (any check failed), `3` the verification could not run (for example
   a Cosign binary that does not match `tools.lock.toml`). Offline: the evidence directory and the public key
   are all it needs.
+
+**Registry mode.** With `--push`, `sentinel attest` also signs the image itself (`cosign sign`) and attaches
+the four statements to it in its registry (`cosign attest`), always by digest. That copy is what Kyverno reads
+at admission (A5). `sentinel verify` without `--evidence` reads it back:
+
+```bash
+uv run sentinel attest <registry>/demo-shop/shop-api@sha256:<digest> ... --out out/evidence --push
+uv run sentinel verify <registry>/demo-shop/shop-api@sha256:<digest> --key cosign.pub \
+  --repo NOURHANE-EHOUARI/sentinelci --builder-id <release workflow ref>
+```
+
+- The trust report gains a first check, `signature: the image itself`: a `cosign sign` statement about this
+  digest. Cosign 3 stores every signature and attestation as a Sigstore bundle (an OCI referrer of the image),
+  and `cosign verify` accepts any statement the key signed about the digest as a signature, an attestation
+  included. So the check looks for a statement of type `https://sigstore.dev/cosign/sign/v1`.
+- A retried attest job attaches the same statements again (the predicates never read the clock): still one
+  attestation each. Two different statements of the same type are ambiguous, and that attestation fails.
+- Attestations live next to the image in its repository: the same digest copied to another repository has
+  none.
+- `--registry-http` allows plain HTTP, for a local registry only (the kind cluster's, a test one). Registry
+  credentials come only from `DOCKER_CONFIG` (the directory of a Docker `config.json`), when it is set; no
+  other variable reaches Cosign.
+- With `--push`, a registry failure is exit `3` and no bundle is kept. The registry may then hold part of the
+  set, which is not trusted until a complete run attaches the rest.

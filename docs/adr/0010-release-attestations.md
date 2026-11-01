@@ -60,7 +60,21 @@ signed predicate is not byte-identical to the file it came from.
 4. **Two copies of the same statements.** The `attest` job attaches them to the image (`cosign attest`, read by
    Kyverno and by `sentinel verify` in registry mode) and also writes each one as a Sigstore bundle in the
    evidence artifact (`attestations/<kind>.sigstore.json`), which `sentinel verify --evidence <dir>` checks
-   offline. This ADR delivers the evidence mode; the registry mode and the workflow follow in A4b/A4c.
+   offline. The evidence mode came first (A4); the registry mode followed (A4d, `sentinel attest --push`,
+   `sentinel verify` without `--evidence`), and the workflow follows in A4c. In registry mode:
+   - the image itself is signed too (`cosign sign`), and `sentinel verify` requires that signature (SC-004).
+     Cosign 3 stores each signature and each attestation as a Sigstore bundle, an OCI referrer of the image (or,
+     on a registry without the referrers API, an entry of the `sha256-<hex>` tag index). The image signature is
+     a DSSE statement of type `https://sigstore.dev/cosign/sign/v1`, and `cosign verify` accepts any statement
+     the key signed about the digest as a signature: an attestation alone passes it. Kyverno's
+     `verifyImageSignatures` behaves the same (A5). So `sentinel verify` looks for a statement of that type;
+   - attestations are read with `cosign verify-attestation --type`, then re-checked on what Cosign printed
+     (statement type, one subject, this digest). Identical statements count once, since a retried job
+     attaches the same bytes (decision 6). Two different statements of one type make that attestation
+     ambiguous: it fails;
+   - a verification that ran and failed (Cosign exit codes 1 and 10 to 13), or an unreachable registry, is
+     "not trusted" (exit 1). Plain HTTP only with `--registry-http`, for a local registry. Registry credentials
+     reach Cosign only through `DOCKER_CONFIG`.
 
 5. **Keys.** Private mode (now): a key pair, `--key` names the private key file or `env://VAR`; only that
    variable and `COSIGN_PASSWORD` reach the Cosign process (the runner's minimal environment drops the rest);
