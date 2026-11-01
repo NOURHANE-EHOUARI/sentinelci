@@ -64,6 +64,7 @@ from sentinelci.policy.opa import OpaError, OpaRunner
 from sentinelci.policy.replay import ReplayResult, check_identity, replay, skip_reason
 from sentinelci.policy.store import EvidenceStore, StoreError
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
+from sentinelci.remediation.dockerfile import propose as propose_dockerfile
 from sentinelci.remediation.gate import verify_proposal
 from sentinelci.remediation.kubernetes import propose as propose_kubernetes
 from sentinelci.remediation.proposal import RemediationError
@@ -830,30 +831,24 @@ def _read_findings(path: Path, what: str) -> dict[str, Finding]:
         raise RemediationError(f"{what} {path}: {exc}") from exc
 
 
-@remediate_app.command("kubernetes")
-def remediate_kubernetes(
-    findings: Annotated[Path, typer.Option(help="Findings NDJSON (Trivy IAC findings are the input).")],
-    out: Annotated[
-        Path, typer.Option(help="Destination of the patch proposal (schemas/patch-proposal.v1.json).")
-    ],
-    repo_root: Annotated[
-        Path, typer.Option(help="Repository root the finding paths are relative to.")
-    ] = Path("."),
-    attempt: Annotated[
-        int, typer.Option(min=1, max=3, help="Attempt number (1, then up to two retries).")
-    ] = 1,
-) -> None:
-    """Propose hardening for the Kubernetes findings the deterministic fixer resolves (it never applies it).
+FindingsOption = Annotated[
+    Path, typer.Option(help="Findings NDJSON (the scanner's IAC findings are the input).")
+]
+ProposalOut = Annotated[
+    Path, typer.Option(help="Destination of the patch proposal (schemas/patch-proposal.v1.json).")
+]
+RepoRootOption = Annotated[Path, typer.Option(help="Repository root the finding paths are relative to.")]
+AttemptOption = Annotated[int, typer.Option(min=1, max=3, help="Attempt number (1, then up to two retries).")]
 
-    Exit code 0 with a proposal, or with nothing to propose (no file written); 3 when the input is unusable.
-    """
+
+def _propose(command: str, fixer: Any, findings: Path, out: Path, repo_root: Path, attempt: int) -> None:
     out.unlink(missing_ok=True)
     try:
-        plan = propose_kubernetes(
+        plan = fixer(
             list(_read_findings(findings, "findings").values()), repo_root, attempt=attempt, created_at=_now()
         )
     except RemediationError as exc:
-        typer.echo(f"sentinel remediate kubernetes: {exc}", err=True)
+        typer.echo(f"sentinel remediate {command}: {exc}", err=True)
         raise typer.Exit(EXIT_NO_DECISION) from exc
     for path, reason in plan.skipped.items():
         typer.echo(f"warning: {path} left alone: {reason}", err=True)
@@ -865,6 +860,35 @@ def remediate_kubernetes(
         f"proposal {plan.proposal.proposal_id}: {len(plan.proposal.finding_ids)} finding(s) in "
         f"{len(plan.proposal.files)} file(s) -> {out}"
     )
+
+
+@remediate_app.command("kubernetes")
+def remediate_kubernetes(
+    findings: FindingsOption,
+    out: ProposalOut,
+    repo_root: RepoRootOption = Path("."),
+    attempt: AttemptOption = 1,
+) -> None:
+    """Propose hardening for the Kubernetes findings the deterministic fixer resolves (it never applies it).
+
+    Exit code 0 with a proposal, or with nothing to propose (no file written); 3 when the input is unusable.
+    """
+    _propose("kubernetes", propose_kubernetes, findings, out, repo_root, attempt)
+
+
+@remediate_app.command("dockerfile")
+def remediate_dockerfile(
+    findings: FindingsOption,
+    out: ProposalOut,
+    repo_root: RepoRootOption = Path("."),
+    attempt: AttemptOption = 1,
+) -> None:
+    """Propose fixes for the Dockerfile findings the deterministic fixer resolves (it never applies them):
+    a non-root USER, COPY instead of ADD for local files, apt-get --no-install-recommends.
+
+    Exit code 0 with a proposal, or with nothing to propose (no file written); 3 when the input is unusable.
+    """
+    _propose("dockerfile", propose_dockerfile, findings, out, repo_root, attempt)
 
 
 @remediate_app.command("verify")

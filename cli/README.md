@@ -221,6 +221,11 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
   leaves alone what would change the application (hostPath volumes, image tags, resource limits, added
   capabilities). Comments, key order and quoting are kept; a file it cannot edit without reformatting is
   named in a warning and left alone. With nothing to fix, it writes no file and exits `0`.
+- `dockerfile` does the same for Dockerfiles: the final stage runs as `USER 10001:10001` (a last `USER root` is
+  replaced, otherwise the line goes right before CMD/ENTRYPOINT), COPY replaces ADD for local files (not for a
+  URL, a git source, an archive ADD extracts or an ADD-only flag), and `apt-get install` gets
+  `--no-install-recommends`. The base image's tag or digest, a HEALTHCHECK and a script piped to a shell are
+  left alone. A file with an `escape` directive or a heredoc is left alone.
 - `verify` writes a `VerificationResult` (`schemas/verification-result.v1.json`): VERIFIED only if the patched
   commit builds, its tests pass, every target fingerprint is gone, no new finding of severity MEDIUM or higher
   appeared, and its decision is not BLOCK. Exit `0` VERIFIED, `1` REJECTED (a retry is left) or FAILED (the

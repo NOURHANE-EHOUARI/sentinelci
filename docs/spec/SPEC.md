@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.17 | A6b remediation (§9): `sentinel remediate dockerfile`: the deterministic Dockerfile fixer (non-root `USER 10001:10001` in the final stage, COPY instead of ADD for local files, `apt-get install --no-install-recommends`; each checked against the pinned Trivy), sharing the per-file loop with the Kubernetes fixer. |
 | 1.1.16 | A6a remediation (§9): `sentinel remediate kubernetes` proposes hardening for the Trivy findings the deterministic Kubernetes fixer resolves (16 rule ids, each checked against the pinned Trivy; manifests edited round-trip, so the diff shows only the hardening; never what changes the application's behaviour), as a `PatchProposal`; `sentinel remediate verify` applies the verification gate and writes a `VerificationResult`. Read models for both contracts; the §9 states and their transitions. New dependency: ruamel.yaml. |
 | 1.1.6 | A9 first seeds (§17): 5 fake secrets, 6 IaC, 3 CI-workflow seeds and 4 clean controls in `demo-shop/`, with a draft ground-truth format (`demo-shop/ground-truth/`, final schema owned by B9) checked against the pinned Gitleaks, Trivy and zizmor. SentinelCI's Trivy configuration trusts only the kind registry for KSV0125. |
 | 1.1.5 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
@@ -424,14 +425,14 @@ States: PROPOSED → PATCH_READY → PR_OPEN → VERIFYING → VERIFIED | REJECT
 target fingerprint gone · no new ≥ MEDIUM finding · verdict ≠ BLOCK. Bot uses `pull_request` (never
 `pull_request_target`), verification jobs get no secrets, the bot never merges.
 
-Implemented (A6a): `sentinel remediate kubernetes` and `sentinel remediate verify`. The Kubernetes fixer maps each
-Trivy rule id it resolves to one edit (privileged, privilege escalation, capabilities, non-root UID and GID,
-read-only root file system, seccomp profile, host namespaces), each checked against the pinned Trivy: the edit makes
-that rule's finding disappear and adds none. It never changes what the application does (hostPath volumes, image
-tags, resource limits, added capabilities): those findings stay, and the gate rejects a proposal that claims them.
-Manifests are edited round-trip (comments, order and quoting kept); a file whose layout cannot be reproduced exactly
-is left alone. A proposal touches only flagged files and its diff applies with `git apply`. A failing patch is
-REJECTED while an attempt is left (at most three), FAILED after the last one.
+Implemented (A6a, A6b): `sentinel remediate kubernetes`, `sentinel remediate dockerfile` and `sentinel remediate
+verify`. The Kubernetes fixer maps each Trivy rule id it resolves to one edit (privileged, privilege escalation,
+capabilities, non-root UID and GID, read-only root file system, seccomp profile, host namespaces), each checked
+against the pinned Trivy: the edit makes that rule's finding disappear and adds none. It never changes what the
+application does (hostPath volumes, image tags, resource limits, added capabilities): those findings stay, and the
+gate rejects a proposal that claims them. Manifests are edited round-trip (comments, order and quoting kept); a file
+whose layout cannot be reproduced exactly is left alone. A proposal touches only flagged files and its diff applies
+with `git apply`. A failing patch is REJECTED while an attempt is left (at most three), FAILED after the last one.
 
 ## 10. Dashboard and observability
 
