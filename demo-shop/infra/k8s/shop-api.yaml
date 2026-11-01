@@ -1,0 +1,33 @@
+# INTENTIONALLY VULNERABLE (GT-IAC-005): privileged root container with the host filesystem mounted,
+# a mutable image tag and no resource limits.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shop-api
+  namespace: demo-shop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shop-api
+  template:
+    metadata:
+      labels:
+        app: shop-api
+    spec:
+      hostNetwork: true
+      containers:
+        - name: shop-api
+          image: registry.local/demo-shop/shop-api:latest
+          ports:
+            - containerPort: 8000
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          volumeMounts:
+            - name: host-root
+              mountPath: /host
+      volumes:
+        - name: host-root
+          hostPath:
+            path: /

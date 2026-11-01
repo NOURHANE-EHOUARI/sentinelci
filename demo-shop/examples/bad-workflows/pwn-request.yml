@@ -1,0 +1,19 @@
+# INTENTIONALLY VULNERABLE CI example (GT-PIPELINE-001). Never copy into .github/workflows: it would run.
+# "Pwn request": pull_request_target runs with a write token and secrets, then checks out and builds the
+# untrusted pull-request head, so any pull request can steal the token.
+name: pr-preview
+
+on:
+  pull_request_target:
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - run: npm install && npm run build
+      - run: ./scripts/deploy-preview.sh
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
