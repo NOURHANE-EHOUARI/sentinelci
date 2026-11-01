@@ -4,9 +4,9 @@ registry, attested by `sentinel attest --push` or, for the bad cases, by the rel
 
 `kyverno apply` evaluates the policy the way the admission controller does and reads the signatures and
 attestations from the registry, so this is the admission decision without a cluster. Each bad case changes one
-thing in an otherwise trusted release, as in the `sentinel verify` tests, and must be refused for that reason:
-the two verifiers trust exactly the same images. Real-tool tests are opt-in: set SENTINEL_TOOLS_DIR (crane,
-cosign and kyverno installed there).
+thing in an otherwise trusted release, as in the `sentinel verify` tests, and must be refused for that reason;
+`sentinel verify` must refuse it too (the verdicts are compared, not the reasons). Real-tool tests are
+opt-in: set SENTINEL_TOOLS_DIR (crane, cosign and kyverno installed there).
 """
 
 import copy
@@ -22,11 +22,11 @@ from typer.testing import CliRunner
 from sentinelci.cli import app
 from sentinelci.scanners.lock import load_lock
 from sentinelci.scanners.runner import run_verified_tool
-from sentinelci.supplychain.admission import POLICY_NAME, render_policy
+from sentinelci.supplychain.admission import DECISION_VERSIONS, POLICY_NAME, render_policy
 from sentinelci.supplychain.attestations import KINDS, AttestationError, parse_image
 from sentinelci.supplychain.cosign import SIGNATURE_TYPE
 
-from .conftest import BUILDER, GITHUB_ENV, REPO, decision_bytes
+from .conftest import BUILDER, GITHUB_ENV, REPO, ROOT, decision_bytes
 from .oci import REPO_LOCK, TOOLS_DIR, attach, attest, make_keys, needs_tools, predicates, push_image
 
 PUBLIC_KEY = (
@@ -53,8 +53,14 @@ def test_the_policy_requires_the_signature_and_the_four_attestations(tmp_path: P
     assert policy["metadata"]["name"] == POLICY_NAME
     assert [a["intoto"]["type"] for a in spec["attestations"]] == [SIGNATURE_TYPE, *KINDS.values()]
     assert spec["attestors"][0]["cosign"]["key"]["data"] == PUBLIC_KEY
-    assert spec["matchImageReferences"] == [{"glob": "kind-registry:5000/demo-shop/*"}]
+    assert spec["matchImageReferences"] == [
+        {"expression": "ref.lowerAscii().startsWith('kind-registry:5000/demo-shop/')"}
+    ]
+    (rule,) = spec["matchConstraints"]["resourceRules"]
+    assert rule["operations"] == ["CREATE", "UPDATE"]
+    assert rule["resources"] == ["pods", "pods/ephemeralcontainers"], "kubectl debug uses the subresource"
     assert spec["validationActions"] == ["Deny"] and spec["failurePolicy"] == "Fail"
+    assert spec["webhookConfiguration"] == {"timeoutSeconds": 30}
     assert spec["validationConfigurations"] == {"mutateDigest": True, "verifyDigest": True, "required": True}
     assert spec["credentials"] == {"allowInsecureRegistry": False}
     assert _render(tmp_path, allow_http=True)["spec"]["credentials"] == {"allowInsecureRegistry": True}
@@ -83,6 +89,10 @@ def test_the_signatures_are_checked_before_any_payload_is_read(tmp_path: Path) -
         ({"image_glob": "Kind-Registry/demo"}, "--image-glob"),
         ({"image_glob": "kind-registry:5000/demo' "}, "--image-glob"),
         ({"image_glob": "*"}, "--image-glob"),
+        ({"image_glob": "kind-registry:5000/*/api*"}, "--image-glob"),
+        ({"image_glob": "kind-registry:5000/demo-shop/api"}, "--image-glob"),
+        ({"image_glob": "registry.example.com/demo-shop/*", "allow_http": True}, "plain HTTP"),
+        ({"image_glob": "demo-shop/api/*", "allow_http": True}, "names no registry host"),
     ],
     ids=[
         "quote-in-repo",
@@ -91,6 +101,10 @@ def test_the_signatures_are_checked_before_any_payload_is_read(tmp_path: Path) -
         "uppercase-glob",
         "quote-in-glob",
         "any-image",
+        "inner-star",
+        "no-star",
+        "http-to-a-real-registry",
+        "http-without-registry",
     ],
 )
 def test_a_value_that_could_change_the_policy_is_refused(
@@ -98,6 +112,29 @@ def test_a_value_that_could_change_the_policy_is_refused(
 ) -> None:
     with pytest.raises(AttestationError, match=message):
         _render(tmp_path, **changes)
+
+
+def test_the_decision_versions_are_the_contracts(tmp_path: Path) -> None:
+    """#45 review, blocking 1: rendered from the Decision v1 contract, which mirrors the schema."""
+    schema = json.loads((ROOT / "schemas" / "decision.v1.json").read_text(encoding="utf-8"))
+    assert list(DECISION_VERSIONS) == schema["properties"]["schema_version"]["enum"]
+    expressions = " ".join(v["expression"] for v in _render(tmp_path)["spec"]["validations"])
+    assert "schema_version in [" + ", ".join(f"'{v}'" for v in DECISION_VERSIONS) + "]" in expressions
+    assert "verdict in ['PASS', 'WARN']" in expressions and "v.effect != 'WARN'" in expressions
+
+
+def test_a_key_file_with_anything_but_one_public_key_is_refused(tmp_path: Path) -> None:
+    """#45 review, should fix 3: the policy is committed, so a private key next to the public one would be."""
+    key = tmp_path / "bundle.pem"
+    private = "-----BEGIN ENCRYPTED SIGSTORE PRIVATE KEY-----\nAAAA\n-----END ...\n"
+    for text in (private + PUBLIC_KEY, PUBLIC_KEY + private, PUBLIC_KEY + PUBLIC_KEY):
+        key.write_text(text, encoding="ascii")
+        with pytest.raises(AttestationError, match="exactly one PEM public key"):
+            render_policy(public_key=key, image_glob="r/x/*", repo=REPO, builder_id=BUILDER, allow_http=False)
+    key.write_text(PUBLIC_KEY.replace("\n", "\r\n"), encoding="ascii")
+    assert "example0000" in render_policy(
+        public_key=key, image_glob="r/x/*", repo=REPO, builder_id=BUILDER, allow_http=False
+    )
 
 
 def test_a_file_that_is_not_a_public_key_is_refused(tmp_path: Path) -> None:
@@ -118,6 +155,8 @@ def test_the_cli_writes_the_policy_and_refuses_bad_values(tmp_path: Path) -> Non
     out.write_text("stale", encoding="utf-8")
     result = CliRunner().invoke(app, [*args[:-2], "--repo", "not a repo", "--out", str(out)])
     assert result.exit_code == 3 and not out.exists(), "a refused render leaves no policy behind"
+    result = CliRunner().invoke(app, [*args[:-2], "--out", str(key)])
+    assert result.exit_code == 3 and key.read_text(encoding="ascii") == PUBLIC_KEY, "--out is never the key"
 
 
 # ---------------------------------------------------------------- the real Kyverno, Cosign and registry
@@ -213,6 +252,15 @@ def release(crane: Path, registry: str, tmp_path_factory: pytest.TempPathFactory
             subject__image_digest=parse_image(block).digest, verdict="BLOCK", violations=blocking
         )
         attach(block, keys["release.key"], predicates(work, block) | {"decision": json.loads(blocked)})
+        # Signed with the key but not a non-BLOCK Decision v1 (#45 review, blocking 1).
+        for name, changes in {
+            "verdict-in-lower-case": {"verdict": "block"},
+            "pass-with-a-block-violation": {"verdict": "PASS", "violations": blocking},
+            "unknown-decision-version": {"schema_version": "9.9"},
+        }.items():
+            target = image(name)
+            decision = json.loads(decision_bytes(subject__image_digest=parse_image(target).digest, **changes))
+            attach(target, keys["release.key"], predicates(work, target) | {"decision": decision})
         no_sbom = image("no-sbom")
         attach(
             no_sbom, keys["release.key"], {k: v for k, v in predicates(work, no_sbom).items() if k != "sbom"}
@@ -235,7 +283,10 @@ EXPECTED = {
     "no-image-signature": ("fail", "signature: the image itself is not signed by the release key"),
     "no-sbom": ("fail", "signature: no SBOM (CycloneDX) signed by the release key"),
     "pr-decision": ("fail", "decision: not a release decision"),
-    "block": ("fail", "decision: the verdict is BLOCK"),
+    "block": ("fail", "decision: not a non-BLOCK Decision v1 verdict"),
+    "verdict-in-lower-case": ("fail", "decision: not a non-BLOCK Decision v1 verdict"),
+    "pass-with-a-block-violation": ("fail", "decision: not a non-BLOCK Decision v1 verdict"),
+    "unknown-decision-version": ("fail", "decision: not a non-BLOCK Decision v1 verdict"),
     "decision-of-another-image": ("fail", "decision: about another image"),
     "another-repository": ("fail", "decision: from another repository"),
     "another-builder": ("fail", "provenance: not built by the release workflow"),
@@ -298,3 +349,46 @@ def test_sentinel_verify_agrees_with_admission_on_every_case(release: dict[str, 
              "--tools-dir", str(TOOLS_DIR)],
         )  # fmt: skip
         assert (result.exit_code == 0) is (EXPECTED[name][0] == "pass"), (name, result.output)
+
+
+@needs_tools
+@pytest.mark.integration
+def test_a_provenance_without_our_source_and_a_non_cyclonedx_sbom_are_refused(
+    release: dict[str, Any], crane: Path
+) -> None:
+    """#45 review, nit 2: the source guard (`.exists`) and the CycloneDX check are pinned."""
+    keys, registry, work = release["keys"], release["registry"], release["work"]
+    elsewhere = push_image(crane, registry, work)
+    signed = copy.deepcopy(predicates(work, elsewhere))
+    (source,) = signed["provenance"]["buildDefinition"]["resolvedDependencies"]
+    source["uri"] = "git+https://github.com/o/r@main"
+    attach(elsewhere, keys["release.key"], signed)
+    spdx = push_image(crane, registry, work)
+    attach(spdx, keys["release.key"], _with(predicates(work, spdx), "sbom", "bomFormat", "SPDX"))
+    results = admit(work / "more", _policy(release), [_pod("elsewhere", elsewhere), _pod("spdx", spdx)])
+    assert {name: (result, message.strip()) for name, (result, message) in results.items()} == {
+        "elsewhere": ("fail", "provenance: not built from the decision's commit"),
+        "spdx": ("fail", "SBOM: not the one the vulnerability scan names"),
+    }
+
+
+@needs_tools
+@pytest.mark.integration
+def test_an_upper_case_registry_host_is_still_checked(release: dict[str, Any]) -> None:
+    """#45 review, should fix 2: host names ignore case, so the policy's match must too. The same registry is
+    named `localhost:<port>` here, so that the host has letters."""
+    port = release["registry"].rpartition(":")[2]
+    policy = render_policy(
+        public_key=release["keys"]["release.pub"], image_glob=f"localhost:{port}/demo-shop/*", repo=REPO,
+        builder_id=BUILDER, allow_http=True,
+    )  # fmt: skip
+    path = {name: release["images"][name].partition("/")[2] for name in ("good", "unsigned")}
+    pods = [
+        _pod("unsigned-upper", f"LOCALHOST:{port}/{path['unsigned']}"),
+        _pod("good-lower", f"localhost:{port}/{path['good']}"),
+        _pod("good-upper", f"LOCALHOST:{port}/{path['good']}"),
+    ]
+    results = admit(release["work"] / "case", policy, pods)
+    assert results["unsigned-upper"][0] == "fail", "matched and refused, not left unchecked"
+    assert results["good-lower"] == ("pass", "success")
+    assert results["good-upper"][0] == "fail", "refused rather than unchecked: fails closed"

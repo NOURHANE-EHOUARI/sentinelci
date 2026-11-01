@@ -10,7 +10,7 @@
 
 | Version | Change |
 |---|---|
-| 1.1.19 | A5 admission policy (§7): `sentinel admission-policy` renders the Kyverno 1.19 `ImageValidatingPolicy` (`policies.kyverno.io/v1`) from the parameters of `sentinel verify`, and requires the same things: the image's `cosign sign` statement (as an attestation, since `verifyImageSignatures` accepts any key-signed statement) and the four attestations, bound as `sentinel verify` binds them. Kyverno CLI pinned in `tools.lock.toml`; every bad case is refused by both verifiers for the same reason (`kyverno apply` against a real registry). |
+| 1.1.19 | A5 admission policy (§7): `sentinel admission-policy` renders the Kyverno 1.19 `ImageValidatingPolicy` (`policies.kyverno.io/v1`) from the parameters of `sentinel verify`, and requires the same things: the image's `cosign sign` statement (as an attestation, since `verifyImageSignatures` accepts any key-signed statement) and the four attestations, bound as `sentinel verify` binds them. Kyverno CLI pinned in `tools.lock.toml`; every bad case the tests cover is refused by both verifiers (`kyverno apply` against a real registry). The decision must be a non-BLOCK Decision v1 verdict (versions rendered from the contract); images match as a prefix of the lower-cased reference; `pods/ephemeralcontainers` is covered; the key file must hold exactly one public key. Admission is weaker than `sentinel verify` on the full schemas and on ambiguity (named in the README). |
 | 1.1.18 | A4 registry mode (§7, ADR-0010 decision 4): `sentinel attest --push` also signs the image and attaches the four attestations to it in its registry (Cosign 3 bundles, by digest); `sentinel verify` without `--evidence` reads them back and requires the image's own `cosign sign` statement, since Cosign 3 accepts any key-signed statement about the digest as a signature. A digest has one release per registry: `attest --push` refuses a different one before signing, and a re-run signs the same statements (the provenance names the run, not its attempt). `--registry-http` is for a loopback or single-label local registry only. crane is pinned in `tools.lock.toml` (local test registry, copies by digest). |
 | 1.1.12 | A4 release attestations (§7, ADR-0010): `sentinel attest` signs the release decision, CycloneDX SBOM, vulnerability scan (`schemas/vuln-result.v1.json`) and SLSA v1 provenance of an image digest with the pinned Cosign and a key pair (no transparency log), only for a non-BLOCK release decision about that image that recorded these findings and this SBOM; `sentinel verify` checks the four Sigstore bundles offline and prints a trust report (exit 0 trusted, 1 not, 3 could not run). |
 | 1.1.6 | A9 first seeds (§17): 5 fake secrets, 6 IaC, 3 CI-workflow seeds and 4 clean controls in `demo-shop/`, with a draft ground-truth format (`demo-shop/ground-truth/`, final schema owned by B9) checked against the pinned Gitleaks, Trivy and zizmor. SentinelCI's Trivy configuration trusts only the kind registry for KSV0125. |
@@ -396,11 +396,14 @@ store and when nothing was compared (every decision skipped; the previous-night 
   Offline from the evidence directory's Sigstore bundles (`--evidence`), or from the registry (the image's
   `cosign sign` statement and the four attestations `sentinel attest --push` attached, A4d).
 - **Kyverno ImageValidatingPolicy** (`policies.kyverno.io/v1`, Kyverno 1.19, rendered by
-  `sentinel admission-policy`): match our images, attestor = our public key (private mode) or keyless identity
-  (GitHub mode), require the image signature and the four attestations bound as `sentinel verify` binds them
-  (decision ≠ BLOCK, about this digest, from our repository; provenance from the release workflow and the
-  decision's commit; the vulnerability result and SBOM of that decision), `mutateDigest: true`. Negative tests
-  with `kyverno apply` against a real registry, then on kind in CI.
+  `sentinel admission-policy`): match our images (a prefix of the lower-cased reference), attestor = our
+  public key (private mode; a keyless identity comes with keyless `sentinel verify` in GitHub mode), require
+  the image signature and the four attestations bound as `sentinel verify` binds them (a non-BLOCK Decision v1
+  verdict about this digest, from our repository; provenance from the release workflow and the decision's
+  commit; the vulnerability result and SBOM of that decision), `mutateDigest: true`. CEL reads one statement
+  per type, so admission is weaker than `sentinel verify` on the full Decision v1 and vuln-result schemas and
+  on ambiguity (a second statement of a type). Negative tests with `kyverno apply` against a real registry,
+  then on kind in CI.
 
 ## 8. AI layer
 

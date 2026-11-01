@@ -961,6 +961,9 @@ def admission_policy_command(
     """Write the Kyverno admission policy of SentinelCI releases (A5): a Pod runs an image matching the glob
     only if `sentinel verify` would trust it. Exit code 3, with nothing written, for a value that is not what
     it should be."""
+    if out.resolve() == key.resolve():  # checked before anything is deleted
+        typer.echo("sentinel admission-policy: --out is the key file; nothing was written", err=True)
+        raise typer.Exit(EXIT_NO_DECISION)
     out.unlink(missing_ok=True)
     try:
         policy = render_policy(

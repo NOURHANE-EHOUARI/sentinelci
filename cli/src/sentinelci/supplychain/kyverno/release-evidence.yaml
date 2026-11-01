@@ -18,14 +18,20 @@ metadata:
 spec:
   validationActions: [Deny]
   failurePolicy: Fail
+  # Each admission makes five registry verifications; a timeout denies (failurePolicy: Fail). The API server's
+  # maximum, so that a slow registry is a deny only when it is really unavailable.
+  webhookConfiguration:
+    timeoutSeconds: 30
   matchConstraints:
     resourceRules:
       - apiGroups: ['']
         apiVersions: ['v1']
         operations: ['CREATE', 'UPDATE']
-        resources: ['pods']
+        # Ephemeral containers (kubectl debug) arrive on a subresource, which 'pods' alone does not match.
+        resources: ['pods', 'pods/ephemeralcontainers']
+  # A prefix of the lower-cased reference: registry host names ignore case, and a glob does not.
   matchImageReferences:
-    - glob: '${image_glob}'
+    - expression: "ref.lowerAscii().startsWith('${image_prefix}')"
   validationConfigurations:
     mutateDigest: true
     verifyDigest: true
@@ -83,10 +89,12 @@ ${public_key}
       expression: >-
         images.all(kind, images[kind].all(image,
           extractPayload(image, attestations.decision).predicate.subject.context == 'release'))
-    - message: 'decision: the verdict is BLOCK'
+    - message: 'decision: not a non-BLOCK Decision v1 verdict'
       expression: >-
         images.all(kind, images[kind].all(image,
-          extractPayload(image, attestations.decision).predicate.verdict != 'BLOCK'))
+          extractPayload(image, attestations.decision).predicate.verdict in ['PASS', 'WARN'] &&
+          extractPayload(image, attestations.decision).predicate.schema_version in [${decision_versions}] &&
+          !extractPayload(image, attestations.decision).predicate.violations.exists(v, v.effect != 'WARN')))
     - message: 'decision: about another image'
       expression: >-
         images.all(kind, images[kind].all(image, image.contains('@') &&
