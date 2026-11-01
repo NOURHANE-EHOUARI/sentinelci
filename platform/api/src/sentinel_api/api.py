@@ -46,7 +46,7 @@ def _errors(*codes: int) -> dict[int | str, dict[str, Any]]:
         401: "No valid ingestion token (`Authorization: Bearer <token>`).",
         404: "No such run or finding.",
         409: "This run's findings are already recorded; compare `findings_sha256` from `GET /runs/{run_id}`.",
-        413: "The request body is larger than the limit.",
+        413: "The request body is larger than the limit (64 KiB, or the upload limit for findings).",
         415: f"The findings upload is not `{NDJSON_TYPE}`.",
         503: "No database is configured.",
     }
@@ -143,7 +143,7 @@ def create_run(body: RunCreate, session: SessionDep) -> RunOut:
     return _run_out(run)
 
 
-@router.get("/runs/{run_id}", tags=["runs"], responses=_errors(404, 503))
+@router.get("/runs/{run_id}", tags=["runs"], responses=_errors(404, 413, 503))
 def get_run(run_id: uuid.UUID, session: SessionDep) -> RunOut:
     run = session.get(Run, run_id)
     if run is None:
@@ -264,7 +264,7 @@ async def upload_findings(run_id: uuid.UUID, request: Request, session: SessionD
     return await run_in_threadpool(_store, session, run_id, body)
 
 
-@router.get("/findings", tags=["findings"], responses=_errors(503))
+@router.get("/findings", tags=["findings"], responses=_errors(413, 503))
 def list_findings(
     session: SessionDep,
     repo: Annotated[str | None, Query(pattern=_REPO, max_length=200)] = None,
@@ -295,7 +295,7 @@ def list_findings(
     return FindingPage(items=items, total=total, limit=limit, offset=offset)
 
 
-@router.get("/findings/{finding_id}", tags=["findings"], responses=_errors(404, 503))
+@router.get("/findings/{finding_id}", tags=["findings"], responses=_errors(404, 413, 503))
 def get_finding(
     finding_id: Annotated[str, Path(pattern=_SHA256)],
     session: SessionDep,

@@ -1,7 +1,9 @@
 """A recorded run's evidence cannot change (#38 review).
 
-Once `runs.findings_sha256` is set, the database refuses to change it, the finding count or the upload time,
-and refuses to add, change or remove that run's findings. The API's single conditional update already allows
+Once `runs.findings_sha256` is set, the database refuses any change to the run (its evidence and what the
+upload was checked against: repo, commit, context, ref, CI run id) and refuses to delete it, and refuses to
+add, change or remove that run's findings. A run whose findings never arrived carries no evidence and can
+still be deleted. The API's single conditional update already allows
 one recording only; this is the backstop for anything that bypasses it.
 
 Revision ID: 0002
@@ -23,20 +25,20 @@ def upgrade() -> None:
         """
         CREATE FUNCTION runs_keep_recorded_evidence() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN
-            IF OLD.findings_sha256 IS NOT NULL AND (
-                NEW.findings_sha256 IS DISTINCT FROM OLD.findings_sha256
-                OR NEW.findings_uploaded_at IS DISTINCT FROM OLD.findings_uploaded_at
-                OR NEW.finding_count IS DISTINCT FROM OLD.finding_count
-            ) THEN
-                RAISE EXCEPTION 'run % is recorded: its evidence cannot change', OLD.id;
+            IF OLD.findings_sha256 IS NOT NULL THEN
+                IF TG_OP = 'DELETE' THEN
+                    RAISE EXCEPTION 'run % is recorded: it cannot be deleted', OLD.id;
+                ELSIF NEW IS DISTINCT FROM OLD THEN
+                    RAISE EXCEPTION 'run % is recorded: its evidence cannot change', OLD.id;
+                END IF;
             END IF;
-            RETURN NEW;
+            RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
         END
         $$
         """
     )
     op.execute(
-        "CREATE TRIGGER runs_keep_recorded_evidence BEFORE UPDATE ON runs "
+        "CREATE TRIGGER runs_keep_recorded_evidence BEFORE UPDATE OR DELETE ON runs "
         "FOR EACH ROW EXECUTE FUNCTION runs_keep_recorded_evidence()"
     )
     op.execute(

@@ -225,6 +225,12 @@ def test_the_api_receives_the_token_hash_never_the_token(services: dict[str, Any
     assert environment["SENTINEL_API_TOKEN_SHA256"] == DUMMY_ENV["SENTINEL_API_TOKEN_SHA256"]
 
 
+def test_no_service_reads_an_env_file(services: dict[str, Any]) -> None:
+    """#38 review: `env_file: .env` would give a container every value of .env, the client token too."""
+    for name, service in services.items():
+        assert "env_file" not in service, name
+
+
 def test_the_client_token_never_reaches_a_container() -> None:
     """#38 review: a canary token in the environment must not appear anywhere in the rendered config.
 
@@ -246,3 +252,21 @@ def test_make_env_refuses_a_hash_that_does_not_match_the_token(tmp_path: Path) -
     with pytest.raises(MAKE_ENV.EnvError, match="delete both"):
         MAKE_ENV.write_env(target)
     assert target.read_text(encoding="utf-8") == "".join(lines), "nothing is written"
+
+
+def test_make_env_accepts_a_hash_list_that_holds_the_tokens_hash(tmp_path: Path) -> None:
+    """An overlapping rotation keeps the old hash next to the new one; the API accepts both (#38 review)."""
+    target = tmp_path / ".env"
+    MAKE_ENV.write_env(target)
+    text = target.read_text(encoding="utf-8")
+    values = dict(
+        line.split("=", 1) for line in text.splitlines() if "=" in line and not line.startswith("#")
+    )
+    older = hashlib.sha256(b"older token").hexdigest()
+    listed = f"{values['SENTINEL_API_TOKEN_SHA256']},{older}"
+    target.write_text(text.replace(values["SENTINEL_API_TOKEN_SHA256"], listed), encoding="utf-8")
+    assert MAKE_ENV.write_env(target) is False
+    without = text.replace(values["SENTINEL_API_TOKEN_SHA256"], older)
+    target.write_text(without, encoding="utf-8")
+    with pytest.raises(MAKE_ENV.EnvError, match="delete both"):
+        MAKE_ENV.write_env(target)

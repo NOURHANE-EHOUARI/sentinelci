@@ -351,10 +351,10 @@ def test_writes_declare_the_bearer_scheme_and_reads_do_not(client: TestClient) -
     ("method", "path", "codes"),
     [
         ("POST", "/api/v1/runs", {"201", "401", "413", "422", "503"}),
-        ("GET", "/api/v1/runs/{run_id}", {"200", "404", "422", "503"}),
+        ("GET", "/api/v1/runs/{run_id}", {"200", "404", "413", "422", "503"}),
         ("POST", "/api/v1/runs/{run_id}/findings", {"201", "401", "404", "409", "413", "415", "422", "503"}),
-        ("GET", "/api/v1/findings", {"200", "422", "503"}),
-        ("GET", "/api/v1/findings/{finding_id}", {"200", "404", "422", "503"}),
+        ("GET", "/api/v1/findings", {"200", "413", "422", "503"}),
+        ("GET", "/api/v1/findings/{finding_id}", {"200", "404", "413", "422", "503"}),
     ],
 )
 def test_every_status_a_route_returns_is_in_the_contract(
@@ -491,8 +491,12 @@ def test_two_concurrent_uploads_record_one(
         "UPDATE runs SET findings_sha256 = repeat('0', 64) WHERE id = %s",
         "UPDATE runs SET finding_count = 99 WHERE id = %s",
         "UPDATE runs SET findings_sha256 = NULL, findings_uploaded_at = NULL WHERE id = %s",
+        "UPDATE runs SET commit = repeat('b', 40) WHERE id = %s",
+        "UPDATE runs SET repo = 'someone/else', context = 'release' WHERE id = %s",
+        "UPDATE runs SET ref = 'refs/heads/other' WHERE id = %s",
+        "DELETE FROM runs WHERE id = %s",
     ],
-    ids=["hash", "count", "unrecord"],
+    ids=["hash", "count", "unrecord", "commit", "repo-context", "ref", "delete"],
 )
 def test_recorded_evidence_cannot_be_changed_in_the_database(
     client: TestClient, headers: dict[str, str], database_url: str, statement: str
@@ -595,3 +599,91 @@ def test_the_media_type_is_matched_as_http_says(
         headers={**headers, "Content-Type": media_type},
     )
     assert response.status_code == 201, response.text
+
+
+# ---------------------------------------------------------------- #38 review, round 2
+
+
+def test_an_unrecorded_run_can_still_be_deleted(
+    client: TestClient, headers: dict[str, str], database_url: str
+) -> None:
+    """Only recorded evidence is fixed: a run whose findings never arrived carries none."""
+    import psycopg
+
+    run_id = create_run(client, headers)
+    with psycopg.connect(database_url) as conn:
+        assert conn.execute("DELETE FROM runs WHERE id = %s", (run_id,)).rowcount == 1
+
+
+def test_a_real_sized_upload_passes_the_body_limit(client: TestClient, headers: dict[str, str]) -> None:
+    """Above the 64 KiB JSON cap: the upload route has its own limit (the middleware matches its path)."""
+    from sentinel_api.limits import MAX_JSON_BYTES
+
+    documents = []
+    for n in range(200):
+        document = finding("secret-in-config.json")
+        document["id"] = hashlib.sha256(f"finding {n}".encode()).hexdigest()
+        documents.append(document)
+    body = ndjson(*documents)
+    assert len(body) > MAX_JSON_BYTES
+    run_id = create_run(client, headers)
+    response = upload(client, headers, run_id, body)
+    assert response.status_code == 201, response.text
+    assert response.json()["finding_count"] == 200
+
+
+def test_the_database_refusal_is_answered_409(
+    client: TestClient, headers: dict[str, str], database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the lock is ever bypassed, a run recorded meanwhile makes the trigger refuse: 409, never a 500."""
+    import uuid
+
+    import psycopg
+    from fastapi import HTTPException
+
+    import sentinel_api.api as api
+
+    run_id = create_run(client, headers)
+    real_parse = api._parse
+
+    def record_meanwhile(body: bytes, run: Any) -> list[dict[str, Any]]:
+        with psycopg.connect(database_url, autocommit=True) as conn:
+            conn.execute(
+                "UPDATE runs SET findings_sha256 = repeat('0', 64), findings_uploaded_at = now()"
+                " WHERE id = %s",
+                (run_id,),
+            )
+        return real_parse(body, run)
+
+    monkeypatch.setattr(api, "_parse", record_meanwhile)
+    factory = client.app.state.sessions  # type: ignore[attr-defined]
+    with factory() as session:
+        # Without the row lock: the bypass this backstop exists for.
+        monkeypatch.setattr(
+            session, "get", lambda model, ident, **_: type(session).get(session, model, ident)
+        )
+        with pytest.raises(HTTPException) as caught:
+            api._store(session, uuid.UUID(run_id), ndjson(SECRET))
+    assert caught.value.status_code == 409
+
+
+def test_runs_created_together_are_listed_in_a_stable_order(
+    client: TestClient, headers: dict[str, str], database_url: str
+) -> None:
+    """Equal created_at: the run id, then the finding id, decide (pagination must never repeat or skip).
+
+    The findings are inserted in descending id order, so an order left to the database would differ.
+    """
+    import psycopg
+
+    names = ["secret-in-config.json", "sca-enriched-and-scored.json", "container-os-package.json"]
+    runs = [create_run(client, headers, commit=c * 40) for c in "def"]
+    for run_id, c in zip(runs, "def", strict=True):
+        documents = sorted((finding(n, commit=c * 40) for n in names), key=lambda d: d["id"], reverse=True)
+        assert upload(client, headers, run_id, ndjson(*documents)).status_code == 201
+    with psycopg.connect(database_url) as conn:
+        conn.execute("ALTER TABLE runs DISABLE TRIGGER runs_keep_recorded_evidence")
+        conn.execute("UPDATE runs SET created_at = '2026-11-01T00:00:00Z'")
+        conn.execute("ALTER TABLE runs ENABLE TRIGGER runs_keep_recorded_evidence")
+    listed = [(i["run_id"], i["finding"]["id"]) for i in client.get("/api/v1/findings").json()["items"]]
+    assert listed == sorted(listed)

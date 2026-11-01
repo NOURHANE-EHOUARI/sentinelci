@@ -64,8 +64,9 @@ def write_env(path: Path = ENV_FILE) -> bool:
         values.setdefault(name, generate())
     for name, derive in DERIVED.items():
         values.setdefault(name, derive(values))
-        if values[name] != derive(values):
-            # E.g. only the token line was deleted to rotate it: the old hash would refuse every write.
+        # A list (an overlapping rotation) is fine as long as it holds the current value. Only the token line
+        # deleted to rotate it would leave the old hash alone, and refuse every write.
+        if derive(values) not in values[name].split(","):
             raise EnvError(f"{name} in {path} does not match its source; delete both lines to rotate them")
     missing = [name for name in [*VARIABLES, *DERIVED] if existing is None or name not in existing]
     if not missing:
