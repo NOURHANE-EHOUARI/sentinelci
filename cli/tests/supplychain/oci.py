@@ -125,8 +125,8 @@ def release_files(tmp_path: Path, image: str, **changes: Any) -> dict[str, Path]
     return paths
 
 
-def attest(tmp_path: Path, image: str, key: Path, *extra: str) -> Result:
-    release = release_files(tmp_path, image)
+def attest(tmp_path: Path, image: str, key: Path, *extra: str, **changes: Any) -> Result:
+    release = release_files(tmp_path, image, **changes)
     return CliRunner().invoke(
         app,
         [

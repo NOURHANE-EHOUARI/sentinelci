@@ -231,7 +231,9 @@ class WorkflowRun:
 
     @property
     def invocation_id(self) -> str:
-        return f"{GITHUB}/{self.repository}/actions/runs/{self.run_id}/attempts/{self.run_attempt}"
+        """The run, without its attempt: GitHub's only retry ("Re-run jobs") increments the attempt, and a
+        re-run must sign the same statements, or registry mode sees two releases (ambiguous, #44 review)."""
+        return f"{GITHUB}/{self.repository}/actions/runs/{self.run_id}"
 
 
 def workflow_run(env: Mapping[str, str]) -> WorkflowRun:

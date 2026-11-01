@@ -68,7 +68,13 @@ from sentinelci.scanners.installer import VerificationReport, install_tools, ver
 from sentinelci.scanners.lock import LOCK_FILE_NAME, load_lock
 from sentinelci.supplychain.admission import render_policy
 from sentinelci.supplychain.attestations import KINDS, AttestationError, parse_image, release_predicates
-from sentinelci.supplychain.cosign import Registry, Signer, Verifier, check_public_key
+from sentinelci.supplychain.cosign import (
+    Signer,
+    Verifier,
+    check_public_key,
+    refuse_another_release,
+    registry_for,
+)
 from sentinelci.supplychain.verify import ATTESTATIONS_DIR, verify_evidence, verify_registry
 
 EXIT_UNTRUSTED_INPUT = 3
@@ -808,7 +814,8 @@ RegistryHttpOption = Annotated[
     bool,
     typer.Option(
         "--registry-http",
-        help="Reach the image's registry over plain HTTP: only for a local registry (kind's, a test one).",
+        help="Reach the image's registry over plain HTTP: a local registry only (a loopback host, or a "
+        "single-label host with a port such as kind-registry:5000); refused for any other host.",
     ),
 ]
 
@@ -841,12 +848,14 @@ def attest_command(
     Runs in the release workflow's attest job (the GitHub Actions variables give the provenance). Exit code 3,
     with nothing signed, when the inputs don't belong together: a BLOCK or non-release decision, a decision
     about another image, findings or an SBOM the decision did not record, or a run on another repository or
-    commit. With --push, a registry failure is exit code 3 too: the registry may then hold part of the set,
-    which neither `sentinel verify` nor Kyverno trusts, until a complete run attaches the rest.
+    commit. With --push, the registry must not already hold a different release of this digest signed by the
+    same key (a digest has one release per registry; a re-run of the same release is fine): exit code 3, with
+    nothing signed. A registry failure while pushing is exit code 3 too: no bundle is kept, and the registry
+    may hold part of the set, which neither `sentinel verify` nor Kyverno trusts.
     """
     directory = out / ATTESTATIONS_DIR
     bundles = [directory / f"{kind}.sigstore.json" for kind in KINDS]
-    signed = False
+    signed = pushing = False
     try:
         target = parse_image(image)
         predicates = release_predicates(
@@ -857,17 +866,26 @@ def attest_command(
             env=os.environ,
         )
         signer = Signer(key, load_lock(lock), tools_dir, platform)
+        if push:  # checked before anything is signed
+            registry = registry_for(target, allow_http=registry_http)
+            statements = {kind: (KINDS[kind], predicates[kind]) for kind in KINDS}
+            refuse_another_release(signer, target, statements, registry, os.environ)
         directory.mkdir(parents=True, exist_ok=True)
         for (kind, predicate_type), bundle in zip(KINDS.items(), bundles, strict=True):
             signer.attest(target, predicate_type, predicates[kind], bundle, os.environ)
         if push:
-            registry = Registry(allow_http=registry_http)
+            pushing = True
             signer.sign_image(target, registry, os.environ)
             for kind, predicate_type in KINDS.items():
                 signer.attest_image(target, predicate_type, predicates[kind], registry, os.environ)
         signed = True
     except (AttestationError, OSError, ToolIntegrityError, ScannerError) as exc:
-        typer.echo(f"sentinel attest: {exc}; nothing was signed", err=True)
+        outcome = (
+            "no bundle kept; the registry may hold part of the set (not trusted)"
+            if pushing
+            else "nothing was signed"
+        )
+        typer.echo(f"sentinel attest: {exc}; {outcome}", err=True)
         raise typer.Exit(EXIT_NO_DECISION) from exc
     finally:
         if not signed:  # all four or none, whatever stopped the run; an earlier run's bundles go too
@@ -915,7 +933,7 @@ def verify_command(
         if evidence is not None:
             report = verify_evidence(target, evidence, verifier, repo=repo, builder_id=builder_id)
         else:
-            registry = Registry(allow_http=registry_http)
+            registry = registry_for(target, allow_http=registry_http)
             report = verify_registry(target, verifier, registry, os.environ, repo=repo, builder_id=builder_id)
     except (AttestationError, ToolIntegrityError, ScannerError) as exc:
         typer.echo(f"sentinel verify: {exc}\nFAIL CLOSED: the image is not trusted.", err=True)

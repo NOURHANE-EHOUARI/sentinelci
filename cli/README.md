@@ -253,15 +253,28 @@ uv run sentinel verify <registry>/demo-shop/shop-api@sha256:<digest> --key cosig
   digest. Cosign 3 stores every signature and attestation as a Sigstore bundle (an OCI referrer of the image),
   and `cosign verify` accepts any statement the key signed about the digest as a signature, an attestation
   included. So the check looks for a statement of type `https://sigstore.dev/cosign/sign/v1`.
-- A retried attest job attaches the same statements again (the predicates never read the clock): still one
-  attestation each. Two different statements of the same type are ambiguous, and that attestation fails.
-- Attestations live next to the image in its repository: the same digest copied to another repository has
-  none.
-- `--registry-http` allows plain HTTP, for a local registry only (the kind cluster's, a test one). Registry
-  credentials come only from `DOCKER_CONFIG` (the directory of a Docker `config.json`), when it is set; no
-  other variable reaches Cosign.
-- With `--push`, a registry failure is exit `3` and no bundle is kept. The registry may then hold part of the
-  set, which is not trusted until a complete run attaches the rest.
+- A re-run of the attest job, GitHub's "Re-run jobs" included, attaches the same statements again: the
+  predicates read neither the clock nor the run attempt. Each still counts as one attestation. Two different
+  statements of the same type are ambiguous, and that attestation fails.
+- **One release per digest per registry.** Before signing anything, `attest --push` derives the public key
+  (`cosign public-key`) and refuses (exit `3`, nothing signed) when the registry already holds a different
+  statement of one of the four types, signed by the same key, about this digest. A second release would make
+  `sentinel verify` refuse the image as ambiguous, while Kyverno, which reads one statement per type, could
+  still admit it. To release the digest again, remove the old release first: on a registry without the OCI
+  referrers API, `crane delete <repository>:sha256-<hex>`.
+- Trust is per digest; the repository name is informational. A plain copy of the image to another repository
+  carries no attestation, but a copy that includes the `sha256-<hex>` index (`crane copy` of both, or
+  `cosign save` / `cosign load`) is the same release, and is trusted there too.
+- `--registry-http` allows plain HTTP for a local registry only: a loopback host (`localhost`, `127.0.0.1`), or
+  a single-label host with a port (kind's `kind-registry:5000`). Any other host is refused (exit `3`), since
+  the image and the registry credentials would cross the network in clear. Registry credentials come only
+  from `DOCKER_CONFIG` (the directory of a Docker `config.json`), when it is set; no other variable reaches
+  Cosign.
+- With `--push`, a registry failure while pushing is exit `3`, and no bundle is kept. The registry may then
+  hold part of the set, which is not trusted. Re-running the same release completes it.
+- An unavailable registry: when the connection is refused, `verify` reports every check failed (exit `1`).
+  When the registry accepts the connection and never answers, Cosign's 120 s timeout ends the run (exit `3`).
+  Both refuse the image.
 
 ## `sentinel admission-policy` (Kyverno admission of releases, A5)
 
