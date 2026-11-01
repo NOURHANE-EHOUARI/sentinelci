@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "group_id": "86f9350a0d633a6ecb064b153de275f42c4992c5e84c1ff2a5578aa7732bfbbb",
+  "finding_ids": [
+    "1111111111111111111111111111111111111111111111111111111111111111",
+    "2222222222222222222222222222222222222222222222222222222222222222"
+  ],
+  "stage": "structural",
+  "key": "package:pkg:npm/lodash",
+  "title": "lodash 4.17.20: 2 advisories",
+  "root_cause": "The web front end pins lodash 4.17.20, which GHSA-35jh-r3h4-6jhm and GHSA-29mw-wpgm-hmr9 affect.",
+  "single_fix": "Upgrade lodash to 4.17.21 or later in services/web/package.json."
+}

@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.20 | A7 correlation (§8, §13.2): `schemas/root-cause-group.v1.json` (RootCauseGroup v1, advisory); stages 1 (dedup) and 2a (structural fix keys) of `sentinel_ai.correlate`, stage 2b (embedding clustering) with an injected embedder, and the ARI and alert-reduction metrics. |
 | 1.1.6 | A9 first seeds (§17): 5 fake secrets, 6 IaC, 3 CI-workflow seeds and 4 clean controls in `demo-shop/`, with a draft ground-truth format (`demo-shop/ground-truth/`, final schema owned by B9) checked against the pinned Gitleaks, Trivy and zizmor. SentinelCI's Trivy configuration trusts only the kind registry for KSV0125. |
 | 1.1.5 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
 | 1.1.4 | Enrichment (B2, §6.1): `schemas/enrichment-snapshot.v1.json` (`schema_version` "1.0", `sources.kev.cves`: the CVEs the KEV lookup covered) and `schemas/sentinel-config.v1.json` (`sentinel.yaml`, canonical component paths); `sentinel enrich`. "Not listed in KEV" only for covered CVEs; `sentinel.yaml` read with a restricted YAML loader. |
@@ -395,7 +396,7 @@ AI runs after the decision is stored, writes only advisory tables, and every out
 |---|---|---|---|---|
 | Explain | finding + code window + CWE + advisory | Explanation {summary, impact, exploit_scenario, fix_guidance, references, confidence} | B | rubric + LLM-judge agreement |
 | Triage hint | finding + context + past waivers | TriageHint {likely_false_positive, rationale, confidence} | B | precision on labelled FPs |
-| Correlate | all findings of a run | RootCauseGroup {title, root_cause, finding_ids, single_fix} | A | ARI, alert reduction |
+| Correlate | all findings of a run | RootCauseGroup (`schemas/root-cause-group.v1.json`) {title, root_cause, finding_ids, single_fix} | A | ARI, alert reduction |
 | Patch | finding + file + explanation (+ CI logs) | PatchProposal (`schemas/patch-proposal.v1.json`) | B | verified fix rate |
 
 - **Provider interface** `sentinel_ai.providers.LLMProvider` (`complete(system, user, schema)`, `embed(texts)`).
@@ -405,8 +406,10 @@ AI runs after the decision is stored, writes only advisory tables, and every out
 - **Guardrails:** import contract; untrusted text in delimited data blocks; schema validation with one repair
   retry, else "unavailable"; secret redaction before any prompt; model/prompt/input hash logged; injection
   canaries prove verdict invariance.
-- **Correlation (A7):** stage 1 fingerprint dedup → stage 2 embeddings (pgvector) + clustering → stage 3 LLM
-  labels and single fix; each stage measured separately.
+- **Correlation (A7):** stage 1 fingerprint dedup → stage 2a structural fix keys (the same package, the same
+  advisory under any of its ids, the same rule in the same file; deterministic) → stage 2b embeddings
+  (pgvector) + average-linkage clustering within a category → stage 3 LLM labels and single fix; each stage
+  measured separately (ARI, alert reduction). A fix is proposed only when one change resolves every member.
 
 ## 9. Verified remediation loop
 
@@ -509,6 +512,7 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
 | `tool-status.v1.json` | A3 → B4 | per tool: version, hashes, status (`ok` … `not_run`), detail; any non-`ok` status → SC-010; required in `pr`/`release`, and must list every required scanner |
 | `patch-proposal.v1.json` | B6 / A6 fixers → A6 | finding ids, strategy, diff, files, rationale, model (required for `llm:code`) |
 | `verification-result.v1.json` | A6 → B1, B8 | gate outcome; VERIFIED only if every condition holds |
+| `root-cause-group.v1.json` | A7 correlator → B1, B7, B8 | finding ids (sorted, one group each), stage that formed it, title, root cause, single fix or null; `model` for stage `llm` only. Advisory: never read by the gate |
 | evidence bundle layout | A4 → B1 | `manifest.json` (sha256 of each file, signed) + decision, findings, snapshot, SBOMs, raw outputs |
 | `openapi.yaml` | B1 → A3, A6, A8, B7 | Platform API |
 | `sentinel.yaml` (`sentinel-config.v1.json`) | target → B2, B4 | service, exposure, environment, data_classification, owners, policy_profile; optional `components` (path, exposure, data class) |

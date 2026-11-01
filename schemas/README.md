@@ -8,6 +8,7 @@ JSON Schemas (draft 2020-12) shared by both tracks. See `docs/spec/SPEC.md` sect
 | `decision.v1.json` | B4 (policy engine) → A4, A5, platform |
 | `patch-proposal.v1.json` | A6 fixers / B6 LLM → A6 remediation loop |
 | `verification-result.v1.json` | A6 → platform, B8 |
+| `root-cause-group.v1.json` | A7 correlator (`sentinel_ai.correlate`) → platform, dashboard, B8 (advisory, never read by the gate) |
 | `waivers.v1.json` | people via reviewed PRs (AI drafts only) → B4 gate, platform |
 | `tool-status.v1.json` | A3 pipeline (superset of the `tools verify --report` manifest) → B4 gate (SC-010) |
 | `enrichment-snapshot.v1.json` | B2 fetchers (EPSS, KEV, OSV) → `sentinel enrich`, evidence store, replay |

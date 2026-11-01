@@ -22,6 +22,7 @@ CONTRACTS = {
     "tool-status": "tool-status.v1.json",
     "enrichment-snapshot": "enrichment-snapshot.v1.json",
     "sentinel-config": "sentinel-config.v1.json",
+    "root-cause-group": "root-cause-group.v1.json",
 }
 
 
