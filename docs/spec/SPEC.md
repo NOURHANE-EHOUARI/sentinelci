@@ -392,8 +392,8 @@ store and when nothing was compared (every decision skipped; the previous-night 
   attestation must be signed by `--key` and about this digest; the decision must be a release decision about
   this image from `--repo`; the provenance must come from `--builder-id` and the decision's commit; the
   vulnerability result and the SBOM must be the decision's. Exit 0 trusted, 1 not trusted, 3 could not run.
-  Offline from the evidence directory's Sigstore bundles (`--evidence`); registry mode with the release
-  workflow (A4b).
+  Offline from the evidence directory's Sigstore bundles (`--evidence`), or from the registry (the image's
+  `cosign sign` statement and the four attestations `sentinel attest --push` attached, A4d).
 - **Kyverno ImageValidatingPolicy** (apiVersion depends on the Kyverno release): match our images, attestor =
   our public key (private mode) or keyless identity (GitHub mode), require the decision attestation with
   verdict ≠ BLOCK and an SBOM attestation, `mutateDigest: true`. Negative tests on kind in CI.
