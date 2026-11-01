@@ -125,7 +125,7 @@ def test_a_diff_that_changes_an_unlisted_file_is_refused(repo: Path, proposal: P
 def test_a_diff_that_does_more_than_edit_in_place_is_refused(
     repo: Path, proposal: PatchProposal, diff: str, files: list[str]
 ) -> None:
-    with pytest.raises(RemediationError, match=r"more than edit files in place|the proposal lists"):
+    with pytest.raises(RemediationError, match=r"more than edit|renames or copies|the proposal lists"):
         apply_proposal(_with_diff(proposal, diff, files), repo, findings=FINDINGS)
     assert git(repo, "branch", "--list").strip() == "* main"
 

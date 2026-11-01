@@ -218,14 +218,34 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
 
 - `kubernetes` proposes (`schemas/patch-proposal.v1.json`), it never applies. It hardens the workloads of the
   manifests that Trivy flagged, for the rule ids it knows (each edit checked against the pinned Trivy), and
-  leaves alone what would change the application (hostPath volumes, image tags, resource limits, added
-  capabilities). Comments, key order and quoting are kept; a file it cannot edit without reformatting is
-  named in a warning and left alone. With nothing to fix, it writes no file and exits `0`.
-- `dockerfile` does the same for Dockerfiles: the final stage runs as `USER 10001:10001` (a last `USER root` is
-  replaced, otherwise the line goes right before CMD/ENTRYPOINT), COPY replaces ADD for local files (not for a
-  URL, a git source, an archive ADD extracts or an ADD-only flag), and `apt-get install` gets
-  `--no-install-recommends`. The base image's tag or digest, a HEALTHCHECK and a script piped to a shell are
-  left alone. A file with an `escape` directive or a heredoc is left alone.
+  leaves alone what the fix would have to choose for the application (hostPath volumes, image tags, resource
+  limits, added capabilities). Comments, key order and quoting are kept, and so are `---` / `...` markers; a
+  file it cannot edit without reformatting, with CRLF line endings, or with a workload kind it does not edit
+  is named in a warning and left alone. With nothing to fix, it writes no file and exits `0`.
+  - **It can change how a workload runs**: a non-root UID/GID (10001; a UID or GID above 10000 is kept), a
+    read-only root file system and dropped capabilities can stop a workload that writes into its image, owns
+    files by another UID or needs a capability. The proposal's rationale says so. `--build-ok` and
+    `--tests-ok` come from the build and unit tests, which do not run the workload: there is no cluster
+    deploy test yet.
+- `dockerfile` does the same for Dockerfiles:
+  - **USER.** `USER 10001:10001` is added to the final stage after its last RUN and USER, before the next
+    CMD/ENTRYPOINT or at the end, so every RUN still runs as the user it ran as. A USER line is never
+    rewritten. The final stage is the last FROM: an image built with `--target` an earlier stage is not
+    changed (Trivy checks the last stage too).
+  - **ADD → COPY**, only when ADD would do nothing more. ADD unpacks a local tar by its content, so every
+    source must be in the repository (next to the Dockerfile, then at the root) and be a directory or a plain
+    file that is neither a tar nor compressed. A URL, a git source, a glob, a variable, a missing source or an
+    ADD-only flag keeps ADD (COPY's `--chown`, `--chmod`, `--link` and `--exclude` are fine). A zip is copied:
+    ADD never unpacks one.
+  - **apt-get.** `apt-get install` gets `--no-install-recommends`.
+  - **What it leaves alone.** An instruction that carries a finding the edit does not resolve is not edited:
+    Trivy names a Dockerfile finding by its instruction's text, so the other finding would get a new
+    fingerprint. Only the findings an edit resolved are claimed; a file where nothing could be resolved is
+    reported as "nothing this fixer can resolve". The base image's tag or digest, a HEALTHCHECK and a script
+    piped to a shell are left alone too, and so is a file with an `escape` directive, a heredoc or CRLF line
+    endings.
+  - **It can change what the image does**: files it writes at run time must be writable by UID 10001, and an
+    image that needs root at run time breaks. The rationale says so.
 - `apply` turns a proposal into one commit on a new `sentinel/fix/<id>` branch of a local clone, and prints
   the branch, the commit, the base and the diff's sha256 as JSON. The bot's workflow pushes it and opens the
   pull request.
@@ -248,7 +268,15 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
     by another user (a container job on a runner) is refused as "dubious ownership": exit `3`, fail closed.
   - A branch exists once per proposal. Exit `3`, with nothing created, otherwise.
 - `verify` writes a `VerificationResult` (`schemas/verification-result.v1.json`): VERIFIED only if the patched
-  commit builds, its tests pass, every target fingerprint is gone, no new finding of severity MEDIUM or higher
-  appeared, and its decision is not BLOCK. Exit `0` VERIFIED, `1` REJECTED (a retry is left) or FAILED (the
-  third attempt), `3` when an input cannot be trusted (nothing is written).
+  commit builds, its tests pass, every target is gone, no new finding of severity MEDIUM or higher appeared,
+  and its decision is not BLOCK. Exit `0` VERIFIED, `1` REJECTED (a retry is left) or FAILED (the third
+  attempt), `3` when an input cannot be trusted (nothing is written). In detail:
+  - a target is gone when its fingerprint is gone and no new fingerprint of the same tool and rule appears in
+    its file (a renamed container moves a finding, it does not fix it); a base finding that rises to MEDIUM or
+    higher counts as new;
+  - exit `3` for a proposal whose id does not match its content, that claims findings `--before` does not
+    have, or whose diff does anything but edit, in place, the files those findings are in;
+  - exit `3` for a decision not made on `--after` (`inputs.findings_digest`), not in pr context, or without the
+    tool status: a scan that failed or was skipped must not vouch for the patch;
+  - `--out` can never be one of the inputs.
 

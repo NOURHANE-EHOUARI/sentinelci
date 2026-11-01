@@ -100,7 +100,12 @@ def _link(file: Path) -> None:
         (b"kind: Pod\nspec: [unclosed\n", "not valid YAML"),
         (b"kind: Pod\nspec: {}", "does not end with a newline"),
         (b"kind: \xff\n", "not UTF-8"),
-        (b"kind: Pod\nspec:\n  containers: []\n", "already hardened"),
+        (b"kind: Pod\nspec:\n  containers: []\n", "nothing this fixer can resolve"),
+        (b"kind: Pod\r\nspec:\r\n  hostPID: true\r\n  containers: []\r\n", "CRLF"),
+        (
+            b"kind: Deployment\nspec: {}\n---\nkind: Unknown\nspec:\n  containers: []\n",
+            "kind Unknown is not supported",
+        ),
     ],
     ids=[
         "missing",
@@ -110,6 +115,8 @@ def _link(file: Path) -> None:
         "no-final-newline",
         "not-utf8",
         "stale-findings",
+        "crlf",
+        "unsupported-kind",
     ],
 )
 def test_a_file_that_cannot_be_edited_minimally_is_left_alone(
@@ -262,3 +269,55 @@ def test_real_trivy_after_the_proposal_only_the_left_alone_findings_remain(tmp_p
     assert _trivy(repo / "demo-shop" / "infra" / "k8s", tmp_path / "cache")["shop-api.yaml"] == set(
         LEFT_ALONE
     )
+
+
+POD = """\
+kind: {kind}
+spec:
+  template:
+    spec:
+      containers:
+        - name: a
+          securityContext:
+            capabilities:
+              add:
+                - NET_BIND_SERVICE
+"""
+
+
+def test_drop_all_keeps_the_added_capabilities() -> None:
+    """#41 review, nit 2."""
+    text = fix_manifest(POD.format(kind="Deployment"), ["KSV-0003"]).text
+    assert "- NET_BIND_SERVICE" in text and "- ALL" in text
+
+
+@pytest.mark.parametrize(
+    "kind", ["Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job", "ReplicationController"]
+)
+def test_every_template_workload_is_hardened(kind: str) -> None:
+    assert "allowPrivilegeEscalation: false" in fix_manifest(POD.format(kind=kind), ["KSV-0001"]).text
+
+
+def test_a_pod_template_is_hardened() -> None:
+    template = "kind: PodTemplate\ntemplate:\n  spec:\n    containers:\n      - name: a\n"
+    assert "allowPrivilegeEscalation: false" in fix_manifest(template, ["KSV-0001"]).text
+
+
+@pytest.mark.parametrize(("value", "kept"), [(20000, True), (10001, True), (10000, False), (0, False)])
+def test_a_uid_above_the_host_range_is_kept(value: int, kept: bool) -> None:
+    """#41 review, should fix 1: files in the image may belong to the UID the workload already uses."""
+    manifest = (
+        "kind: Pod\nspec:\n  containers:\n    - name: a\n      securityContext:\n"
+        f"        runAsUser: {value}\n        runAsGroup: {value}\n"
+    )
+    text = fix_manifest(manifest, ["KSV-0020", "KSV-0021"]).text
+    assert (f"runAsUser: {value}" in text and f"runAsGroup: {value}" in text) is kept
+    assert ("runAsUser: 10001" in text) is (kept is False or value == 10001)
+
+
+@pytest.mark.parametrize(("start", "end"), [("---\n", ""), ("", "...\n"), ("---\n", "...\n")])
+def test_document_markers_are_kept(start: str, end: str) -> None:
+    """#41 review, nit 1: many manifests start with --- (and some end with ...)."""
+    manifest = f"{start}kind: Pod\nspec:\n  hostPID: true\n  containers:\n    - name: a\n{end}"
+    text = fix_manifest(manifest, ["KSV-0010"]).text
+    assert text == manifest.replace("hostPID: true", "hostPID: false")

@@ -31,6 +31,19 @@ class NotFixable(Exception):
 class Fixed:
     text: str
     changes: list[str]  # what was changed, for the proposal's rationale
+    # (rule id, 1-based line) of what an edit left alone; (rule id, None): the whole rule. A finding of that
+    # rule on such a line is not claimed: a proposal claims only what it resolves.
+    left_open: frozenset[tuple[str, int | None]] = frozenset()
+
+
+@dataclass(frozen=True)
+class FixContext:
+    """What a fixer may need beyond the text: where the file is, and the findings on it that it was not asked
+    to fix (an edit must not change their fingerprints)."""
+
+    path: str  # repository-relative
+    repo_root: Path
+    others: Sequence[Finding]
 
 
 @dataclass(frozen=True)
@@ -41,7 +54,7 @@ class Plan:
 
 def proposal_id_of(strategy: str, attempt: int, finding_ids: Sequence[str], diff: str) -> str:
     """The id of a proposal: a UUID of its strategy, attempt, findings and diff. Anyone can recompute it, so
-    the id (in the branch name and the commit trailers) identifies the content."""
+    the id identifies the content (the gate and the apply step check it)."""
     key = json.dumps([strategy, attempt, sorted(set(finding_ids)), hashlib.sha256(diff.encode()).hexdigest()])
     return str(uuid.uuid5(_NAMESPACE, key))
 
@@ -87,23 +100,39 @@ def build_proposal(
     )
 
 
+def _left_open(finding: Finding, left_open: frozenset[tuple[str, int | None]]) -> bool:
+    if (finding.rule_id, None) in left_open:
+        return True
+    place = finding.location
+    if place is None or place.start_line is None:
+        return any(rule == finding.rule_id for rule, _ in left_open)
+    lines = range(place.start_line, (place.end_line or place.start_line) + 1)
+    return any((finding.rule_id, line) in left_open for line in lines)
+
+
 def propose_fixes(
     findings: Sequence[Finding],
     repo_root: Path,
     *,
     select: Callable[[Finding], bool],
-    fix: Callable[[str, set[str]], Fixed],
+    fix: Callable[[str, set[str], FixContext], Fixed],
     strategy: Strategy,
     rationale: Callable[[int, list[str]], str],
     attempt: int,
     created_at: datetime,
 ) -> Plan:
     """One proposal for every finding `select` keeps, file by file: each flagged file is read, fixed for the
-    rule ids flagged in it, and left alone (with the reason) when it cannot be edited or nothing changes."""
+    rule ids flagged in it, and left alone (with the reason) when it cannot be edited or nothing changes. Only
+    the findings an edit resolves are claimed."""
     by_path: dict[str, list[Finding]] = defaultdict(list)
     for finding in findings:
         if select(finding) and finding.location is not None:
             by_path[finding.location.path].append(finding)
+    on_path: dict[str, list[Finding]] = defaultdict(list)
+    for finding in findings:
+        for place in [finding.location, *(finding.other_locations or [])]:
+            if place is not None and finding not in by_path.get(place.path, []):
+                on_path[place.path].append(finding)
     changes: dict[str, tuple[str, str]] = {}
     fixed_ids: list[str] = []
     labels: set[str] = set()
@@ -114,19 +143,23 @@ def propose_fixes(
             skipped[path] = "not a regular file inside the repository"
             continue
         try:
-            old = file.read_text(encoding="utf-8")
-            fixed = fix(old, {f.rule_id for f in flagged})
+            old = file.read_bytes().decode("utf-8")  # as stored: CRLF is not turned into LF
+            if "\r" in old:
+                raise NotFixable("CRLF line endings: a diff of the LF text would not apply")
+            context = FixContext(path=path, repo_root=repo_root, others=on_path.get(path, []))
+            fixed = fix(old, {f.rule_id for f in flagged}, context)
         except UnicodeDecodeError:
             skipped[path] = "not UTF-8 text"
             continue
         except NotFixable as exc:
             skipped[path] = str(exc)
             continue
-        if fixed.text == old:
-            skipped[path] = "already hardened: the findings are stale"
+        claimed = [f.id for f in flagged if not _left_open(f, fixed.left_open)]
+        if fixed.text == old or not claimed:
+            skipped[path] = "nothing this fixer can resolve"
             continue
         changes[path] = (old, fixed.text)
-        fixed_ids += [f.id for f in flagged]
+        fixed_ids += claimed
         labels.update(fixed.changes)
     if not changes:
         return Plan(proposal=None, skipped=skipped)

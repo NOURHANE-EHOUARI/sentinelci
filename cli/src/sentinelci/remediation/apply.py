@@ -11,12 +11,14 @@ no hook can run, whatever the clone's `.git/config` or `.gitattributes` say. Git
 configuration; what could run code there is overridden on the command line (`core.hooksPath`,
 `core.fsmonitor`, `commit.gpgsign`), and the user's and system's configuration are not read at all.
 
-Before anything is written, the proposal is checked against itself and against the base scan:
+Before anything is written, the proposal is checked against itself and against the base scan, with the
+verification gate's own check (`gate.check_proposal`):
 - its id is recomputed from its strategy, attempt, findings and diff, so the branch name and the
   `Sentinel-Proposal` trailer identify the content, and the `Sentinel-Diff` trailer holds the diff's sha256;
 - every finding it claims is in the base findings, and every file it changes is where one of them was found;
-- the diff changes exactly the files it lists, each a regular file at the base commit, with no file created,
-  deleted, renamed or made executable, and it applies cleanly to that base.
+- the diff only edits files in place. Git then confirms it: the diff changes exactly the files it lists,
+  each a regular file at the base commit (a symbolic link is not), with no file created, deleted, renamed or
+  made executable, and it applies cleanly to that base.
 
 The commit's dates are the proposal's `created_at`: the same proposal on the same base is the same commit.
 """
@@ -33,7 +35,8 @@ from pathlib import Path
 
 from sentinelci.contracts.finding import Finding
 from sentinelci.contracts.remediation import PatchProposal
-from sentinelci.remediation.proposal import RemediationError, proposal_id_of
+from sentinelci.remediation.gate import check_proposal
+from sentinelci.remediation.proposal import RemediationError
 
 BRANCH_PREFIX = "sentinel/fix/"
 BOT_NAME = "SentinelCI bot"
@@ -105,26 +108,6 @@ def _commit_message(proposal: PatchProposal) -> str:
     return f"{subject}\n\n{rationale}\n\n" + "\n".join(trailers) + "\n"
 
 
-def _check_scope(proposal: PatchProposal, findings: Sequence[Finding]) -> None:
-    """The proposal is what its id says, claims findings of the base scan, and edits only where they are."""
-    expected = proposal_id_of(proposal.strategy, proposal.attempt, proposal.finding_ids, proposal.diff)
-    if proposal.proposal_id != expected:
-        raise RemediationError("the proposal id does not match its strategy, attempt, findings and diff")
-    by_id = {finding.id: finding for finding in findings}
-    unknown = sorted(set(proposal.finding_ids) - set(by_id))
-    if unknown:
-        raise RemediationError(f"the proposal claims findings the base scan does not have: {unknown[0]}")
-    places = {
-        location.path
-        for finding_id in proposal.finding_ids
-        for location in [by_id[finding_id].location, *(by_id[finding_id].other_locations or [])]
-        if location is not None
-    }
-    outside = sorted(set(proposal.files) - places)
-    if outside:
-        raise RemediationError(f"the proposal changes {outside[0]}, where none of its findings was found")
-
-
 def _check_diff(repo: Path, proposal: PatchProposal, base: str, index: Mapping[str, str]) -> None:
     """The diff changes exactly the proposal's files, in place, and applies to the base (in the index)."""
     checked = _git(
@@ -174,7 +157,7 @@ def apply_proposal(
     if resolved.returncode != 0:
         raise RemediationError(f"{base!r} is not a commit of {repo}")
     base_commit = resolved.stdout.strip()
-    _check_scope(proposal, findings)
+    check_proposal(proposal, {finding.id: finding for finding in findings})  # the gate's own check
     with tempfile.TemporaryDirectory(prefix="sentinel-apply-") as scratch:
         index = {"GIT_INDEX_FILE": str(Path(scratch) / "index")}  # never the clone's own index
         _git(repo, "read-tree", base_commit, env=index)

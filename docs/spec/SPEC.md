@@ -11,8 +11,8 @@
 | Version | Change |
 |---|---|
 | 1.1.21 | A6 apply step (§9): `sentinel remediate apply` commits a patch proposal on a new `sentinel/fix/` branch of a local clone with plumbing commands on a temporary index (never pushes, checks nothing out, so no hook, filter or fsmonitor of the clone runs), after checking that the proposal id matches its content, that its findings are in the base scan (`--findings`) and its files are where they were found, and that the diff edits exactly the listed regular files in place (no file created, deleted, renamed, made executable or symlink retargeted). The commit has a `Sentinel-Diff` trailer and the proposal's dates. |
-| 1.1.17 | A6b remediation (§9): `sentinel remediate dockerfile`: the deterministic Dockerfile fixer (non-root `USER 10001:10001` in the final stage, COPY instead of ADD for local files, `apt-get install --no-install-recommends`; each checked against the pinned Trivy), sharing the per-file loop with the Kubernetes fixer. |
-| 1.1.16 | A6a remediation (§9): `sentinel remediate kubernetes` proposes hardening for the Trivy findings the deterministic Kubernetes fixer resolves (16 rule ids, each checked against the pinned Trivy; manifests edited round-trip, so the diff shows only the hardening; never what changes the application's behaviour), as a `PatchProposal`; `sentinel remediate verify` applies the verification gate and writes a `VerificationResult`. Read models for both contracts; the §9 states and their transitions. New dependency: ruamel.yaml. |
+| 1.1.17 | A6b remediation (§9): `sentinel remediate dockerfile`: the deterministic Dockerfile fixer (`USER 10001:10001` added to the final stage after its last RUN and USER, never rewriting a USER line; COPY instead of ADD only when every source is a directory or a plain file of the repository, neither a tar nor compressed, judged by content; `apt-get install --no-install-recommends`; each checked against the pinned Trivy), sharing the per-file loop with the Kubernetes fixer. An edit leaves alone an instruction that carries a finding it does not resolve (its fingerprint would change), a proposal claims only the findings an edit resolved, and CRLF files are left alone. The USER change can change what the image does, and the rationale says so. |
+| 1.1.16 | A6a remediation (§9): `sentinel remediate kubernetes` proposes hardening for the Trivy findings the deterministic Kubernetes fixer resolves (16 rule ids, each checked against the pinned Trivy; manifests edited round-trip, so the diff shows only the hardening; a non-root UID/GID, a read-only root file system and dropped capabilities can change how a workload runs, and the rationale says so), as a `PatchProposal`; `sentinel remediate verify` applies the verification gate and writes a `VerificationResult`. The gate refuses (exit 3) a proposal whose id does not match its content, that claims findings the base scan lacks or edits anything but where they are, and a decision not made in pr context on the patched findings with the tool status; a target re-reported under a new fingerprint (same tool, rule and file) is not gone, and a base finding that rises to MEDIUM or higher is new. Read models for both contracts; the §9 states and their transitions. New dependency: ruamel.yaml. |
 | 1.1.6 | A9 first seeds (§17): 5 fake secrets, 6 IaC, 3 CI-workflow seeds and 4 clean controls in `demo-shop/`, with a draft ground-truth format (`demo-shop/ground-truth/`, final schema owned by B9) checked against the pinned Gitleaks, Trivy and zizmor. SentinelCI's Trivy configuration trusts only the kind registry for KSV0125. |
 | 1.1.5 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
 | 1.1.4 | Enrichment (B2, §6.1): `schemas/enrichment-snapshot.v1.json` (`schema_version` "1.0", `sources.kev.cves`: the CVEs the KEV lookup covered) and `schemas/sentinel-config.v1.json` (`sentinel.yaml`, canonical component paths); `sentinel enrich`. "Not listed in KEV" only for covered CVEs; `sentinel.yaml` read with a restricted YAML loader. |
@@ -418,7 +418,7 @@ States: PROPOSED → PATCH_READY → PR_OPEN → VERIFYING → VERIFIED | REJECT
 | Strategy | Applies to | How |
 |---|---|---|
 | Dependency bump | SCA with fixed version | minimal fixed version, regenerate lockfile |
-| Dockerfile fixer | container hygiene | non-root USER, base pinned by digest, no `curl \| sh` |
+| Dockerfile fixer | container hygiene | non-root USER, COPY for plain local ADD sources, `apt-get --no-install-recommends` (base digest pin and `curl \| sh`: later, they need a registry or the application) |
 | Kubernetes fixer | manifest findings | runAsNonRoot, readOnlyRootFilesystem, drop ALL, limits |
 | LLM code fixer (B6) | SAST | diff restricted to flagged files; retried with CI logs |
 
@@ -427,16 +427,29 @@ target fingerprint gone · no new ≥ MEDIUM finding · verdict ≠ BLOCK. Bot u
 `pull_request_target`), verification jobs get no secrets, the bot never merges.
 
 Implemented (A6a, A6b): `sentinel remediate kubernetes`, `sentinel remediate dockerfile` and `sentinel remediate
-verify`. The Kubernetes fixer maps each Trivy rule id it resolves to one edit (privileged, privilege escalation,
-capabilities, non-root UID and GID, read-only root file system, seccomp profile, host namespaces), each checked
-against the pinned Trivy: the edit makes that rule's finding disappear and adds none. It never changes what the
-application does (hostPath volumes, image tags, resource limits, added capabilities): those findings stay, and the
-gate rejects a proposal that claims them. Manifests are edited round-trip (comments, order and quoting kept); a file
-whose layout cannot be reproduced exactly is left alone. A proposal touches only flagged files and its diff applies
-with `git apply`. A failing patch is REJECTED while an attempt is left (at most three), FAILED after the last one.
-`sentinel remediate apply` (A6c) commits a proposal on a new `sentinel/fix/` branch of a local clone, without
-pushing, touching the working tree or running hooks, after checking that the diff edits exactly the listed
-regular files in place.
+verify`. The Dockerfile fixer adds `USER 10001:10001` to the final stage after its last RUN and USER (a USER line is
+never rewritten), turns ADD into COPY only when ADD would do nothing more (sources judged by their content in the
+repository: no tar, nothing compressed, no URL, glob or variable), and adds `--no-install-recommends`; an
+instruction that carries another finding is left alone, and only the findings an edit resolved are claimed. Its
+USER change can still break an image that writes as root at run time. The Kubernetes fixer maps each
+Trivy rule id it resolves to one edit (privileged, privilege escalation, capabilities, non-root UID and GID,
+read-only root file system, seccomp profile, host namespaces), each checked against the pinned Trivy: the edit makes
+that rule's finding disappear and adds none. What the fix would have to choose for the application (hostPath
+volumes, image tags, resource limits, added capabilities) is left alone, and those findings stay open. Some edits
+can still change how a workload runs: a non-root UID/GID (a UID or GID above 10000 is kept), a read-only root file
+system and dropped capabilities can stop a workload that writes into its image, owns files by another UID or needs
+a capability. The rationale names them, and "build OK" does not include a cluster deploy test yet. A file with a
+workload kind the fixer does not edit is left alone, so no finding on it is claimed.
+Manifests are edited round-trip (comments, order and quoting kept); a file whose layout cannot be reproduced exactly
+is left alone. A proposal touches only flagged files and its diff applies with `git apply`. The gate verifies only
+a proposal it could verify honestly (its id matches its content; its findings are in the base scan; its diff edits,
+in place, only the files they are in) against the decision made on the patched scan (`inputs.findings_digest`), in
+pr context, with the tool status. A target is gone only when no new fingerprint of the same tool and rule appears
+in its file. A failing patch is REJECTED while an attempt is left (at most three), FAILED after the last one.
+`sentinel remediate apply` (A6c) commits a proposal on a new `sentinel/fix/` branch of a local clone with plumbing
+commands on a temporary index (no checkout, so no hook, filter or fsmonitor of the clone runs, and nothing is
+pushed), after the same proposal check as the gate against the base findings and a check that the diff applies to
+the base and edits regular files in place.
 
 ## 10. Dashboard and observability
 
