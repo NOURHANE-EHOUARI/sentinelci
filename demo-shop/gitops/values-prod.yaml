@@ -1,0 +1,7 @@
+# Helm values of the demo-shop production overlay (GitOps, task A5).
+# INTENTIONALLY VULNERABLE (GT-SECRET-005): a webhook URL in plain text. FAKE: no such Slack workspace exists.
+image:
+  repository: registry.local/demo-shop/shop-api
+  digest: "" # set by the release pipeline (digest bump)
+alerts:
+  slackWebhook: https://hooks.slack.com/services/TFAKE0DEMO/BFAKE0DEMO/SentinelFakeDemoWebhook0x9Qz
