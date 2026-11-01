@@ -39,6 +39,13 @@ class Plan:
     skipped: dict[str, str]  # path -> why it was left alone
 
 
+def proposal_id_of(strategy: str, attempt: int, finding_ids: Sequence[str], diff: str) -> str:
+    """The id of a proposal: a UUID of its strategy, attempt, findings and diff. Anyone can recompute it, so
+    the id (in the branch name and the commit trailers) identifies the content."""
+    key = json.dumps([strategy, attempt, sorted(set(finding_ids)), hashlib.sha256(diff.encode()).hexdigest()])
+    return str(uuid.uuid5(_NAMESPACE, key))
+
+
 def unified_diff(path: str, old: str, new: str) -> str:
     """A `git apply`-able diff of one text file, with a/ and b/ prefixes."""
     lines = difflib.unified_diff(
@@ -67,10 +74,9 @@ def build_proposal(
     if not diff:
         raise RemediationError("the patch changes nothing")
     ids = sorted(set(finding_ids))
-    key = json.dumps([strategy, attempt, ids, hashlib.sha256(diff.encode()).hexdigest()])
     return PatchProposal(
         schema_version="1.0",
-        proposal_id=str(uuid.uuid5(_NAMESPACE, key)),
+        proposal_id=proposal_id_of(strategy, attempt, ids, diff),
         finding_ids=ids,
         strategy=strategy,
         diff=diff,

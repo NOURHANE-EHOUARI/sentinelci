@@ -211,7 +211,7 @@ waivers:
 
 ```bash
 uv run sentinel remediate kubernetes --findings out/findings.ndjson --repo-root . --out out/proposal.json
-uv run sentinel remediate apply --proposal out/proposal.json --repo-root .   # prints the new branch as JSON
+uv run sentinel remediate apply --proposal out/proposal.json --findings out/base.ndjson --repo-root .
 uv run sentinel remediate verify --proposal out/proposal.json --before out/base.ndjson \
   --after out/patched.ndjson --decision out/patched-decision.json --build-ok --tests-ok --out out/result.json
 ```
@@ -227,13 +227,25 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
   `--no-install-recommends`. The base image's tag or digest, a HEALTHCHECK and a script piped to a shell are
   left alone. A file with an `escape` directive or a heredoc is left alone.
 - `apply` turns a proposal into one commit on a new `sentinel/fix/<id>` branch of a local clone, and prints
-  the branch, the commit and the base as JSON. The bot's workflow pushes it and opens the pull request.
-  - **What it never does:** push, change the working tree or the current branch, or run the repository's
-    hooks. Git runs without user, system or repository-provided configuration.
-  - **What it checks first:** the diff changes exactly the files the proposal lists, each a regular file
-    tracked at the base. It creates, deletes, renames or makes executable no file, and does not retarget a
-    symbolic link (git applies a new link target as an in-place edit, so the file mode at the base is what
-    tells them apart). The diff must apply to the base.
+  the branch, the commit, the base and the diff's sha256 as JSON. The bot's workflow pushes it and opens the
+  pull request.
+  - **What it never does:** push, or change the working tree, the index or the current branch. Nothing is
+    checked out: the commit is built on a temporary index with plumbing commands (`read-tree`,
+    `apply --cached`, `write-tree`, `commit-tree`, `update-ref`), so no smudge or clean filter, fsmonitor or
+    hook the clone configures can run. What in the clone's `.git/config` could run code is overridden on the
+    command line (`core.hooksPath`, `core.fsmonitor`, `commit.gpgsign`); the user's and system configuration
+    are not read, nor are the caller's `GIT_*` variables.
+  - **What it checks first:** the proposal id is recomputed from its strategy, attempt, findings and diff, so
+    the branch name and the trailers identify the content. Every finding it claims must be in `--findings`
+    (the base scan), and every file it changes must be where one of them was found. The diff changes exactly
+    the files the proposal lists, each a regular file at the base. It creates, deletes, renames or makes
+    executable no file, and does not retarget a symbolic link (git applies a new link target as an in-place
+    edit, so the file mode at the base is what tells them apart). The diff must apply to the base.
+  - **The commit** carries `Sentinel-Proposal`, `Sentinel-Strategy`, `Sentinel-Diff: sha256:<hex>` and one
+    `Sentinel-Finding` trailer per finding. Its dates are the proposal's `created_at`, so the same proposal on
+    the same base is the same commit.
+  - **Ownership:** git's `safe.directory` comes from the user's configuration, which is not read. A clone owned
+    by another user (a container job on a runner) is refused as "dubious ownership": exit `3`, fail closed.
   - A branch exists once per proposal. Exit `3`, with nothing created, otherwise.
 - `verify` writes a `VerificationResult` (`schemas/verification-result.v1.json`): VERIFIED only if the patched
   commit builds, its tests pass, every target fingerprint is gone, no new finding of severity MEDIUM or higher
