@@ -211,7 +211,7 @@ waivers:
 
 ```bash
 uv run sentinel remediate kubernetes --findings out/findings.ndjson --repo-root . --out out/proposal.json
-git apply --check <(jq -r .diff out/proposal.json)   # the bot applies it on a branch and opens a PR
+uv run sentinel remediate apply --proposal out/proposal.json --repo-root .   # prints the new branch as JSON
 uv run sentinel remediate verify --proposal out/proposal.json --before out/base.ndjson \
   --after out/patched.ndjson --decision out/patched-decision.json --build-ok --tests-ok --out out/result.json
 ```
@@ -226,6 +226,15 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
   URL, a git source, an archive ADD extracts or an ADD-only flag), and `apt-get install` gets
   `--no-install-recommends`. The base image's tag or digest, a HEALTHCHECK and a script piped to a shell are
   left alone. A file with an `escape` directive or a heredoc is left alone.
+- `apply` turns a proposal into one commit on a new `sentinel/fix/<id>` branch of a local clone, and prints
+  the branch, the commit and the base as JSON. The bot's workflow pushes it and opens the pull request.
+  - **What it never does:** push, change the working tree or the current branch, or run the repository's
+    hooks. Git runs without user, system or repository-provided configuration.
+  - **What it checks first:** the diff changes exactly the files the proposal lists, each a regular file
+    tracked at the base. It creates, deletes, renames or makes executable no file, and does not retarget a
+    symbolic link (git applies a new link target as an in-place edit, so the file mode at the base is what
+    tells them apart). The diff must apply to the base.
+  - A branch exists once per proposal. Exit `3`, with nothing created, otherwise.
 - `verify` writes a `VerificationResult` (`schemas/verification-result.v1.json`): VERIFIED only if the patched
   commit builds, its tests pass, every target fingerprint is gone, no new finding of severity MEDIUM or higher
   appeared, and its decision is not BLOCK. Exit `0` VERIFIED, `1` REJECTED (a retry is left) or FAILED (the

@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.21 | A6 apply step (§9): `sentinel remediate apply` commits a patch proposal on a new `sentinel/fix/` branch of a local clone (never pushes, never touches the working tree, never runs hooks), after checking that the diff edits exactly the listed regular files in place (no file created, deleted, renamed, made executable or symlink retargeted). |
 | 1.1.17 | A6b remediation (§9): `sentinel remediate dockerfile`: the deterministic Dockerfile fixer (non-root `USER 10001:10001` in the final stage, COPY instead of ADD for local files, `apt-get install --no-install-recommends`; each checked against the pinned Trivy), sharing the per-file loop with the Kubernetes fixer. |
 | 1.1.16 | A6a remediation (§9): `sentinel remediate kubernetes` proposes hardening for the Trivy findings the deterministic Kubernetes fixer resolves (16 rule ids, each checked against the pinned Trivy; manifests edited round-trip, so the diff shows only the hardening; never what changes the application's behaviour), as a `PatchProposal`; `sentinel remediate verify` applies the verification gate and writes a `VerificationResult`. Read models for both contracts; the §9 states and their transitions. New dependency: ruamel.yaml. |
 | 1.1.6 | A9 first seeds (§17): 5 fake secrets, 6 IaC, 3 CI-workflow seeds and 4 clean controls in `demo-shop/`, with a draft ground-truth format (`demo-shop/ground-truth/`, final schema owned by B9) checked against the pinned Gitleaks, Trivy and zizmor. SentinelCI's Trivy configuration trusts only the kind registry for KSV0125. |
@@ -433,6 +434,9 @@ application does (hostPath volumes, image tags, resource limits, added capabilit
 gate rejects a proposal that claims them. Manifests are edited round-trip (comments, order and quoting kept); a file
 whose layout cannot be reproduced exactly is left alone. A proposal touches only flagged files and its diff applies
 with `git apply`. A failing patch is REJECTED while an attempt is left (at most three), FAILED after the last one.
+`sentinel remediate apply` (A6c) commits a proposal on a new `sentinel/fix/` branch of a local clone, without
+pushing, touching the working tree or running hooks, after checking that the diff edits exactly the listed
+regular files in place.
 
 ## 10. Dashboard and observability
 

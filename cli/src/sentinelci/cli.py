@@ -64,6 +64,7 @@ from sentinelci.policy.opa import OpaError, OpaRunner
 from sentinelci.policy.replay import ReplayResult, check_identity, replay, skip_reason
 from sentinelci.policy.store import EvidenceStore, StoreError
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
+from sentinelci.remediation.apply import apply_proposal
 from sentinelci.remediation.dockerfile import propose as propose_dockerfile
 from sentinelci.remediation.gate import verify_proposal
 from sentinelci.remediation.kubernetes import propose as propose_kubernetes
@@ -889,6 +890,33 @@ def remediate_dockerfile(
     Exit code 0 with a proposal, or with nothing to propose (no file written); 3 when the input is unusable.
     """
     _propose("dockerfile", propose_dockerfile, findings, out, repo_root, attempt)
+
+
+@remediate_app.command("apply")
+def remediate_apply(
+    proposal: Annotated[
+        Path, typer.Option(help="The patch proposal to commit (schemas/patch-proposal.v1.json).")
+    ],
+    repo_root: Annotated[Path, typer.Option(help="A local clone of the repository.")] = Path("."),
+    base: Annotated[str, typer.Option(help="The commit the proposal was made against.")] = "HEAD",
+    branch: Annotated[
+        str | None, typer.Option(help="New branch name, under sentinel/fix/ (default: from the proposal id).")
+    ] = None,
+) -> None:
+    """Commit a proposal on a new sentinel/fix/ branch of a local clone, and print it as JSON. It never
+    pushes, never changes the working tree or the current branch, and never runs the repository's hooks.
+
+    Exit code 0 when committed; 3, with nothing created, when the diff does anything the proposal does not
+    list (another file, a new, deleted, renamed or executable file) or does not apply to the base.
+    """
+    try:
+        applied = apply_proposal(
+            PatchProposal.model_validate_json(proposal.read_bytes()), repo_root, base=base, branch=branch
+        )
+    except (OSError, ValidationError, RemediationError) as exc:
+        typer.echo(f"sentinel remediate apply: {exc}\nnothing was committed", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    typer.echo(json.dumps({"branch": applied.branch, "commit": applied.commit, "base": applied.base}))
 
 
 @remediate_app.command("verify")
