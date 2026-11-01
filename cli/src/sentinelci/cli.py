@@ -66,6 +66,7 @@ from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
 from sentinelci.scanners.installer import VerificationReport, install_tools, verify_tools
 from sentinelci.scanners.lock import LOCK_FILE_NAME, load_lock
+from sentinelci.supplychain.admission import render_policy
 from sentinelci.supplychain.attestations import KINDS, AttestationError, parse_image, release_predicates
 from sentinelci.supplychain.cosign import Registry, Signer, Verifier, check_public_key
 from sentinelci.supplychain.verify import ATTESTATIONS_DIR, verify_evidence, verify_registry
@@ -922,6 +923,37 @@ def verify_command(
     typer.echo(report.render(), nl=False)
     if not report.trusted:
         raise typer.Exit(EXIT_UNTRUSTED)
+
+
+@app.command("admission-policy")
+def admission_policy_command(
+    key: Annotated[
+        Path, typer.Option(help="Cosign public key of the releases (the one `sentinel verify` uses).")
+    ],
+    repo: Annotated[str, typer.Option(help="The repository releases must come from, owner/name.")],
+    builder_id: Annotated[
+        str, typer.Option(help="The release workflow, as SLSA builder id (the one `sentinel verify` uses).")
+    ],
+    image_glob: Annotated[
+        str, typer.Option(help="Images the policy applies to, e.g. kind-registry:5000/demo-shop/*.")
+    ],
+    out: Annotated[Path, typer.Option(help="Where to write the Kyverno ImageValidatingPolicy (YAML).")],
+    registry_http: RegistryHttpOption = False,
+) -> None:
+    """Write the Kyverno admission policy of SentinelCI releases (A5): a Pod runs an image matching the glob
+    only if `sentinel verify` would trust it. Exit code 3, with nothing written, for a value that is not what
+    it should be."""
+    out.unlink(missing_ok=True)
+    try:
+        policy = render_policy(
+            public_key=key, image_glob=image_glob, repo=repo, builder_id=builder_id, allow_http=registry_http
+        )
+    except AttestationError as exc:
+        typer.echo(f"sentinel admission-policy: {exc}; nothing was written", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(policy, encoding="utf-8", newline="\n")
+    typer.echo(f"admission policy for {image_glob} -> {out}")
 
 
 if __name__ == "__main__":

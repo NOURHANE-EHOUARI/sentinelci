@@ -262,3 +262,37 @@ uv run sentinel verify <registry>/demo-shop/shop-api@sha256:<digest> --key cosig
   other variable reaches Cosign.
 - With `--push`, a registry failure is exit `3` and no bundle is kept. The registry may then hold part of the
   set, which is not trusted until a complete run attaches the rest.
+
+## `sentinel admission-policy` (Kyverno admission of releases, A5)
+
+Writes the Kyverno `ImageValidatingPolicy` (`policies.kyverno.io/v1`, Kyverno 1.19) that admits a Pod only if
+every image matching the glob is a release `sentinel verify` would trust. It takes the same parameters as
+`sentinel verify`:
+
+```bash
+uv run sentinel admission-policy --key cosign.pub --repo NOURHANE-EHOUARI/sentinelci \
+  --builder-id <release workflow ref> --image-glob kind-registry:5000/demo-shop/* \
+  --registry-http --out deploy/kyverno/release-evidence.yaml
+```
+
+- **What it requires**, checked in this order (the first that fails is the reason given):
+  - the image signature (`cosign sign`) and the four attestations, each signed by the key;
+  - a release decision that is not BLOCK, about this digest, from `--repo`;
+  - provenance from `--builder-id`, built from the decision's commit;
+  - a vulnerability result naming the decision, its findings and its SBOM;
+  - that SBOM's `serialNumber`.
+- **Why the signature is required as an attestation.** `verifyImageSignatures` accepts any statement the key
+  signed about the digest, an attestation included (see registry mode above). So the policy requires a
+  statement of type `https://sigstore.dev/cosign/sign/v1`.
+- **Digests.** An image without a digest is refused (`verifyDigest`). In a cluster, `mutateDigest` first pins
+  a tag to the digest it resolves to.
+- **Scope.** Every container is checked (init and ephemeral too). An image outside the glob is not this
+  policy's business: restricting which registries may run at all is a separate policy.
+- **What it does not check.** The policy reads the attestations with `extractPayload`, one per type. It does
+  not see a second, different attestation of the same type, which `sentinel verify` refuses as ambiguous.
+  Only the release key can attach one.
+- **Values are checked before they are written** (exit `3`, nothing written): they end up in YAML and in CEL
+  string literals.
+- **Tests.** `kyverno apply` (pinned in `tools.lock.toml`) evaluates the policy as the admission controller
+  does, against a real registry. Every case `sentinel verify` refuses, admission refuses too, for the same
+  reason.
