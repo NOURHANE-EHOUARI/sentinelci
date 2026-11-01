@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from jsonschema import Draft202012Validator, FormatChecker
+from referencing import Registry, Resource
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMAS = ROOT / "schemas"
@@ -23,12 +24,22 @@ CONTRACTS = {
     "enrichment-snapshot": "enrichment-snapshot.v1.json",
     "sentinel-config": "sentinel-config.v1.json",
     "root-cause-group": "root-cause-group.v1.json",
+    "correlation": "correlation.v1.json",
 }
+
+
+def _registry() -> Registry:
+    """Every contract by its `$id`, so that one contract can refer to another (correlation -> group)."""
+    resources = []
+    for name in CONTRACTS.values():
+        schema = json.loads((SCHEMAS / name).read_text(encoding="utf-8"))
+        resources.append((schema["$id"], Resource.from_contents(schema)))
+    return Registry().with_resources(resources)
 
 
 def _validator(contract: str) -> Draft202012Validator:
     schema = json.loads((SCHEMAS / CONTRACTS[contract]).read_text(encoding="utf-8"))
-    return Draft202012Validator(schema, format_checker=FormatChecker())
+    return Draft202012Validator(schema, format_checker=FormatChecker(), registry=_registry())
 
 
 def _fixtures(kind: str) -> list[tuple[str, Path]]:

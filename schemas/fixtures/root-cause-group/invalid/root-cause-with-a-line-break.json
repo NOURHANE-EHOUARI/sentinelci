@@ -5,7 +5,8 @@
     "1111111111111111111111111111111111111111111111111111111111111111"
   ],
   "stage": "dedup",
+  "labelled_by": "template",
   "title": "t",
-  "root_cause": "first paragraph\u2028second",
+  "root_cause": "first paragraph second",
   "single_fix": null
 }

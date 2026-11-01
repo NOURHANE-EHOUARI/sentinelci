@@ -5,6 +5,7 @@
     "3333333333333333333333333333333333333333333333333333333333333333"
   ],
   "stage": "dedup",
+  "labelled_by": "template",
   "title": "Hard-coded GitHub token in settings.yaml",
   "root_cause": "One secret, reported by one tool.",
   "single_fix": null

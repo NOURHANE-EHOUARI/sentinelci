@@ -7,19 +7,24 @@ clustering does, not how good a model is: that is measured with the real model i
 
 import hashlib
 import json
+import math
 import random
 from pathlib import Path
 from typing import Any
 
 import pytest
 from jsonschema import Draft202012Validator
+from referencing import Registry, Resource
 
 from sentinel_ai.correlate import (
+    Correlation,
     CorrelationError,
+    EmbeddingModel,
     RootCauseGroup,
     adjusted_rand_index,
     alert_reduction,
     correlate,
+    correlate_run,
     dedup,
     group_id,
     labels_of,
@@ -223,11 +228,19 @@ def test_stage_2b_merges_close_groups_of_one_category() -> None:
 def test_stage_2b_never_merges_across_categories_or_below_the_threshold() -> None:
     mixed = [SIMILAR[0], located("IAC", "sql-in-a-config", "x.yaml", 1, "SQL in a config file")]
     assert len(correlate(mixed, embed=keyword_embedder, threshold=0.5)) == 2, "SAST and IAC stay apart"
-    assert len(correlate(SIMILAR, embed=keyword_embedder, threshold=1.01)) == len(SIMILAR)
+    orthogonal = lambda texts: [[float(i == j) for j in range(len(texts))] for i in range(len(texts))]  # noqa: E731
+    assert len(correlate(SIMILAR, embed=orthogonal, threshold=0.5)) == len(SIMILAR), "below the threshold"
+
+
+@pytest.mark.parametrize("threshold", [1.01, -1.5, math.nan])
+def test_a_threshold_that_is_not_a_cosine_similarity_is_refused(threshold: float) -> None:
+    """#47 review, nit 3: -5 merged every group of a category."""
+    with pytest.raises(CorrelationError, match="not a cosine similarity"):
+        correlate(SIMILAR, embed=keyword_embedder, threshold=threshold)
 
 
 def test_an_embedder_that_does_not_answer_one_vector_per_text_is_refused() -> None:
-    with pytest.raises(CorrelationError, match="a vector per text"):
+    with pytest.raises(CorrelationError, match="one finite vector per text"):
         embedding_groups([dedup(SIMILAR[:2])], lambda texts: [[1.0]], 0.5)
 
 
@@ -285,3 +298,143 @@ def test_groups_merge_on_their_average_similarity_not_their_closest_members() ->
     close_to_one = located("SAST", "r2", "b.py", 1, "alpha")
     assert len(correlate([*group, close_to_one], embed=_marker_embedder, threshold=0.9)) == 2
     assert len(correlate([*group, close_to_one], embed=_marker_embedder, threshold=0.5)) == 1
+
+
+# ---------------------------------------------------------------- #47 review
+
+
+@pytest.mark.parametrize("path", ["infra/k8s/my app.yaml", "a/" * 300 + "m.yaml"], ids=["space", "long"])
+def test_every_group_satisfies_the_contract_whatever_the_path(path: str) -> None:
+    (group,) = correlate([located("IAC", "KSV-0014", path, 20), located("IAC", "KSV-0014", path, 41)])
+    assert not [e.message for e in SCHEMA.iter_errors(group.document())]
+    assert group.key == f"rule:KSV-0014@{path}"
+
+
+def test_a_key_the_contract_cannot_hold_is_dropped_and_the_title_still_names_it() -> None:
+    first, second = (
+        sca("GHSA-a", "pkg:npm/a@1", fixed=["2"]) | {"aliases": ["OSV\nX"]},
+        sca("GHSA-b", "pkg:npm/b@1", fixed=["2"]) | {"aliases": ["OSV\nX"]},
+    )
+    (group,) = correlate([first, second])
+    assert group.key is None and "OSV" in group.title
+    assert not [e.message for e in SCHEMA.iter_errors(group.document())]
+
+
+def test_stage_2b_never_merges_secrets() -> None:
+    """Each secret is rotated on its own, in stage 2b as in stage 2a."""
+    two = [secret("github-pat", "services/a/settings.yaml"), secret("github-pat", "services/b/settings.yaml")]
+    assert len(correlate(two, embed=lambda texts: [[1.0, 0.0] for _ in texts], threshold=0.5)) == 2
+
+
+def _down(texts: list[str]) -> list[list[float]]:
+    raise ConnectionError("connection refused")
+
+
+def _nan(texts: list[str]) -> list[list[float]]:
+    return [[math.nan, 1.0] for _ in texts]
+
+
+@pytest.mark.parametrize("embed", [_down, _nan], ids=["down", "nan"])
+def test_an_embedder_failure_is_a_correlation_error(embed: Any) -> None:
+    with pytest.raises(CorrelationError, match="embedder"):
+        correlate(FINDINGS, embed=embed, threshold=0.0)
+
+
+def test_the_model_refuses_members_out_of_order_or_a_foreign_group_id() -> None:
+    (group,) = correlate(FINDINGS[:2])
+    document = group.document()
+    for change in ({"finding_ids": document["finding_ids"][::-1]}, {"group_id": "0" * 64}):
+        with pytest.raises(ValueError, match="sha256 of them"):
+            RootCauseGroup.model_validate(document | change)
+
+
+def test_two_reports_of_one_fingerprint_give_the_same_labels_in_any_order() -> None:
+    first = located("SAST", "r1", "a.py", 1, "SQL built from strings")
+    other = first | {"tool": {"name": "other", "version": "1"}, "title": "String-built SQL"}
+    assert correlate([first, other]) == correlate([other, first])
+
+
+def test_an_embedding_group_records_its_similarity_and_only_it() -> None:
+    groups = correlate(SIMILAR, embed=keyword_embedder, threshold=0.5)
+    merged = [g for g in groups if g.stage == "embedding"]
+    assert merged and all(g.similarity is not None and 0.5 <= g.similarity <= 1 for g in merged)
+    assert all(g.similarity is None for g in groups if g.stage != "embedding")
+    assert all(not [e.message for e in SCHEMA.iter_errors(g.document())] for g in groups)
+
+
+def test_a_package_in_an_image_and_in_a_lockfile_are_two_root_causes() -> None:
+    """Nit 5: one needs an image rebuild, the other a lockfile bump."""
+    lockfile = sca("GHSA-35jh-r3h4-6jhm", LODASH, fixed=["4.17.21"])
+    image = sca("GHSA-35jh-r3h4-6jhm", LODASH, fixed=["4.17.21"], category="CONTAINER")
+    assert len(correlate([lockfile, image])) == 2
+
+
+def test_versions_are_listed_in_version_order() -> None:
+    """Nit 5: 4.17.9 before 4.17.10, and every version of the package in the title."""
+    old = sca("GHSA-a", "pkg:npm/lodash@4.17.9", fixed=["4.17.10"])
+    new = sca("GHSA-b", "pkg:npm/lodash@4.17.10", fixed=["4.17.9", "4.17.11"])
+    (group,) = correlate([old, new])
+    assert group.title.startswith("lodash 4.17.9, 4.17.10: 2 advisories")
+    assert group.single_fix == "Upgrade lodash past every fix (4.17.9, 4.17.10, 4.17.11)."
+
+
+# ---------------------------------------------------------------- the run document (correlation.v1.json)
+
+CONTRACTS = {
+    name: json.loads((ROOT / "schemas" / name).read_text("utf-8"))
+    for name in ("correlation.v1.json", "root-cause-group.v1.json")
+}
+RUN_SCHEMA = Draft202012Validator(
+    CONTRACTS["correlation.v1.json"],
+    registry=Registry().with_resources((s["$id"], Resource.from_contents(s)) for s in CONTRACTS.values()),
+)
+MODEL = EmbeddingModel(provider="ollama", name="qwen3-embedding:0.6b", digest="sha256:" + "8" * 64)
+
+
+def _ndjson(findings: list[dict[str, Any]]) -> bytes:
+    return "".join(json.dumps(f, sort_keys=True) + "\n" for f in findings).encode()
+
+
+def test_the_run_document_ties_the_groups_to_their_findings() -> None:
+    data = _ndjson(FINDINGS)
+    run = correlate_run(data)
+    document = run.document()
+    assert not [e.message for e in RUN_SCHEMA.iter_errors(document)]
+    assert run.findings_sha256 == hashlib.sha256(data).hexdigest()
+    assert run.correlator.stages == ["dedup", "structural"] and run.correlator.threshold is None
+    assert sorted(i for g in run.groups for i in g.finding_ids) == sorted({f["id"] for f in FINDINGS})
+
+
+def test_the_run_document_records_the_embedding_stage_and_its_model() -> None:
+    run = correlate_run(_ndjson(SIMILAR), embed=keyword_embedder, embedding_model=MODEL, threshold=0.5)
+    assert run.correlator.stages == ["dedup", "structural", "embedding"]
+    assert (run.correlator.threshold, run.correlator.embedding_model) == (0.5, MODEL)
+    assert not [e.message for e in RUN_SCHEMA.iter_errors(run.document())]
+
+
+@pytest.mark.parametrize("embed", [_down, _nan], ids=["down", "nan"])
+def test_an_embedder_failure_keeps_stages_1_and_2a_and_says_so(embed: Any) -> None:
+    """Should fix 4: advice degrades, it never vanishes, and the document says which stages ran."""
+    run = correlate_run(_ndjson(FINDINGS), embed=embed, embedding_model=MODEL)
+    assert run.correlator.stages == ["dedup", "structural"] and run.correlator.embedding_model is None
+    assert run.groups == correlate(FINDINGS)
+
+
+def test_an_embedder_comes_with_its_model() -> None:
+    with pytest.raises(CorrelationError, match="embedding model"):
+        correlate_run(_ndjson(FINDINGS), embed=keyword_embedder)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda d: d | {"groups": d["groups"][::-1]},
+        lambda d: d | {"groups": [*d["groups"], d["groups"][0]]},
+        lambda d: d | {"correlator": {"version": "0.1.0", "stages": ["dedup"]}},
+    ],
+    ids=["unsorted", "a-finding-twice", "a-stage-that-did-not-run"],
+)
+def test_the_run_model_refuses_what_the_schema_cannot_express(change: Any) -> None:
+    document = correlate_run(_ndjson(FINDINGS)).document()
+    with pytest.raises(ValueError, match=r"sorted|two groups|did not run"):
+        Correlation.model_validate(change(document))

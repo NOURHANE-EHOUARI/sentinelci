@@ -6,7 +6,8 @@
     "2222222222222222222222222222222222222222222222222222222222222222",
     "3333333333333333333333333333333333333333333333333333333333333333"
   ],
-  "stage": "llm",
+  "stage": "structural",
+  "labelled_by": "llm",
   "title": "SQL built from strings in the data layer",
   "root_cause": "Three queries format user input into SQL text instead of passing parameters.",
   "single_fix": "Use parameterized queries in app/db.py.",

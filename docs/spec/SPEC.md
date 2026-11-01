@@ -10,7 +10,7 @@
 
 | Version | Change |
 |---|---|
-| 1.1.20 | A7 correlation (§8, §13.2): `schemas/root-cause-group.v1.json` (RootCauseGroup v1, advisory); stages 1 (dedup) and 2a (structural fix keys) of `sentinel_ai.correlate`, stage 2b (embedding clustering) with an injected embedder, and the ARI and alert-reduction metrics. |
+| 1.1.20 | A7 correlation (§8, §13.2, §17): `schemas/root-cause-group.v1.json` (RootCauseGroup v1, advisory: `stage` is what formed a group, dedup, structural or embedding, `labelled_by` who wrote its labels, template or llm with its `model`, and an embedding group's `similarity`) and `schemas/correlation.v1.json` (one run's groups with the sha256 of the findings they came from, the stages that ran, the threshold and the embedding model); stages 1 (dedup) and 2a (structural fix keys, within one category) of `sentinel_ai.correlate`, stage 2b (embedding clustering, never secrets) with an injected embedder that falls back to stages 1 and 2a when it fails, and the ARI and alert-reduction metrics. The threshold is calibrated off demo-shop (§17). |
 | 1.1.6 | A9 first seeds (§17): 5 fake secrets, 6 IaC, 3 CI-workflow seeds and 4 clean controls in `demo-shop/`, with a draft ground-truth format (`demo-shop/ground-truth/`, final schema owned by B9) checked against the pinned Gitleaks, Trivy and zizmor. SentinelCI's Trivy configuration trusts only the kind registry for KSV0125. |
 | 1.1.5 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
 | 1.1.4 | Enrichment (B2, §6.1): `schemas/enrichment-snapshot.v1.json` (`schema_version` "1.0", `sources.kev.cves`: the CVEs the KEV lookup covered) and `schemas/sentinel-config.v1.json` (`sentinel.yaml`, canonical component paths); `sentinel enrich`. "Not listed in KEV" only for covered CVEs; `sentinel.yaml` read with a restricted YAML loader. |
@@ -139,7 +139,7 @@ Local CLI runs can **push** to the same ingestion API. No self-hosted runners (a
 | Platform API | ingestion, sync, query, OpenAPI | FastAPI, SQLAlchemy 2, Alembic | B |
 | Workers | sync, enrichment refresh, AI, remediation | Celery + Redis | B / A |
 | AI analyst | explanations, triage hints, patch proposals | Ollama, own provider interface | B |
-| Correlator | dedup, embeddings, clustering, labels | pgvector, scikit-learn/HDBSCAN | A |
+| Correlator | dedup, embeddings, clustering, labels | pure Python now (average linkage); numpy or pgvector in the worker | A |
 | Remediation orchestrator | fixers, branches/PRs, verification | GitHub App / token, httpx2 | A |
 | Evidence store | content-addressed bundles | SeaweedFS (S3 API, ADR-0007) | B |
 | Database | runs, findings, decisions, waivers, groups, remediations | PostgreSQL + pgvector | B |
@@ -406,10 +406,15 @@ AI runs after the decision is stored, writes only advisory tables, and every out
 - **Guardrails:** import contract; untrusted text in delimited data blocks; schema validation with one repair
   retry, else "unavailable"; secret redaction before any prompt; model/prompt/input hash logged; injection
   canaries prove verdict invariance.
-- **Correlation (A7):** stage 1 fingerprint dedup → stage 2a structural fix keys (the same package, the same
-  advisory under any of its ids, the same rule in the same file; deterministic) → stage 2b embeddings
-  (pgvector) + average-linkage clustering within a category → stage 3 LLM labels and single fix; each stage
-  measured separately (ARI, alert reduction). A fix is proposed only when one change resolves every member.
+- **Correlation (A7):** stage 1 fingerprint dedup → stage 2a structural fix keys within one category (the same
+  package, the same advisory under any of its ids, the same rule in the same file; deterministic) → stage 2b
+  embeddings (pgvector) + average-linkage clustering within a category, never for secrets (each is rotated on
+  its own) → stage 3 LLM labels and single fix for the groups it is given (it labels, it never forms groups);
+  each stage measured separately (ARI, alert reduction). A fix is proposed only when one change resolves every
+  member. A run's groups travel in a correlation document (`schemas/correlation.v1.json`) with the sha256 of
+  the findings they came from, the stages that ran, the threshold and the embedding model; if the embedder
+  fails, stages 1 and 2a are kept and the document says so. The 2b threshold (`DEFAULT_THRESHOLD` = 0.8) is
+  provisional until calibrated (§17).
 
 ## 9. Verified remediation loop
 
@@ -429,7 +434,7 @@ target fingerprint gone · no new ≥ MEDIUM finding · verdict ≠ BLOCK. Bot u
 ## 10. Dashboard and observability
 
 Pages: Overview, Findings, Finding detail, Policies & waivers (B) · Releases & evidence, Supply chain,
-Remediation (A).
+Remediation, Root-cause groups (A).
 
 | Metric | Definition |
 |---|---|
@@ -522,7 +527,8 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
 
 `POST /api/v1/runs` · `POST /api/v1/runs/{id}/findings` (NDJSON) · `POST /api/v1/runs/{id}/artifacts` ·
 `POST /api/v1/sync/github` · `GET /api/v1/findings[/{id}]` · `POST /api/v1/findings/{id}/explain` ·
-`GET /api/v1/groups` (A) · `POST|GET /api/v1/remediations` (A) · `GET /api/v1/releases[/{digest}/evidence]` (A) ·
+`POST /api/v1/runs/{id}/groups` and `GET /api/v1/runs/{id}/groups` (correlation documents, scoped by run) ·
+`POST|GET /api/v1/remediations` (A) · `GET /api/v1/releases[/{digest}/evidence]` (A) ·
 `GET /metrics` · `GET /healthz`.
 
 ## 14. Engineering workflow
@@ -553,7 +559,7 @@ Vertical ownership; each track has DevOps, security, backend/UI and an AI compon
 | A4 | Supply chain & release | `sentinel-release.yml`: build by digest, SBOMs, Cosign sign + attestations (SBOM, vuln, decision, provenance), signed evidence bundle, `sentinel verify`. Accept: verify fails on the 4 bad cases | S2 | L |
 | A5 | Runtime enforcement | kind + registry, Helm, Argo CD, Kyverno policy, GitOps digest bump. Accept: bad images denied by automated tests; good release deploys | S3 | L |
 | A6 | Remediation orchestration | Bot, deterministic fixers, PR creation, verifier, retries, state machine; consumes B6. Accept: never VERIFIED with failing test / new finding; never merges | S4 | L |
-| A7 | AI alert correlation | §8 correlator, pgvector, `/api/v1/groups`. Accept: ARI + alert reduction with ablation | S3 | M |
+| A7 | AI alert correlation | §8 correlator and `correlation.v1.json` (B1 serves it under `/api/v1/runs/{id}/groups`), pgvector. Accept: ARI + alert reduction with ablation, threshold calibrated off demo-shop | S3 | M |
 | A8 | Observability & pages | Prometheus metrics, Grafana as code, pages Releases, Supply chain, Remediation | S3–S4 | M |
 | A9 | Demo seeds: infra & deps | Dockerfiles, K8s, Terraform, vulnerable/unused deps, fake secrets + ground truth | S0–S1 | S |
 | A10 | Hardening & v1.0.0 | Self-gating, Scorecard, caching, signed v1.0.0, switch to GitHub mode when public | S5 | S |
@@ -609,6 +615,14 @@ controls 5. Choose concrete package versions in Sprint 0 from the current KEV ca
 **Metrics:** recall per category and false positives on clean controls · NDCG@10 vs CVSS baseline · ARI + alert
 reduction + ablation · explanation rubric + LLM-judge agreement (Cohen's kappa) · verified fix rate · AI
 mislabel rate on canaries and verdict changes (must be 0) · pipeline p50/p95 · replay identity.
+
+**Correlation, without tuning on the test set.** The stage 2b threshold and the embedding model are chosen on a
+labelled set that is not demo-shop (hand-labelled findings of one or two other vulnerable applications, scanned
+in a container, or a split of seeds fixed before any score is looked at), then committed with the model's digest
+before the demo-shop run. On demo-shop, the ARI-vs-threshold curve, with stage 2b on and off, is reported as
+sensitivity only. Alert reduction counts raw tool reports (`out/raw/`, so stage 1 merges the tools) against
+groups; a findings file already has one finding per fingerprint, so stage 1 alone reduces nothing there.
+Findings with no ground-truth seed are left out of the ARI and listed.
 
 **Demo (5 min):** context (2026 incident) → BLOCK on a PR → understand (score factors, AI advisory) → fix (bot PR,
 VERIFIED) → release (signed, `sentinel verify`, Argo CD, Kyverno admits) → attack (bad image denied) →

@@ -5,6 +5,7 @@
     "GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG"
   ],
   "stage": "dedup",
+  "labelled_by": "template",
   "title": "t",
   "root_cause": "r",
   "single_fix": null

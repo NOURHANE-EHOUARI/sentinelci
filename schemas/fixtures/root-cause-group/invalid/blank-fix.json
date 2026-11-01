@@ -5,6 +5,7 @@
     "1111111111111111111111111111111111111111111111111111111111111111"
   ],
   "stage": "dedup",
+  "labelled_by": "template",
   "title": "t",
   "root_cause": "r",
   "single_fix": "   "

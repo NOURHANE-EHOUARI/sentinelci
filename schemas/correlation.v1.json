@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/NOURHANE-EHOUARI/sentinelci/schemas/correlation.v1.json",
+  "title": "SentinelCI Correlation v1",
+  "description": "One correlator run (task A7, SPEC section 8): the root-cause groups of one run's findings, the findings they were computed from, and how they were computed. Advisory: the release gate never reads it. A consumer (B1) checks that findings_sha256 is its run's and that the groups cover each of its findings exactly once.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "findings_sha256",
+    "correlator",
+    "groups"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "findings_sha256": {
+      "description": "sha256 hex of the findings NDJSON bytes the groups were computed from (B1's runs.findings_sha256).",
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "correlator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "stages"
+      ],
+      "properties": {
+        "version": {
+          "description": "The correlator's version.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[0-9A-Za-z.+-]+$"
+        },
+        "stages": {
+          "description": "The stages that ran, in order. dedup always runs; embedding only when an embedder answered.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "dedup",
+              "structural",
+              "embedding"
+            ]
+          },
+          "contains": {
+            "const": "dedup"
+          }
+        },
+        "threshold": {
+          "description": "The embedding similarity threshold (stage embedding).",
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1
+        },
+        "embedding_model": {
+          "description": "The embedding model (stage embedding).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "name",
+            "digest"
+          ],
+          "properties": {
+            "provider": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[a-z0-9._-]+$"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[A-Za-z0-9._:/@-]+$"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])sha256:[a-f0-9]{64}$"
+            }
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "stages": {
+            "contains": {
+              "const": "embedding"
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "threshold",
+          "embedding_model"
+        ]
+      },
+      "else": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "threshold"
+              ]
+            },
+            {
+              "required": [
+                "embedding_model"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "groups": {
+      "description": "RootCauseGroup v1 documents, sorted by group_id; together they hold each finding id exactly once (checked by the producer and by B1, not expressible here).",
+      "type": "array",
+      "items": {
+        "$ref": "root-cause-group.v1.json"
+      }
+    }
+  },
+  "$defs": {
+    "sha256_hex": {
+      "type": "string",
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[a-f0-9]{64}$"
+    }
+  }
+}
