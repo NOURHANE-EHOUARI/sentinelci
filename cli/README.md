@@ -141,7 +141,16 @@ Runs the OPA policies in `policies/` and writes a Decision record (`schemas/deci
   the decision, so a failed scan still produces a record.
 - `--service-context <sentinel.yaml>`: the same base-branch file given to `sentinel enrich --config`. Its exposure
   shaped the scores, so the decision records its digest (`inputs.service_context_digest`, Decision 1.3) and
-  `--store` keeps it for replay. An invalid file is never recorded (exit 3).
+  `--store` keeps it for replay. An invalid file is never recorded (exit 3). Its `policy_profile` picks the profile:
+  `strict` makes any P1 an SC-006 BLOCK (`policies/profiles.rego`).
+- `--vex <json>` (default `.sentinel/vex.json` if present, from the base branch): OpenVEX `not_affected`
+  statements (`schemas/vex.v1.json`, justification required). A covered package finding counts for no rule and is
+  listed in `vex_applied` (Decision 1.4); the command prints a `VEX not_affected:` line. A statement of any other
+  status about the same finding disputes `not_affected` whatever the order, so remove an earlier
+  `under_investigation` or `affected` statement when you add `not_affected`. Like a waiver, `not_affected` applies
+  for 90 days after it was made (its `last_updated` or `timestamp`, else the document's `timestamp`), and a
+  statement or document dated after `--evaluated-at` blocks (SC-010). Products are package purls (`pkg:oci` is
+  refused: an image matches no finding). An invalid document, a duplicate JSON key, or one over 4 MiB exits 3.
 - Required scanners (`policies/required_tools.rego`, part of the policy bundle, so read from the base branch):
   gitleaks in `pr` and `release`, none in `local`. A required tool left out of the tool status, or no tool
   status at all in a context that requires tools, is an SC-010 BLOCK (`Scanner missing` /

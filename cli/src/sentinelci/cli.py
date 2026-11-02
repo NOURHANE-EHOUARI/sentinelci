@@ -64,6 +64,7 @@ from sentinelci.policy.opa import OpaError, OpaRunner
 from sentinelci.policy.replay import ReplayResult, check_identity, replay, skip_reason
 from sentinelci.policy.store import EvidenceStore, StoreError
 from sentinelci.policy.tool_status import load_tool_status
+from sentinelci.policy.vex import DEFAULT_VEX_PATH
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
 from sentinelci.remediation.gate import check_proposal, verify_proposal
 from sentinelci.remediation.kubernetes import propose as propose_kubernetes
@@ -412,6 +413,13 @@ def evaluate_command(
             "digest (Decision 1.3)."
         ),
     ] = None,
+    vex: Annotated[
+        Path | None,
+        typer.Option(
+            help="OpenVEX statements (schemas/vex.v1.json), from the base branch. "
+            f"Default: {DEFAULT_VEX_PATH} if present."
+        ),
+    ] = None,
     sbom: Annotated[Path | None, typer.Option(help="SBOM file to record by digest.")] = None,
     opa: Annotated[
         Path | None, typer.Option(help="OPA binary. Default: $SENTINEL_OPA, then opa on PATH.")
@@ -428,7 +436,9 @@ def evaluate_command(
     """
     if waivers is None and Path(DEFAULT_WAIVERS_PATH).is_file():
         waivers = Path(DEFAULT_WAIVERS_PATH)
-    inputs = [findings, waivers, baseline, tool_status, enrichment_snapshot, service_context, sbom, opa]
+    if vex is None and Path(DEFAULT_VEX_PATH).is_file():
+        vex = Path(DEFAULT_VEX_PATH)
+    inputs = [findings, waivers, baseline, tool_status, enrichment_snapshot, service_context, sbom, vex, opa]
     dirs = {"--policy-dir": policy_dir, "--store": store}
     _refuse_output(output, inputs, "sentinel evaluate", "--output", dirs)
     # A stale decision from an earlier run must never be mistaken for this run's result.
@@ -443,6 +453,7 @@ def evaluate_command(
             enrichment_snapshot=enrichment_snapshot.read_bytes() if enrichment_snapshot else None,
             sbom=sbom.read_bytes() if sbom else None,
             service_context=service_context.read_bytes() if service_context else None,
+            vex=vex.read_bytes() if vex else None,
         )
         bundle = PolicyBundle.load(policy_dir)
         decision = evaluate(
@@ -458,6 +469,7 @@ def evaluate_command(
             enrichment_snapshot=data.enrichment_snapshot,
             sbom=data.sbom,
             service_context=data.service_context,
+            vex_data=data.vex,
         )
         if store is not None:
             _store_evidence(EvidenceStore(store), decision, bundle, data)
@@ -476,6 +488,8 @@ def evaluate_command(
         typer.echo(f"  {rule}  {effect:<5}  {message}  ({count} {noun})")
     if decision["waivers_applied"]:
         typer.echo(f"Waivers applied: {', '.join(decision['waivers_applied'])}")
+    if decision.get("vex_applied"):
+        typer.echo(f"VEX not_affected: {', '.join(decision['vex_applied'])}")
     typer.echo(f"Decision written to {output}")
     if decision["verdict"] == "BLOCK":
         raise typer.Exit(EXIT_BLOCK)
@@ -490,6 +504,7 @@ class _Inputs:
     enrichment_snapshot: bytes | None
     sbom: bytes | None
     service_context: bytes | None
+    vex: bytes | None
 
 
 def _store_evidence(
@@ -507,6 +522,7 @@ def _store_evidence(
         ),
         "sbom_digest": data.sbom,
         "service_context_digest": data.service_context,
+        "vex_digest": data.vex,
     }
     for key, blob in stored.items():
         if blob is not None and store.put(blob) != inputs[key]:
