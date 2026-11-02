@@ -182,7 +182,7 @@ def test_a_package_without_location_is_still_a_finding() -> None:
         ("High", "HIGH", "High"),
         ("Medium", "MEDIUM", "Medium"),
         ("Low", "LOW", "Low"),
-        ("Negligible", "LOW", "Negligible"),  # a known vulnerability is never INFO
+        ("Negligible", "INFO", "Negligible"),  # the distribution: no security impact worth fixing
         ("Unknown", "HIGH", "Unknown"),  # missing data never lowers risk
         ("", "HIGH", "Unknown"),
         (None, "HIGH", "Unknown"),

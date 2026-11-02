@@ -237,7 +237,7 @@ uv run sentinel normalize grype grype.json --scan-root demo-shop --out out/sca.n
 - Findings (category SCA): one per (vulnerability id, purl base). `rule_id` is Grype's id of the matched record
   (a GHSA for a language package), related CVE ids are in `cve`, other ids in `aliases`. Every file the package
   was found in is a place (`location`, then `other_locations`), relative to the repository root
-  (`--repo-root`, or `--scan-root` for `normalize grype`). Severity is Grype's; Negligible counts as LOW and
+  (`--repo-root`, or `--scan-root` for `normalize grype`). Severity is Grype's; Negligible counts as INFO and
   Unknown as HIGH, with the raw value in `severity_source`. The report's CVSS, EPSS and KEV are not copied:
   `sentinel enrich` adds them from the dated snapshot.
 - Exit code `3`, with no findings file, when a tool fails or does not match the lock, the database is missing,

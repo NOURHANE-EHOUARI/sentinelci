@@ -9,9 +9,10 @@
 - Every file the package was found in is a place. Matches with the same fingerprint (the same package in two
   services, or two versions of it) are one finding: the first place by path is `location`, the others are
   `other_locations` (Finding 1.1). The package block, fixed versions and message describe the first place.
-- Severity is Grype's. `Negligible` counts as LOW (a known vulnerability is never INFO) and `Unknown` as HIGH
-  (missing data never lowers risk); `severity_source` keeps the raw value. Any other value fails closed: a
-  new Grype severity needs a reviewed mapping.
+- Severity is Grype's. `Negligible` counts as INFO: the distribution says the issue has no security
+  impact worth fixing, and LOW and INFO both end in P4, so only the counts differ (review of #52).
+  `Unknown` counts as HIGH (missing data never lowers risk). `severity_source` keeps the raw value. Any
+  other value fails closed: a new Grype severity needs a reviewed mapping.
 - The CVSS, EPSS and KEV data in the report are not copied: enrichment comes from the dated snapshot (B2)
   only, so that a decision can be replayed from its evidence.
 - Nothing may have been silenced. The report records the configuration it was made with, and it must show no
@@ -44,7 +45,7 @@ GRYPE_SEVERITIES: dict[str, Severity] = {
     "High": "HIGH",
     "Medium": "MEDIUM",
     "Low": "LOW",
-    "Negligible": "LOW",
+    "Negligible": "INFO",
 }
 UNKNOWN = "Unknown"
 UNKNOWN_SEVERITY: Severity = "HIGH"
