@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from sentinelci.scanners.errors import ScannerError
+from sentinelci.scanners.errors import ScannerError, ScannerTimeout
 from sentinelci.scanners.installer import verify_tools
 from sentinelci.scanners.lock import ToolLock
 
@@ -90,7 +90,7 @@ def run_verified_tool(
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            raise ScannerError(f"{name} timed out after {timeout_s} s") from exc
+            raise ScannerTimeout(f"{name} timed out after {timeout_s} s") from exc
         except OSError as exc:
             raise ScannerError(f"{name} could not be started: {exc}") from exc
         duration = time.monotonic() - started
