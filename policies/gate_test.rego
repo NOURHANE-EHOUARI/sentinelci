@@ -296,6 +296,41 @@ test_pr_new_copy_that_becomes_the_primary_location_blocks if {
 	gate.decision.verdict == "BLOCK" with input as pr_with([head], [located(secret, "app/config.py")])
 }
 
+# A dependency's fingerprint has no path (SPEC section 13.1: purl base and advisory), so a known vulnerable package
+# that a second service starts to use keeps its id. It is a new place with its own exposure and reachability: it
+# counts as introduced, as a secret copied to a new file does.
+sca_p0 := scored(vuln(h("e"), "HIGH"), "P0")
+
+test_pr_known_vulnerable_package_in_a_new_service_blocks if {
+	head := spread(sca_p0, "services/shop-api/requirements.txt", ["services/admin/requirements.txt"])
+	d := gate.decision with input as pr_with([head], [located(sca_p0, "services/shop-api/requirements.txt")])
+	d.violations == [{"rule": "SC-002", "effect": "BLOCK", "finding_ids": [sca_p0.id], "message": "P0 finding not waived"}]
+}
+
+test_pr_known_vulnerable_package_only_in_a_new_manifest_blocks if {
+	head := located(sca_p0, "services/web/package-lock.json")
+	d := gate.decision with input as pr_with([head], [located(sca_p0, "services/shop-api/requirements.txt")])
+	d.verdict == "BLOCK"
+}
+
+test_pr_vulnerable_package_already_in_every_manifest_does_not_block if {
+	both := spread(sca_p0, "services/shop-api/requirements.txt", ["services/admin/requirements.txt"])
+	gate.decision.verdict == "PASS" with input as pr_with([both], [both])
+}
+
+test_pr_removing_a_service_that_used_the_package_does_not_block if {
+	base_finding := spread(sca_p0, "services/shop-api/requirements.txt", ["services/admin/requirements.txt"])
+	head := located(sca_p0, "services/shop-api/requirements.txt")
+	gate.decision.verdict == "PASS" with input as pr_with([head], [base_finding])
+}
+
+# Categories whose fingerprint already holds the path keep the fingerprint rule: a known id is not new.
+test_pr_path_rule_is_for_secrets_and_dependencies_only if {
+	issue := scored(pipeline_issue(h("f"), "HIGH"), "P0")
+	head := spread(issue, ".github/workflows/ci.yml", [".github/workflows/release.yml"])
+	gate.decision.verdict == "PASS" with input as pr_with([head], [located(issue, ".github/workflows/ci.yml")])
+}
+
 test_pr_without_baseline_counts_every_finding if {
 	i := object.union(with_findings([secret]), {"context": "pr"})
 	gate.decision.verdict == "BLOCK" with input as i
