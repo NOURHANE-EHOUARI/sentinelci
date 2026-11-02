@@ -6,9 +6,20 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, func, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, deferred, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
@@ -24,6 +35,12 @@ class Run(Base):
         CheckConstraint("commit ~ '^[a-f0-9]{40}$'", name="runs_commit"),
         CheckConstraint(
             "(findings_sha256 IS NULL) = (findings_uploaded_at IS NULL)", name="runs_findings_recorded_once"
+        ),
+        # The uploaded bytes are kept only as the bytes the recorded digest was taken of.
+        CheckConstraint(
+            "findings_ndjson IS NULL OR "
+            "(findings_sha256 IS NOT NULL AND encode(sha256(findings_ndjson), 'hex') = findings_sha256)",
+            name="runs_findings_bytes_match",
         ),
         # One run per CI run: a re-run of the upload step gets the existing run (409), never a second one.
         Index(
@@ -48,6 +65,9 @@ class Run(Base):
     findings_sha256: Mapped[str | None] = mapped_column(String(64))
     findings_uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finding_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # The upload itself, byte for byte (since API 1.2.0): what a consumer hashes to get `findings_sha256`,
+    # for example the correlator. Loaded only when asked for. Null for a run recorded before it was kept.
+    findings_ndjson: Mapped[bytes | None] = deferred(mapped_column(LargeBinary))
 
     findings: Mapped[list[RunFinding]] = relationship(back_populates="run", cascade="all, delete-orphan")
 
