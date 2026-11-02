@@ -25,8 +25,8 @@ from sentinelci.remediation.proposal import RemediationError, proposal_id_of
 
 _RANK = ("INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL")
 NEW_FINDING_FLOOR = "MEDIUM"
-_DIFF_HEADER = re.compile(r"diff --git a/(\S+) b/(\S+)")
-_HUNK = re.compile(r"@@ -[0-9]+(?:,[0-9]+)? \+[0-9]+(?:,[0-9]+)? @@.*")
+_DIFF_PREFIX = "diff --git a/"
+_HUNK = re.compile(r"@@ -[0-9]+(?:,([0-9]+))? \+[0-9]+(?:,([0-9]+))? @@.*")
 
 
 def paths_of(finding: Finding) -> set[str]:
@@ -35,26 +35,67 @@ def paths_of(finding: Finding) -> set[str]:
     return {place.path for place in places if place is not None}
 
 
+def _header_path(line: str) -> str:
+    """X of `diff --git a/X b/X`, or RemediationError: another path on each side is a rename or a copy. X may
+    hold spaces, so the line is split into two equal halves rather than at white space."""
+    rest = line.removeprefix(_DIFF_PREFIX)
+    half = (len(rest) - len(" b/")) // 2
+    path = rest[:half]
+    if not path or rest != f"{path} b/{path}":
+        raise RemediationError(f"the diff renames or copies a file, or names it oddly: {line[:80]!r}")
+    return path
+
+
 def diff_paths(diff: str) -> list[str]:
     """The files a diff edits in place, or RemediationError when it does anything else (creates, deletes,
-    renames, copies, changes a mode, holds a binary patch, or names a path outside the repository)."""
+    renames, copies, changes a mode, holds a binary patch, or names a path outside the repository).
+
+    Every hunk is read to its line counts, as git reads it: after the last line of a hunk only another hunk
+    or another `diff --git` header may follow. git would otherwise take a `--- a/X` / `+++ b/X` pair there as
+    one more file to patch, an edit or a creation this check never saw.
+    """
+    lines = diff.split("\n")  # git's own line split: no other character ends a line
+    if lines and lines[-1] == "":
+        lines.pop()
     paths: list[str] = []
-    in_header = False
-    for line in diff.splitlines():
-        header = _DIFF_HEADER.fullmatch(line)
-        if header is not None:
-            if header[1] != header[2]:
-                raise RemediationError(f"the diff renames or copies {header[1]}")
-            paths.append(header[1])
-            in_header = True
-        elif in_header and _HUNK.fullmatch(line):
-            in_header = False
-        elif in_header:
+    state = "start"  # start, header, hunk, between (after a complete hunk)
+    old = new = 0
+    for line in lines:
+        if state == "hunk":
+            if line.startswith("\\"):  # "\ No newline at end of file": not a line of either side
+                continue
+            if line == "" or line[0] == " ":  # git takes an empty line in a hunk as an empty context line
+                old, new = old - 1, new - 1
+            elif line[0] == "-":
+                old -= 1
+            elif line[0] == "+":
+                new -= 1
+            else:
+                raise RemediationError(f"the diff is not a plain edit of its files: {line[:80]!r}")
+            if old < 0 or new < 0:
+                raise RemediationError(f"a hunk of {paths[-1]} has more lines than its header says")
+            if old == new == 0:
+                state = "between"
+            continue
+        hunk = _HUNK.fullmatch(line)
+        if hunk is not None and state in ("header", "between"):
+            old, new = (int(count) if count is not None else 1 for count in hunk.groups())
+            state = "between" if old == new == 0 else "hunk"
+        elif line.startswith(_DIFF_PREFIX) and state in ("start", "between"):
+            paths.append(_header_path(line))
+            state = "header"
+        elif state == "between" and line.startswith("\\"):
+            continue
+        elif state == "header":
             if line.startswith("index ") or line in (f"--- a/{paths[-1]}", f"+++ b/{paths[-1]}"):
                 continue
             raise RemediationError(f"the diff does more than edit {paths[-1]} in place: {line[:80]!r}")
-        elif not paths or (line[:1] not in (" ", "+", "-", "\\") and not _HUNK.fullmatch(line)):
+        else:
             raise RemediationError(f"the diff is not a plain edit of its files: {line[:80]!r}")
+    if state == "hunk":
+        raise RemediationError(f"the diff ends inside a hunk of {paths[-1]}")
+    if state == "header":
+        raise RemediationError(f"the diff changes nothing in {paths[-1]}")
     for path in paths:
         if PurePosixPath(path).is_absolute() or ".." in PurePosixPath(path).parts:
             raise RemediationError(f"the diff names a path outside the repository: {path}")

