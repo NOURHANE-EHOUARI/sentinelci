@@ -100,14 +100,20 @@ def build_proposal(
     )
 
 
-def _left_open(finding: Finding, left_open: frozenset[tuple[str, int | None]]) -> bool:
+def _left_open(finding: Finding, path: str, left_open: frozenset[tuple[str, int | None]]) -> bool:
+    """The fixer left this finding open in `path`: its rule left open at any of its places in that file (a
+    finding merged with `other_locations` stays reported while one of its places is left)."""
     if (finding.rule_id, None) in left_open:
         return True
-    place = finding.location
-    if place is None or place.start_line is None:
+    places = [place for place in (finding.location, *(finding.other_locations or [])) if place is not None]
+    places = [place for place in places if place.path == path]
+    if not places or any(place.start_line is None for place in places):
         return any(rule == finding.rule_id for rule, _ in left_open)
-    lines = range(place.start_line, (place.end_line or place.start_line) + 1)
-    return any((finding.rule_id, line) in left_open for line in lines)
+    return any(
+        (finding.rule_id, line) in left_open
+        for place in places
+        for line in range(place.start_line or 0, (place.end_line or place.start_line or 0) + 1)
+    )
 
 
 def propose_fixes(
@@ -154,7 +160,7 @@ def propose_fixes(
         except NotFixable as exc:
             skipped[path] = str(exc)
             continue
-        claimed = [f.id for f in flagged if not _left_open(f, fixed.left_open)]
+        claimed = [f.id for f in flagged if not _left_open(f, path, fixed.left_open)]
         if fixed.text == old or not claimed:
             skipped[path] = "nothing this fixer can resolve"
             continue
