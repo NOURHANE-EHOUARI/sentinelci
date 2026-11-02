@@ -6,6 +6,9 @@
 - Builds on: ADR-0006 (private phase), ADR-0008 (base-branch pipeline), ADR-0010 (release attestations); the
   commands of #35 (`sentinel attest`, `sentinel verify`), #36 (`sentinel sbom`), #44 (registry mode) and #45
   (`sentinel admission-policy`)
+- Supersedes: ADR-0006 decision 1 (the signing key as a repository secret, referenced by the attest job); makes
+  ADR-0006 decision 4 (a private GHCR package for CI images) optional. The SPEC lines that still put the key in
+  CI (sections 4.3, 5 job isolation and the section 18 risk row) are updated with A4c.
 
 ## Context
 
@@ -63,16 +66,25 @@ registry (ADR-0006, decision 4). Facts checked with the pinned tools on 2026-11-
 
    `make release` ends by printing the digest and the trust report (16/16 in registry mode). The ephemeral
    registry needs no registry credential; the private GHCR package of ADR-0006, decision 4, becomes optional.
+
+   The laptop signer runs repository code too (`release.sh`, the Makefile and the CLI of the checkout, in the
+   shell where the key password is typed), so `release.sh` applies the laptop analog of ADR-0008: it refuses
+   unless the working tree is clean and `HEAD` is `origin/main`. Cosign prompts for the key password on the
+   terminal; it is never stored in `.env` or exported to the environment, where any process of the session
+   could read it.
 5. **Deploy and attack from the bundle (A5b):**
    - `make demo-release` loads the bundle into the kind registry (`cosign load`, digest unchanged) and verifies
-     it there. It then bumps the digest in `demo-shop/gitops/` (Argo CD) and waits for
+     it there. It then commits the new digest to the demo's GitOps repository and waits for
      `kubectl rollout status`. It fails if the verification or the rollout fails, and it is safe to run twice.
+   - That GitOps repository is a local bare repository on the laptop, created from `deploy/argocd/` and served
+     read-only to Argo CD inside kind. Nothing is pushed to GitHub: `main` is never written, and the cluster
+     holds no GitHub credential. (`demo-shop/gitops/` stays a seeded scan target.)
    - The admission policy is rendered once per cluster with `sentinel admission-policy`, from the committed
      release public key, so Kyverno trusts exactly what `sentinel verify` trusts.
    - `make demo-attack` deploys the two refused cases and shows Kyverno's denials: an unsigned image, and the
      BLOCK image of decision 6, which `attest` refused to sign.
 
-   With these, the M2/M3 demo is three commands, offline after the first `grype db update`.
+   With these, the M2/M3 demo is three commands, offline after the first `sentinel tools grype-db` (#52).
 6. **The release image.** A hardened Dockerfile goes next to the seed:
    - Python 3.12-slim pinned by digest;
    - UID 10001, port 8080;
@@ -82,8 +94,11 @@ registry (ADR-0006, decision 4). Facts checked with the pinned tools on 2026-11-
 
    It installs `services/shop-api/requirements.release.txt`, which is hash-pinned (`--require-hashes`) with
    fixed versions and written by B9 with the application code. The demo's BLOCK image is the same Dockerfile
-   with `--build-arg REQUIREMENTS=requirements.txt`, the seeded pins. The ground truth gets a control for the
-   release Dockerfile (no SC-011 on it). The seeded Dockerfile stays a scan target.
+   with `--build-arg REQUIREMENTS=requirements.block.txt`: `requirements.release.txt` with pyyaml replaced by
+   the seeded 5.3.1, hash-pinned (its sdist), which gives one BLOCK reason, GT-SCA-001 (SC-002, P0). The seeded
+   `requirements.txt` cannot be the BLOCK image's: it has no hashes, and lxml 4.6.2 cannot be built on Python
+   3.12 (review of #43). The ground truth gets a control for the release Dockerfile (no SC-011 on it). The
+   seeded Dockerfile and `requirements.txt` stay scan targets, never built.
 7. **The key stays off GitHub during the private phase.**
    - The release key pair lives on the laptop; the private key is password-protected and never committed.
    - The public key is committed (`deploy/keys/release.pub`), and the admission policy is rendered from it.
@@ -101,8 +116,8 @@ registry (ADR-0006, decision 4). Facts checked with the pinned tools on 2026-11-
   Actions minutes. CI builds and decides with no secret, so a stolen workflow run cannot sign.
 - A residual risk is named instead of hidden: whoever can push can read any repository secret. That is why
   there is none for signing.
-- Track B's application code and `requirements.release.txt` (B9) are a dependency of the M2 demo, and so is
-  the release Dockerfile (A9).
+- Track B's application code, `requirements.release.txt` and `requirements.block.txt` (B9) are a dependency of
+  the M2 demo, and so is the release Dockerfile (A9).
 - Not decided here: whether releases also publish to the private GHCR package (optional, decision 4). When the
   repository goes public, keyless signing in CI and GitHub artifact attestations replace the laptop key and the
   CLI-written provenance (ADR-0006).
