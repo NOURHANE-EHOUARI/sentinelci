@@ -124,27 +124,36 @@ def _non_root_user(edit: _Edit, instructions: list[Instruction]) -> None:
 
 
 def _plain_local_source(source: str, context: FixContext | None) -> bool:
-    """A source ADD only copies: found in the repository (next to the Dockerfile, then at its root), inside
-    it, and a directory or a regular file that is neither a tar nor compressed."""
+    """A source ADD only copies, wherever the build context puts it.
+
+    The context may be the Dockerfile's directory or the repository root (`docker build -f svc/Dockerfile .`),
+    so every place the source could be is checked. A place where nothing is found is skipped; any place that
+    holds a symbolic link (Docker follows it, and unpacks a tar it points to), something outside the
+    repository, a tar, something compressed, or anything but a directory or a regular file keeps ADD. ADD
+    becomes COPY only when the source was found and every place that holds it is plain.
+    """
     if context is None or not source or any(c in source for c in "*?[$") or "://" in source:
         return False
     if source.startswith("git@"):
         return False
     root = context.repo_root
+    found = False
     for base in (root / context.path).parent, root:
         candidate = base / source.lstrip("/")
-        if candidate.is_symlink() or not candidate.exists():
-            continue
-        if not is_within(candidate, root):
+        if not candidate.is_symlink() and not candidate.exists():
+            continue  # nothing there, not even a dangling link
+        found = True
+        if candidate.is_symlink() or not is_within(candidate, root):
             return False
         if candidate.is_dir():
-            return True
+            continue
         if not candidate.is_file():
             return False
         with candidate.open("rb") as file:
             head = file.read(6)
-        return not head.startswith(_COMPRESSED) and not tarfile.is_tarfile(candidate)
-    return False
+        if head.startswith(_COMPRESSED) or tarfile.is_tarfile(candidate):
+            return False
+    return found
 
 
 def _copy_not_add(edit: _Edit, instructions: list[Instruction]) -> None:

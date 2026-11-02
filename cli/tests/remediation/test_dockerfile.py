@@ -361,3 +361,58 @@ def test_a_source_that_is_not_one_plain_file_of_the_repository_stays_added(
     text = f"FROM a\nADD {source} /app/\nCMD x\n"
     context = FixContext(path="Dockerfile", repo_root=repo, others=[])
     assert fix_dockerfile(text, ["DS-0005"], context).text == text
+
+
+@pytest.mark.parametrize("tar_at", ["svc/vendor", "vendor"], ids=["next-to-it", "at-the-root"])
+@pytest.mark.parametrize("link", [False, True], ids=["file", "symlink"])
+def test_add_stays_when_any_place_the_source_could_be_is_a_tar(
+    tmp_path: Path, tar_at: str, link: bool
+) -> None:
+    """The build context may be the Dockerfile's directory or the repository root: a tar in either one is
+    unpacked by ADD (Docker follows a symbolic link), so ADD stays when either place holds one."""
+    (tmp_path / "svc").mkdir()
+    (tmp_path / "data").write_text("x")
+    with tarfile.open(tmp_path / "archive.tar", "w") as archive:
+        archive.add(tmp_path / "data", arcname="data")
+    for place in ("svc/vendor", "vendor"):
+        target = tmp_path / place
+        if place != tar_at:
+            target.write_text("plain\n")
+        elif link:
+            target.symlink_to(tmp_path / "archive.tar")
+        else:
+            shutil.copy(tmp_path / "archive.tar", target)
+    context = FixContext(path="svc/Dockerfile", repo_root=tmp_path, others=[])
+    fixed = fix_dockerfile("FROM a\nADD vendor /opt/\nUSER app\nCMD x\n", {"DS-0005"}, context)
+    assert "ADD vendor /opt/" in fixed.text and ("DS-0005", 2) in fixed.left_open
+
+
+@pytest.mark.parametrize("where", ["svc/vendor", "vendor"], ids=["next-to-it", "at-the-root"])
+def test_a_plain_source_in_either_place_becomes_copy(tmp_path: Path, where: str) -> None:
+    """Control: one plain file, in either place, and nothing elsewhere."""
+    (tmp_path / "svc").mkdir()
+    (tmp_path / where).write_text("plain\n")
+    context = FixContext(path="svc/Dockerfile", repo_root=tmp_path, others=[])
+    fixed = fix_dockerfile("FROM a\nADD vendor /opt/\nUSER app\nCMD x\n", {"DS-0005"}, context)
+    assert "COPY vendor /opt/" in fixed.text and not fixed.left_open
+
+
+def test_a_dangling_link_where_the_source_could_be_keeps_add(tmp_path: Path) -> None:
+    (tmp_path / "svc").mkdir()
+    (tmp_path / "svc" / "vendor").write_text("plain\n")
+    (tmp_path / "vendor").symlink_to(tmp_path / "missing.tar")
+    context = FixContext(path="svc/Dockerfile", repo_root=tmp_path, others=[])
+    fixed = fix_dockerfile("FROM a\nADD vendor /opt/\nUSER app\nCMD x\n", {"DS-0005"}, context)
+    assert "ADD vendor /opt/" in fixed.text
+
+
+def test_a_merged_finding_with_a_held_place_is_not_claimed(tmp_path: Path) -> None:
+    """#42 review, nit 1: #26 merges two identical RUNs into one finding with `other_locations`. When one of
+    them is held by another finding, the merged finding stays reported, so it is not claimed."""
+    run = "RUN apt-get update && apt-get install -y curl"
+    repo = _service(tmp_path, f"FROM a\n{run}\nUSER app\n{run}\nCMD x\n")
+    merged = _at("DS-0029", 2).model_copy(
+        update={"other_locations": [Location(path="svc/Dockerfile", start_line=4, end_line=4)]}
+    )
+    plan = propose([merged, _at("DS-0021", 4, severity="HIGH")], repo, created_at=NOW)
+    assert plan.proposal is None and plan.skipped["svc/Dockerfile"] == "nothing this fixer can resolve"
