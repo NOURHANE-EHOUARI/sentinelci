@@ -855,6 +855,46 @@ resource "aws_iam_group_policy" "p" {{
 }}
 """,
 }
+ASSUME_ROLE_CFN = """      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+"""
+FULL_ADMIN_CLOUDFORMATION = {
+    "AWS::IAM::Policy": f"""AWSTemplateFormatVersion: "2010-09-09"
+Resources:
+  AdminPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: admin
+      Roles: [!Ref Role]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: "*"
+            Resource: "*"
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+{ASSUME_ROLE_CFN}""",
+    "inline policy of an AWS::IAM::Role": f"""AWSTemplateFormatVersion: "2010-09-09"
+Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+{ASSUME_ROLE_CFN}      Policies:
+        - PolicyName: inline-admin
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ["*:*"]
+                Resource: ["*"]
+""",
+}
 NOT_FULL_ADMIN = {
     "one service": ("s3:*", "*", "Allow"),
     "one resource": ("*", "arn:aws:s3:::bucket/*", "Allow"),
@@ -871,6 +911,18 @@ def test_real_trivy_reports_full_admin_policies_with_sentinelcis_check(tmp_path:
     repo.mkdir()
     (repo / "iam.tf").write_text(FULL_ADMIN[form])
     assert ("iam.tf", "SENTINEL-AWS-0001") in _real_ids(repo)
+
+
+@real
+@pytest.mark.integration
+@pytest.mark.parametrize("form", FULL_ADMIN_CLOUDFORMATION)
+def test_real_trivy_reports_full_admin_cloudformation_policies(tmp_path: Path, form: str) -> None:
+    # Trivy adapts CloudFormation into the same IAM state. Not seen: AWS::IAM::ManagedPolicy, which Trivy does
+    # not adapt, like a Terraform policy read with file().
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "template.yaml").write_text(FULL_ADMIN_CLOUDFORMATION[form])
+    assert ("template.yaml", "SENTINEL-AWS-0001") in _real_ids(repo)
 
 
 @real

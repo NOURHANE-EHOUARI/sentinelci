@@ -28,10 +28,11 @@ package sentinelci.aws.iam.sentinel_aws_0001
 
 import rego.v1
 
-# Every policy document Trivy adapted from the configuration: the policies it declares, and the inline policies
-# of the roles, users and groups it declares. Not seen: a policy attached by ARN (such as the AWS-managed
-# AdministratorAccess), whose document is not in the configuration, and a policy attached to a user or group
-# the configuration does not declare.
+# Every policy document Trivy adapted from the configuration (Terraform or CloudFormation): the policies it
+# declares, and the inline policies of the roles, users and groups it declares. Not seen, because Trivy does not
+# adapt them: a policy attached by ARN (such as the AWS-managed AdministratorAccess), whose document is not in
+# the configuration; a policy attached to a user or group the configuration does not declare; a Terraform
+# policy read with file(); and a CloudFormation AWS::IAM::ManagedPolicy.
 policies contains policy if {
 	some policy in input.aws.iam.policies
 }
