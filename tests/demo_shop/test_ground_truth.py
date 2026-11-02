@@ -83,6 +83,9 @@ def test_ground_truth_is_well_formed() -> None:
             assert "known_miss" not in seed, f"{seed['id']} is detected: drop known_miss"
         else:
             assert str(seed.get("known_miss", "")).strip(), f"{seed['id']}: no detection, and no known_miss"
+            # Only the Trivy test checks that a known miss is still missed: other categories get the same
+            # check with their first known miss.
+            assert seed["category"] == "IAC", f"{seed['id']}: known_miss is checked for IAC seeds only"
         for detection in seed["expected"]["detections"]:
             assert set(detection) == {"tool", "rule"} and all(detection.values()), seed["id"]
     for control in CONTROLS:
@@ -170,5 +173,9 @@ def test_trivy_finds_every_iac_seed_and_nothing_in_controls() -> None:
     }
     assert _expected("trivy") <= found
     assert not {path for path, _ in found} & _controls("trivy")
-    missed = {s["location"]["path"] for s in SEEDS if "known_miss" in s and s["category"] == "IAC"}
-    assert missed and not {path for path, _ in found} & missed, "Trivy now detects a known miss: record it"
+    for seed in (s for s in SEEDS if "known_miss" in s and s["category"] == "IAC"):
+        rules = sorted(rule for path, rule in found if path == seed["location"]["path"])
+        assert not rules, (
+            f"{seed['id']} is a known miss, but Trivy now reports {rules} in its file. If a rule flags "
+            "the seed, list it in expected.detections and drop known_miss; never edit the seed to hide it"
+        )

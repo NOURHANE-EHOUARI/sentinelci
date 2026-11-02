@@ -98,8 +98,10 @@ seeds:
     title: IAM policy allowing every action on every resource
     location: {path: infra/terraform/iam.tf, line: 8}
     known_miss: >-
-      Trivy 0.76.1 does not flag a fully wildcarded IAM policy (jsonencode, a JSON heredoc or an
-      aws_iam_policy_document with actions ["*"]); it counts as a miss for IaC recall (ADR-0012).
+      Trivy 0.76.1 does not flag a fully wildcarded IAM policy in any form tried (jsonencode, a JSON heredoc,
+      an aws_iam_policy_document with actions ["*"], an inline role policy, CloudFormation AWS::IAM::Policy
+      and ManagedPolicy): its AWS-0057 is deprecated and has no rule left, so --include-deprecated-checks does
+      not help. It counts as a miss for IaC recall (ADR-0012).
     expected:
       detections: []
 

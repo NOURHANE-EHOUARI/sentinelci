@@ -6,7 +6,8 @@
 #
 # Hashes were copied from each project's published checksum file for that exact release (linked below) on
 # 2026-10-28. To upgrade a tool: open a PR that changes the version, URLs and hashes together, and link the
-# upstream checksum file in the PR description so the reviewer can check every value.
+# upstream checksum file in the PR description so the reviewer can check every value. A Trivy upgrade also
+# re-checks GT-IAC-004 (demo-shop ground truth): its known_miss names Trivy's version.
 #
 # Not pinned here yet:
 # - opengrep: publishes keyless Cosign signatures but no checksum file; it will be pinned once

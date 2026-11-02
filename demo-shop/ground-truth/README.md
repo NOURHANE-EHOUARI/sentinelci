@@ -22,6 +22,12 @@ seeds:
       gate: SC-001                # the gate rule this seed should trigger, when one applies
       detections:                 # detections verified with the pinned tools
         - {tool: gitleaks, rule: github-pat}
+  - id: GT-IAC-004
+    # ...
+    known_miss: >-                # required when expected.detections is empty, forbidden otherwise: which
+      Trivy 0.76.1 does not ...   # pinned tool and version misses the seed, the forms tried, and why
+    expected:
+      detections: []
 controls:
   - id: GT-CLEAN-001
     owner: A9
@@ -39,6 +45,11 @@ Matching rules for the harness:
 - Other findings in a seeded file are real but unlisted issues. They count neither as hits nor as false
   positives. Only controls measure false positives.
 - Every seeded file names its ground-truth id in a comment, so a reader of the file knows it is deliberate.
+- A seed with `known_miss` can't be detected. The evaluation counts it as a false negative in its category's
+  recall: it stays in the denominator, and the report lists it with its reason. It is never excluded or
+  reweighted.
+- When the still-missed check fails, record the detection in `expected.detections` and remove `known_miss`.
+  Never change the seed, the check or the scanner configuration to keep it missed.
 
 Fields planned for later tasks, optional today: `relevance` (0–3, for NDCG@10 against the CVSS baseline),
 `group` (shared root cause, for ARI), and for SCA `package` (purl), `vulnerability`, `kev`, `imported`.
@@ -53,4 +64,6 @@ Fields planned for later tasks, optional today: `relevance` (0–3, for NDCG@10 
 
 Gitleaks must report exactly the secret seeds: 5 out of 5, and nothing on the controls. A seed that no pinned
 tool detects has `detections: []` and a `known_miss` saying why (GT-IAC-004, ADR-0012). It counts as a miss in
-the evaluation. The Trivy test checks that it is still missed, so a tool upgrade that catches it shows up.
+the evaluation. The Trivy test checks, seed by seed, that it is still missed: any Trivy finding in its file
+fails the test and names the rules, so a tool upgrade that catches it shows up. Only IaC seeds can be known
+misses for now; another category gets the same check with its first one.
