@@ -11,9 +11,9 @@
 - **Stage 2b, embedding.** Groups of the same category whose texts are close are merged: average linkage over
   the embeddings of their alerts, with a similarity threshold; a merged group records the linkage of its last
   merge (`similarity`). Secrets are never merged. The embedder is injected (`LLMProvider.embed`, a local model
-  by default); without one, this stage is skipped. An embedder that fails or returns non-finite vectors is an
-  `EmbedderError`, and `correlate_run` then falls back to stages 1 and 2a, recording which stages ran: advice
-  degrades, it never vanishes.
+  by default); without one, this stage is skipped. An embedder that fails, or returns non-finite or zero
+  vectors, is an `EmbedderError`, and `correlate_run` then falls back to stages 1 and 2a and records the stage
+  as `skipped`, with the failure: advice degrades, it never vanishes, and an outage never reads as a choice.
 
 Labels are templates (`labelled_by: template`): what the members share, and a fix only when one change
 resolves every member (each a package with known fixed versions). Stage 3 (a model labels the groups it is
@@ -41,6 +41,7 @@ from sentinel_ai.correlate.models import (
     EmbeddingModel,
     OneLine,
     RootCauseGroup,
+    Skipped,
     Stage,
     group_id,
 )
@@ -203,8 +204,9 @@ def embedding_groups(
         len(vectors) != len(alerts)
         or any(len(v) != len(vectors[0]) for v in vectors)
         or not all(math.isfinite(x) for v in vectors for x in v)
+        or not all(any(v) for v in vectors)  # an empty or zero vector has no direction: every cosine is 0
     ):
-        raise EmbedderError("the embedder must return one finite vector per text, all of one size")
+        raise EmbedderError("the embedder must return one finite vector per text, all of one size, none zero")
     offsets, start = [], 0
     for group in groups:
         offsets.append(list(range(start, start + len(group))))
@@ -336,8 +338,9 @@ def correlate(
         title, cause, fix, key = _labels(sorted(members, key=lambda a: a.id), stage)
         result.append(
             RootCauseGroup(
-                group_id=group_id(ids), finding_ids=ids, stage=stage, similarity=score, key=key, title=title,
-                root_cause=cause, single_fix=fix,
+                schema_version="1.0", group_id=group_id(ids), finding_ids=ids, stage=stage,
+                labelled_by="template", similarity=score, key=key, title=title, root_cause=cause,
+                single_fix=fix,
             )
         )  # fmt: skip
     return sorted(result, key=lambda group: group.group_id)
@@ -351,20 +354,25 @@ def correlate_run(
     embedding_model: EmbeddingModel | None = None,
     threshold: float = DEFAULT_THRESHOLD,
 ) -> Correlation:
-    """The correlation document of one findings NDJSON file: its groups, its sha256 (what ties them to a run)
-    and the stages that ran. If the embedder fails, stages 1 and 2a are kept and `stages` says so."""
+    """The correlation document of one findings NDJSON file (the bytes B1 recorded, served at
+    `GET /runs/{id}/findings`): its groups, its sha256 (what ties them to a run) and the stages that ran. If
+    the embedder fails, stages 1 and 2a are kept and the embedding stage is recorded as skipped, with the
+    failure. With no findings, the embedder is not called, and the stage is neither run nor skipped."""
     if (embed is None) != (embedding_model is None):
         raise CorrelationError("an embedder comes with the embedding model that names it, and only then")
     try:
-        findings = [json.loads(line) for line in findings_data.decode("utf-8").splitlines() if line.strip()]
+        # NDJSON lines end with "\n" only, as the gate and B1 split them: str.splitlines() would also split on
+        # U+2028, U+2029 and U+0085, which stay raw inside JSON strings (the CLI writes ensure_ascii=False).
+        lines = findings_data.decode("utf-8").split("\n")
+        findings = [json.loads(line) for line in lines if line.strip()]
     except (UnicodeDecodeError, ValueError) as exc:
         raise CorrelationError(f"the findings are not NDJSON: {exc}") from exc
+    ran, skipped = embed is not None and bool(findings), None
     try:
-        groups = correlate(findings, structural=structural, embed=embed, threshold=threshold)
-        ran = embed is not None
-    except EmbedderError:
+        groups = correlate(findings, structural=structural, embed=embed if ran else None, threshold=threshold)
+    except EmbedderError as exc:  # its message is the correlator's own, never the provider's text
         groups = correlate(findings, structural=structural, threshold=threshold)
-        ran = False
+        ran, skipped = False, [Skipped(stage="embedding", reason=str(exc))]
     stages: list[Stage] = ["dedup"]
     if structural:
         stages.append("structural")
@@ -375,7 +383,11 @@ def correlate_run(
         stages=stages,
         threshold=threshold if ran else None,
         embedding_model=embedding_model if ran else None,
+        skipped=skipped,
     )
     return Correlation(
-        findings_sha256=hashlib.sha256(findings_data).hexdigest(), correlator=correlator, groups=groups
+        schema_version="1.0",
+        findings_sha256=hashlib.sha256(findings_data).hexdigest(),
+        correlator=correlator,
+        groups=groups,
     )

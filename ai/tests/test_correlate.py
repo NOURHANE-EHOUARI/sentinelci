@@ -469,3 +469,102 @@ def test_the_run_model_refuses_a_finding_in_two_groups() -> None:
     }
     with pytest.raises(ValueError, match="in two groups"):
         Correlation.model_validate(document)
+
+
+# ---------------------------------------------------------------- Hiba's review of f590bbb
+
+
+@pytest.mark.parametrize("missing", ["labelled_by", "schema_version"])
+def test_the_model_requires_what_the_schema_requires(missing: str) -> None:
+    """A document without `labelled_by` is not a template's: the model must not fill it in."""
+    (group,) = correlate(FINDINGS[:2])
+    document = {k: v for k, v in group.document().items() if k != missing}
+    assert list(SCHEMA.iter_errors(document))
+    with pytest.raises(ValueError):
+        RootCauseGroup.model_validate(document)
+
+
+def test_the_model_does_not_coerce_what_the_schema_refuses() -> None:
+    run = correlate_run(_ndjson(SIMILAR), embed=keyword_embedder, embedding_model=MODEL, threshold=0.5)
+    document = run.document()
+    for changed in (
+        document | {"correlator": document["correlator"] | {"threshold": "0.5"}},
+        document | {"groups": [document["groups"][0] | {"similarity": "0.9"}, *document["groups"][1:]]},
+        document | {"groups": [document["groups"][0] | {"similarity": True}, *document["groups"][1:]]},
+    ):
+        assert list(RUN_SCHEMA.iter_errors(changed))
+        with pytest.raises(ValueError):
+            Correlation.model_validate(changed)
+
+
+def test_the_schema_refuses_a_group_formed_by_a_stage_that_did_not_run() -> None:
+    document = correlate_run(_ndjson(FINDINGS)).document()
+    assert list(RUN_SCHEMA.iter_errors(document | {"correlator": {"version": "0.1.0", "stages": ["dedup"]}}))
+
+
+@pytest.mark.parametrize("separator", [chr(0x2028), chr(0x2029), chr(0x85)], ids=["u2028", "u2029", "u0085"])
+def test_the_findings_are_split_on_newlines_only_like_the_gate_and_b1(separator: str) -> None:
+    """The CLI writes NDJSON with ensure_ascii=False, so these stay raw inside a JSON string; B1 serves the
+    upload back byte for byte (GET /runs/{id}/findings, #57), so the correlator reads exactly these bytes."""
+    finding = FINDINGS[0] | {"message": f"first{separator}second"}
+    data = (json.dumps(finding, sort_keys=True, ensure_ascii=False) + "\r\n\n").encode("utf-8")
+    run = correlate_run(data)
+    assert [g.finding_ids for g in run.groups] == [[finding["id"]]]
+    assert run.findings_sha256 == hashlib.sha256(data).hexdigest()
+
+
+@pytest.mark.parametrize("vector", [[], [0.0, 0.0]], ids=["empty", "zero"])
+def test_a_vector_without_a_direction_is_an_embedder_failure(vector: list[float]) -> None:
+    with pytest.raises(CorrelationError, match="embedder"):
+        correlate(FINDINGS, embed=lambda texts: [vector for _ in texts], threshold=0.0)
+
+
+RUN_FIXTURES = ROOT / "schemas" / "fixtures" / "correlation"
+
+
+@pytest.mark.parametrize("path", sorted((RUN_FIXTURES / "valid").glob("*.json")), ids=lambda p: p.stem)
+def test_the_run_model_accepts_every_valid_fixture(path: Path) -> None:
+    document = json.loads(path.read_text("utf-8"))
+    assert Correlation.model_validate(document).document() == document
+
+
+@pytest.mark.parametrize("path", sorted((RUN_FIXTURES / "invalid").glob("*.json")), ids=lambda p: p.stem)
+def test_the_run_model_refuses_every_invalid_fixture(path: Path) -> None:
+    with pytest.raises(ValueError):
+        Correlation.model_validate(json.loads(path.read_text("utf-8")))
+
+
+@pytest.mark.parametrize("embed", [_down, _nan], ids=["down", "nan"])
+def test_a_failed_embedder_is_recorded_as_skipped_not_as_an_ablation(embed: Any) -> None:
+    """Nit 2: an outage and a choice give different documents; the reason names the failure, not its text."""
+    failed = correlate_run(_ndjson(FINDINGS), embed=embed, embedding_model=MODEL).document()
+    ablation = correlate_run(_ndjson(FINDINGS)).document()
+    reason = (
+        "the embedder failed: ConnectionError"
+        if embed is _down
+        else "the embedder must return one finite vector per text, all of one size, none zero"
+    )
+    assert failed["correlator"].pop("skipped") == [{"stage": "embedding", "reason": reason}]  # type: ignore[attr-defined]
+    assert failed == ablation
+
+
+def test_with_no_findings_the_embedder_is_not_called_and_not_recorded() -> None:
+    """Nit 2: nothing to embed is not a run of stage 2b, and not a failure either."""
+    calls: list[list[str]] = []
+
+    def embed(texts: list[str]) -> list[list[float]]:
+        calls.append(texts)
+        return [[1.0] for _ in texts]
+
+    document = correlate_run(b"", embed=embed, embedding_model=MODEL).document()
+    assert not calls and document["correlator"] == {"version": "0.1.0", "stages": ["dedup", "structural"]}
+    assert not [e.message for e in RUN_SCHEMA.iter_errors(document)]
+
+
+def test_the_stages_are_one_of_the_four_orders_that_can_occur() -> None:
+    document = correlate_run(_ndjson(FINDINGS)).document()
+    for stages in (["structural", "dedup"], ["dedup", "dedup"], ["embedding", "dedup"], []):
+        changed = document | {"correlator": {"version": "0.1.0", "stages": stages}}
+        assert list(RUN_SCHEMA.iter_errors(changed)), stages
+        with pytest.raises(ValueError):
+            Correlation.model_validate(changed)

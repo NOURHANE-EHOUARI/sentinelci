@@ -35,20 +35,25 @@
           "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[0-9A-Za-z.+-]+$"
         },
         "stages": {
-          "description": "The stages that ran, in order. dedup always runs; embedding only when an embedder answered.",
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "enum": [
+          "description": "The stages that ran, in order: dedup always, then structural, then embedding (only when an embedder answered).",
+          "enum": [
+            [
+              "dedup"
+            ],
+            [
+              "dedup",
+              "structural"
+            ],
+            [
+              "dedup",
+              "embedding"
+            ],
+            [
               "dedup",
               "structural",
               "embedding"
             ]
-          },
-          "contains": {
-            "const": "dedup"
-          }
+          ]
         },
         "threshold": {
           "description": "The embedding similarity threshold (stage embedding).",
@@ -83,39 +88,87 @@
               "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])sha256:[a-f0-9]{64}$"
             }
           }
-        }
-      },
-      "if": {
-        "properties": {
-          "stages": {
-            "contains": {
-              "const": "embedding"
+        },
+        "skipped": {
+          "description": "A stage that was asked for and could not run (the embedder failed), with the failure: an outage, never read as a choice. Absent when every stage asked for ran.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "stage",
+              "reason"
+            ],
+            "properties": {
+              "stage": {
+                "const": "embedding"
+              },
+              "reason": {
+                "description": "One line written by the correlator: the failure (an exception type, or an answer it could not use), never the provider's own text.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029]).*\\S"
+              }
             }
           }
         }
       },
-      "then": {
-        "required": [
-          "threshold",
-          "embedding_model"
-        ]
-      },
-      "else": {
-        "not": {
-          "anyOf": [
-            {
-              "required": [
-                "threshold"
-              ]
-            },
-            {
-              "required": [
-                "embedding_model"
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "stages": {
+                "contains": {
+                  "const": "embedding"
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "threshold",
+              "embedding_model"
+            ]
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "threshold"
+                  ]
+                },
+                {
+                  "required": [
+                    "embedding_model"
+                  ]
+                }
               ]
             }
-          ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "skipped"
+            ]
+          },
+          "then": {
+            "properties": {
+              "stages": {
+                "not": {
+                  "contains": {
+                    "const": "embedding"
+                  }
+                }
+              }
+            }
+          }
         }
-      }
+      ]
     },
     "groups": {
       "description": "RootCauseGroup v1 documents, sorted by group_id; together they hold each finding id exactly once (checked by the producer and by B1, not expressible here).",
@@ -125,6 +178,72 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "correlator": {
+            "properties": {
+              "stages": {
+                "not": {
+                  "contains": {
+                    "const": "structural"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "groups": {
+            "items": {
+              "properties": {
+                "stage": {
+                  "not": {
+                    "const": "structural"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "correlator": {
+            "properties": {
+              "stages": {
+                "not": {
+                  "contains": {
+                    "const": "embedding"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "groups": {
+            "items": {
+              "properties": {
+                "stage": {
+                  "not": {
+                    "const": "embedding"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "sha256_hex": {
       "type": "string",

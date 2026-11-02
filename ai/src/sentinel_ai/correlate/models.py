@@ -1,9 +1,9 @@
 """The correlator's contracts as it writes them (task A7): `RootCauseGroup` (schemas/root-cause-group.v1.json)
 and the run document that carries a run's groups, `Correlation` (schemas/correlation.v1.json).
 
-The models refuse whatever the schemas refuse, and also what a schema cannot express: finding ids out of
-order, a `group_id` that is not the sha256 of the members, and a run whose groups do not hold each finding
-exactly once.
+The models refuse whatever the schemas refuse (strict: nothing is coerced, nothing the schema requires is
+filled in), and also what a schema cannot express: finding ids out of order, a `group_id` that is not the
+sha256 of the members, and a run whose groups do not hold each finding exactly once.
 """
 
 import hashlib
@@ -19,8 +19,18 @@ MAX_KEY = 2048
 _Similarity = Annotated[float, Field(ge=-1, le=1)]
 
 
+# The orders the stages can run in (`correlator.stages`): dedup always, then structural, then embedding.
+STAGE_ORDERS: tuple[list[Stage], ...] = (
+    ["dedup"],
+    ["dedup", "structural"],
+    ["dedup", "embedding"],
+    ["dedup", "structural", "embedding"],
+)
+
+
 class _Contract(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # Strict: "0.9" is not 0.9 and true is not a similarity, as in the schema.
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
 class ModelRef(_Contract):
@@ -33,11 +43,11 @@ class ModelRef(_Contract):
 
 
 class RootCauseGroup(_Contract):
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0"]
     group_id: Fingerprint
     finding_ids: list[Fingerprint] = Field(min_length=1)
     stage: Stage  # what formed the group
-    labelled_by: LabelledBy = "template"  # who wrote its labels
+    labelled_by: LabelledBy  # who wrote its labels: never assumed, AI text must not pass for a template's
     similarity: _Similarity | None = None  # for stage embedding: the linkage of its last merge
     key: Annotated[OneLine, Field(max_length=MAX_KEY)] | None = None
     title: Annotated[OneLine, Field(max_length=200)]
@@ -69,26 +79,36 @@ class EmbeddingModel(_Contract):
     digest: Annotated[str, StringConstraints(pattern=r"^sha256:[a-f0-9]{64}$")]
 
 
+class Skipped(_Contract):
+    """A stage that was asked for and could not run (the embedder failed): an outage, not a choice."""
+
+    stage: Literal["embedding"]
+    reason: Annotated[OneLine, Field(max_length=200)]
+
+
 class Correlator(_Contract):
     version: Annotated[str, StringConstraints(pattern=r"^[0-9A-Za-z.+-]+$", max_length=64)]
-    stages: list[Stage] = Field(min_length=1)
+    stages: list[Stage]
     threshold: _Similarity | None = None
     embedding_model: EmbeddingModel | None = None
+    skipped: Annotated[list[Skipped], Field(min_length=1, max_length=1)] | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
-        if "dedup" not in self.stages or len(set(self.stages)) != len(self.stages):
-            raise ValueError("stages: each once, dedup always")
+        if self.stages not in STAGE_ORDERS:
+            raise ValueError("stages: dedup first, then structural, then embedding, each at most once")
         embedded = "embedding" in self.stages
         if embedded != (self.threshold is not None) or embedded != (self.embedding_model is not None):
             raise ValueError("threshold and embedding_model are set when stage embedding ran, and only then")
+        if embedded and self.skipped is not None:
+            raise ValueError("a stage that ran is not skipped")
         return self
 
 
 class Correlation(_Contract):
     """One correlator run: the groups, the findings they were computed from, and how."""
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0"]
     findings_sha256: Fingerprint
     correlator: Correlator
     groups: list[RootCauseGroup]
@@ -110,7 +130,7 @@ class Correlation(_Contract):
         return {
             "schema_version": self.schema_version,
             "findings_sha256": self.findings_sha256,
-            "correlator": self.correlator.model_dump(mode="json", exclude_none=True),
+            "correlator": self.correlator.model_dump(mode="json", exclude_none=True),  # skipped only if set
             "groups": [group.document() for group in self.groups],
         }
 
