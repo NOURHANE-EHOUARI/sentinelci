@@ -24,6 +24,10 @@ from sentinelci.report.upload import RunInfo, UploadError, check_api_url, check_
 ROOT = Path(__file__).resolve().parents[3]
 CONTRACT = yaml.safe_load((ROOT / "schemas" / "openapi.yaml").read_text(encoding="utf-8"))
 RUN_CREATE = Draft202012Validator(CONTRACT["components"]["schemas"]["RunCreate"])
+# API 1.1.0's 409 on POST /runs: the existing run of this CI run (its $ref resolves inside the contract).
+RUN_EXISTS = Draft202012Validator(
+    {"$ref": "#/components/schemas/RunExists", "components": CONTRACT["components"]}
+)
 TOKEN = "fake-ingestion-token-for-tests-only"  # noqa: S105 (a fake, for the fake platform)
 REPO, COMMIT = "NOURHANE-EHOUARI/sentinelci", "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 FINDING = json.loads(
@@ -49,6 +53,7 @@ class Fake:
         self.upload_status: int | None = None  # force an answer to the findings upload
         self.redirect_to: str | None = None
         self.lie_about_digest = False
+        self.contract_errors: list[str] = []  # answers of the fake that the contract would not allow
 
 
 def handler(fake: Fake) -> type[BaseHTTPRequestHandler]:
@@ -79,6 +84,14 @@ def handler(fake: Fake) -> type[BaseHTTPRequestHandler]:
                 errors = [e.message for e in RUN_CREATE.iter_errors(document)]
                 if errors:
                     return self._answer(422, {"detail": [{"msg": errors[0]}]})
+                key = ("repo", "commit", "context", "run_id")
+                ci_run = tuple(document.get(k) for k in key)
+                same = [r for r in fake.runs.values() if tuple(r[k] for k in key) == ci_run]
+                existing = same[0] if same and ci_run[3] is not None else None
+                if existing is not None:  # API 1.1.0: one run per CI run, whatever the ref
+                    exists = {"detail": f"CI run already recorded as run {existing['id']}", "run": existing}
+                    fake.contract_errors += [e.message for e in RUN_EXISTS.iter_errors(exists)]
+                    return self._answer(409, exists)
                 run_id = str(uuid.uuid4())
                 fake.runs[run_id] = {"id": run_id, "ref": None, "run_id": None, **document,
                                      "created_at": "2026-11-01T20:00:00Z", "finding_count": 0,
@@ -262,6 +275,70 @@ def test_the_platform_must_record_the_bytes_sent(tmp_path: Path, platform: str, 
 def test_an_unreachable_platform_is_an_upload_failure(tmp_path: Path) -> None:
     result = run_upload(tmp_path, "http://127.0.0.1:9", findings())
     assert result.exit_code == 4 and "could not be reached" in result.output
+
+
+# ---------------------------------------------------------------- the same CI run again (API 1.1.0, #56)
+
+CI = ("--ref", "refs/pull/7/merge", "--run-id", "123456789/1")  # GitHub: <run id>/<run attempt>
+
+
+def test_the_same_ci_run_again_resumes_the_run_the_platform_has(
+    tmp_path: Path, platform: str, fake: Fake
+) -> None:
+    """A lost answer or a failed findings POST: the same command again finishes the run, without --resume."""
+    data = findings(ref=CI[1], run_id=CI[3])
+    fake.upload_status = 503
+    failed = run_upload(tmp_path, platform, data, *CI)
+    (run_id,) = fake.runs
+    assert failed.exit_code == 4 and f"--resume {run_id}" in failed.output, failed.output
+    fake.upload_status = None
+    again = run_upload(tmp_path, platform, data, *CI)
+    assert again.exit_code == 0, again.output
+    assert json.loads(again.output) | {"findings_sha256": None} == {
+        "run_id": run_id, "finding_count": 2, "findings_sha256": None, "already_recorded": False}  # fmt: skip
+    assert len(fake.runs) == 1 and fake.runs[run_id]["findings_sha256"] == hashlib.sha256(data).hexdigest()
+    assert not fake.contract_errors
+
+
+def test_the_same_ci_run_once_recorded_is_already_uploaded(tmp_path: Path, platform: str, fake: Fake) -> None:
+    data = findings(ref=CI[1], run_id=CI[3])
+    first = run_upload(tmp_path, platform, data, *CI)
+    assert first.exit_code == 0, first.output
+    sent = len(fake.requests)
+    again = run_upload(tmp_path, platform, data, *CI)
+    assert again.exit_code == 0 and json.loads(again.output)["already_recorded"] is True, again.output
+    assert json.loads(again.output)["run_id"] == json.loads(first.output)["run_id"]
+    assert [m for m, *_ in fake.requests[sent:]] == ["POST"], "the 409 is enough: no findings sent again"
+    other = run_upload(tmp_path, platform, findings(count=1, ref=CI[1], run_id=CI[3]), *CI)
+    assert other.exit_code == 4 and "already holds other findings" in other.output
+    assert len(fake.runs) == 1 and not fake.contract_errors
+
+
+def test_the_same_ci_run_with_another_ref_is_refused_and_says_which(
+    tmp_path: Path, platform: str, fake: Fake
+) -> None:
+    """The platform matches a CI run without its ref; the client compares the rest before resuming."""
+    assert run_upload(tmp_path, platform, findings(ref=CI[1], run_id=CI[3]), *CI).exit_code == 0
+    sent = len(fake.requests)
+    other = ("--ref", "refs/heads/main", "--run-id", CI[3])
+    result = run_upload(tmp_path, platform, findings(ref=other[1], run_id=CI[3]), *other)
+    (run_id,) = fake.runs
+    assert result.exit_code == 4, result.output
+    assert f"run {run_id} is not this run (ref differs)" in result.output, result.output
+    assert len(fake.requests) == sent + 1, "nothing sent after the 409"
+
+
+def test_local_runs_are_never_resumed(tmp_path: Path, platform: str, fake: Fake) -> None:
+    for _ in range(2):
+        assert run_upload(tmp_path, platform, findings()).exit_code == 0
+    assert len(fake.runs) == 2
+
+
+def test_an_unreachable_platform_says_the_same_command_resumes_a_ci_run(tmp_path: Path) -> None:
+    result = run_upload(tmp_path, "http://127.0.0.1:9", findings(ref=CI[1], run_id=CI[3]), *CI)
+    assert result.exit_code == 4 and "the same command again resumes it" in result.output, result.output
+    local = run_upload(tmp_path, "http://127.0.0.1:9", findings())
+    assert local.exit_code == 4 and "resumes" not in local.output, local.output
 
 
 def test_an_empty_run_is_uploaded_as_such() -> None:

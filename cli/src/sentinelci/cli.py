@@ -61,7 +61,7 @@ from sentinelci.policy.replay import ReplayResult, check_identity, replay, skip_
 from sentinelci.policy.store import EvidenceStore, StoreError
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
 from sentinelci.report.pr_comment import ReportError, load_inputs, render_no_decision, render_pr_comment
-from sentinelci.report.upload import RunInfo, UploadError, platform_from, upload
+from sentinelci.report.upload import TOKEN_VARIABLE, RunInfo, UploadError, platform_from, upload
 from sentinelci.risk import RiskModel, RiskModelError, score_finding
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
@@ -518,7 +518,10 @@ def upload_command(
     commit: Annotated[str, typer.Option(help="Commit SHA that was scanned.")],
     context: Annotated[RunContext, typer.Option(help="Run context.")],
     ref: Annotated[str | None, typer.Option(help="Git ref that was scanned.")] = None,
-    run_id: Annotated[str | None, typer.Option(help="CI run identifier.")] = None,
+    run_id: Annotated[
+        str | None,
+        typer.Option(help="CI run identifier, as the findings carry it (GitHub: <run id>/<run attempt>)."),
+    ] = None,
     resume: Annotated[
         str | None, typer.Option(help="Finish the upload of a run the platform already created (its id).")
     ] = None,
@@ -527,16 +530,20 @@ def upload_command(
 
     The token comes only from the SENTINEL_API_TOKEN environment variable. Exit code 0 when the platform
     recorded exactly these findings (with --resume, also when it already had them), 4 when it did not, for
-    whatever reason: an upload never changes the verdict, which was decided before. A re-run without --resume
-    records a new run.
+    whatever reason: an upload never changes the verdict, which was decided before. With --run-id, the same
+    command again resumes the platform's run of that CI run; without it, a re-run records a new run.
     """
     run = RunInfo(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id)
     try:
         platform = platform_from(api_url)
         uploaded = upload(findings.read_bytes(), run, platform, resume=resume)
     except (OSError, UploadError) as exc:
+        # The platform's own words are quoted in some messages: one that echoes the request (a gateway quoting
+        # the Authorization header) must not make the CLI print the token.
+        said, token = str(exc), os.environ.get(TOKEN_VARIABLE, "").strip()
+        said = said.replace(token, f"<{TOKEN_VARIABLE}>") if token else said
         typer.echo(
-            f"sentinel upload: {exc}\nthe findings were not uploaded (the verdict is unchanged)", err=True
+            f"sentinel upload: {said}\nthe findings were not uploaded (the verdict is unchanged)", err=True
         )
         raise typer.Exit(EXIT_UPLOAD_FAILED) from exc
     except Exception as exc:

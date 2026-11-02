@@ -17,7 +17,9 @@ The findings are checked locally first, as the API checks them (Finding v1, each
 run), so a bad file never leaves an empty run behind. Then `POST /api/v1/runs`, then the NDJSON as is, and the
 platform's `findings_sha256` must be the sha256 of the bytes sent. `--resume <run id>` finishes an upload that
 stopped after the run was created; a run whose findings are already recorded counts as uploaded only if the
-platform recorded these same bytes.
+platform recorded these same bytes. A CI run (`--run-id`) needs no `--resume`: the platform answers the same
+CI run again with 409 and the run it has (API 1.1.0), which is resumed the same way. In GitHub Actions the run
+id is `<run id>/<run attempt>`, so a re-run of the job is a new run, as it is a new scan and a new decision.
 """
 
 import hashlib
@@ -30,7 +32,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NoReturn
 from urllib.parse import urlsplit
 
 from sentinelci.policy.decision import load_findings
@@ -76,7 +78,13 @@ def check_api_url(url: str) -> str:
     if any(char.isspace() or not char.isprintable() for char in url):
         # urlsplit drops tabs and line breaks, so the check would read another URL than the request.
         raise UploadError("--api-url must not hold white space or control characters")
-    parts = urlsplit(url)
+    if not url.isascii():
+        # http.client sends the host and the path as they are, in Latin-1 or ASCII: it would fail mid-request.
+        raise UploadError("--api-url must be in ASCII (an international host name in its xn-- form)")
+    try:
+        parts = urlsplit(url)
+    except ValueError as exc:  # an unclosed "[" around an IPv6 address
+        raise UploadError(f"--api-url is not a usable URL: {type(exc).__name__}") from exc
     host = (parts.hostname or "").lower()
     if parts.scheme not in ("https", "http") or not host:
         raise UploadError("--api-url must be an https:// URL (or http:// on localhost)")
@@ -188,13 +196,25 @@ class Platform:
 
         return _within_deadline(send)
 
-    def create_run(self, run: RunInfo) -> str:
-        status, body = self._request(
-            "POST", "/api/v1/runs", json.dumps(run.body()).encode(), "application/json"
-        )
-        if status != 201 or not isinstance(body, dict) or not _UUID.fullmatch(str(body.get("id", ""))):
-            raise UploadError(f"creating the run failed: {_why(status, body)}")
-        return str(body["id"])
+    def create_run(self, run: RunInfo) -> tuple[str, dict[str, Any] | None]:
+        """The new run's id, or the id and record of the run the platform already has for this CI run (409,
+        API 1.1.0: the same repo, commit, context and run id)."""
+        try:
+            status, body = self._request(
+                "POST", "/api/v1/runs", json.dumps(run.body()).encode(), "application/json"
+            )
+        except UploadError as exc:
+            # The run may have been created before the answer was lost: for a CI run, the 409 finds it again.
+            if run.run_id is None:
+                raise
+            hint = "if the platform created the run, the same command again resumes it"
+            raise UploadError(f"{exc} ({hint})") from exc
+        if status == 201 and isinstance(body, dict) and _UUID.fullmatch(str(body.get("id", ""))):
+            return str(body["id"]), None
+        existing = body.get("run") if status == 409 and isinstance(body, dict) else None
+        if isinstance(existing, dict) and _UUID.fullmatch(str(existing.get("id", ""))):
+            return str(existing["id"]), existing
+        raise UploadError(f"creating the run failed: {_why(status, body)}")
 
     def run(self, run_id: str) -> dict[str, Any]:
         status, body = self._request("GET", f"/api/v1/runs/{run_id}", None, None)
@@ -228,30 +248,49 @@ def upload(data: bytes, run: RunInfo, platform: Platform, *, resume: str | None 
     """Record `data` (Finding v1 NDJSON of `run`) on the platform; UploadError when it was not recorded."""
     count = check_findings(data, run)
     digest = hashlib.sha256(data).hexdigest()
+    recorded: dict[str, Any] | None
     if resume is not None:
         if not _UUID.fullmatch(resume):
             raise UploadError(f"--resume {resume!r} is not a run id")
-        recorded = platform.run(resume)
-        if any(recorded.get(k) != v for k, v in run.body().items()):
-            raise UploadError(f"run {resume} is not this run (repo, commit, context, ref or run id differ)")
-        if recorded.get("findings_sha256") is not None:
-            return _already(resume, recorded, digest, count)
-        run_id = resume
+        run_id, recorded = resume, platform.run(resume)
     else:
-        run_id = platform.create_run(run)
-    status, body = platform.upload(run_id, data)
-    if status == 409:
-        return _already(run_id, platform.run(run_id), digest, count)
+        run_id, recorded = platform.create_run(run)
+    if recorded is not None:  # --resume, or a CI run the platform already has (409): it must be this run
+        _same_run(run_id, recorded, run)
+        if recorded.get("findings_sha256") is not None:
+            return _already(run_id, recorded, digest, count)
+    try:
+        status, body = platform.upload(run_id, data)
+        recorded = platform.run(run_id) if status == 409 else None
+    except UploadError as exc:
+        _name_the_run(run_id, exc)
+    if recorded is not None:  # recorded meanwhile, by another attempt of this upload
+        return _already(run_id, recorded, digest, count)
     if status == 413:
         raise UploadError(
             f"run {run_id} stays empty: the findings are larger than the platform's upload limit, so "
             f"--resume will not help ({_why(status, body)})"
         )
     if status != 201 or not isinstance(body, dict):
-        raise UploadError(f"uploading the findings of run {run_id} failed: {_why(status, body)}")
+        why = f"{_why(status, body)} (--resume {run_id} finishes it)"
+        raise UploadError(f"uploading the findings of run {run_id} failed: {why}")
     if body.get("findings_sha256") != digest or body.get("finding_count") != count:
         raise UploadError(f"run {run_id}: the platform recorded other bytes than the ones sent")
     return Uploaded(run_id=run_id, finding_count=count, findings_sha256=digest)
+
+
+def _same_run(run_id: str, recorded: Mapping[str, Any], run: RunInfo) -> None:
+    """The platform's run is about this run. The fields that differ are named, never the platform's values."""
+    differ = [name.replace("_", " ") for name, value in run.body().items() if recorded.get(name) != value]
+    if differ:
+        verb = "differs" if len(differ) == 1 else "differ"
+        raise UploadError(f"run {run_id} is not this run ({', '.join(differ)} {verb})")
+
+
+def _name_the_run(run_id: str, exc: UploadError) -> NoReturn:
+    """A failure once the run exists names it: after a lost answer it may even hold the findings already."""
+    said = str(exc) if run_id in str(exc) else f"run {run_id}: {exc}"
+    raise UploadError(f"{said} (--resume {run_id} finishes or confirms it)") from exc
 
 
 def _already(run_id: str, recorded: Mapping[str, Any], digest: str, count: int) -> Uploaded:

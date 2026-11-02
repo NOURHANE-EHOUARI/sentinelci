@@ -2,7 +2,10 @@
 
 import hashlib
 import json
+import os
 import socket
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -334,3 +337,114 @@ def test_a_malformed_answer_is_an_upload_error(
     url, _ = raw(lambda request: reply)
     with pytest.raises(up.UploadError, match="the platform sent a malformed answer"):
         up.Platform(url, TOKEN).create_run(RUN)
+
+
+# ---------------------------------------------------------------- Hiba's re-review of 7493800 (her tests)
+
+
+def test_the_command_exits_at_the_deadline_without_waiting_for_the_request(
+    tmp_path: Path, raw: Callable[[Answer], tuple[str, list[bytes]]]
+) -> None:
+    url, _ = raw(lambda request: None)  # never answers: the worker stays blocked for TIMEOUT_S (60 s)
+    path = tmp_path / "findings.ndjson"
+    path.write_bytes(findings())
+    code = "import sentinelci.report.upload as up; up.DEADLINE_S = 1.0; import sentinelci.cli as c; c.app()"
+    args = ["upload", "--findings", str(path), "--api-url", url, "--repo", REPO, "--commit", COMMIT]
+    start = time.monotonic()
+    result = subprocess.run(
+        [sys.executable, "-c", code, *args, "--context", "pr"],
+        env=os.environ | {"SENTINEL_API_TOKEN": TOKEN},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 4 and "did not answer within 1 s" in result.stderr, result.stderr
+    assert time.monotonic() - start < 15, "the process waited for the blocked request"
+
+
+def test_the_platform_cannot_make_the_cli_print_the_token(
+    tmp_path: Path, raw: Callable[[Answer], tuple[str, list[bytes]]]
+) -> None:
+    def answer(request: bytes) -> bytes:
+        auth = next(x for x in request.split(b"\r\n") if x.lower().startswith(b"authorization:"))
+        return _response("401 Unauthorized", json.dumps({"detail": f"bad {auth.decode()}"}).encode())
+
+    url, _ = raw(answer)
+    result = run_upload(tmp_path, url, findings())
+    assert result.exit_code == 4 and TOKEN not in result.output, result.output
+    assert "<SENTINEL_API_TOKEN>" in result.output
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://[::1",
+        "https://" + chr(0x4F8B) + chr(0x3048) + ".jp",
+        "https://" + chr(0x130) + "stanbul.example",
+        "https://sentinel.example.org/" + chr(0xE9),
+    ],
+    ids=["unclosed-bracket", "japanese-host", "dotted-capital-i", "non-ascii-path"],
+)
+def test_a_url_urllib_cannot_send_is_refused_by_the_check(url: str) -> None:
+    with pytest.raises(up.UploadError, match=r"usable URL|in ASCII"):
+        up.check_api_url(url)
+
+
+@pytest.mark.parametrize("reply", [b"garbage\r\n\r\n", b""], ids=["malformed", "cut-off"])
+def test_a_failed_findings_upload_names_the_run_to_resume(
+    tmp_path: Path, raw: Callable[[Answer], tuple[str, list[bytes]]], reply: bytes
+) -> None:
+    run_id = str(uuid.uuid4())
+
+    def answer(request: bytes) -> bytes:
+        if request.startswith(b"POST /api/v1/runs "):
+            return _response("201 Created", json.dumps({"id": run_id}).encode())
+        return reply
+
+    url, _ = raw(answer)
+    result = run_upload(tmp_path, url, findings())
+    assert result.exit_code == 4 and f"--resume {run_id}" in result.output, result.output
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"detail": "exists"}, {"detail": "exists", "run": {"id": "not-a-uuid"}}, {"run": []}, ["x"]],
+    ids=["no-run", "bad-id", "run-not-an-object", "not-an-object"],
+)
+def test_a_409_without_a_usable_run_is_an_upload_failure(
+    tmp_path: Path, raw: Callable[[Answer], tuple[str, list[bytes]]], body: object
+) -> None:
+    url, seen = raw(lambda request: _response("409 Conflict", json.dumps(body).encode()))
+    result = run_upload(tmp_path, url, findings(run_id="1/1"), "--run-id", "1/1")
+    assert result.exit_code == 4 and "creating the run failed: HTTP 409" in result.output, result.output
+    assert len(seen) == 1
+
+
+def test_findings_recorded_meanwhile_are_compared_not_refused(
+    tmp_path: Path, raw: Callable[[Answer], tuple[str, list[bytes]]]
+) -> None:
+    """Another attempt recorded the findings between the run's creation and this POST: 409, then a read."""
+    data, run_id = findings(), str(uuid.uuid4())
+    recorded = {"id": run_id, "repo": REPO, "commit": COMMIT, "context": "pr", "ref": None, "run_id": None,
+                "finding_count": 2, "findings_sha256": hashlib.sha256(data).hexdigest()}  # fmt: skip
+
+    def answer(request: bytes) -> bytes:
+        if request.startswith(b"POST /api/v1/runs "):
+            return _response("201 Created", json.dumps({"id": run_id}).encode())
+        if request.startswith(b"POST "):
+            return _response("409 Conflict", json.dumps({"detail": "already recorded"}).encode())
+        return _response("200 OK", json.dumps(recorded).encode())
+
+    url, seen = raw(answer)
+    result = run_upload(tmp_path, url, data)
+    assert result.exit_code == 0 and json.loads(result.output)["already_recorded"] is True, result.output
+    assert [r.split(b" ")[0] for r in seen] == [b"POST", b"POST", b"GET"]
+
+
+def test_every_field_that_differs_is_named_and_none_of_the_platforms_values() -> None:
+    recorded = {"repo": REPO, "commit": "f" * 40, "context": "pr", "ref": "refs/heads/elsewhere"}
+    run = up.RunInfo(REPO, COMMIT, "pr", ref="refs/heads/main")
+    with pytest.raises(up.UploadError) as caught:
+        up._same_run("r", recorded, run)
+    assert str(caught.value) == "run r is not this run (commit, ref differ)"
