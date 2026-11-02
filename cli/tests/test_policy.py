@@ -468,6 +468,132 @@ def test_no_snapshot_has_one_digest_in_evaluate_and_enrich(tmp_path: Path, opa_b
     assert recorded == "sha256:" + hashlib.sha256(EMPTY_SNAPSHOT).hexdigest()
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        b"version: 1\nservice: demo\nexposure: dmz\n",
+        b"version: 1\nservice: demo\nexposure: a\nexposure: b\n",
+        b"\xff",
+    ],
+    ids=["unknown-exposure", "duplicate-key", "not-utf8"],
+)
+def test_an_invalid_service_context_is_never_recorded(tmp_path: Path, opa_binary: Path, text: bytes) -> None:
+    (tmp_path / "sentinel.yaml").write_bytes(text)
+    code, out, decision = run_evaluate(
+        tmp_path, b"", "--service-context", str(tmp_path / "sentinel.yaml"), "--opa", str(opa_binary)
+    )
+    assert code == 3, out
+    assert "--service-context" in out
+    assert not decision.exists()
+
+
+@pytest.mark.parametrize(
+    ("option", "content"),
+    [("--service-context", b"version: 1\nservice: demo\nexposure: internal\n"), ("--waivers", b"")],
+)
+def test_output_may_not_be_an_input(tmp_path: Path, opa_binary: Path, option: str, content: bytes) -> None:
+    """#22 review: `--output sentinel.yaml` deleted the repository's sentinel.yaml before reading it."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    victim = tmp_path / "input.yaml"
+    victim.write_bytes(content)
+    code, out, _ = run_evaluate(
+        tmp_path, b"", "--opa", str(opa_binary), option, str(victim), "--output", str(victim)
+    )
+    assert code == 3, out
+    assert "--output" in out
+    assert victim.read_bytes() == content, "the input is never deleted"
+
+
+def test_output_may_not_be_the_findings_file(tmp_path: Path, opa_binary: Path) -> None:
+    findings = tmp_path / "findings.v1.ndjson"  # the file run_evaluate passes as --findings
+    code, out, _ = run_evaluate(tmp_path, b"", "--opa", str(opa_binary), "--output", str(findings))
+    assert code == 3, out
+    assert findings.exists()
+
+
+def test_output_may_not_be_a_directory(tmp_path: Path, opa_binary: Path) -> None:
+    """#22 review: a directory gave IsADirectoryError and exit 1, the BLOCK code."""
+    (tmp_path / "out-dir").mkdir(parents=True)
+    code, out, _ = run_evaluate(
+        tmp_path, b"", "--opa", str(opa_binary), "--output", str(tmp_path / "out-dir")
+    )
+    assert code == 3, out
+    assert (tmp_path / "out-dir").is_dir()
+
+
+def test_output_may_not_be_the_default_waivers_file(
+    tmp_path: Path, opa_binary: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    waivers = tmp_path / ".sentinel" / "waivers.yaml"
+    waivers.parent.mkdir(parents=True)
+    waivers.write_text("version: 1\nwaivers: []\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    code, out, _ = run_evaluate(tmp_path / "run", b"", "--opa", str(opa_binary), "--output", str(waivers))
+    assert code == 3, out
+    assert waivers.read_text(encoding="utf-8") == "version: 1\nwaivers: []\n"
+
+
+@pytest.mark.parametrize("name", ["risk-model.yaml", "gate.rego", "not-yet-there.json"])
+def test_output_may_not_be_inside_the_policy_dir(tmp_path: Path, opa_binary: Path, name: str) -> None:
+    """#22 review: `--output policies/risk-model.yaml` deleted the risk model before exit 3."""
+    policies = tmp_path / "policies"
+    shutil.copytree(POLICIES, policies)
+    before = {p: p.read_bytes() for p in policies.rglob("*") if p.is_file()}
+    code, out, _ = run_evaluate(
+        tmp_path / "run", b"", "--opa", str(opa_binary), "--policy-dir", str(policies),
+        "--output", str(policies / name),
+    )  # fmt: skip
+    assert code == 3, out
+    assert "--policy-dir" in out
+    assert {p: p.read_bytes() for p in policies.rglob("*") if p.is_file()} == before, (
+        "the bundle is untouched"
+    )
+
+
+def test_output_may_not_be_inside_the_store(tmp_path: Path, opa_binary: Path) -> None:
+    store = tmp_path / "store"
+    code, out, _ = run_evaluate(tmp_path / "first", b"", "--opa", str(opa_binary), "--store", str(store))
+    assert code == 0, out
+    before = {p: p.read_bytes() for p in store.rglob("*") if p.is_file()}
+    victim = next(p for p in sorted(before) if p.parent.name == "decisions")
+
+    code, out, _ = run_evaluate(
+        tmp_path / "second", b"", "--opa", str(opa_binary), "--store", str(store), "--output", str(victim)
+    )
+
+    assert code == 3, out
+    assert "--store" in out
+    assert {p: p.read_bytes() for p in store.rglob("*") if p.is_file()} == before, "the store is untouched"
+
+
+def test_output_may_not_be_the_opa_binary(tmp_path: Path, opa_binary: Path) -> None:
+    opa = tmp_path / "bin" / opa_binary.name
+    opa.parent.mkdir(parents=True)
+    shutil.copy2(opa_binary, opa)
+    code, out, _ = run_evaluate(tmp_path / "run", b"", "--opa", str(opa), "--output", str(opa))
+    assert code == 3, out
+    assert opa.read_bytes() == opa_binary.read_bytes()
+
+
+def test_output_next_to_the_policy_dir_is_allowed(tmp_path: Path, opa_binary: Path) -> None:
+    """Only paths inside the bundle are refused, not a sibling whose name starts the same way."""
+    policies = tmp_path / "policies"
+    shutil.copytree(POLICIES, policies)
+    output = tmp_path / "policies-out" / "decision.v1.json"
+    code, out, _ = run_evaluate(
+        tmp_path / "run",
+        b"",
+        "--opa",
+        str(opa_binary),
+        "--policy-dir",
+        str(policies),
+        "--output",
+        str(output),
+    )
+    assert code == 0, out
+    assert output.is_file()
+
+
 SCORED_SCA = json.loads((FINDING_FIXTURES / "sca-enriched-and-scored.json").read_text(encoding="utf-8"))
 
 

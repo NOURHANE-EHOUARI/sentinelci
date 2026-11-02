@@ -14,9 +14,9 @@ Rules:
 - Infrastructure code is scanned only, never applied to a real cloud.
 - Ownership: infrastructure, containers, dependencies and secrets (A9); application code and canaries (B9).
 
-Layout: `services/shop-api/`, `services/web/`, `infra/terraform/`, `infra/k8s/`, `gitops/`,
-`examples/bad-workflows/`, `examples/good-workflows/`, `ground-truth/findings.yaml`; planned: `sentinel.yaml`,
-`.sentinel/waivers.yaml`.
+Layout: `services/shop-api/`, `services/web/`, `services/reports/` (a build file only), `infra/terraform/`,
+`infra/k8s/`, `gitops/`, `examples/bad-workflows/`, `examples/good-workflows/`, `ground-truth/findings.yaml`;
+planned: `sentinel.yaml`, `.sentinel/waivers.yaml`.
 
 ## Seeds so far
 
@@ -25,10 +25,12 @@ Layout: `services/shop-api/`, `services/web/`, `infra/terraform/`, `infra/k8s/`,
 | Secrets (all fake) | 5 | settings, `.npmrc`, Terraform provider, Kubernetes Secret, GitOps values | Gitleaks 5/5 |
 | Infrastructure as code | 6 | Terraform (S3, security group, RDS, IAM), Kubernetes, Dockerfile | Trivy 5/6, Checkov 6/6 |
 | CI workflows (never executed) | 3 | `examples/bad-workflows/` | zizmor 3/3 |
+| Dependencies | 8 | `requirements.txt` (shop-api), `package.json` (web), `pom.xml` (reports): 2 CISA KEV, 3 never imported | Syft 8/8 purls; Grype 8/8 (database of 2026-11-01) |
 | Clean controls | 4 | placeholders, sensitive variable, hardened deployment, pinned workflow | no detection |
 
-Still to come: SCA seeds with KEV-listed and never-imported dependencies (A9), container image seeds (A9,
-with the release pipeline), and application code, SAST seeds and injection canaries (B9).
+Still to come: container image seeds (A9, with the release pipeline), and application code, SAST seeds and
+injection canaries (B9). Planned for B9's code: shop-api imports `yaml` (with `full_load`, which GT-SCA-001 is
+about) and `requests`, never `lxml`; the web front end imports `lodash` (`template`), never `minimist` or `lodash-es`.
 
 **The gate blocks this target on purpose.** A pull request that adds a seed is blocked (SC-001 for a secret),
 which is how the demo shows the gate working. A release-mode scan of `main` blocks too, as long as the seeds
