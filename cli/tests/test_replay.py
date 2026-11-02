@@ -639,3 +639,63 @@ def test_the_default_vex_file_is_read(
     )
     assert code == 0
     assert decision["vex_applied"] == [UNSCORED_CRITICAL["id"]]
+
+
+def _vex_with(**statement: object) -> bytes:
+    document = json.loads(vex_doc("pkg:pypi/example-lib"))
+    document["statements"][0].update(statement)
+    return json.dumps(document).encode()
+
+
+def test_a_later_affected_statement_disputes_not_affected(tmp_path: Path, opa_binary: Path) -> None:
+    """Review of #24: `vexctl add` appends the new statement; the earlier not_affected must stop applying."""
+    document = json.loads(vex_doc("pkg:pypi/example-lib"))
+    document["statements"][0]["timestamp"] = "2026-11-01T00:00:00Z"
+    document["statements"].append(
+        {
+            "vulnerability": {"name": "CVE-2099-0001"},
+            "products": [{"@id": "pkg:pypi/example-lib@1.2.0"}],
+            "status": "affected",
+            "timestamp": "2026-11-05T00:00:00Z",
+            "action_statement": "Upgrade to 1.2.4.",
+        }
+    )
+    vex = json.dumps(document).encode()
+    code, _, decision = evaluate(
+        tmp_path, opa_binary, ndjson(UNSCORED_CRITICAL), tool_status=TOOLS_OK, vex=vex
+    )
+    assert code == 1
+    assert decision["vex_applied"] == []
+
+
+def test_evaluate_says_which_findings_vex_covered(tmp_path: Path, opa_binary: Path) -> None:
+    """Review of #24: a PASS that VEX produced must not read like a clean PASS."""
+    vex = vex_doc("pkg:pypi/example-lib")
+    code, out, _ = evaluate(tmp_path, opa_binary, ndjson(UNSCORED_CRITICAL), tool_status=TOOLS_OK, vex=vex)
+    assert code == 0
+    assert f"VEX not_affected: {UNSCORED_CRITICAL['id']}" in out
+
+
+def test_a_not_affected_statement_older_than_90_days_stops_applying(tmp_path: Path, opa_binary: Path) -> None:
+    """Like a waiver: evaluated at 2026-11-10T10:00Z, a statement made on 2026-08-12T09:59:59Z has expired."""
+    expired = _vex_with(timestamp="2026-08-12T09:59:59Z")
+    code, _, decision = evaluate(
+        tmp_path / "a", opa_binary, ndjson(UNSCORED_CRITICAL), tool_status=TOOLS_OK, vex=expired
+    )
+    assert code == 1 and decision["vex_applied"] == []
+    assert [v["rule"] for v in decision["violations"]] == ["SC-002"]
+    current = _vex_with(timestamp="2026-08-12T10:00:00Z")
+    code, _, decision = evaluate(
+        tmp_path / "b", opa_binary, ndjson(UNSCORED_CRITICAL), tool_status=TOOLS_OK, vex=current
+    )
+    assert code == 0 and decision["vex_applied"] == [UNSCORED_CRITICAL["id"]]
+
+
+def test_a_vex_statement_dated_after_the_evaluation_blocks(tmp_path: Path, opa_binary: Path) -> None:
+    future = _vex_with(timestamp="2026-11-10T10:00:01Z")
+    code, _, decision = evaluate(
+        tmp_path, opa_binary, ndjson(UNSCORED_CRITICAL), tool_status=TOOLS_OK, vex=future
+    )
+    assert code == 1
+    assert [v["rule"] for v in decision["violations"]] == ["SC-010"]
+    assert "dated after evaluated_at" in decision["violations"][0]["message"]

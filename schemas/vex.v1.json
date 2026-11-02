@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/NOURHANE-EHOUARI/sentinelci/schemas/vex.v1.json",
   "title": "SentinelCI VEX v1 (OpenVEX v0.2.0 subset)",
-  "description": "`.sentinel/vex.json` of a scan target (SPEC section 6.4): OpenVEX statements, read from the base branch and reviewed like the waivers. Only `not_affected` statements change a decision: a matching package finding stops counting for every rule (like a waiver) and is listed in the decision's `vex_applied`. A statement matches a finding when one of its vulnerability ids (name or aliases) is one of the finding's ids (rule_id, cve, aliases) and one of its products is the finding's package: the purl base (no version: every version), or the purl with its version (that version only). Other statuses are accepted and change nothing. Stricter than OpenVEX: `not_affected` needs a `justification` (an impact statement alone is not enough), products are purls, and unknown fields are refused.",
+  "description": "`.sentinel/vex.json` of a scan target (SPEC section 6.4): OpenVEX statements, read from the base branch and reviewed like the waivers. A `not_affected` statement covers a matching package finding: it stops counting for every rule (like a waiver) and is listed in the decision's `vex_applied`. A statement matches a finding when one of its vulnerability ids (name or aliases) is one of the finding's ids (rule_id, cve, aliases) and one of its products is the finding's package: the purl base (no version: every version), or the purl with its version (that version only). A statement of any other status about the finding disputes `not_affected`, whatever their order (the gate does not order statements): remove an earlier `under_investigation` or `affected` when you add `not_affected`. Like a waiver, `not_affected` applies for 90 days after it was made (its `last_updated` or `timestamp`, else the document's `timestamp`); a statement or document dated after the evaluation is refused. Stricter than OpenVEX: `not_affected` needs a `justification` (an impact statement alone is not enough), products are purls, and unknown fields are refused.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -63,9 +63,9 @@
       "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[A-Za-z0-9][A-Za-z0-9._:-]{1,63}$"
     },
     "purl": {
-      "description": "Package URL; with a version, the statement covers that version only.",
+      "description": "Package URL of a package (not `pkg:oci`: a statement is about a package, and an image matches no finding); with a version, the statement covers that version only.",
       "type": "string",
-      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])pkg:[a-z0-9.+-]+/[^?#@]+(@[^?#@/]+)?(\\?[^#]*)?$"
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])(?!pkg:oci/)pkg:[a-z0-9.+-]+/[^?#@]+(@[^?#@/]+)?(\\?[^#]*)?$"
     },
     "statement": {
       "type": "object",

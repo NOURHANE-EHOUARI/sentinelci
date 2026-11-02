@@ -450,6 +450,8 @@ def evaluate_command(
         typer.echo(f"  {rule}  {effect:<5}  {message}  ({count} {noun})")
     if decision["waivers_applied"]:
         typer.echo(f"Waivers applied: {', '.join(decision['waivers_applied'])}")
+    if decision.get("vex_applied"):
+        typer.echo(f"VEX not_affected: {', '.join(decision['vex_applied'])}")
     typer.echo(f"Decision written to {output}")
     if decision["verdict"] == "BLOCK":
         raise typer.Exit(EXIT_BLOCK)

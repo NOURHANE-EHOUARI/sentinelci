@@ -13,8 +13,9 @@
 #                 checking them is this policy's job (SC-005)
 #   policy_profile optional: `policy_profile` of the base-branch sentinel.yaml (policies/profiles.rego);
 #                 absent: default. An unknown profile is malformed input (SC-010).
-#   vex           optional: the not_affected statements of .sentinel/vex.json (schemas/vex.v1.json), checked
-#                 and normalized by `sentinel evaluate`: {vulnerabilities, products: [{base, version}], ...}
+#   vex           optional: every statement of .sentinel/vex.json (schemas/vex.v1.json), checked and normalized
+#                 by `sentinel evaluate`: {status, vulnerabilities, products: [{base, version}], justification,
+#                 made, document_updated} (UTC RFC 3339; a date after evaluated_at is malformed input, SC-010)
 #
 # Output: data.sentinel.gate.decision = {verdict, violations, waivers_applied, vex_applied}, in the shape of
 # schemas/decision.v1.json. One violation per rule, listing every finding id that triggered it.
@@ -281,15 +282,35 @@ vex_product(p, f) if {
 	purl_version(f.package.purl) == p.version
 }
 
-not_affected(f) if {
+vex_about(s, f) if {
 	f.category in {"SCA", "CONTAINER"}
 	ids := finding_ids(f)
-	some s in object.get(input, "vex", [])
 	some v in s.vulnerabilities
 	upper(v) in ids
 	some p in s.products
 	vex_product(p, f)
 }
+
+# OpenVEX statements are a sequence, each overriding the earlier ones. The gate does not order them: a statement
+# of any other status (affected, fixed, under_investigation) about the finding disputes not_affected (fail closed),
+# so a document must not keep an earlier statement of another status once it says not_affected.
+not_affected(f) if {
+	some s in object.get(input, "vex", [])
+	s.status == "not_affected"
+	vex_current(s)
+	vex_about(s, f)
+	not vex_disputed(f)
+}
+
+vex_disputed(f) if {
+	some s in object.get(input, "vex", [])
+	s.status != "not_affected"
+	vex_about(s, f)
+}
+
+# A not_affected statement is a claim about code that every change may alter: like a waiver, it applies for
+# 90 days after it was made (its last_updated or timestamp, else the document's), then must be re-made.
+vex_current(s) if now - time.parse_rfc3339_ns(s.made) <= max_waiver_ns
 
 vex_applied contains f.id if {
 	some f in input.findings
@@ -496,6 +517,13 @@ detail_suffix(tool) := sprintf(" (%s)", [tool.detail]) if {
 
 # SC-010: the gate cannot evaluate what it was given. Silence is never a pass.
 input_errors contains "findings must be an array" if not is_array(object.get(input, "findings", null))
+
+# A VEX date after the evaluation would outlive any review (and win any ordering by date): refuse the document.
+input_errors contains "a VEX statement or document is dated after evaluated_at" if {
+	some s in object.get(input, "vex", [])
+	some field in ["made", "document_updated"]
+	time.parse_rfc3339_ns(s[field]) > now
+}
 
 input_errors contains "waivers must be an array" if not is_array(object.get(input, "waivers", null))
 

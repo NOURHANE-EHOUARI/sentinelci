@@ -725,7 +725,15 @@ test_an_unknown_profile_fails_closed if {
 
 critical_sca := object.union(sca, {"severity": "CRITICAL"}) # unscored CRITICAL: P0, SC-002 blocks
 
-statement(ids, products) := {"vulnerabilities": ids, "products": products, "justification": "component_not_present"}
+statement(ids, products) := {
+	"status": "not_affected", "vulnerabilities": ids, "products": products, "justification": "component_not_present",
+	"made": "2026-11-01T00:00:00.000000Z", "document_updated": "2026-11-01T00:00:00.000000Z",
+}
+
+other_status(status, ids, products) := object.union(
+	object.remove(statement(ids, products), ["justification"]),
+	{"status": status},
+)
 
 with_vex(fs, statements) := object.union(with_findings(fs), {"vex": statements})
 
@@ -786,4 +794,77 @@ test_vex_applies_in_every_context if {
 		d.vex_applied == [critical_sca.id]
 		not "SC-002" in {v.rule | some v in d.violations}
 	}
+}
+
+# Review of #24: OpenVEX statements override earlier ones; the gate does not order them, so any statement of
+# another status about the finding disputes not_affected (fail closed), whatever the order.
+test_a_statement_of_another_status_disputes_not_affected if {
+	na := statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": null}])
+	every status in ["affected", "fixed", "under_investigation"] {
+		other := other_status(status, ["PYSEC-2026-1"], [{"base": "pkg:pypi/example-lib", "version": "1.2.0"}])
+		every statements in [[na, other], [other, na]] {
+			d := gate.decision with input as with_vex([critical_sca], statements)
+			d.verdict == "BLOCK"
+			d.vex_applied == []
+		}
+	}
+}
+
+test_a_statement_about_another_version_does_not_dispute if {
+	na := statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": null}])
+	other := other_status("affected", ["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": "1.2.1"}])
+	d := gate.decision with input as with_vex([critical_sca], [na, other])
+	d.vex_applied == [critical_sca.id]
+}
+
+test_vex_matches_the_whole_package_name if {
+	every base in ["pkg:pypi/example", "pkg:pypi/example-li", "pkg:pypi/example-lib-extra"] {
+		d := gate.decision with input as with_vex([critical_sca], [statement(["CVE-2026-12345"], [{"base": base, "version": null}])])
+		d.vex_applied == []
+	}
+}
+
+test_vex_folds_dots_in_pypi_names if {
+	dotted := object.union(critical_sca, {"package": {"purl": "pkg:pypi/Example.Lib@1.2.0"}})
+	d := gate.decision with input as with_vex([dotted], [statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": null}])])
+	d.vex_applied == [dotted.id]
+}
+
+# Like a waiver, a not_affected statement applies for 90 days after it was made (evaluated_at 2026-11-10T10:00Z).
+vex_made(when) := object.union(
+	statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": null}]),
+	{"made": when, "document_updated": when},
+)
+
+test_a_not_affected_statement_applies_for_90_days if {
+	every when in ["2026-08-12T10:00:00.000000Z", "2026-11-10T10:00:00.000000Z"] {
+		d := gate.decision with input as with_vex([critical_sca], [vex_made(when)])
+		d.vex_applied == [critical_sca.id]
+	}
+}
+
+test_an_older_not_affected_statement_stops_applying if {
+	d := gate.decision with input as with_vex([critical_sca], [vex_made("2026-08-12T09:59:59.000000Z")])
+	d.vex_applied == []
+	d.verdict == "BLOCK"
+}
+
+test_a_vex_date_after_the_evaluation_is_malformed_input if {
+	every field in ["made", "document_updated"] {
+		future := object.union(vex_made("2026-11-01T00:00:00.000000Z"), {field: "2026-11-10T10:00:01.000000Z"})
+		d := gate.decision with input as with_vex([critical_sca], [future])
+		d.verdict == "BLOCK"
+		d.violations[0].rule == "SC-010"
+		contains(d.violations[0].message, "dated after evaluated_at")
+	}
+}
+
+test_an_expired_or_disputing_statement_of_another_status_still_disputes if {
+	na := statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": null}])
+	old := object.union(
+		other_status("under_investigation", ["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": null}]),
+		{"made": "2025-01-01T00:00:00.000000Z", "document_updated": "2026-11-01T00:00:00.000000Z"},
+	)
+	d := gate.decision with input as with_vex([critical_sca], [na, old])
+	d.vex_applied == []
 }

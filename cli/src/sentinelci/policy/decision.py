@@ -204,7 +204,7 @@ def evaluate(
             load_snapshot(enrichment_snapshot)
         except EnrichmentError as exc:
             raise EvaluationError(f"--enrichment-snapshot: {exc}") from exc
-    vex = None if vex_data is None else load_vex(vex_data)  # not_affected statements, normalized for the gate
+    vex = None if vex_data is None else load_vex(vex_data)  # every statement, normalized for the gate
     profile = None
     if service_context is not None:  # likewise: only a valid sentinel.yaml is recorded
         try:
