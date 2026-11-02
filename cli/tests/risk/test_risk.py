@@ -336,6 +336,21 @@ def test_cli_score_never_deletes_its_input(tmp_path: Path) -> None:
     assert json.loads(findings.read_text(encoding="utf-8")) == SECRET
 
 
+def test_cli_score_never_deletes_the_risk_model(tmp_path: Path) -> None:
+    # Same bug as `evaluate --output` in the review of #22: --out inside --policy-dir.
+    policies = tmp_path / "policies"
+    policies.mkdir()
+    model = (POLICIES / "risk-model.yaml").read_bytes()
+    (policies / "risk-model.yaml").write_bytes(model)
+    code, out, _ = run_score(
+        tmp_path, (json.dumps(SECRET) + "\n").encode(), "--policy-dir", str(policies),
+        "--out", str(policies / "risk-model.yaml"),
+    )  # fmt: skip
+    assert code == 3, out
+    assert "--policy-dir" in out
+    assert (policies / "risk-model.yaml").read_bytes() == model
+
+
 def test_cli_score_refuses_a_directory_as_out(tmp_path: Path) -> None:
     (tmp_path / "out.ndjson").mkdir()  # the --out run_score passes
     code, _, _ = run_score(tmp_path, (json.dumps(SECRET) + "\n").encode())

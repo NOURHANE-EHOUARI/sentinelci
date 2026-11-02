@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/NOURHANE-EHOUARI/sentinelci/schemas/vuln-result.v1.json",
+  "title": "SentinelCI vulnerability result v1",
+  "description": "The `scanner.result` of the vulnerability attestation of a release image (Cosign vulnerability predicate, ADR-0010). Written by `sentinel attest` (A4) from the findings and the SBOM that the release decision recorded, and read by `sentinel verify` and Kyverno (A5). It names the decision, so the four attestations of an image are bound together.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "decision_id",
+    "findings_digest",
+    "sbom",
+    "totals",
+    "tools"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Minor versions only add (schemas/README.md).",
+      "enum": [
+        "1.0"
+      ]
+    },
+    "decision_id": {
+      "description": "The release decision these findings were evaluated in.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "findings_digest": {
+      "description": "sha256 of the findings file (Finding v1 NDJSON), equal to the decision's inputs.findings_digest.",
+      "$ref": "#/$defs/prefixed_sha256"
+    },
+    "sbom": {
+      "description": "The SBOM the decision recorded: its file digest (inputs.sbom_digest) and its CycloneDX serialNumber, which identifies the signed SBOM attestation (Cosign re-serializes the SBOM it signs).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "digest",
+        "serial_number"
+      ],
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "serial_number": {
+          "type": "string",
+          "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])urn:uuid:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        }
+      }
+    },
+    "totals": {
+      "description": "Counts of the findings file, by severity and by category. Each map sums to `findings` (checked by the producer and by `sentinel verify`; JSON Schema cannot add).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "findings",
+        "by_severity",
+        "by_category"
+      ],
+      "properties": {
+        "findings": {
+          "$ref": "#/$defs/count"
+        },
+        "by_severity": {
+          "type": "object",
+          "propertyNames": {
+            "enum": [
+              "CRITICAL",
+              "HIGH",
+              "MEDIUM",
+              "LOW",
+              "INFO"
+            ]
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/positive_count"
+          }
+        },
+        "by_category": {
+          "type": "object",
+          "propertyNames": {
+            "enum": [
+              "SECRET",
+              "SAST",
+              "SCA",
+              "CONTAINER",
+              "IAC",
+              "PIPELINE",
+              "LICENSE"
+            ]
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/positive_count"
+          }
+        }
+      }
+    },
+    "tools": {
+      "description": "The scanner versions the decision recorded (inputs.tool_versions).",
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[a-z0-9][a-z0-9._-]{0,63}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029]).+$"
+      }
+    }
+  },
+  "$defs": {
+    "prefixed_sha256": {
+      "type": "string",
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])sha256:[a-f0-9]{64}$"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "positive_count": {
+      "description": "Only categories and severities that occur are listed.",
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

@@ -282,6 +282,8 @@ TASKS: list[dict[str, Any]] = [
     },
 ]
 
+# Root causes stage 2b may merge. No secrets group: each secret is rotated on its own, so stage 2b never
+# merges secrets (#47), and the bench must not reward embeddings that put them together.
 EMBED_GROUPS = {
     "lodash": [
         "SCA CVE-2021-23337 command injection in lodash 4.17.20 (services/web/package.json)",
@@ -292,11 +294,6 @@ EMBED_GROUPS = {
         "SAST CWE-89 SQL query built with an f-string in app/db.py get_user",
         "SAST CWE-89 string concatenation in SQL statement in app/orders.py find_order",
         "Possible SQL injection: user input formatted into cursor.execute in reports.py",
-    ],
-    "secrets": [
-        "Gitleaks generic-api-key hard-coded in services/shop-api/app/config.py",
-        "Hard-coded AWS access key found in deploy/scripts/upload.sh",
-        "Secret token committed in .env.example of the web service",
     ],
     "container-root": [
         "Dockerfile runs as root: no USER instruction in services/web/Dockerfile",
@@ -439,7 +436,8 @@ def run_embedding(host: str, model: str) -> dict[str, Any]:
         "dimensions": len(vectors[0]),
         "nn_accuracy": round(hits / len(texts), 3),
         "separation": round(separation, 3),
-        "seconds_for_12": round(elapsed, 2),
+        "texts": len(texts),
+        "seconds": round(elapsed, 2),
     }
 
 
