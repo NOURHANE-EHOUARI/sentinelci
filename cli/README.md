@@ -268,4 +268,3 @@ uv run sentinel sbom out/image-oci --source oci-dir --name demo-shop/shop-api \
   `sentinel attest` binds, ADR-0010) and an SPDX document. An output inside the target, a directory, the same
   file for both, or a path that cannot be cleared is refused before anything is written.
 - The package count it prints leaves out the operating-system component Syft adds for an image.
-
