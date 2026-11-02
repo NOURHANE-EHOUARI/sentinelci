@@ -40,7 +40,7 @@ def _render(tmp_path: Path, **changes: Any) -> dict[str, Any]:
     key.write_text(PUBLIC_KEY, encoding="ascii")
     params: dict[str, Any] = {"public_key": key, "image_glob": "kind-registry:5000/demo-shop/*", "repo": REPO,
                               "builder_id": BUILDER, "allow_http": False} | changes  # fmt: skip
-    rendered: dict[str, Any] = yaml.safe_load(render_policy(**params))
+    rendered: dict[str, Any] = next(yaml.safe_load_all(render_policy(**params)))
     return rendered
 
 
@@ -58,7 +58,7 @@ def test_the_policy_requires_the_signature_and_the_four_attestations(tmp_path: P
     ]
     (rule,) = spec["matchConstraints"]["resourceRules"]
     assert rule["operations"] == ["CREATE", "UPDATE"]
-    assert rule["resources"] == ["pods", "pods/ephemeralcontainers"], "kubectl debug uses the subresource"
+    assert rule["resources"] == ["pods"], "the ephemeral containers have their own document"
     assert spec["validationActions"] == ["Deny"] and spec["failurePolicy"] == "Fail"
     assert spec["webhookConfiguration"] == {"timeoutSeconds": 30}
     assert spec["validationConfigurations"] == {"mutateDigest": True, "verifyDigest": True, "required": True}
@@ -151,7 +151,7 @@ def test_the_cli_writes_the_policy_and_refuses_bad_values(tmp_path: Path) -> Non
             "--image-glob", "kind-registry:5000/demo-shop/*", "--out", str(out)]  # fmt: skip
     result = CliRunner().invoke(app, args)
     assert result.exit_code == 0, result.output
-    assert yaml.safe_load(out.read_text(encoding="utf-8"))["metadata"]["name"] == POLICY_NAME
+    assert next(yaml.safe_load_all(out.read_text(encoding="utf-8")))["metadata"]["name"] == POLICY_NAME
     out.write_text("stale", encoding="utf-8")
     result = CliRunner().invoke(app, [*args[:-2], "--repo", "not a repo", "--out", str(out)])
     assert result.exit_code == 3 and not out.exists(), "a refused render leaves no policy behind"
@@ -392,3 +392,42 @@ def test_an_upper_case_registry_host_is_still_checked(release: dict[str, Any]) -
     assert results["unsigned-upper"][0] == "fail", "matched and refused, not left unchecked"
     assert results["good-lower"] == ("pass", "success")
     assert results["good-upper"][0] == "fail", "refused rather than unchecked: fails closed"
+
+
+def test_ephemeral_containers_have_their_own_policy(tmp_path: Path) -> None:
+    """kubectl debug adds a container through the `pods/ephemeralcontainers` subresource. In the same policy
+    as `pods`, it would turn off Kyverno's autogen for Deployments, Jobs and CronJobs: a second document."""
+    key = tmp_path / "release.pub"
+    key.write_text(PUBLIC_KEY, encoding="ascii")
+    pods, ephemeral = yaml.safe_load_all(
+        render_policy(public_key=key, image_glob="kind-registry:5000/demo-shop/*", repo=REPO,
+                      builder_id=BUILDER, allow_http=False)
+    )  # fmt: skip
+    assert ephemeral["metadata"]["name"] == f"{POLICY_NAME}-ephemeral-containers"
+    (rule,) = ephemeral["spec"]["matchConstraints"]["resourceRules"]
+    assert rule["resources"] == ["pods/ephemeralcontainers"]
+    assert {k: v for k, v in ephemeral["spec"].items() if k != "matchConstraints"} == {
+        k: v for k, v in pods["spec"].items() if k != "matchConstraints"
+    }
+
+
+@needs_tools
+@pytest.mark.integration
+def test_a_pod_controller_with_an_unsigned_image_is_refused_itself(release: dict[str, Any]) -> None:
+    """Kyverno's autogen: a Deployment, a Job or a CronJob is refused when applied, not only its Pods."""
+    unsigned = release["images"]["unsigned"]
+    pod_spec: dict[str, Any] = {"containers": [{"name": "app", "image": unsigned}]}
+    labels = {"metadata": {"labels": {"app": "shop"}}}
+    job = {**labels, "spec": {**pod_spec, "restartPolicy": "Never"}}
+    controllers = [
+        {"apiVersion": "apps/v1", "kind": "Deployment",
+         "metadata": {"name": "deployment", "namespace": "shop"},
+         "spec": {"selector": {"matchLabels": {"app": "shop"}}, "template": {**labels, "spec": pod_spec}}},
+        {"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": "job", "namespace": "shop"},
+         "spec": {"template": job}},
+        {"apiVersion": "batch/v1", "kind": "CronJob", "metadata": {"name": "cronjob", "namespace": "shop"},
+         "spec": {"schedule": "0 * * * *", "jobTemplate": {"spec": {"template": job}}}},
+    ]  # fmt: skip
+    refused = ("fail", "signature: the image itself is not signed by the release key")
+    results = admit(release["work"] / "controllers", _policy(release), controllers)
+    assert results == {"deployment": refused, "job": refused, "cronjob": refused}

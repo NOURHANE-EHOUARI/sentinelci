@@ -305,8 +305,9 @@ uv run sentinel admission-policy --key cosign.pub --repo NOURHANE-EHOUARI/sentin
   such as `kind-registry:5000`), as for `sentinel verify`.
 - **Digests.** An image without a digest is refused (`verifyDigest`). In a cluster, `mutateDigest` first pins
   a tag to the digest it resolves to.
-- **Scope.** Pod creation and updates, and the `pods/ephemeralcontainers` subresource that `kubectl debug`
-  uses. Every container is checked, init and ephemeral too. An image outside the glob is not this policy's
+- **Scope.** Pod creation and updates, with Kyverno's autogen, so a Deployment, Job or CronJob with a refused
+  image is refused itself when applied; and, in a second document, the `pods/ephemeralcontainers` subresource
+  that `kubectl debug` uses. Every container is checked, init and ephemeral too. An image outside the glob is not this policy's
   business: restricting which registries may run at all is a separate policy. Kyverno's default install
   excludes `kube-system` and its own namespace (`resourceFilters` and the webhook `namespaceSelector`). Whoever
   can create Pods there is out of scope until the cluster install (A5b) narrows that.

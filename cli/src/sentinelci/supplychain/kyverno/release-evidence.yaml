@@ -14,7 +14,7 @@
 apiVersion: policies.kyverno.io/v1
 kind: ImageValidatingPolicy
 metadata:
-  name: sentinel-release-evidence
+  name: ${name}
 spec:
   validationActions: [Deny]
   failurePolicy: Fail
@@ -27,8 +27,9 @@ spec:
       - apiGroups: ['']
         apiVersions: ['v1']
         operations: ['CREATE', 'UPDATE']
-        # Ephemeral containers (kubectl debug) arrive on a subresource, which 'pods' alone does not match.
-        resources: ['pods', 'pods/ephemeralcontainers']
+        # One resource per document: 'pods' (with Kyverno's autogen, so a Deployment, Job or CronJob is refused
+        # itself), or 'pods/ephemeralcontainers' (kubectl debug), which in the same policy would turn autogen off.
+        resources: ['${resource}']
   # A prefix of the lower-cased reference: registry host names ignore case, and a glob does not.
   matchImageReferences:
     - expression: "ref.lowerAscii().startsWith('${image_prefix}')"

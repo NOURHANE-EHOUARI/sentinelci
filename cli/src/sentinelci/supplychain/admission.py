@@ -53,7 +53,7 @@ def render_policy(*, public_key: Path, image_glob: str, repo: str, builder_id: s
     key = public_key.read_text(encoding="ascii").replace("\r\n", "\n").strip()
     if _ONE_PUBLIC_KEY.fullmatch(key) is None:  # a private key next to it would be published in the policy
         raise AttestationError(f"{public_key} must hold exactly one PEM public key, and nothing else")
-    return Template(_template()).substitute(
+    values = dict(
         image_prefix=glob["prefix"],
         allow_http="true" if allow_http else "false",
         public_key="\n".join(_KEY_INDENT + line.strip() for line in key.splitlines()),
@@ -66,4 +66,15 @@ def render_policy(*, public_key: Path, image_glob: str, repo: str, builder_id: s
         repo=repo,
         builder_id=builder_id,
         source_prefix=f"git+{GITHUB}/{repo}@",
+    )
+    # Two documents with the same checks: Pods, with Kyverno's autogen for the controllers creating them,
+    # and the ephemeral-containers subresource (kubectl debug). Both resources in one policy would turn
+    # autogen off, and a Deployment with an unsigned image would then be admitted (only its Pods refused).
+    template = Template(_template())
+    return "---\n".join(
+        template.substitute(values, name=name, resource=resource)
+        for name, resource in (
+            (POLICY_NAME, "pods"),
+            (f"{POLICY_NAME}-ephemeral-containers", "pods/ephemeralcontainers"),
+        )
     )
