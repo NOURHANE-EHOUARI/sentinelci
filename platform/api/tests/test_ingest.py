@@ -139,6 +139,104 @@ def test_an_unknown_run_is_not_found(client: TestClient, headers: dict[str, str]
     assert upload(client, headers, missing, ndjson(SECRET)).status_code == 404
 
 
+# ---------------------------------------------------------------- one run per CI run (#50 re-runs)
+
+CI_RUN = {**RUN, "ref": "refs/pull/12/merge", "run_id": "11223344"}
+
+
+def test_a_ci_run_recorded_again_is_answered_409_with_the_existing_run(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    """A re-run of the upload step names the same CI run: it gets the run back, so it can resume it."""
+    first = client.post("/api/v1/runs", json=CI_RUN, headers=headers)
+    assert first.status_code == 201, first.text
+    again = client.post("/api/v1/runs", json=CI_RUN, headers=headers)
+    assert again.status_code == 409, again.text
+    assert again.json()["run"] == first.json()
+    assert "already recorded" in again.json()["detail"]
+
+
+def test_the_409_shows_whether_the_findings_arrived(client: TestClient, headers: dict[str, str]) -> None:
+    run_id = create_run(client, headers, **{"run_id": "11223344"})
+    assert upload(client, headers, run_id, ndjson(SECRET)).status_code == 201
+    run = client.post("/api/v1/runs", json={**RUN, "run_id": "11223344"}, headers=headers).json()["run"]
+    assert (run["id"], run["finding_count"]) == (run_id, 1)
+    assert run["findings_sha256"] == hashlib.sha256(ndjson(SECRET)).hexdigest()
+
+
+def test_the_same_ci_run_with_another_ref_is_still_the_same_run(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    run_id = create_run(client, headers, **{"run_id": "11223344", "ref": "refs/heads/a"})
+    other_ref = {**RUN, "run_id": "11223344", "ref": "refs/heads/b"}
+    again = client.post("/api/v1/runs", json=other_ref, headers=headers)
+    assert again.status_code == 409 and again.json()["run"]["id"] == run_id
+    assert again.json()["run"]["ref"] == "refs/heads/a"
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        {"run_id": "11223345"},
+        {"context": "release"},
+        {"commit": "f" * 40},
+        {"repo": "NOURHANE-EHOUARI/other"},
+    ],
+    ids=["another-ci-run", "another-context", "another-commit", "another-repo"],
+)
+def test_another_ci_run_is_another_run(
+    client: TestClient, headers: dict[str, str], other: dict[str, str]
+) -> None:
+    first = create_run(client, headers, **{"run_id": "11223344"})
+    assert create_run(client, headers, **{"run_id": "11223344", **other}) != first
+
+
+def test_runs_without_a_ci_run_id_are_never_merged(client: TestClient, headers: dict[str, str]) -> None:
+    """A local run names no CI run: each POST is a new run, as before."""
+    assert create_run(client, headers) != create_run(client, headers)
+
+
+def test_two_concurrent_creations_of_one_ci_run_record_one(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both requests pass the lookup before either commits: the unique index decides, the loser gets 409."""
+    import threading
+
+    from fastapi.responses import JSONResponse
+
+    import sentinel_api.api as api
+
+    real_lookup = api._existing_run
+    barrier = threading.Barrier(2)
+    looked = threading.local()
+
+    def lookup_then_wait(session: Any, body: Any) -> Any:
+        found = real_lookup(session, body)
+        if not getattr(looked, "once", False):  # the first lookup of each request only
+            looked.once = True
+            barrier.wait(timeout=10)  # both have looked, neither has committed
+        return found
+
+    monkeypatch.setattr(api, "_existing_run", lookup_then_wait)
+    factory = client.app.state.sessions  # type: ignore[attr-defined]
+    outcomes: list[Any] = []
+
+    def create() -> None:
+        with factory() as session:
+            outcomes.append(api.create_run(api.RunCreate(**CI_RUN), session))
+
+    threads = [threading.Thread(target=create) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    created = [o for o in outcomes if isinstance(o, api.RunOut)]
+    conflicts = [o for o in outcomes if isinstance(o, JSONResponse)]
+    assert len(created) == len(conflicts) == 1, outcomes
+    assert conflicts[0].status_code == 409
+    assert json.loads(conflicts[0].body)["run"]["id"] == str(created[0].id)
+
+
 # ---------------------------------------------------------------- findings upload
 
 
@@ -350,7 +448,7 @@ def test_writes_declare_the_bearer_scheme_and_reads_do_not(client: TestClient) -
 @pytest.mark.parametrize(
     ("method", "path", "codes"),
     [
-        ("POST", "/api/v1/runs", {"201", "401", "413", "422", "503"}),
+        ("POST", "/api/v1/runs", {"201", "401", "409", "413", "422", "503"}),
         ("GET", "/api/v1/runs/{run_id}", {"200", "404", "413", "422", "503"}),
         ("POST", "/api/v1/runs/{run_id}/findings", {"201", "401", "404", "409", "413", "415", "422", "503"}),
         ("GET", "/api/v1/findings", {"200", "413", "422", "503"}),
@@ -393,7 +491,7 @@ def test_the_contract_version_is_the_apis_own(client: TestClient) -> None:
     from sentinelci import __version__ as engine_version
 
     document = client.app.openapi()  # type: ignore[attr-defined]
-    assert document["info"]["version"] == API_VERSION == "1.0.0"
+    assert document["info"]["version"] == API_VERSION == "1.1.0"
     assert client.get("/healthz").json() == {"status": "ok", "engine_version": engine_version}
 
 
