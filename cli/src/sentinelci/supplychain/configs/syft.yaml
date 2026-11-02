@@ -1,0 +1,27 @@
+# SentinelCI's Syft configuration (task A4). It is passed explicitly (-c), and Syft runs in a private working
+# directory and home, so the scanned repository's .syft.yaml (Syft reads it from its working directory) is never
+# loaded and cannot exclude packages from the SBOM.
+check-for-app-update: false
+
+# Offline and side-effect free: no enrichment service, no remote license lookup, no package manager or Go
+# tooling executed, no git clone.
+enrich: []
+cpp:
+  vcpkg-allow-git-clone: false
+golang:
+  search-remote-licenses: false
+  search-local-mod-cache-licenses: false
+  search-local-vendor-licenses: false
+  use-packages-lib: false
+java:
+  use-network: false
+  use-maven-local-repository: false
+javascript:
+  search-remote-licenses: false
+python:
+  search-remote-licenses: false
+
+# Packages only: the file catalog would list files by the absolute path of the machine that built the SBOM.
+file:
+  metadata:
+    selection: none
