@@ -73,6 +73,9 @@ from sentinelci.scanners.status import (
     tool_status_document,
     write_tool_status,
 )
+from sentinelci.supplychain.attestations import KINDS, AttestationError, parse_image, release_predicates
+from sentinelci.supplychain.cosign import Signer, Verifier, check_public_key
+from sentinelci.supplychain.verify import ATTESTATIONS_DIR, verify_evidence
 
 EXIT_UNTRUSTED_INPUT = 3
 DEFAULT_TOOLS_DIR = Path(".sentinel/tools")
@@ -233,14 +236,28 @@ def _write_output(out: Path, text: str, command: str) -> None:
         raise typer.Exit(EXIT_NO_DECISION) from exc
 
 
-def _refuse_output(out: Path, sources: list[Path | None], command: str) -> None:
-    """Fail closed before anything is deleted: --out must not be any input file, nor a directory."""
+def _refuse_output(
+    out: Path,
+    sources: list[Path | None],
+    command: str,
+    option: str = "--out",
+    dirs: dict[str, Path | None] | None = None,
+) -> None:
+    """Fail closed before anything is deleted: the output must not be any input file, nor a directory,
+    nor anywhere inside an input directory (`dirs`, by option name: the policy bundle, the evidence store).
+    """
     if out.is_dir():
-        typer.echo(f"{command}: --out {out} is a directory; nothing was written", err=True)
+        typer.echo(f"{command}: {option} {out} is a directory; nothing was written", err=True)
         raise typer.Exit(EXIT_NO_DECISION)
     for source in sources:
         if source is not None and out.exists() and source.exists() and out.resolve() == source.resolve():
-            typer.echo(f"{command}: --out {out} is the input file {source}; nothing was written", err=True)
+            typer.echo(f"{command}: {option} {out} is the input file {source}; nothing was written", err=True)
+            raise typer.Exit(EXIT_NO_DECISION)
+    for dir_option, directory in (dirs or {}).items():
+        if directory is not None and out.resolve().is_relative_to(directory.resolve()):
+            typer.echo(
+                f"{command}: {option} {out} is inside {dir_option} {directory}; nothing was written", err=True
+            )
             raise typer.Exit(EXIT_NO_DECISION)
 
 
@@ -314,10 +331,7 @@ def score_command(
 
     Exit code 0 on success, 3 when the findings or the risk model cannot be read (nothing is written).
     """
-    # Fail closed before anything is deleted: --out must not be the findings file, nor a directory.
-    if out.is_dir() or (out.exists() and findings.exists() and out.resolve() == findings.resolve()):
-        typer.echo(f"sentinel score: --out {out} is the input or a directory; nothing was written", err=True)
-        raise typer.Exit(EXIT_NO_DECISION)
+    _refuse_output(out, [findings], "sentinel score", dirs={"--policy-dir": policy_dir})
     # A stale file from an earlier run must never be read as this run's scores.
     _clear_output(out, "sentinel score")
     try:
@@ -370,6 +384,13 @@ def evaluate_command(
         ),
     ] = None,
     enrichment_snapshot: Annotated[Path | None, typer.Option(help="Enrichment snapshot file.")] = None,
+    service_context: Annotated[
+        Path | None,
+        typer.Option(
+            help="The sentinel.yaml given to `sentinel enrich --config`, from the base branch: recorded by "
+            "digest (Decision 1.3)."
+        ),
+    ] = None,
     sbom: Annotated[Path | None, typer.Option(help="SBOM file to record by digest.")] = None,
     opa: Annotated[
         Path | None, typer.Option(help="OPA binary. Default: $SENTINEL_OPA, then opa on PATH.")
@@ -384,10 +405,13 @@ def evaluate_command(
     Exit code 0 for PASS or WARN, 1 for BLOCK, 3 when no decision could be made (fail closed). With
     --store, a decision whose evidence cannot be stored is not written either (exit 3).
     """
-    # A stale decision from an earlier run must never be mistaken for this run's result.
-    output.unlink(missing_ok=True)
     if waivers is None and Path(DEFAULT_WAIVERS_PATH).is_file():
         waivers = Path(DEFAULT_WAIVERS_PATH)
+    inputs = [findings, waivers, baseline, tool_status, enrichment_snapshot, service_context, sbom, opa]
+    dirs = {"--policy-dir": policy_dir, "--store": store}
+    _refuse_output(output, inputs, "sentinel evaluate", "--output", dirs)
+    # A stale decision from an earlier run must never be mistaken for this run's result.
+    output.unlink(missing_ok=True)
     try:
         # Each input is read once: the same bytes are evaluated, digested and stored.
         data = _Inputs(
@@ -397,6 +421,7 @@ def evaluate_command(
             tool_status=tool_status.read_bytes() if tool_status else None,
             enrichment_snapshot=enrichment_snapshot.read_bytes() if enrichment_snapshot else None,
             sbom=sbom.read_bytes() if sbom else None,
+            service_context=service_context.read_bytes() if service_context else None,
         )
         bundle = PolicyBundle.load(policy_dir)
         decision = evaluate(
@@ -411,6 +436,7 @@ def evaluate_command(
             tool_status_data=data.tool_status,
             enrichment_snapshot=data.enrichment_snapshot,
             sbom=data.sbom,
+            service_context=data.service_context,
         )
         if store is not None:
             _store_evidence(EvidenceStore(store), decision, bundle, data)
@@ -442,6 +468,7 @@ class _Inputs:
     tool_status: bytes | None
     enrichment_snapshot: bytes | None
     sbom: bytes | None
+    service_context: bytes | None
 
 
 def _store_evidence(
@@ -458,6 +485,7 @@ def _store_evidence(
             EMPTY_ENRICHMENT_SNAPSHOT if data.enrichment_snapshot is None else data.enrichment_snapshot
         ),
         "sbom_digest": data.sbom,
+        "service_context_digest": data.service_context,
     }
     for key, blob in stored.items():
         if blob is not None and store.put(blob) != inputs[key]:
@@ -845,6 +873,98 @@ def report_pr_comment(
         raise typer.Exit(EXIT_UNTRUSTED_INPUT) from exc
     out.write_text(render_pr_comment(inputs), encoding="utf-8", newline="\n")
     typer.echo(f"verdict {inputs.decision.verdict}: comment written to {out}")
+
+
+# ---------------------------------------------------------------- supply chain (A4, ADR-0010)
+
+EXIT_UNTRUSTED = 1
+
+
+@app.command("attest")
+def attest_command(
+    image: Annotated[str, typer.Argument(help="The release image, <name>@sha256:<digest>.")],
+    decision: Annotated[Path, typer.Option(help="The release decision (Decision v1) about this image.")],
+    findings: Annotated[Path, typer.Option(help="The findings NDJSON the decision was made on.")],
+    sbom: Annotated[Path, typer.Option(help="The CycloneDX JSON SBOM the decision recorded.")],
+    key: Annotated[str, typer.Option(help="Cosign private key: a file, or env://VAR.")],
+    out: Annotated[Path, typer.Option(help="Evidence directory: the bundles go to <out>/attestations/.")],
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    tools_dir: Annotated[
+        Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
+    ] = DEFAULT_TOOLS_DIR,
+    platform: PlatformOption = None,
+) -> None:
+    """Sign the four release attestations of an image: decision, SBOM, vulnerability scan, provenance.
+
+    Runs in the release workflow's attest job (the GitHub Actions variables give the provenance). Exit code 3,
+    with nothing signed, when the inputs don't belong together: a BLOCK or non-release decision, a decision
+    about another image, findings or an SBOM the decision did not record, or a run on another repository or
+    commit.
+    """
+    directory = out / ATTESTATIONS_DIR
+    bundles = [directory / f"{kind}.sigstore.json" for kind in KINDS]
+    signed = False
+    try:
+        target = parse_image(image)
+        predicates = release_predicates(
+            target,
+            decision_data=decision.read_bytes(),
+            findings_data=findings.read_bytes(),
+            sbom_data=sbom.read_bytes(),
+            env=os.environ,
+        )
+        signer = Signer(key, load_lock(lock), tools_dir, platform)
+        directory.mkdir(parents=True, exist_ok=True)
+        for (kind, predicate_type), bundle in zip(KINDS.items(), bundles, strict=True):
+            signer.attest(target, predicate_type, predicates[kind], bundle, os.environ)
+        signed = True
+    except (AttestationError, OSError, ToolIntegrityError, ScannerError) as exc:
+        typer.echo(f"sentinel attest: {exc}; nothing was signed", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    finally:
+        if not signed:  # all four or none, whatever stopped the run; an earlier run's bundles go too
+            for bundle in bundles:
+                bundle.unlink(missing_ok=True)
+    typer.echo(f"signed {len(bundles)} attestations of {target.name}@{target.digest} -> {directory}")
+
+
+@app.command("verify")
+def verify_command(
+    image: Annotated[str, typer.Argument(help="The image to check, <name>@sha256:<digest>.")],
+    key: Annotated[Path, typer.Option(help="Cosign public key that must have signed every attestation.")],
+    repo: Annotated[str, typer.Option(help="The repository the release must come from, owner/name.")],
+    builder_id: Annotated[
+        str,
+        typer.Option(
+            help="The workflow that must have built it, as SLSA builder id, e.g. "
+            "https://github.com/<owner>/<repo>/.github/workflows/<file>@refs/heads/main."
+        ),
+    ],
+    evidence: Annotated[
+        Path, typer.Option(help="Evidence directory written by `sentinel attest` (offline verification).")
+    ],
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    tools_dir: Annotated[
+        Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
+    ] = DEFAULT_TOOLS_DIR,
+    platform: PlatformOption = None,
+) -> None:
+    """Check that an image is backed by a signed, non-BLOCK release decision, and print a trust report.
+
+    Exit code 0 when every check passes, 1 when any fails (not trusted), 3 when the verification could not run
+    (for example a Cosign binary that does not match tools.lock.toml). Both non-zero codes refuse the image.
+    """
+    try:
+        target = parse_image(image)
+        check_public_key(key)  # a broken setup is "could not run" (3), not "this image is bad" (1)
+        verifier = Verifier(key, load_lock(lock), tools_dir, platform)
+        report = verify_evidence(target, evidence, verifier, repo=repo, builder_id=builder_id)
+    except (AttestationError, ToolIntegrityError, ScannerError) as exc:
+        typer.echo(f"sentinel verify: {exc}\nFAIL CLOSED: the image is not trusted.", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    typer.echo(report.render(), nl=False)
+    if not report.trusted:
+        raise typer.Exit(EXIT_UNTRUSTED)
 
 
 if __name__ == "__main__":
