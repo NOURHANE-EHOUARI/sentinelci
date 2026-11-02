@@ -1,11 +1,13 @@
 """Opengrep JSON -> Finding v1, category SAST (task A2).
 
 The fixture is Opengrep 1.33.1's real `results` with SentinelCI's rules on four small files (scanned at a
-temporary path, rewritten to /scan/target): the same command twice in one file, a SQL statement built from an
-f-string, TLS verification turned off under a `# nosemgrep` comment, and HTML built from data.
+temporary path, rewritten to /scan/target): the same command twice in one file (two findings), a SQL
+statement built from an f-string, TLS verification turned off under a `# nosemgrep` comment, and HTML built
+from data.
 """
 
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -70,11 +72,19 @@ def test_findings_say_what_and_where_and_keep_no_code() -> None:
         assert code not in output
 
 
-def test_the_same_code_twice_in_a_file_is_one_finding_with_other_locations() -> None:
-    (shell,) = [f for f in _normalize(_results()) if f.rule_id == "python-shell-command-from-data"]
-    assert shell.schema_version == "1.1"
-    assert shell.location == Location(path="app/dup.py", start_line=5, end_line=5)
-    assert shell.other_locations == [Location(path="app/dup.py", start_line=9, end_line=9)]
+def test_the_same_code_twice_in_a_file_is_one_finding_per_place_numbered_in_line_order() -> None:
+    first, second = sorted(
+        (f for f in _normalize(_results()) if f.rule_id == "python-shell-command-from-data"),
+        key=lambda f: f.location.start_line if f.location else 0,
+    )
+    base = sast_fingerprint("python-shell-command-from-data", "app/dup.py", _results()[0]["extra"]["lines"])
+    assert (first.id, first.location) == (base, Location(path="app/dup.py", start_line=5, end_line=5))
+    assert (second.id, second.location) == (
+        hashlib.sha256(f"{base}|2".encode()).hexdigest(),
+        Location(path="app/dup.py", start_line=9, end_line=9),
+    )
+    assert first.schema_version == second.schema_version == "1.0"
+    assert first.other_locations is second.other_locations is None
 
 
 def test_a_match_under_a_nosemgrep_comment_is_kept_and_says_so() -> None:
@@ -115,12 +125,79 @@ def test_severities(severity: str, expected: str) -> None:
     assert _normalize([result])[0].severity == expected
 
 
-def test_the_most_severe_match_gives_the_severity_and_its_source() -> None:
+def test_one_place_reported_twice_is_one_finding_with_the_most_severe_match() -> None:
     first, second = _sql(), _sql()
     first["extra"]["severity"] = "INFO"
-    second["start"]["line"] = second["end"]["line"] = 12
     (finding,) = _normalize([first, second])
     assert (finding.severity, finding.severity_source) == ("HIGH", "ERROR (confidence HIGH)")
+    assert finding.id == _normalize([_sql()])[0].id
+
+
+def _at(line: int, **extra: Any) -> dict[str, Any]:
+    """The SQL match of the fixture, at another line of the same file."""
+    result = _sql()
+    result["start"]["line"] = result["end"]["line"] = line
+    result["extra"].update(extra)
+    return result
+
+
+def _ids(results: list[dict[str, Any]]) -> list[tuple[str, int]]:
+    """(id, line) of each finding, in line order."""
+    findings = _normalize(results)
+    return sorted(((f.id, f.location.start_line if f.location else 0) for f in findings), key=lambda x: x[1])
+
+
+def _nth(base: str, n: int) -> str:
+    return hashlib.sha256(f"{base}|{n}".encode()).hexdigest()
+
+
+def test_a_copy_of_a_known_match_below_it_is_a_new_finding() -> None:
+    ((base, _),) = _ids([_at(2)])
+    assert _ids([_at(2), _at(9)]) == [(base, 2), (_nth(base, 2), 9)]
+
+
+def test_a_copy_above_takes_the_first_id_and_the_count_still_goes_up() -> None:
+    """The trade-off of numbering in line order: the new id lands on the older line, but there is one."""
+    ((base, _),) = _ids([_at(9)])
+    assert _ids([_at(9), _at(2)]) == [(base, 2), (_nth(base, 2), 9)]
+
+
+def test_three_copies_are_three_findings() -> None:
+    ((base, _),) = _ids([_at(4)])
+    assert _ids([_at(30), _at(4), _at(17)]) == [(base, 4), (_nth(base, 2), 17), (_nth(base, 3), 30)]
+
+
+def test_each_file_numbers_its_own_copies() -> None:
+    def elsewhere(line: int) -> dict[str, Any]:
+        result = _at(line)
+        result["path"] = "/scan/target/app/other.py"
+        return result
+
+    findings = _normalize([_at(2), elsewhere(3), _at(8), elsewhere(1)])
+    by_file: dict[str, list[tuple[int, str]]] = {}
+    for finding in findings:
+        assert finding.location is not None
+        by_file.setdefault(finding.location.path, []).append((finding.location.start_line, finding.id))
+    for path, lines in (("app/sql.py", (2, 8)), ("app/other.py", (1, 3))):
+        base = sast_fingerprint("python-sql-built-from-strings", path, _sql()["extra"]["lines"])
+        assert sorted(by_file[path]) == [(lines[0], base), (lines[1], _nth(base, 2))]
+
+
+def test_the_note_and_the_first_id_follow_line_order_not_report_order() -> None:
+    """Two hits of the same code given in reverse line order, the second (the lower line) under nosemgrep."""
+    findings = {f.id: f for f in _normalize([_at(12), _at(3, is_ignored=True)])}
+    base = _normalize([_sql()])[0].id
+    first, second = findings[base], findings[_nth(base, 2)]
+    assert first.location == Location(path="app/sql.py", start_line=3, end_line=3)
+    assert first.message is not None and "does not honour" in first.message
+    assert second.location == Location(path="app/sql.py", start_line=12, end_line=12)
+    assert second.message is not None and "does not honour" not in second.message
+
+
+def test_one_place_reported_twice_keeps_the_nosemgrep_note_of_either_report() -> None:
+    for results in ([_at(3), _at(3, is_ignored=True)], [_at(3, is_ignored=True), _at(3)]):
+        (finding,) = _normalize(results)
+        assert finding.message is not None and "does not honour" in finding.message
 
 
 def _broken(edit: Any) -> list[dict[str, Any]]:

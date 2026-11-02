@@ -2,9 +2,11 @@
 
 The fingerprint is the SAST one: `sha256(rule | path | sha256(normalized snippet))`, the snippet being the
 matched lines Opengrep reports (`extra.lines`), whitespace-normalized. A moved line or a re-indented block
-keeps the id; a new match is a new finding. Matches with the same fingerprint (the same code twice in a file)
-are one finding with `other_locations` (Finding 1.1). No code is kept: the snippet is only hashed, and the
-messages are the rules' fixed text (SentinelCI's rules never interpolate code into them)."""
+keeps the id; a new match is a new finding. The same code several times in a file is one finding per place,
+numbered in line order (SPEC §13.1): the first keeps the fingerprint, the n-th is `sha256(fingerprint | n)`.
+A copy of a vulnerable line is then new in a pull request, and a waiver covers the one place it was reviewed
+for. No code is kept: the snippet is only hashed, and the messages are the rules' fixed text (SentinelCI's
+rules never interpolate code into them)."""
 
 import posixpath
 import re
@@ -15,7 +17,7 @@ from typing import Any
 
 from sentinelci.contracts.finding import Finding, Location, Run, Tool
 from sentinelci.normalize.errors import NormalizationError
-from sentinelci.normalize.fingerprint import sast_fingerprint
+from sentinelci.normalize.fingerprint import occurrence_fingerprint, sast_fingerprint
 from sentinelci.normalize.paths import to_repo_relative
 
 # Opengrep's legacy and current rule severities. An unknown one is refused: SentinelCI writes the rules.
@@ -80,35 +82,48 @@ def normalize_opengrep(
 
     findings: list[Finding] = []
     for fingerprint, hits in groups.items():
-        hits.sort(key=lambda hit: (hit[0], hit[1], hit[2]))
-        path, start, end, first = hits[0]
-        distinct = list(dict.fromkeys((p, s, e) for p, s, e, _ in hits))
-        others = [Location(path=p, start_line=s, end_line=e) for p, s, e in distinct[1:]]
-        # Severity and its source come from the same match: the most severe one (first on a tie).
-        worst = max(hits, key=lambda hit: _rank(SEVERITIES[_severity(hit[3]["extra"], 0)]))[3]
-        raw_severity = _severity(worst["extra"], 0)
-        title, cwe, confidence = _metadata(worst["extra"], 0)
-        notes = [str(worst["extra"].get("message") or title), f"Confidence {confidence.lower()}."]
-        if any(hit[3]["extra"].get("is_ignored") for hit in hits):
-            notes.append(IGNORED_NOTE)
-        findings.append(
-            Finding(
-                schema_version="1.1" if others else "1.0",
-                id=fingerprint,
-                tool=tool,
-                rule_id=str(first["check_id"]),
-                category="SAST",
-                title=title,
-                message=" ".join(notes),
-                severity=SEVERITIES[raw_severity],  # type: ignore[arg-type]
-                severity_source=f"{raw_severity} (confidence {confidence})",
-                cwe=cwe or None,
-                location=Location(path=path, start_line=start, end_line=end),
-                other_locations=others or None,
-                run=run,
+        # One fingerprint is one rule and one file. Each place is a finding, numbered in line order; Opengrep
+        # reporting the same place twice is still one finding.
+        places: dict[tuple[str, int, int], list[Mapping[str, Any]]] = defaultdict(list)
+        for path, start, end, result in sorted(hits, key=lambda hit: (hit[0], hit[1], hit[2])):
+            places[(path, start, end)].append(result)
+        for occurrence, ((path, start, end), same) in enumerate(places.items(), start=1):
+            findings.append(
+                _finding(occurrence_fingerprint(fingerprint, occurrence), same, path, start, end, run, tool)
             )
-        )
     return sorted(findings, key=lambda f: f.id)
+
+
+def _finding(
+    fingerprint: str,
+    results: list[Mapping[str, Any]],
+    path: str,
+    start: int,
+    end: int,
+    run: Run,
+    tool: Tool,
+) -> Finding:
+    # Severity and its source come from the same match: the most severe one (first on a tie).
+    worst = max(results, key=lambda result: _rank(SEVERITIES[_severity(result["extra"], 0)]))
+    raw_severity = _severity(worst["extra"], 0)
+    title, cwe, confidence = _metadata(worst["extra"], 0)
+    notes = [str(worst["extra"].get("message") or title), f"Confidence {confidence.lower()}."]
+    if any(result["extra"].get("is_ignored") for result in results):
+        notes.append(IGNORED_NOTE)
+    return Finding(
+        schema_version="1.0",
+        id=fingerprint,
+        tool=tool,
+        rule_id=str(worst["check_id"]),
+        category="SAST",
+        title=title,
+        message=" ".join(notes),
+        severity=SEVERITIES[raw_severity],  # type: ignore[arg-type]
+        severity_source=f"{raw_severity} (confidence {confidence})",
+        cwe=cwe or None,
+        location=Location(path=path, start_line=start, end_line=end),
+        run=run,
+    )
 
 
 def _severity(extra: Mapping[str, Any], index: int) -> str:

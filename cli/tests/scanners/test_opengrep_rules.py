@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 import yaml
 
+from sentinelci.scanners.errors import ScannerError
 from sentinelci.scanners.lock import load_lock
 from sentinelci.scanners.opengrep import RULES_DIR, RULES_PACKAGE, rule_ids, scan_sast_with_run
 
@@ -70,10 +71,35 @@ CASES: list[tuple[str, str, bool, str]] = [
      'import sqlalchemy\n'
      'def f(s, n):\n'
      '    s.execute(sqlalchemy.text("SELECT {}".format(n)))\n'),
+    # The statement built in a variable, then executed (#40 review).
+    ('python-sql-built-from-strings', 'sql5.py', True,
+     'def f(cur, x):\n'
+     '    q = f"SELECT * FROM t WHERE id = {x}"\n'
+     '    cur.execute(q)\n'),
+    ('python-sql-built-from-strings', 'sql6.py', True,
+     'def f(cur, x):\n'
+     '    q = "SELECT * FROM t WHERE id = " + x\n'
+     '    cur.execute(q)\n'),
+    ('python-sql-built-from-strings', 'sql7.py', True,
+     'def f(conn, name):\n'
+     '    sql = "DELETE FROM t WHERE n = \'%s\'" % name\n'
+     '    conn.executemany(sql, [])\n'),
+    ('python-sql-built-from-strings', 'sql8.py', True,
+     'def f(db, n):\n'
+     '    stmt = "SELECT * FROM t WHERE n = {}".format(n)\n'
+     '    return db.execute(stmt).fetchall()\n'),
     ('python-sql-built-from-strings', 'sql-ok.py', False,
      'def f(cur, uid):\n'
      '    cur.execute("SELECT * FROM users WHERE id = %s", (uid,))\n'
      '    cur.execute("SELECT 1")\n'),
+    ('python-sql-built-from-strings', 'sql-ok2.py', False,
+     'def f(cur, uid):\n'
+     '    q = "SELECT * FROM users WHERE id = %s"\n'
+     '    cur.execute(q, (uid,))\n'
+     '    everything = "SELECT * FROM users"\n'
+     '    cur.execute(everything)\n'
+     '    note = f"looked up {uid}"\n'
+     '    cur.execute("SELECT * FROM audit WHERE n = %s", (note,))\n'),
     ('python-unsafe-deserialization', 'de1.py', True,
      'import pickle\n'
      'def f(data):\n'
@@ -137,6 +163,32 @@ CASES: list[tuple[str, str, bool, str]] = [
      'export function f(dir: string) {\n'
      '  execSync(`rm -rf ${dir}`);\n'
      '}\n'),
+    # The module by its "node:" name (#40 review).
+    ('js-shell-command-from-data', 'cp3.js', True,
+     'const cp = require("node:child_process");\n'
+     'function f(x) {\n'
+     '  cp.exec(`ls ${x}`);\n'
+     '}\n'),
+    ('js-shell-command-from-data', 'cp4.ts', True,
+     'import { exec } from "node:child_process";\n'
+     'export function f(x: string) {\n'
+     '  exec(`ls ${x}`);\n'
+     '}\n'),
+    ('js-shell-command-from-data', 'cp5.mjs', True,
+     'import * as cp from "node:child_process";\n'
+     'export function f(x) {\n'
+     '  cp.execSync("rm -rf " + x);\n'
+     '}\n'),
+    ('js-shell-command-from-data', 'cp6.js', True,
+     'const { execSync } = require("node:child_process");\n'
+     'module.exports = (x) => execSync("git log " + x);\n'),
+    ('js-shell-command-from-data', 'cp7.ts', True,
+     'import cp from "node:child_process";\n'
+     'export const f = (x: string) => cp.exec(x);\n'),
+    ('js-shell-command-from-data', 'cp-ok2.js', False,
+     'const cp = require("node:child_process");\n'
+     'cp.exec("ls -l");\n'
+     'function g(x) { cp.execFile("ls", [x]); }\n'),
     ('js-shell-command-from-data', 'cp-ok.js', False,
      'const cp = require("child_process");\n'
      'cp.exec("ls -l");\n'
@@ -214,3 +266,41 @@ def test_the_rules_flag_exactly_the_vulnerable_cases(tmp_path: Path) -> None:
     expected = {(rule, name) for rule, name, flag, _ in CASES if flag}
     assert found == expected, {"missed": sorted(expected - found), "unexpected": sorted(found - expected)}
     assert scan.warnings == []
+
+
+# One valid line of Python 3.12 that Opengrep 1.33.1 cannot parse (PEP 695). Opengrep skips the code around it
+# and only warns: from line 1 to the function here, so the call on line 3 would be lost (#40 review).
+GENERIC = "def first[T](x: T) -> T:\n    return x\n"
+CALL = 'os.system(f"rm -rf {path} 1")\n'
+
+
+def _scan_files(tmp_path: Path, contents: dict[str, str]):  # type: ignore[no-untyped-def]
+    target = tmp_path / "samples"
+    target.mkdir()
+    for name, code in contents.items():
+        (target / name).write_text(code)
+    return scan_sast_with_run(target, lock=load_lock(REPO_LOCK), tools_dir=Path(str(TOOLS_DIR)))
+
+
+@pytest.mark.skipif(not TOOLS_DIR, reason="set SENTINEL_TOOLS_DIR to a `sentinel tools install` directory")
+@pytest.mark.integration
+def test_a_file_mostly_not_analysed_fails_closed(tmp_path: Path) -> None:
+    mid = "import os\n\n" + CALL + "\n" * 300 + GENERIC + "\n" * 300 + CALL.replace(" 1", " 2")
+    with pytest.raises(ScannerError, match=r"^opengrep could not scan everything: PartialParsing in mid\.py: "
+                       r"305 of 606 lines not analysed$"):  # fmt: skip
+        _scan_files(tmp_path, {"mid.py": mid})
+
+
+@pytest.mark.skipif(not TOOLS_DIR, reason="set SENTINEL_TOOLS_DIR to a `sentinel tools install` directory")
+@pytest.mark.integration
+def test_a_small_parse_gap_is_a_warning_and_the_rest_is_analysed(tmp_path: Path) -> None:
+    small = "import os\n\n" + CALL + "\n" + GENERIC + "\n" + "x = 1\n" * 5 + CALL.replace(" 1", " 2")
+    alias = 'import os\n\ntype Alias = list[int]\n\n\ndef f(path):\n    os.system(f"rm -rf {path}")\n'
+    scan = _scan_files(tmp_path, {"small.py": small, "alias.py": alias})
+    assert sorted((Path(r["path"]).name, r["start"]["line"]) for r in scan.results) == [
+        ("alias.py", 7), ("small.py", 3), ("small.py", 13),
+    ]  # fmt: skip
+    assert scan.warnings == [
+        "PartialParsing in alias.py: 1 of 7 lines not analysed",
+        "PartialParsing in small.py: 4 of 13 lines not analysed",
+    ]

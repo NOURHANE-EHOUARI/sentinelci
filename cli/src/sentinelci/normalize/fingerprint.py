@@ -49,6 +49,14 @@ def sast_fingerprint(rule_id: str, path: str, snippet: str) -> str:
     return sha256_hex(_SEP.join((rule_id, path, sha256_hex(normalize_snippet(snippet)))))
 
 
+def occurrence_fingerprint(fingerprint: str, occurrence: int) -> str:
+    """The n-th of several identical SAST matches in a file, in line order: the first keeps the fingerprint,
+    the n-th (n >= 2) is sha256(fingerprint | n). A copy of a line is then a new finding of its own."""
+    if occurrence < 1:
+        raise ValueError(f"occurrences are numbered from 1, not {occurrence}")
+    return fingerprint if occurrence == 1 else sha256_hex(_SEP.join((fingerprint, str(occurrence))))
+
+
 def config_fingerprint(rule_id: str, path: str, resource: str) -> str:
     """IAC / PIPELINE: sha256(rule id | path | resource or job identifier)."""
     return sha256_hex(_SEP.join((rule_id, path, resource)))

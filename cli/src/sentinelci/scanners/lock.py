@@ -21,6 +21,19 @@ _BINARY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _ASSET = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
 
 
+def _signer_identity(homepage: str, version: str) -> re.Pattern[str]:
+    """The certificate identity of a release build: a workflow file of the tool's own repository (no
+    sub-path), run at a branch or tag whose last part is this version (`v1.2.3`, `release-v1.2.3`,
+    `release/1.2.3`). It is documentation for reviewers: `sentinel tools install`/`verify` check only the
+    pinned sha256."""
+    return re.compile(
+        re.escape(homepage)
+        + r"/\.github/workflows/[A-Za-z0-9._-]+\.ya?ml@refs/(?:heads|tags)/"
+        + r"(?:[A-Za-z0-9_][A-Za-z0-9._]*[/-])*v?"
+        + re.escape(version)
+    )
+
+
 def _require_github_release(url: str, field: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme != "https":
@@ -77,7 +90,8 @@ class Tool(_Strict):
     archive: Literal["tar.gz", "none"]
     checksums_url: str | None = None
     # For a project that signs its assets keyless instead of publishing checksums: the release workflow's
-    # identity (certificate SAN) and the OIDC issuer a reviewer verifies each signature against.
+    # identity (certificate SAN) and the OIDC issuer a reviewer verifies each signature against. They are
+    # documentation: `sentinel tools install`/`verify` check only the pinned sha256 and never read them.
     signer_identity: str | None = None
     signer_issuer: Literal["https://token.actions.githubusercontent.com"] | None = None
     artifacts: dict[Platform, Artifact] = Field(min_length=1)
@@ -116,10 +130,14 @@ class Tool(_Strict):
         signed = self.signer_identity is not None and self.signer_issuer is not None
         if (self.signer_identity is None) != (self.signer_issuer is None):
             raise ValueError("signer_identity and signer_issuer go together")
-        if self.signer_identity is not None and not self.signer_identity.startswith(
-            f"{self.homepage}/.github/workflows/"
+        if self.signer_identity is not None and not _signer_identity(self.homepage, self.version).fullmatch(
+            self.signer_identity
         ):
-            raise ValueError(f"signer_identity must be a workflow of {self.homepage}: {self.signer_identity}")
+            raise ValueError(
+                f"signer_identity must be a workflow file of {self.homepage} run at a branch or tag named "
+                f"after this version (.github/workflows/<name>.yml@refs/tags/v{self.version}, "
+                f"...@refs/heads/release-v{self.version}): {self.signer_identity}"
+            )
         for platform, artifact in self.artifacts.items():
             has_checksums = self.checksums_url is not None or artifact.checksums_url is not None
             if not has_checksums and not (signed and artifact.signed):

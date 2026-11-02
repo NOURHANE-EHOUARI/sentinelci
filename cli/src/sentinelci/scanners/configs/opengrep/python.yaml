@@ -61,6 +61,22 @@ rules:
               - pattern: $DB.$EXEC("..." + $VALUE, ...)
               - pattern: $DB.$EXEC($VALUE + "...", ...)
               - pattern: $DB.$EXEC("...".format(...), ...)
+              # The statement built in a variable first, then executed: the most common shape of CWE-89.
+              - patterns:
+                  - pattern-either:
+                      - pattern-inside: |
+                          $Q = f"..."
+                          ...
+                      - pattern-inside: |
+                          $Q = "..." % $VALUES
+                          ...
+                      - pattern-inside: |
+                          $Q = "..." + $VALUE
+                          ...
+                      - pattern-inside: |
+                          $Q = "...".format(...)
+                          ...
+                  - pattern: $DB.$EXEC($Q, ...)
           - metavariable-regex:
               metavariable: $EXEC
               regex: ^(execute|executemany|executescript|exec_driver_sql)$

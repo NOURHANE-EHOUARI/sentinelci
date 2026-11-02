@@ -16,7 +16,12 @@ the author of the change, so each one is neutralized:
   the whole run keeps the scanner time limit, which fails closed (SC-010);
 - repository rule files (`.semgrep.yml`)  -> never loaded: `--config` names SentinelCI's rules only;
 - a link out of the scan target           -> Opengrep does not follow it while the code it points to may be
-  built and run, so the target is refused when it has one (a link loop too).
+  built and run, so the target is refused when it has one (a link loop too);
+- a file Opengrep cannot parse in full   -> Opengrep skips the code it could not parse and only warns: when
+  that is more than half of the file's lines (one line of modern syntax can hide a whole file), the scan
+  fails closed; a smaller gap is a warning that names the file and counts the lines not analysed;
+- any other problem, even a warning      -> fails closed: Opengrep drops the file's results (too many matches
+  in one file, out of memory, ...).
 
 `--no-rewrite-rule-ids` keeps the rule ids as written (no prefix from where the rules are installed)."""
 
@@ -54,6 +59,11 @@ OFFLINE_ENV = {
     "no_proxy": "",
 }
 MAX_REPORTED = 5
+# Opengrep's error types for a file it could not parse in full. Their spans are the code it skipped; without a
+# span, it skipped the whole file. Any other error type means results were lost: it is always fatal.
+PARSE_ERRORS = frozenset(
+    {"PartialParsing", "Syntax error", "Lexical error", "Other syntax error", "AST builder error"}
+)
 
 
 @dataclass(frozen=True)
@@ -61,7 +71,7 @@ class SastScan:
     results: list[dict[str, Any]]
     run: ToolRun
     target: Path  # resolved: result paths are absolute, under it
-    warnings: list[str]  # non-fatal problems Opengrep reported (a file parsed only partly, ...)
+    warnings: list[str]  # files Opengrep parsed in part, for at most half of their lines
 
 
 def rule_ids() -> frozenset[str]:
@@ -99,24 +109,94 @@ def _listed(items: list[str]) -> str:
     return ", ".join(items[:MAX_REPORTED]) + more
 
 
+def _span_line(position: Any) -> int:
+    line = position.get("line") if isinstance(position, dict) else None
+    if not isinstance(line, int) or isinstance(line, bool) or line < 1:
+        raise ScannerError("opengrep's JSON report has a malformed error span")
+    return line
+
+
+def _spans(error: dict[str, Any]) -> list[tuple[int, int]]:
+    """The (start, end) lines Opengrep skipped, from `spans` and the PartialParsing locations."""
+    kind = error.get("type")
+    found: list[Any] = []
+    for spans in (error.get("spans"), kind[1] if isinstance(kind, list) and len(kind) > 1 else None):
+        if spans is not None and not isinstance(spans, list):
+            raise ScannerError("opengrep's JSON report has a malformed error span")
+        found += spans or []
+    lines: list[tuple[int, int]] = []
+    for span in found:
+        if not isinstance(span, dict):
+            raise ScannerError("opengrep's JSON report has a malformed error span")
+        start, end = _span_line(span.get("start")), _span_line(span.get("end"))
+        if end < start:
+            raise ScannerError("opengrep's JSON report has a malformed error span")
+        lines.append((start, end))
+    return lines
+
+
+def line_count(data: bytes) -> int:
+    """Lines as Opengrep numbers them: a last line without a newline still counts."""
+    return data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
+
+
+def lines_covered(spans: list[tuple[int, int]], total: int) -> int:
+    """How many of lines 1..total the (start, end) spans cover, overlaps counted once."""
+    covered, reached = 0, 0
+    for start, end in sorted(spans):
+        start, end = max(start, reached + 1), min(end, total)
+        if end >= start:
+            covered += end - start + 1
+            reached = end
+    return covered
+
+
+def _relative(where: Any, target: Path) -> str | None:
+    if isinstance(where, str) and Path(where).is_absolute() and is_within(Path(where), target):
+        return Path(where).resolve().relative_to(target).as_posix()
+    return None
+
+
+def _parse_gap(name: str, where: str, spans: list[tuple[int, int]] | None, target: Path) -> tuple[bool, str]:
+    """(fatal, text) for a file Opengrep parsed only in part (`spans` None: not at all)."""
+    try:
+        total = line_count((target / where).read_bytes())
+    except OSError:
+        return True, f"{name} in {where}: the file cannot be read to count what was not analysed"
+    skipped = total if spans is None else lines_covered(spans, total)
+    return 2 * skipped > total, f"{name} in {where}: {skipped} of {total} lines not analysed"
+
+
 def _problems(report: dict[str, Any], target: Path) -> tuple[list[str], list[str]]:
-    """(fatal, warnings) from Opengrep's `errors`: anything but a warning means part of the scan did not
-    run."""
+    """(fatal, warnings) from Opengrep's `errors`. Only a file parsed in part, for at most half of its lines,
+    is a warning: anything else means part of the scan did not run."""
     fatal: list[str] = []
     warnings: list[str] = []
     errors = report.get("errors")
     if not isinstance(errors, list):
         raise ScannerError("opengrep's JSON report has no `errors` list")
+    gaps: dict[str, tuple[str, list[tuple[int, int]] | None]] = {}  # file -> (first error, spans; None: all)
     for error in errors:
         if not isinstance(error, dict):
             raise ScannerError("opengrep's JSON report has a malformed error entry")
         kind = error.get("type")
         name = kind[0] if isinstance(kind, list) and kind else kind
-        where = error.get("path")
-        if isinstance(where, str) and Path(where).is_absolute() and is_within(Path(where), target):
-            where = Path(where).resolve().relative_to(target).as_posix()
-        text = f"{name or 'error'}{f' in {where}' if isinstance(where, str) and where else ''}"
-        (warnings if error.get("level") == "warn" else fatal).append(text)
+        where = _relative(error.get("path"), target)
+        if (
+            error.get("level") == "warn"
+            and isinstance(name, str)
+            and name in PARSE_ERRORS
+            and where is not None
+        ):
+            first, known = gaps.get(where, (name, []))
+            spans = _spans(error)
+            gaps[where] = (first, None if known is None or not spans else known + spans)
+            continue
+        where = where or error.get("path")
+        fatal.append(f"{name or 'error'}{f' in {where}' if isinstance(where, str) and where else ''}")
+    for path, (first, skipped) in sorted(gaps.items()):
+        is_fatal, text = _parse_gap(first, path, skipped, target)
+        (fatal if is_fatal else warnings).append(text)
     return fatal, warnings
 
 

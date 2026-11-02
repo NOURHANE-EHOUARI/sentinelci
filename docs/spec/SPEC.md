@@ -10,7 +10,7 @@
 
 | Version | Change |
 |---|---|
-| 1.1.15 | A1 SAST (§5): `sentinel scan sast` runs the pinned Opengrep (no checksum file upstream: pinned by hash after checking each asset's keyless signature, recorded in `tools.lock.toml` with its signer identity) with SentinelCI's own rules only (`configs/opengrep/`, each pinned by cases it must flag and leave alone), offline, with `nosemgrep` comments, `.semgrepignore`, `.gitignore`, the size and per-file time limits and repository rule files never honoured, and links leaving the tree refused; findings are category SAST with the §13.1 SAST fingerprint. |
+| 1.1.15 | A1 SAST (§5): `sentinel scan sast` runs the pinned Opengrep (no checksum file upstream: pinned by hash after checking each asset's keyless signature, recorded in `tools.lock.toml` with its signer identity) with SentinelCI's own rules only (`configs/opengrep/`, each pinned by cases it must flag and leave alone), offline, with `nosemgrep` comments, `.semgrepignore`, `.gitignore`, the size and per-file time limits and repository rule files never honoured, and links leaving the tree refused; a file Opengrep cannot analyse for more than half of its lines, and any other error even reported as a warning, fails closed; findings are category SAST with the §13.1 SAST fingerprint, plus the occurrence number for repeated identical matches in a file (each copy is its own finding, so a copy is new in a PR and a waiver covers one place). |
 | 1.1.6 | A9 first seeds (§17): 5 fake secrets, 6 IaC, 3 CI-workflow seeds and 4 clean controls in `demo-shop/`, with a draft ground-truth format (`demo-shop/ground-truth/`, final schema owned by B9) checked against the pinned Gitleaks, Trivy and zizmor. SentinelCI's Trivy configuration trusts only the kind registry for KSV0125. |
 | 1.1.5 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
 | 1.1.4 | Enrichment (B2, §6.1): `schemas/enrichment-snapshot.v1.json` (`schema_version` "1.0", `sources.kev.cves`: the CVEs the KEV lookup covered) and `schemas/sentinel-config.v1.json` (`sentinel.yaml`, canonical component paths); `sentinel enrich`. "Not listed in KEV" only for covered CVEs; `sentinel.yaml` read with a restricted YAML loader. |
@@ -190,8 +190,16 @@ messages, so no code reaches a finding), from a private working directory and ho
 cannot silence it: `--disable-nosem` (a match under a `# nosemgrep` comment is reported, flagged, and its message
 says the comment is not honoured), `--x-ignore-semgrepignore-files`, `--no-git-ignore`, `--max-target-bytes=0` (no
 file is skipped for its size) and `--timeout=0` (no rule is dropped for a slow file; the run keeps the scanner time
-limit); repository rule files are never loaded, and a link that leaves the scan target, or loops, is refused. Any
-error Opengrep reports above warning level fails closed; a file parsed only in part is named in the job log.
+limit); repository rule files are never loaded, and a link that leaves the scan target, or loops, is refused.
+Opengrep chooses files by extension: `.py`, `.pyi`, `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts` and `.tsx`, plus an
+executable file whose `#!` line names `python` or `node`; anything else (a script without an extension that is not
+executable, `.mts`, `.cts`, `.pyw`, notebooks) is not scanned, and the guarantees above cover only these files.
+`sentinel tools install`/`verify` check only the pinned sha256; the signature fields of the lock are not read. Any
+error Opengrep reports fails closed, even a warning (too many matches in a file, out of memory: Opengrep then drops
+the file's results), except a file it could parse only in part: that fails closed too when more than half of the
+file's lines were not analysed (all of them when it could not parse the file at all), since one line of syntax
+Opengrep does not know can hide a whole file; a smaller gap is named in the job log with its line count, and the
+code in it is not analysed.
 
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
@@ -510,7 +518,10 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
 - SCA / CONTAINER: `sha256(category | vuln id | purl base)` where *purl base* = the purl without version,
   qualifiers or subpath (same definition as `purl_base` in `policies/gate.rego`). After a bump the finding disappears; base-image point releases, other
   architectures and Grype/Trivy qualifier differences keep the same fingerprint. Waivers use the same purl base.
-- SAST: `sha256(rule id | path | hash of normalized snippet)` — survives line shifts.
+- SAST: `sha256(rule id | path | hash of normalized snippet)` — survives line shifts — plus the occurrence number
+  for repeated identical matches in a file: in line order, the first keeps that id and the n-th (n ≥ 2) is
+  `sha256(<that id> | n)`, its own finding. A copy of a vulnerable line is then new in a PR, and a waiver covers
+  one place.
 - SECRET: `sha256(rule id | sha256(secret value))`.
 - IAC / PIPELINE: `sha256(rule id | path | resource or job id)`.
 

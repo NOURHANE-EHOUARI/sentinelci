@@ -187,3 +187,53 @@ def test_an_invalid_signed_entry_is_rejected(
     assert old in content, reason
     with pytest.raises(ToolIntegrityError):
         load_lock(write_lock(content.replace(old, new, 1)))
+
+
+OPENGREP_IDENTITY = (
+    "https://github.com/opengrep/opengrep/.github/workflows/rolling-release.yml@refs/heads/release-v1.33.1"
+)
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        "https://github.com/opengrep/opengrep/.github/workflows/",
+        "https://github.com/opengrep/opengrep/.github/workflows/evil.yml@refs/heads/attacker-branch",
+        "https://github.com/opengrep/opengrep/.github/workflows/../../../evil/x/.github/workflows/r.yml",
+        "https://github.com/opengrep/opengrep/.github/workflows/../../../evil/x/.github/workflows/r.yml"
+        "@refs/heads/release-v1.33.1",
+        "https://github.com/opengrep/opengrep/.github/workflows/rolling-release.yml@refs/heads/release-v1.33.0",
+        "https://github.com/opengrep/opengrep/.github/workflows/rolling-release.yml@refs/heads/release-v1.33.10",
+        "https://github.com/opengrep/opengrep/.github/workflows/rolling-release.yml@refs/tags/v11.33.1",
+        "https://github.com/opengrep/opengrep/.github/workflows/rolling-release.yml@refs/pull/1/release-v1.33.1",
+        "https://github.com/opengrep/opengrep/.github/workflows/rolling-release.sh@refs/heads/release-v1.33.1",
+        f"{OPENGREP_IDENTITY} ",
+        f"{OPENGREP_IDENTITY}\n",
+        OPENGREP_IDENTITY.replace("opengrep/opengrep", "opengrep/opengrep-fork"),
+    ],
+    ids=["no-file-no-ref", "attacker-branch", "dot-dot-no-ref", "dot-dot", "older-version", "longer-version",
+         "version-ending-like-this-one", "pull-request-ref", "not-a-workflow-file", "trailing-space",
+         "trailing-newline", "other-repository"],
+)  # fmt: skip
+def test_a_signer_identity_that_is_not_this_releases_workflow_is_refused(
+    tmp_path: Path, identity: str
+) -> None:
+    lock = REPO_LOCK.read_text(encoding="utf-8")
+    assert f'signer_identity = "{OPENGREP_IDENTITY}"' in lock
+    changed = tmp_path / "tools.lock.toml"
+    changed.write_text(lock.replace(OPENGREP_IDENTITY, identity.replace("\n", "\\n"), 1), encoding="utf-8")
+    with pytest.raises(ToolIntegrityError, match="signer_identity must be a workflow file"):
+        load_lock(changed)
+
+
+@pytest.mark.parametrize(
+    "ref",
+    ["refs/tags/v1.0.0", "refs/tags/1.0.0", "refs/heads/release-v1.0.0", "refs/heads/release/v1.0.0",
+     "refs/heads/release_2.x-v1.0.0"],
+)  # fmt: skip
+def test_a_release_workflow_at_a_ref_named_after_the_version_loads(
+    write_lock: Callable[[str], Path], ref: str
+) -> None:
+    content = _signed_lock(GOOD_SHA).replace("release.yml@refs/tags/v1.0.0", f"release.yaml@{ref}")
+    tool = load_lock(write_lock(content)).tools["rawtool"]
+    assert tool.signer_identity == f"https://github.com/example/rawtool/.github/workflows/release.yaml@{ref}"
