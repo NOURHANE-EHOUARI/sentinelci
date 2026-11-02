@@ -78,10 +78,18 @@ from sentinelci.report.pr_comment import (
 from sentinelci.risk import RiskModel, RiskModelError, score_finding
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
-from sentinelci.scanners.installer import VerificationReport, install_tools, verify_tools
-from sentinelci.scanners.lock import LOCK_FILE_NAME, load_lock
+from sentinelci.scanners.installer import VerificationReport, detect_platform, install_tools, verify_tools
+from sentinelci.scanners.lock import LOCK_FILE_NAME, ToolLock, load_lock
+from sentinelci.scanners.runner import DEFAULT_TIMEOUT_S as SCAN_TIMEOUT_DEFAULT_S
+from sentinelci.scanners.status import (
+    outcome_from_error,
+    outcome_from_run,
+    tool_status_document,
+    write_tool_status,
+)
 from sentinelci.supplychain.attestations import KINDS, AttestationError, parse_image, release_predicates
 from sentinelci.supplychain.cosign import Signer, Verifier, check_public_key
+from sentinelci.supplychain.sbom import SOURCE_KINDS, SourceKind, generate_sbom
 from sentinelci.supplychain.verify import ATTESTATIONS_DIR, verify_evidence
 
 EXIT_UNTRUSTED_INPUT = 3
@@ -114,6 +122,16 @@ app.add_typer(remediate_app, name="remediate")
 
 LockOption = Annotated[Path, typer.Option("--lock", help="Path to the tool lock file.")]
 DestOption = Annotated[Path, typer.Option("--dest", help="Installation directory (bin/ and cache/).")]
+ScanTimeoutOption = Annotated[
+    int,
+    typer.Option(
+        "--timeout",
+        min=30,
+        max=3600,
+        help="Time limit of one scanner run, in seconds (Gitleaks git mode runs twice). A scanner that "
+        "outlives it is recorded as `timeout` (SC-010).",
+    ),
+]
 PlatformOption = Annotated[
     str | None, typer.Option("--platform", help="Override platform detection, e.g. linux-amd64.")
 ]
@@ -239,14 +257,28 @@ def _write_output(out: Path, text: str, command: str) -> None:
         raise typer.Exit(EXIT_NO_DECISION) from exc
 
 
-def _refuse_output(out: Path, sources: list[Path | None], command: str) -> None:
-    """Fail closed before anything is deleted: --out must not be any input file, nor a directory."""
+def _refuse_output(
+    out: Path,
+    sources: list[Path | None],
+    command: str,
+    option: str = "--out",
+    dirs: dict[str, Path | None] | None = None,
+) -> None:
+    """Fail closed before anything is deleted: the output must not be any input file, nor a directory,
+    nor anywhere inside an input directory (`dirs`, by option name: the policy bundle, the evidence store).
+    """
     if out.is_dir():
-        typer.echo(f"{command}: --out {out} is a directory; nothing was written", err=True)
+        typer.echo(f"{command}: {option} {out} is a directory; nothing was written", err=True)
         raise typer.Exit(EXIT_NO_DECISION)
     for source in sources:
         if source is not None and out.exists() and source.exists() and out.resolve() == source.resolve():
-            typer.echo(f"{command}: --out {out} is the input file {source}; nothing was written", err=True)
+            typer.echo(f"{command}: {option} {out} is the input file {source}; nothing was written", err=True)
+            raise typer.Exit(EXIT_NO_DECISION)
+    for dir_option, directory in (dirs or {}).items():
+        if directory is not None and out.resolve().is_relative_to(directory.resolve()):
+            typer.echo(
+                f"{command}: {option} {out} is inside {dir_option} {directory}; nothing was written", err=True
+            )
             raise typer.Exit(EXIT_NO_DECISION)
 
 
@@ -320,10 +352,7 @@ def score_command(
 
     Exit code 0 on success, 3 when the findings or the risk model cannot be read (nothing is written).
     """
-    # Fail closed before anything is deleted: --out must not be the findings file, nor a directory.
-    if out.is_dir() or (out.exists() and findings.exists() and out.resolve() == findings.resolve()):
-        typer.echo(f"sentinel score: --out {out} is the input or a directory; nothing was written", err=True)
-        raise typer.Exit(EXIT_NO_DECISION)
+    _refuse_output(out, [findings], "sentinel score", dirs={"--policy-dir": policy_dir})
     # A stale file from an earlier run must never be read as this run's scores.
     _clear_output(out, "sentinel score")
     try:
@@ -376,6 +405,13 @@ def evaluate_command(
         ),
     ] = None,
     enrichment_snapshot: Annotated[Path | None, typer.Option(help="Enrichment snapshot file.")] = None,
+    service_context: Annotated[
+        Path | None,
+        typer.Option(
+            help="The sentinel.yaml given to `sentinel enrich --config`, from the base branch: recorded by "
+            "digest (Decision 1.3)."
+        ),
+    ] = None,
     sbom: Annotated[Path | None, typer.Option(help="SBOM file to record by digest.")] = None,
     opa: Annotated[
         Path | None, typer.Option(help="OPA binary. Default: $SENTINEL_OPA, then opa on PATH.")
@@ -390,10 +426,13 @@ def evaluate_command(
     Exit code 0 for PASS or WARN, 1 for BLOCK, 3 when no decision could be made (fail closed). With
     --store, a decision whose evidence cannot be stored is not written either (exit 3).
     """
-    # A stale decision from an earlier run must never be mistaken for this run's result.
-    output.unlink(missing_ok=True)
     if waivers is None and Path(DEFAULT_WAIVERS_PATH).is_file():
         waivers = Path(DEFAULT_WAIVERS_PATH)
+    inputs = [findings, waivers, baseline, tool_status, enrichment_snapshot, service_context, sbom, opa]
+    dirs = {"--policy-dir": policy_dir, "--store": store}
+    _refuse_output(output, inputs, "sentinel evaluate", "--output", dirs)
+    # A stale decision from an earlier run must never be mistaken for this run's result.
+    output.unlink(missing_ok=True)
     try:
         # Each input is read once: the same bytes are evaluated, digested and stored.
         data = _Inputs(
@@ -403,6 +442,7 @@ def evaluate_command(
             tool_status=tool_status.read_bytes() if tool_status else None,
             enrichment_snapshot=enrichment_snapshot.read_bytes() if enrichment_snapshot else None,
             sbom=sbom.read_bytes() if sbom else None,
+            service_context=service_context.read_bytes() if service_context else None,
         )
         bundle = PolicyBundle.load(policy_dir)
         decision = evaluate(
@@ -417,6 +457,7 @@ def evaluate_command(
             tool_status_data=data.tool_status,
             enrichment_snapshot=data.enrichment_snapshot,
             sbom=data.sbom,
+            service_context=data.service_context,
         )
         if store is not None:
             _store_evidence(EvidenceStore(store), decision, bundle, data)
@@ -448,6 +489,7 @@ class _Inputs:
     tool_status: bytes | None
     enrichment_snapshot: bytes | None
     sbom: bytes | None
+    service_context: bytes | None
 
 
 def _store_evidence(
@@ -464,6 +506,7 @@ def _store_evidence(
             EMPTY_ENRICHMENT_SNAPSHOT if data.enrichment_snapshot is None else data.enrichment_snapshot
         ),
         "sbom_digest": data.sbom,
+        "service_context_digest": data.service_context,
     }
     for key, blob in stored.items():
         if blob is not None and store.put(blob) != inputs[key]:
@@ -755,13 +798,24 @@ def scan_secrets_cmd(
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
     ] = (DEFAULT_TOOLS_DIR),
     platform: PlatformOption = None,
+    timeout: ScanTimeoutOption = SCAN_TIMEOUT_DEFAULT_S,
+    tool_status_out: Annotated[
+        Path | None,
+        typer.Option(
+            help="Also write a tool status (schemas/tool-status.v1.json), on success and on failure, so the "
+            "gate can record a failed scan as SC-010."
+        ),
+    ] = None,
 ) -> None:
     """Scan for secrets with the verified Gitleaks binary; raw secrets never leave memory."""
     out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
+    if tool_status_out is not None:
+        tool_status_out.unlink(missing_ok=True)  # nor an older status vouching for it
     if mode not in ("dir", "git"):
         raise typer.BadParameter("mode must be 'dir' or 'git'")
     scan_mode: GitleaksMode = "git" if mode == "git" else "dir"
     root = repo_root or target
+    tool_lock: ToolLock | None = None
     try:
         tool_lock = load_lock(lock)
         raw, tool_run = scan_secrets_with_run(
@@ -772,6 +826,7 @@ def scan_secrets_cmd(
             platform=platform,
             mode=scan_mode,
             log_opts=log_opts,
+            timeout_s=timeout,
         )
         findings = normalize_gitleaks(
             raw,
@@ -780,10 +835,31 @@ def scan_secrets_cmd(
             repo_root=root,
         )
     except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
+        if tool_status_out is not None and tool_lock is not None:  # no lock: no status, the gate blocks
+            outcome = outcome_from_error("gitleaks", exc, lock=tool_lock)
+            _write_status(tool_status_out, lock, platform or _host_platform(), {"gitleaks": outcome})
         raise _fail_closed(exc) from exc
     out.parent.mkdir(parents=True, exist_ok=True)
     write_ndjson(findings, out)
+    if tool_status_out is not None:  # last: an `ok` status never vouches for a findings file not yet written
+        host = platform or _host_platform()
+        outcome = outcome_from_run(tool_run, lock=tool_lock, platform=host)
+        _write_status(tool_status_out, lock, host, {"gitleaks": outcome})
     typer.echo(f"gitleaks {tool_run.version}: {len(findings)} finding(s) written to {out}")
+
+
+def _host_platform() -> str | None:
+    try:
+        return detect_platform()
+    except ToolIntegrityError:
+        return None
+
+
+def _write_status(
+    destination: Path, lock: Path, platform: str | None, outcomes: dict[str, dict[str, Any]]
+) -> None:
+    write_tool_status(tool_status_document(lock.read_bytes(), platform, outcomes), destination)
+    typer.echo(f"tool status written to {destination}", err=True)
 
 
 # ---------------------------------------------------------------- report
@@ -910,6 +986,74 @@ def verify_command(
     typer.echo(report.render(), nl=False)
     if not report.trusted:
         raise typer.Exit(EXIT_UNTRUSTED)
+
+
+@app.command("sbom")
+def sbom_command(
+    target: Annotated[Path, typer.Argument(help="Source tree, or the image the build wrote to a file.")],
+    name: Annotated[str, typer.Option(help="Name of the SBOM's subject, e.g. demo-shop/shop-api.")],
+    cyclonedx: Annotated[Path, typer.Option(help="Destination of the CycloneDX JSON SBOM.")],
+    spdx: Annotated[Path, typer.Option(help="Destination of the SPDX JSON SBOM.")],
+    source: Annotated[
+        str, typer.Option(help=f"What the target is: {', '.join(SOURCE_KINDS)} (never a registry pull).")
+    ] = "dir",
+    image_digest: Annotated[
+        str | None,
+        typer.Option(
+            help="For an image source (required there): the manifest digest the build produced, "
+            "sha256:<hex>. Both SBOMs must name it."
+        ),
+    ] = None,
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    tools_dir: Annotated[
+        Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
+    ] = DEFAULT_TOOLS_DIR,
+    platform: PlatformOption = None,
+) -> None:
+    """Write the CycloneDX and SPDX SBOMs of a source tree or a built image with the pinned Syft (offline).
+
+    Exit code 3, with neither file written, when Syft fails, does not match tools.lock.toml, or writes
+    something other than a CycloneDX document with a serialNumber and an SPDX document.
+    """
+    if source not in SOURCE_KINDS:
+        raise typer.BadParameter(f"--source must be one of {', '.join(SOURCE_KINDS)}")
+    for out in (cyclonedx, spdx):  # checked before anything is deleted
+        if out.resolve().is_relative_to(target.resolve()) or out.is_dir():
+            typer.echo(
+                f"sentinel sbom: {out} is inside the target {target} or a directory; nothing was written",
+                err=True,
+            )
+            raise typer.Exit(EXIT_NO_DECISION)
+    if cyclonedx.resolve() == spdx.resolve():
+        typer.echo("sentinel sbom: --cyclonedx and --spdx are the same file; nothing was written", err=True)
+        raise typer.Exit(EXIT_NO_DECISION)
+    for out in (cyclonedx, spdx):
+        try:
+            out.unlink(missing_ok=True)  # a failed run must never leave an older SBOM behind
+        except OSError as exc:
+            typer.echo(f"sentinel sbom: cannot use {out}: {exc}; nothing was written", err=True)
+            raise typer.Exit(EXIT_NO_DECISION) from exc
+    kind: SourceKind = source  # narrowed by the membership check above
+    try:
+        sbom = generate_sbom(
+            target,
+            kind=kind,
+            name=name,
+            lock=load_lock(lock),
+            tools_dir=tools_dir,
+            image_digest=image_digest,
+            platform=platform,
+        )
+        for out, data in ((cyclonedx, sbom.cyclonedx), (spdx, sbom.spdx)):
+            out.parent.mkdir(parents=True, exist_ok=True)
+            _write_atomically(out, data.decode("utf-8"))
+    except (ToolIntegrityError, ScannerError, OSError, UnicodeDecodeError) as exc:
+        for out in (cyclonedx, spdx):
+            out.unlink(missing_ok=True)
+        raise _fail_closed(exc) from exc
+    typer.echo(
+        f"syft {sbom.run.version}: {sbom.packages} package(s), {sbom.serial_number} -> {cyclonedx}, {spdx}"
+    )
 
 
 # ---------------------------------------------------------------- remediate
