@@ -10,9 +10,15 @@
 
 | Version | Change |
 |---|---|
+| 1.1.29 | Platform API 1.2.0 (B1, §13.3): the platform keeps each run's findings upload byte for byte and serves it at `GET /api/v1/runs/{id}/findings`, so a consumer that must match `findings_sha256` (the correlator's run document, #47; a replay) reads the exact bytes; the JSONB rows keep neither key order nor bytes. The database keeps only bytes that hash to the recorded digest, and the recorded-run trigger makes them immutable. Runs recorded before have none, and the API says so. |
+| 1.1.28 | Platform API 1.1.0 (B1, §13.3): one run per CI run. `POST /api/v1/runs` with the `repo`, `commit`, `context` and `run_id` of a run already recorded (a re-run of `sentinel upload`, #50) is answered 409 with the existing run, which the client resumes instead of recording the findings a second time; a unique index decides between concurrent requests. A run without `run_id` is always new. Migration 0003 stops, changing nothing, on a database that already holds a CI run twice. |
+| 1.1.27 | Diff-aware PR mode (§5, B4): a known vulnerable package (SCA) in a manifest where the base branch did not have it counts as introduced, like a known secret in a new file. SCA fingerprints hold no path, so a second service that starts to use a vulnerable package kept the old id and passed as "not new", although that service has its own exposure and reachability. A moved manifest now counts as new too, which errs toward blocking. Agreed on #52. |
 | 1.1.24 | B1 acceptance changed after the plan, while GitHub Actions are blocked: "an upload (`sentinel upload`, 1.1.23) or a sync ingests a real run" replaces "a sync ingests a real run". M1 can then be met by uploading a local run; the GitHub sync (§4.1, the platform pulls each CI run's evidence) stays in B1 and lands once CI runs exist. Hand-off B1 → A3, A8: OpenAPI and the ingestion endpoints at the end of S1, the sync later. |
 | 1.1.22 | Checkov dropped (ADR-0012): stage 4 is Trivy (config) and zizmor, A1 has no Checkov adapter, and §11 says so. The demo-shop ground truth keeps only detections by pinned tools; GT-IAC-004, which Trivy 0.76.1 misses, stays a seed with `known_miss` and counts as a miss for IaC recall. |
+| 1.1.13 | A4 SBOMs (§7): `sentinel sbom` writes CycloneDX and SPDX JSON with the pinned Syft, offline and never configured by the scanned repository (private working directory and home, SentinelCI's `supplychain/configs/syft.yaml` passed explicitly, no network lookup, no file catalog); images come from the OCI layout the build wrote, and both SBOMs must name the image's manifest digest; an output inside the target is refused before anything is deleted. |
 | 1.1.12 | A4 release attestations (§7, ADR-0010): `sentinel attest` signs the release decision, CycloneDX SBOM, vulnerability scan (`schemas/vuln-result.v1.json`) and SLSA v1 provenance of an image digest with the pinned Cosign and a key pair (no transparency log), only for a non-BLOCK release decision about that image that recorded these findings and this SBOM; `sentinel verify` checks the four Sigstore bundles offline and prints a trust report (exit 0 trusted, 1 not, 3 could not run). |
+| 1.1.9 | Decision 1.3: `inputs.service_context_digest`, the `sentinel.yaml` enrichment used (from the base branch), recorded by `sentinel evaluate --service-context`, stored with `--store` and given back on replay; an invalid `sentinel.yaml` is never recorded (exit 3). |
+| 1.1.7 | A3b evidence (§5, §6.5): every scan writes a tool status (`sentinel scan secrets --tool-status-out`), so a failed, timed-out or tampered scanner becomes a recorded BLOCK (SC-010) instead of a bare red job. PR mode scans the base commit's tree as the baseline. The gate stores its evidence (`--store`), uploaded as the `sentinel-evidence` artifact; the PR comment names it in its replay line and shows "N new" only for the baseline the gate used. The nightly replay also replays the last release decisions of `demo-shop.yml` on main. The gate scores findings with the base risk model before deciding, and every scanner run has a time limit the scan job outlives. |
 | 1.1.6 | A9 first seeds (§17): 5 fake secrets, 6 IaC, 3 CI-workflow seeds and 4 clean controls in `demo-shop/`, with a draft ground-truth format (`demo-shop/ground-truth/`, final schema owned by B9) checked against the pinned Gitleaks, Trivy and zizmor. SentinelCI's Trivy configuration trusts only the kind registry for KSV0125. |
 | 1.1.5 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
 | 1.1.4 | Enrichment (B2, §6.1): `schemas/enrichment-snapshot.v1.json` (`schema_version` "1.0", `sources.kev.cves`: the CVEs the KEV lookup covered) and `schemas/sentinel-config.v1.json` (`sentinel.yaml`, canonical component paths); `sentinel enrich`. "Not listed in KEV" only for covered CVEs; `sentinel.yaml` read with a restricted YAML loader. |
@@ -189,11 +195,24 @@ exceptions go through waivers (§6.4).
 the pipeline (CLI, `tools.lock.toml`, policies, waivers) at the **base** commit and the change only as data to
 scan; tools live in `$RUNNER_TEMP` (ADR-0008).
 
-**PR mode (diff-aware):** only findings new to the PR (fingerprints not in the base-branch baseline) can block. A known
-secret also counts as new in a file where the base did not have it (every place counts: `location` plus
-`other_locations`, Finding 1.1).
+**PR mode (diff-aware):** only findings new to the PR (fingerprints not in the base-branch baseline) can block. A
+known secret also counts as new in a file where the base did not have it, and so does a known vulnerable package in
+a manifest where the base did not have it: both fingerprints hold no path (§13.1), and a new place has its own
+exposure. Every place counts: `location` plus `other_locations`, Finding 1.1. The baseline is the base commit's
+tree, exported with `git archive` outside the pipeline checkout and scanned in dir mode by the same pinned scanners.
+If it cannot be produced, every finding counts (the strict side). The PR comment shows "N new" only when the gate
+used that baseline (checked against `inputs.baseline_digest`), with the gate's own definition of new.
+**Scanner failures** (any mode): each scanner writes a tool status (`schemas/tool-status.v1.json`) on success and on
+failure, and the scan job keeps going, so a failed, timed-out or tampered scanner becomes a recorded BLOCK (SC-010)
+with its reason. A missing tool status is SC-010 too. Each scanner run has a time limit (`--timeout`, 300 s in
+`sentinel-scan.yml`), and the scan job's own limit outlives the sum of its runs, so a slow scanner ends as a
+recorded `timeout`, not as a killed job.
+**Scoring:** the gate job scores the findings with the base commit's risk model (`sentinel score`, §6.2) before
+`sentinel evaluate`; the decision records, and the PR comment shows, the scored findings. A scoring failure means no
+decision (exit 3).
 **Release mode:** full evaluation, then signing. In this single repo, `demo-shop/` is scanned by its own workflow
-calling `./.github/workflows/sentinel-scan.yml`; the self-scan of SentinelCI excludes `demo-shop/`.
+calling `$/.github/workflows/sentinel-scan.yml` (GitHub's self-repository syntax: the workflow at the running
+commit); the self-scan of SentinelCI excludes `demo-shop/`.
 
 Example deterministic PR comment:
 
@@ -352,7 +371,8 @@ draft a waiver PR; only a human approval makes it effective.
 Schema: `schemas/decision.v1.json`. Fields: `decision_id`, `evaluated_at`, `subject` (repo, ref, commit, image
 digest, context), `verdict`, `violations` (rule, effect, finding ids, message), `waivers_applied`, `inputs`
 (digests of findings, SBOM, enrichment snapshot, policy bundle, waivers file (since 1.1), base-branch findings
-baseline and tool status (since 1.2, when given); risk model version;
+baseline and tool status (since 1.2, when given), service context `sentinel.yaml` (since 1.3, when given); risk
+model version;
 tool versions),
 `engine_version`. The schema enforces verdict consistency (BLOCK ⇒ at least one BLOCK violation; PASS ⇒ none).
 Attached to the image as an in-toto attestation, predicate type
@@ -365,22 +385,31 @@ manifest (`<sha256>  <path>` per file, sorted; its digest is `policy_bundle_dige
 decisions. Written by `sentinel evaluate --store`; every read is checked against its digest. `sentinel replay
 <id | file>` takes all inputs from the store, policy included, and compares the whole record (exit 0 identical,
 1 differs, 3 missing or tampered evidence). Recorded scanner versions are passed back as evidence; the OPA and
-engine versions are the running ones, so an upgrade shows up as a difference. Proposed: the evidence bundle
-(A4) and the platform evidence store (SeaweedFS, ADR-0007) carry the same `sha256/<hex>` layout, so replay works
-on either.
+engine versions are the running ones, so an upgrade shows up as a difference. Every `sentinel-scan.yml` run
+uploads its store as the `sentinel-evidence` artifact, and the PR comment's replay line names it. Proposed: the
+evidence bundle (A4) and the platform evidence store (SeaweedFS, ADR-0007) carry the same `sha256/<hex>` layout,
+so replay works on either.
 
 **Nightly replay** (`.github/workflows/replay-nightly.yml`): replays the last successful night's corpus with
-today's engine (`sentinel replay --all`), then records a fresh corpus (`eval/replay/corpus.py`: fixed gate cases
-covering PASS, SC-001, SC-005 and SC-010), replays it in a fresh process and uploads it. `--all` skips decisions
-recorded with another engine or OPA version (after checking that the record's `decision_id` matches its own
-subject, time, inputs and engine version, so an edited version cannot turn a difference into a skip) and fails
-on any difference, on missing evidence, on an empty
-store and when nothing was compared (every decision skipped; the previous-night step accepts that with
-`--allow-all-skipped`, so an engine bump night says so in its summary). Consequence: a change to what the engine decides for the same inputs must come with an engine version bump.
+today's engine (`sentinel replay --all`), replays the `sentinel-evidence` artifacts of the last five
+`demo-shop.yml` runs triggered by a push to main (not pull-request runs: a pull request can edit the workflow that
+uploads its evidence), then records a fresh corpus (`eval/replay/corpus.py`: fixed gate cases covering PASS,
+SC-001, SC-005 and SC-010), replays it in a fresh process and uploads it. `--all` skips decisions recorded with
+another engine or OPA version (after checking that the record's `decision_id` matches its own subject, time,
+inputs and engine version, so an edited version cannot turn a difference into a skip) and fails on any
+difference, on missing evidence, on an empty store and when nothing was compared (every decision skipped; the
+previous-night and release steps accept that with `--allow-all-skipped`, so an engine bump night says so in its
+summary). Consequence: a change to what the engine decides for the same inputs must come with an engine version
+bump.
 
 ## 7. Supply-chain integrity and deploy-time enforcement
 
-- **SBOM:** Syft → CycloneDX JSON (primary) + SPDX JSON, for source and image.
+- **SBOM:** Syft → CycloneDX JSON (primary) + SPDX JSON, for source and image (`sentinel sbom`: the pinned Syft,
+  verified before it runs, in a private working directory and home with SentinelCI's own configuration passed
+  explicitly, so the scanned repository's `.syft.yaml` is never loaded; offline, no remote lookup or tooling;
+  no file catalog; images read from the OCI layout the build wrote (a directory or a tar of one), never pulled,
+  and both SBOMs must name the image's manifest digest (`--image-digest`); `--base-path` stops links above the
+  tree; a CycloneDX document without `serialNumber` or an SPDX document that is not one fails closed).
 - **Signing:** Cosign v3 (Sigstore bundle format). Private mode: key pair, no transparency-log upload. GitHub mode:
   keyless, identity = release workflow path + ref. Always sign digests, never tags.
 - **Attestations:** SLSA provenance, CycloneDX SBOM, vulnerability scan, release decision (ADR-0010: one
@@ -529,7 +558,7 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
 
 ### 13.3 Platform API v1 (first cut)
 
-`POST /api/v1/runs` · `POST /api/v1/runs/{id}/findings` (NDJSON) · `POST /api/v1/runs/{id}/artifacts` ·
+`POST /api/v1/runs` (409 with the existing run for a CI run already recorded) · `POST /api/v1/runs/{id}/findings` (NDJSON) · `GET /api/v1/runs/{id}/findings` (the exact upload) · `POST /api/v1/runs/{id}/artifacts` ·
 `POST /api/v1/sync/github` · `GET /api/v1/findings[/{id}]` · `POST /api/v1/findings/{id}/explain` ·
 `GET /api/v1/groups` (A) · `POST|GET /api/v1/remediations` (A) · `GET /api/v1/releases[/{digest}/evidence]` (A) ·
 `GET /metrics` · `GET /healthz`.

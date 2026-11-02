@@ -48,7 +48,11 @@ curl -s 'http://127.0.0.1:8000/api/v1/findings?severity=CRITICAL'
 Every finding must be a valid Finding v1 document of that run (same `repo`, `commit` and `context`). A run's
 findings are recorded once: a second upload is refused (409), so recorded evidence is never replaced; after a lost
 response, compare `findings_sha256` from `GET /api/v1/runs/<run id>` with your file's sha256. The database itself
-refuses any change to a recorded run or its findings, and refuses to delete it. Bodies are capped before
+refuses any change to a recorded run or its findings, and refuses to delete it. A CI run is recorded once: a
+second `POST /api/v1/runs` with the same `repo`, `commit`, `context` and `run_id` (a re-run of the upload step)
+is answered 409 with the existing run in `run`, so the client uploads its findings only if `findings_sha256` is
+null. A run without `run_id` (a local run) is always new. `GET /api/v1/runs/<run id>/findings` gives the upload back
+byte for byte (its sha256 is `findings_sha256`), for the correlator or a replay. Bodies are capped before
 authentication: 64 KiB for JSON, `SENTINEL_API_MAX_UPLOAD_BYTES` (32 MiB by default) for a findings upload. To
 rotate the token, delete both `SENTINEL_API_TOKEN` lines from `.env` and run `make compose-env`.
 
