@@ -11,9 +11,10 @@ from typing import Annotated, Any
 import psycopg.errors
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, update
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
 
@@ -44,7 +45,7 @@ def _errors(*codes: int) -> dict[int | str, dict[str, Any]]:
     """The documented error responses of a route (schemas/openapi.yaml must list every status it returns)."""
     reasons = {
         401: "No valid ingestion token (`Authorization: Bearer <token>`).",
-        404: "No such run or finding.",
+        404: "No such run or finding, or no findings recorded for the run (yet).",
         409: "This run's findings are already recorded; compare `findings_sha256` from `GET /runs/{run_id}`.",
         413: "The request body is larger than the limit (64 KiB, or the upload limit for findings).",
         415: f"The findings upload is not `{NDJSON_TYPE}`.",
@@ -74,6 +75,14 @@ class RunOut(BaseModel):
     finding_count: int
     findings_sha256: str | None
     findings_uploaded_at: datetime | None
+
+
+class RunExists(BaseModel):
+    """409 on `POST /runs`: this CI run is already recorded. `run` is the existing run, so a re-run can resume
+    it (upload its findings if `findings_sha256` is null) instead of recording the findings a second time."""
+
+    detail: str
+    run: RunOut
 
 
 class UploadResult(BaseModel):
@@ -127,18 +136,60 @@ def _run_out(run: Run) -> RunOut:
     )  # fmt: skip
 
 
+_RUN_EXISTS: dict[int | str, dict[str, Any]] = {
+    409: {
+        "model": RunExists,
+        "description": "This CI run (`repo`, `commit`, `context`, `run_id`) is recorded already: see `run`.",
+    }
+}
+
+
+def _existing_run(session: Session, body: RunCreate) -> Run | None:
+    """The run already recorded for this CI run. A run without `run_id` names no CI run: it matches none."""
+    if body.run_id is None:
+        return None
+    return session.scalars(
+        select(Run).where(
+            Run.repo == body.repo, Run.commit == body.commit, Run.context == body.context,
+            Run.ci_run_id == body.run_id,
+        )
+    ).one_or_none()  # fmt: skip
+
+
+def _run_exists(run: Run) -> JSONResponse:
+    content = RunExists(detail=f"CI run already recorded as run {run.id}", run=_run_out(run))
+    return JSONResponse(content.model_dump(mode="json"), status_code=status.HTTP_409_CONFLICT)
+
+
 @router.post(
     "/runs",
     status_code=status.HTTP_201_CREATED,
+    response_model=RunOut,
     dependencies=[Depends(require_writer)],
     tags=["runs"],
-    responses=_errors(401, 413, 503),
+    responses={**_errors(401, 413, 503), **_RUN_EXISTS},
 )
-def create_run(body: RunCreate, session: SessionDep) -> RunOut:
-    """Record a pipeline run. Its findings are uploaded next, once."""
+def create_run(body: RunCreate, session: SessionDep) -> RunOut | JSONResponse:
+    """Record a pipeline run. Its findings are uploaded next, once.
+
+    A CI run is recorded once: the same `repo`, `commit`, `context` and `run_id` again (a re-run of the upload
+    step) is answered 409 with the existing run, which the client resumes instead of recording the findings a
+    second time. A run without `run_id` (a local run) is always a new run.
+    """
+    existing = _existing_run(session, body)
+    if existing is not None:
+        return _run_exists(existing)
     run = Run(repo=body.repo, commit=body.commit, context=body.context, ref=body.ref, ci_run_id=body.run_id)
     session.add(run)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError as exc:  # recorded meanwhile by a concurrent request: the unique index decided
+        session.rollback()
+        diag = getattr(exc.orig, "diag", None)
+        existing = _existing_run(session, body)
+        if getattr(diag, "constraint_name", None) != "runs_ci_run" or existing is None:
+            raise
+        return _run_exists(existing)
     session.refresh(run)
     return _run_out(run)
 
@@ -227,7 +278,10 @@ def _store(session: Session, run_id: uuid.UUID, body: bytes) -> UploadResult:
             update(Run)
             .where(Run.id == run_id, Run.findings_sha256.is_(None))
             .values(
-                findings_sha256=digest, findings_uploaded_at=datetime.now(UTC), finding_count=len(findings)
+                findings_sha256=digest,
+                findings_uploaded_at=datetime.now(UTC),
+                finding_count=len(findings),
+                findings_ndjson=body,
             )
             .execution_options(synchronize_session=False)
         )
@@ -262,6 +316,35 @@ async def upload_findings(run_id: uuid.UUID, request: Request, session: SessionD
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, f"findings are uploaded as {NDJSON_TYPE}")
     body = await _read_body(request, request.app.state.settings.max_upload_bytes)
     return await run_in_threadpool(_store, session, run_id, body)
+
+
+@router.get(
+    "/runs/{run_id}/findings",
+    tags=["runs"],
+    response_class=Response,
+    responses={
+        200: {
+            "description": "The upload byte for byte: its sha256 is the run's `findings_sha256`, the ETag.",
+            "content": {NDJSON_TYPE: {"schema": {"type": "string"}}},
+        },
+        **_errors(404, 413, 503),
+    },
+)
+def get_run_findings(run_id: uuid.UUID, session: SessionDep) -> Response:
+    """The run's findings exactly as uploaded: what to hash, correlate or replay against `findings_sha256`."""
+    run = session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such run")
+    if run.findings_sha256 is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no findings recorded for this run yet")
+    data = run.findings_ndjson
+    if data is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "the uploaded bytes were not kept (the run predates API 1.2.0)"
+        )
+    if hashlib.sha256(data).hexdigest() != run.findings_sha256:  # the database refuses this (migration 0004)
+        raise RuntimeError(f"run {run.id}: the kept upload does not match its findings_sha256")
+    return Response(data, media_type=NDJSON_TYPE, headers={"ETag": f'"{run.findings_sha256}"'})
 
 
 @router.get("/findings", tags=["findings"], responses=_errors(413, 503))

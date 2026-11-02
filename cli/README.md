@@ -139,6 +139,9 @@ Runs the OPA policies in `policies/` and writes a Decision record (`schemas/deci
   `other_locations`). Release ignores the baseline.
 - `--tool-status <json>` (`schemas/tool-status.v1.json`): every tool that is not `ok` becomes an SC-010 BLOCK in
   the decision, so a failed scan still produces a record.
+- `--service-context <sentinel.yaml>`: the same base-branch file given to `sentinel enrich --config`. Its exposure
+  shaped the scores, so the decision records its digest (`inputs.service_context_digest`, Decision 1.3) and
+  `--store` keeps it for replay. An invalid file is never recorded (exit 3).
 - Required scanners (`policies/required_tools.rego`, part of the policy bundle, so read from the base branch):
   gitleaks in `pr` and `release`, none in `local`. A required tool left out of the tool status, or no tool
   status at all in a context that requires tools, is an SC-010 BLOCK (`Scanner missing` /
