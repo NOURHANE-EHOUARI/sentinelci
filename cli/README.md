@@ -286,10 +286,13 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
     checked out: the commit is built on a temporary index with plumbing commands (`read-tree`,
     `apply --cached`, `write-tree`, `commit-tree`, `update-ref`), so no smudge or clean filter, fsmonitor or
     hook the clone configures can run. What in the clone's `.git/config` could run code is overridden on the
-    command line (`core.hooksPath`, `core.fsmonitor`, `commit.gpgsign`); the user's and system configuration
-    are not read, nor are the caller's `GIT_*` variables.
+    command line (`core.hooksPath`, `core.fsmonitor`, `commit.gpgsign`), and so are line-ending and white-space
+    rewrites (`core.autocrlf`, `apply.whitespace`), so the commit is exactly base + diff; the user's and system
+    configuration are not read, nor are the caller's `GIT_*` variables.
   - **What it checks first:** the proposal id is recomputed from its strategy, attempt, findings and diff, so
-    the branch name and the trailers identify the content. Every finding it claims must be in `--findings`
+    the branch name and the trailers identify the content. The id covers those four only, not `created_at` or
+    the rationale (the commit date and message): a second proposal with the same id is refused anyway, because
+    its branch already exists. Every finding it claims must be in `--findings`
     (the base scan), and every file it changes must be where one of them was found. The diff changes exactly
     the files the proposal lists, each a regular file at the base. It creates, deletes, renames or makes
     executable no file, and does not retarget a symbolic link (git applies a new link target as an in-place

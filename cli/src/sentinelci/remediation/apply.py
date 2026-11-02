@@ -44,10 +44,11 @@ BOT_EMAIL = "bot@sentinelci.invalid"
 _BRANCH = re.compile(r"sentinel/fix/[a-z0-9][a-z0-9._-]{0,63}")
 _REGULAR_FILE_MODES = frozenset({"100644", "100755"})
 # What in the clone's own configuration could run code or prompt is turned off on the command line, which
-# wins over every configuration file (hooks, fsmonitor, signing); line endings are never converted.
+# wins over every configuration file (hooks, fsmonitor, signing); line endings are never converted, and
+# white space is applied as the diff has it (the clone's apply.whitespace=fix would change the commit).
 _GIT = (
     "git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "commit.gpgsign=false",
-    "-c", "core.autocrlf=false",
+    "-c", "core.autocrlf=false", "-c", "apply.whitespace=nowarn", "-c", "apply.ignoreWhitespace=no",
 )  # fmt: skip
 
 

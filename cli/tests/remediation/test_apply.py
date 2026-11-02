@@ -4,6 +4,7 @@ local clone, and nothing else happens. Real git, a throwaway repository per test
 import json
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -300,3 +301,55 @@ def test_configuration_of_the_clone_that_runs_code_never_runs(
     applied = apply_proposal(proposal, repo, findings=FINDINGS)
     assert not marker.exists(), "the clone's configuration ran code during apply"
     assert git(repo, "-c", "core.fsmonitor=false", "rev-parse", applied.branch) == applied.commit
+
+
+# Review of #48, round 2.
+
+
+@pytest.mark.parametrize(
+    "smuggled",
+    [
+        "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-demo\n+demo, patched\n",
+        "--- /dev/null\n+++ b/new.sh\n@@ -0,0 +1 @@\n+echo pwned\n",
+    ],
+    ids=["edits-an-unlisted-file", "creates-a-file"],
+)
+def test_a_patch_without_a_git_header_after_the_last_hunk_is_refused(
+    repo: Path, proposal: PatchProposal, smuggled: str
+) -> None:
+    """git apply reads a traditional ---/+++ pair after a hunk as one more file to change."""
+    hostile = _with_diff(proposal, proposal.diff + smuggled)
+    with pytest.raises(RemediationError, match=r"not a plain edit|the proposal lists|more than edit"):
+        apply_proposal(hostile, repo, findings=FINDINGS)
+    assert git(repo, "branch", "--list").strip() == "* main"
+
+
+def test_a_branch_created_meanwhile_is_never_overwritten(
+    repo: Path, proposal: PatchProposal, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sentinelci.remediation.apply as apply_module
+
+    real = apply_module._git
+
+    def racing(where: Path, *args: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if args[0] == "update-ref":  # someone else creates the branch after the existence check
+            git(where, "branch", default_branch(proposal), "HEAD")
+        return real(where, *args, **kwargs)
+
+    monkeypatch.setattr(apply_module, "_git", racing)
+    with pytest.raises(RemediationError, match="update-ref"):
+        apply_proposal(proposal, repo, findings=FINDINGS)
+    assert git(repo, "rev-parse", default_branch(proposal)) == git(repo, "rev-parse", "HEAD")
+
+
+def test_the_clones_whitespace_settings_never_change_what_is_committed(
+    repo: Path, proposal: PatchProposal
+) -> None:
+    """apply.whitespace=fix in the clone's own .git/config would strip trailing spaces from added lines, so
+    the commit would not be base + diff although its Sentinel-Diff trailer names that diff."""
+    git(repo, "config", "apply.whitespace", "fix")
+    old = (repo / SEED_PATH).read_text()
+    new = old.replace("\n", "  \n", 1)  # the first line gains two trailing spaces
+    spaced = _with_diff(proposal, unified_diff(SEED_PATH, old, new), files=[SEED_PATH])
+    applied = apply_proposal(spaced, repo, findings=FINDINGS)
+    assert git(repo, "show", f"{applied.commit}:{SEED_PATH}").split("\n")[0].endswith("  ")
