@@ -10,8 +10,9 @@ make down                                    # stop; data volumes are kept
 ```
 
 `make up` first runs `make compose-env`, which creates `deploy/compose/.env` with random credentials
-(owner-only permissions, git-ignored, never overwritten). Read your credentials there. Compose refuses to start
-if a credential is missing: there is no default password anywhere.
+(owner-only permissions, git-ignored). An existing value is never changed; variables added by a later task are
+appended to an older file. Read your credentials there. Compose refuses to start if a credential is missing:
+there is no default password anywhere.
 
 | Service | URL on the host | Profile | Purpose |
 |---|---|---|---|
@@ -27,6 +28,29 @@ Ports can be moved if one is taken, e.g. `POSTGRES_PORT=5433 make up` (also `RED
 `OLLAMA_PORT`, `PROMETHEUS_PORT`, `GRAFANA_PORT`).
 
 Not here yet: the Celery worker (B1) and the web dashboard (B7) are added by their tasks.
+
+## Platform API (B1)
+
+The API applies its database migrations when it starts. Its contract is `schemas/openapi.yaml`; the interactive
+docs are at http://127.0.0.1:8000/docs. Writes need the token `SENTINEL_API_TOKEN` from `.env`. The API itself
+only receives its SHA-256 (`SENTINEL_API_TOKEN_SHA256`), so the token never sits in a container. Reads are open on
+localhost.
+
+```bash
+set -a; . deploy/compose/.env; set +a
+curl -s -X POST http://127.0.0.1:8000/api/v1/runs -H "Authorization: Bearer $SENTINEL_API_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"repo": "owner/name", "commit": "<40 hex>", "context": "local"}'
+curl -s -X POST http://127.0.0.1:8000/api/v1/runs/<run id>/findings -H "Authorization: Bearer $SENTINEL_API_TOKEN" \
+  -H 'Content-Type: application/x-ndjson' --data-binary @out/findings.ndjson    # once per run, all or nothing
+curl -s 'http://127.0.0.1:8000/api/v1/findings?severity=CRITICAL'
+```
+
+Every finding must be a valid Finding v1 document of that run (same `repo`, `commit` and `context`). A run's
+findings are recorded once: a second upload is refused (409), so recorded evidence is never replaced; after a lost
+response, compare `findings_sha256` from `GET /api/v1/runs/<run id>` with your file's sha256. The database itself
+refuses any change to a recorded run or its findings, and refuses to delete it. Bodies are capped before
+authentication: 64 KiB for JSON, `SENTINEL_API_MAX_UPLOAD_BYTES` (32 MiB by default) for a findings upload. To
+rotate the token, delete both `SENTINEL_API_TOKEN` lines from `.env` and run `make compose-env`.
 
 ## Security rules (tested in `tests/deploy/test_compose.py`)
 
