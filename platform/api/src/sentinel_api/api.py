@@ -11,9 +11,10 @@ from typing import Annotated, Any
 import psycopg.errors
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, update
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
 
@@ -76,6 +77,14 @@ class RunOut(BaseModel):
     findings_uploaded_at: datetime | None
 
 
+class RunExists(BaseModel):
+    """409 on `POST /runs`: this CI run is already recorded. `run` is the existing run, so a re-run can resume
+    it (upload its findings if `findings_sha256` is null) instead of recording the findings a second time."""
+
+    detail: str
+    run: RunOut
+
+
 class UploadResult(BaseModel):
     run_id: uuid.UUID
     finding_count: int
@@ -127,18 +136,60 @@ def _run_out(run: Run) -> RunOut:
     )  # fmt: skip
 
 
+_RUN_EXISTS: dict[int | str, dict[str, Any]] = {
+    409: {
+        "model": RunExists,
+        "description": "This CI run (`repo`, `commit`, `context`, `run_id`) is recorded already: see `run`.",
+    }
+}
+
+
+def _existing_run(session: Session, body: RunCreate) -> Run | None:
+    """The run already recorded for this CI run. A run without `run_id` names no CI run: it matches none."""
+    if body.run_id is None:
+        return None
+    return session.scalars(
+        select(Run).where(
+            Run.repo == body.repo, Run.commit == body.commit, Run.context == body.context,
+            Run.ci_run_id == body.run_id,
+        )
+    ).one_or_none()  # fmt: skip
+
+
+def _run_exists(run: Run) -> JSONResponse:
+    content = RunExists(detail=f"CI run already recorded as run {run.id}", run=_run_out(run))
+    return JSONResponse(content.model_dump(mode="json"), status_code=status.HTTP_409_CONFLICT)
+
+
 @router.post(
     "/runs",
     status_code=status.HTTP_201_CREATED,
+    response_model=RunOut,
     dependencies=[Depends(require_writer)],
     tags=["runs"],
-    responses=_errors(401, 413, 503),
+    responses={**_errors(401, 413, 503), **_RUN_EXISTS},
 )
-def create_run(body: RunCreate, session: SessionDep) -> RunOut:
-    """Record a pipeline run. Its findings are uploaded next, once."""
+def create_run(body: RunCreate, session: SessionDep) -> RunOut | JSONResponse:
+    """Record a pipeline run. Its findings are uploaded next, once.
+
+    A CI run is recorded once: the same `repo`, `commit`, `context` and `run_id` again (a re-run of the upload
+    step) is answered 409 with the existing run, which the client resumes instead of recording the findings a
+    second time. A run without `run_id` (a local run) is always a new run.
+    """
+    existing = _existing_run(session, body)
+    if existing is not None:
+        return _run_exists(existing)
     run = Run(repo=body.repo, commit=body.commit, context=body.context, ref=body.ref, ci_run_id=body.run_id)
     session.add(run)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError as exc:  # recorded meanwhile by a concurrent request: the unique index decided
+        session.rollback()
+        diag = getattr(exc.orig, "diag", None)
+        existing = _existing_run(session, body)
+        if getattr(diag, "constraint_name", None) != "runs_ci_run" or existing is None:
+            raise
+        return _run_exists(existing)
     session.refresh(run)
     return _run_out(run)
 

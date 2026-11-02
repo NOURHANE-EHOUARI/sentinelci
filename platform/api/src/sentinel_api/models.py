@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -24,6 +24,16 @@ class Run(Base):
         CheckConstraint("commit ~ '^[a-f0-9]{40}$'", name="runs_commit"),
         CheckConstraint(
             "(findings_sha256 IS NULL) = (findings_uploaded_at IS NULL)", name="runs_findings_recorded_once"
+        ),
+        # One run per CI run: a re-run of the upload step gets the existing run (409), never a second one.
+        Index(
+            "runs_ci_run",
+            "repo",
+            "commit",
+            "context",
+            "ci_run_id",
+            unique=True,
+            postgresql_where=text("ci_run_id IS NOT NULL"),
         ),
     )
 

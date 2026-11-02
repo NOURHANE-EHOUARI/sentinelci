@@ -2,7 +2,7 @@
 openapi: 3.1.0
 info:
   title: SentinelCI API
-  version: 1.0.0
+  version: 1.1.0
 paths:
   /healthz:
     get:
@@ -25,7 +25,16 @@ paths:
       tags:
       - runs
       summary: Create Run
-      description: Record a pipeline run. Its findings are uploaded next, once.
+      description: 'Record a pipeline run. Its findings are uploaded next, once.
+
+
+        A CI run is recorded once: the same `repo`, `commit`, `context` and `run_id`
+        again (a re-run of the upload
+
+        step) is answered 409 with the existing run, which the client resumes instead
+        of recording the findings a
+
+        second time. A run without `run_id` (a local run) is always a new run.'
       operationId: create_run_api_v1_runs_post
       requestBody:
         content:
@@ -59,6 +68,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorOut'
+        '409':
+          description: 'This CI run (`repo`, `commit`, `context`, `run_id`) is recorded
+            already: see `run`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunExists'
         '422':
           description: Validation Error
           content:
@@ -508,6 +524,23 @@ components:
       - commit
       - context
       title: RunCreate
+    RunExists:
+      properties:
+        detail:
+          type: string
+          title: Detail
+        run:
+          $ref: '#/components/schemas/RunOut'
+      type: object
+      required:
+      - detail
+      - run
+      title: RunExists
+      description: '409 on `POST /runs`: this CI run is already recorded. `run` is
+        the existing run, so a re-run can resume
+
+        it (upload its findings if `findings_sha256` is null) instead of recording
+        the findings a second time.'
     RunOut:
       properties:
         id:

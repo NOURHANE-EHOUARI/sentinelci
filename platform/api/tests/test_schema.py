@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 
 import psycopg
+import pytest
 import yaml
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
@@ -52,3 +53,24 @@ def test_the_api_matches_its_committed_contract() -> None:
     """
     app = create_app(Settings(database_url=None, token_sha256=frozenset()))
     assert yaml.safe_load(OPENAPI.read_text(encoding="utf-8")) == app.openapi()
+
+
+def test_a_ci_run_recorded_twice_stops_the_unique_index_migration(postgres_server: str) -> None:
+    """A database from before 0003 may hold a CI run twice: the migration stops and changes nothing."""
+    name = f"t_{uuid.uuid4().hex}"
+    with psycopg.connect(f"{postgres_server}/sentinel", autocommit=True) as conn:
+        conn.execute(f'CREATE DATABASE "{name}"')
+    url = f"{postgres_server}/{name}"
+    upgrade(url, "0002")
+    insert = (
+        "INSERT INTO runs (id, repo, commit, context, ci_run_id) "
+        "VALUES (gen_random_uuid(), 'o/r', repeat('a', 40), 'pr', '7')"
+    )
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute(insert)
+        conn.execute(insert)
+    with pytest.raises(RuntimeError, match=r"1 CI run\(s\) are recorded more than once"):
+        upgrade(url)
+    with psycopg.connect(url) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == ("0002",)
+        assert conn.execute("SELECT count(*) FROM runs").fetchone() == (2,)
