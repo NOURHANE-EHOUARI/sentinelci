@@ -63,6 +63,7 @@ from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaError, OpaRunner
 from sentinelci.policy.replay import ReplayResult, check_identity, replay, skip_reason
 from sentinelci.policy.store import EvidenceStore, StoreError
+from sentinelci.policy.tool_status import load_tool_status
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
 from sentinelci.remediation.dockerfile import propose as propose_dockerfile
 from sentinelci.remediation.gate import check_proposal, verify_proposal
@@ -80,6 +81,9 @@ from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
 from sentinelci.scanners.installer import VerificationReport, install_tools, verify_tools
 from sentinelci.scanners.lock import LOCK_FILE_NAME, load_lock
+from sentinelci.supplychain.attestations import KINDS, AttestationError, parse_image, release_predicates
+from sentinelci.supplychain.cosign import Signer, Verifier, check_public_key
+from sentinelci.supplychain.verify import ATTESTATIONS_DIR, verify_evidence
 
 EXIT_UNTRUSTED_INPUT = 3
 DEFAULT_TOOLS_DIR = Path(".sentinel/tools")
@@ -817,6 +821,98 @@ def report_pr_comment(
     typer.echo(f"verdict {inputs.decision.verdict}: comment written to {out}")
 
 
+# ---------------------------------------------------------------- supply chain (A4, ADR-0010)
+
+EXIT_UNTRUSTED = 1
+
+
+@app.command("attest")
+def attest_command(
+    image: Annotated[str, typer.Argument(help="The release image, <name>@sha256:<digest>.")],
+    decision: Annotated[Path, typer.Option(help="The release decision (Decision v1) about this image.")],
+    findings: Annotated[Path, typer.Option(help="The findings NDJSON the decision was made on.")],
+    sbom: Annotated[Path, typer.Option(help="The CycloneDX JSON SBOM the decision recorded.")],
+    key: Annotated[str, typer.Option(help="Cosign private key: a file, or env://VAR.")],
+    out: Annotated[Path, typer.Option(help="Evidence directory: the bundles go to <out>/attestations/.")],
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    tools_dir: Annotated[
+        Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
+    ] = DEFAULT_TOOLS_DIR,
+    platform: PlatformOption = None,
+) -> None:
+    """Sign the four release attestations of an image: decision, SBOM, vulnerability scan, provenance.
+
+    Runs in the release workflow's attest job (the GitHub Actions variables give the provenance). Exit code 3,
+    with nothing signed, when the inputs don't belong together: a BLOCK or non-release decision, a decision
+    about another image, findings or an SBOM the decision did not record, or a run on another repository or
+    commit.
+    """
+    directory = out / ATTESTATIONS_DIR
+    bundles = [directory / f"{kind}.sigstore.json" for kind in KINDS]
+    signed = False
+    try:
+        target = parse_image(image)
+        predicates = release_predicates(
+            target,
+            decision_data=decision.read_bytes(),
+            findings_data=findings.read_bytes(),
+            sbom_data=sbom.read_bytes(),
+            env=os.environ,
+        )
+        signer = Signer(key, load_lock(lock), tools_dir, platform)
+        directory.mkdir(parents=True, exist_ok=True)
+        for (kind, predicate_type), bundle in zip(KINDS.items(), bundles, strict=True):
+            signer.attest(target, predicate_type, predicates[kind], bundle, os.environ)
+        signed = True
+    except (AttestationError, OSError, ToolIntegrityError, ScannerError) as exc:
+        typer.echo(f"sentinel attest: {exc}; nothing was signed", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    finally:
+        if not signed:  # all four or none, whatever stopped the run; an earlier run's bundles go too
+            for bundle in bundles:
+                bundle.unlink(missing_ok=True)
+    typer.echo(f"signed {len(bundles)} attestations of {target.name}@{target.digest} -> {directory}")
+
+
+@app.command("verify")
+def verify_command(
+    image: Annotated[str, typer.Argument(help="The image to check, <name>@sha256:<digest>.")],
+    key: Annotated[Path, typer.Option(help="Cosign public key that must have signed every attestation.")],
+    repo: Annotated[str, typer.Option(help="The repository the release must come from, owner/name.")],
+    builder_id: Annotated[
+        str,
+        typer.Option(
+            help="The workflow that must have built it, as SLSA builder id, e.g. "
+            "https://github.com/<owner>/<repo>/.github/workflows/<file>@refs/heads/main."
+        ),
+    ],
+    evidence: Annotated[
+        Path, typer.Option(help="Evidence directory written by `sentinel attest` (offline verification).")
+    ],
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    tools_dir: Annotated[
+        Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
+    ] = DEFAULT_TOOLS_DIR,
+    platform: PlatformOption = None,
+) -> None:
+    """Check that an image is backed by a signed, non-BLOCK release decision, and print a trust report.
+
+    Exit code 0 when every check passes, 1 when any fails (not trusted), 3 when the verification could not run
+    (for example a Cosign binary that does not match tools.lock.toml). Both non-zero codes refuse the image.
+    """
+    try:
+        target = parse_image(image)
+        check_public_key(key)  # a broken setup is "could not run" (3), not "this image is bad" (1)
+        verifier = Verifier(key, load_lock(lock), tools_dir, platform)
+        report = verify_evidence(target, evidence, verifier, repo=repo, builder_id=builder_id)
+    except (AttestationError, ToolIntegrityError, ScannerError) as exc:
+        typer.echo(f"sentinel verify: {exc}\nFAIL CLOSED: the image is not trusted.", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    typer.echo(report.render(), nl=False)
+    if not report.trusted:
+        raise typer.Exit(EXIT_UNTRUSTED)
+
+
 # ---------------------------------------------------------------- remediate
 
 
@@ -905,6 +1001,13 @@ def remediate_verify(
     before: Annotated[Path, typer.Option(help="Findings NDJSON of the commit the patch applies to.")],
     after: Annotated[Path, typer.Option(help="Findings NDJSON of the patched commit (same scanners).")],
     decision: Annotated[Path, typer.Option(help="Decision v1 record of the patched commit.")],
+    tool_status: Annotated[
+        Path,
+        typer.Option(
+            "--tool-status",
+            help="The tool status that decision recorded: every target's scanner must be in it, ok.",
+        ),
+    ],
     build: Annotated[bool, typer.Option("--build-ok/--build-failed", help="Did the patched commit build?")],
     tests: Annotated[bool, typer.Option("--tests-ok/--tests-failed", help="Did its tests pass?")],
     out: Annotated[
@@ -918,9 +1021,12 @@ def remediate_verify(
     Exit code 0 when VERIFIED, 1 when REJECTED or FAILED (the result is written either way), 3 when the inputs
     cannot be trusted (nothing is written): a proposal whose id does not match its content, that claims
     findings the base scan does not have or edits anything but where they are; a decision that was not made in
-    pr context, on the patched findings, with the tool status.
+    pr context, on the patched findings, with this tool status; a tool status that does not show the scanner
+    of every target ok (a scanner that never ran finds nothing, and nothing must not vouch for the patch).
     """
-    _refuse_input_as_output(out, [proposal, before, after, decision], "sentinel remediate verify")
+    _refuse_input_as_output(
+        out, [proposal, before, after, decision, tool_status], "sentinel remediate verify"
+    )
     out.unlink(missing_ok=True)
     try:
         applied = PatchProposal.model_validate_json(proposal.read_bytes())
@@ -933,8 +1039,18 @@ def remediate_verify(
                 "the decision must be a pr-context decision that saw the tool status (a scan that failed "
                 "must not vouch for the patch)"
             )
+        status_data = tool_status.read_bytes()
+        if record.inputs.tool_status_digest != "sha256:" + hashlib.sha256(status_data).hexdigest():
+            raise RemediationError("the tool status is not the one the decision recorded (--tool-status)")
+        statuses = load_tool_status(status_data)["tools"]
         base_findings = _read_findings(before, "base findings")
         check_proposal(applied, base_findings)
+        for scanner in sorted({base_findings[finding_id].tool.name for finding_id in applied.finding_ids}):
+            if statuses.get(scanner, {}).get("status") != "ok":
+                raise RemediationError(
+                    f"the tool status does not show {scanner} ok: the patched scan's silence about its "
+                    "targets proves nothing"
+                )
         result = verify_proposal(
             applied,
             before=base_findings,
@@ -945,7 +1061,7 @@ def remediate_verify(
             verified_at=_now(),
             pull_request=pull_request,
         )
-    except (OSError, ValidationError, RemediationError) as exc:
+    except (OSError, ValidationError, RemediationError, EvaluationError) as exc:
         typer.echo(f"sentinel remediate verify: {exc}\nFAIL CLOSED: nothing is verified.", err=True)
         raise typer.Exit(EXIT_NO_DECISION) from exc
     _write_atomically(out, result.model_dump_json(indent=2, exclude_none=True) + "\n")
