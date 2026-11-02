@@ -4,10 +4,11 @@ It fixes the Trivy findings it knows how to resolve, and only those, each rule i
 against the pinned Trivy, and it claims only the findings an edit resolved:
 
 - DS-0005 (ADD for a local file): `COPY`, only when ADD would do nothing more. ADD unpacks a local tar
-  archive by its content, not its name, so every source must be found in the repository (next to the
-  Dockerfile, then at the repository root), inside it, and be a directory or a regular file that is neither
-  a tar nor compressed. A URL, a git source, a glob, a variable, a missing source and an ADD-only flag keep
-  ADD;
+  archive by its content, not its name, and the build context may be the Dockerfile's directory or the
+  repository root, so every source must be found, and every place it could be (next to the Dockerfile, at
+  the repository root) must hold nothing or a plain directory or regular file inside the repository: no
+  symbolic link, tar or compressed file. A URL, a git source, a glob, a variable, a missing source and an
+  ADD-only flag keep ADD;
 - DS-0029 (apt-get without --no-install-recommends): the flag is added to each `apt-get install` lacking it;
 - DS-0002 (the image runs as root): `USER 10001:10001` is added to the final stage (the last FROM) after its
   last RUN and USER, so every RUN still runs as the user it ran as: before the next CMD or ENTRYPOINT, or at
