@@ -9,12 +9,19 @@ name: sentinel-scan
 #   checked out only as data to scan. No job ever runs its code.
 # - Each job gets the least privilege it needs. Only `report` can write, and only a pull-request comment.
 # - Tools are installed outside the checkouts ($RUNNER_TEMP) and re-verified against the lock right before
-#   every run. Any scanner, gate or report failure fails the workflow: there is no silent pass (SC-010).
+#   every run. A scanner that fails, times out or does not match the lock is recorded in the tool status
+#   (schemas/tool-status.v1.json), and the gate turns it into a recorded BLOCK (SC-010). A missing tool status is
+#   SC-010 too, and a gate or report failure fails the workflow: there is no silent pass.
+# - Every decision is kept with all its inputs in a content-addressed evidence store (artifact
+#   `sentinel-evidence`), so `sentinel replay <decision id> --store <unpacked artifact>` re-runs it exactly.
 #
 # Modes
 # - pull_request: diff-aware. Gitleaks scans only the commits of the pull request (base..head), forced to text
-#   patches, so secrets added and removed again inside the pull request are still found.
-# - push / workflow_dispatch: release mode. The working tree at the pushed commit is scanned in full.
+#   patches, so secrets added and removed again inside the pull request are still found. The base commit's tree
+#   is scanned too, as a baseline: only what the change introduces can block. Without a baseline (its scan
+#   failed), every finding counts.
+# - push / workflow_dispatch: release mode. The working tree at the pushed commit is scanned in full, without a
+#   baseline.
 
 on:
   workflow_call:
@@ -29,12 +36,16 @@ permissions: {}
 env:
   UV_VERSION: "0.11.32"
   PYTHON_VERSION: "3.12"
+  # Time limit of one scanner run. The scan job's timeout-minutes must outlive every run it may make (a git-mode
+  # Gitleaks scan runs twice), so a slow scanner is recorded as `timeout` (SC-010) instead of a killed job.
+  # tests/ci/test_workflows.py checks the sum.
+  SCANNER_TIMEOUT_S: "300"
 
 jobs:
   scan:
     name: scan (no secrets, read-only)
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read # check out the pipeline and the change to scan; nothing else
     steps:
@@ -126,28 +137,56 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           SCAN_PATH: ${{ inputs.path }}
+        # A failed scan does not stop the job: the CLI records the failure in tool-status.json (written last on
+        # success, so an `ok` status always comes with its findings), and the gate turns it into SC-010. The
+        # empty findings file it leaves behind never passes alone: the gate requires the tool status in `pr` and
+        # `release`, and blocks when it is missing or not `ok`.
         run: |
-          set -euo pipefail
+          set -uo pipefail
           mkdir -p "$RUNNER_TEMP/out"
           common=(
             --out "$RUNNER_TEMP/out/findings.ndjson"
+            --tool-status-out "$RUNNER_TEMP/out/tool-status.json" --timeout "$SCANNER_TIMEOUT_S"
             --repo "$REPO" --commit "$HEAD_SHA" --context "$CONTEXT" --ref "$REF" --run-id "$RUN_ID"
             --repo-root target --lock pipeline/tools.lock.toml --tools-dir "$RUNNER_TEMP/sentinel-tools"
           )
+          status=0
           if [ "$CONTEXT" = "pr" ]; then
-            "$SENTINEL" scan secrets target --mode git --log-opts "$BASE_SHA..$HEAD_SHA -- $SCAN_PATH" "${common[@]}"
+            "$SENTINEL" scan secrets target --mode git --log-opts "$BASE_SHA..$HEAD_SHA -- $SCAN_PATH" \
+              "${common[@]}" || status=$?
           else
-            "$SENTINEL" scan secrets "target/$SCAN_PATH" --mode dir "${common[@]}"
+            "$SENTINEL" scan secrets "target/$SCAN_PATH" --mode dir "${common[@]}" || status=$?
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::warning::the secret scan failed (exit $status): the gate records it as SC-010"
+            : > "$RUNNER_TEMP/out/findings.ndjson"
           fi
 
-      - name: Record the verified toolchain
+      - name: Scan the base commit as a baseline (pull requests only)
+        if: steps.context.outputs.context == 'pr'
         env:
           SENTINEL: ${{ github.workspace }}/pipeline/.venv/bin/sentinel
-        run: >-
-          "$SENTINEL" tools verify gitleaks
-          --lock pipeline/tools.lock.toml
-          --dest "$RUNNER_TEMP/sentinel-tools"
-          --report "$RUNNER_TEMP/out/tools-manifest.json"
+          BASE_SHA: ${{ steps.context.outputs.base_sha }}
+          REPO: ${{ github.repository }}
+          SCAN_PATH: ${{ inputs.path }}
+        # The base tree is exported with `git archive` (no checkout, no hooks, no filters) outside the pipeline
+        # checkout, whose .venv must not be scanned. Its export-ignore attributes can only make the baseline
+        # smaller, and a smaller baseline only makes more findings count as new: any failure here drops the
+        # baseline, which is the strict side.
+        run: |
+          set -uo pipefail
+          base="$RUNNER_TEMP/base"
+          mkdir -p "$base"
+          if git -C target archive --format=tar "$BASE_SHA" -- "$SCAN_PATH" | tar -x -C "$base" \
+            && "$SENTINEL" scan secrets "$base/$SCAN_PATH" --mode dir --repo-root "$base" \
+              --out "$RUNNER_TEMP/out/baseline.ndjson" \
+              --repo "$REPO" --commit "$BASE_SHA" --context pr --timeout "$SCANNER_TIMEOUT_S" \
+              --lock pipeline/tools.lock.toml --tools-dir "$RUNNER_TEMP/sentinel-tools"; then
+            echo "baseline: $(wc -l < "$RUNNER_TEMP/out/baseline.ndjson") finding(s) on the base commit"
+          else
+            rm -f "$RUNNER_TEMP/out/baseline.ndjson"
+            echo "::warning::the baseline scan failed: every finding of the pull request counts as new"
+          fi
 
       - name: Upload the scan evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -206,21 +245,44 @@ jobs:
           REPO: ${{ github.repository }}
         # GitHub runs this with `bash -e`: the exit code is captured with `|| status=$?` so that a BLOCK (1) or
         # no decision (3) is recorded and the decision is still uploaded; the last step fails the job.
+        # The tool status and the baseline are passed only when the scan job produced them: without a tool
+        # status the gate blocks (SC-010), without a baseline every finding counts. Findings are scored first
+        # with the base commit's risk model (SPEC 6.2); scoring that fails means no decision (exit 3). The
+        # scored findings are what the decision records and what the report shows.
         run: |
           set -uo pipefail
+          in="$RUNNER_TEMP/in"
           mkdir -p "$RUNNER_TEMP/decision"
+          manifests=("$RUNNER_TEMP/opa-manifest.json")
+          extra=()
+          if [ -f "$in/tool-status.json" ]; then
+            manifests+=("$in/tool-status.json")
+            extra+=(--tool-status "$in/tool-status.json")
+          fi
+          if [ "$CONTEXT" = "pr" ] && [ -f "$in/baseline.ndjson" ]; then
+            extra+=(--baseline "$in/baseline.ndjson")
+          fi
           mapfile -t versions < <(jq -r '.tools | to_entries[] | "--tool-version=\(.key)=\(.value.version)"' \
-            "$RUNNER_TEMP/in/tools-manifest.json" "$RUNNER_TEMP/opa-manifest.json")
+            "${manifests[@]}")
           # Run from the pipeline checkout: policies and .sentinel/waivers.yaml come from the base commit, so a
           # pull request cannot waive its own findings (a waiver applies once it is reviewed and merged).
           cd pipeline
           status=0
+          if ! "$SENTINEL" score --findings "$in/findings.ndjson" --policy-dir policies \
+            --out "$RUNNER_TEMP/decision/findings.ndjson"; then
+            # Whatever score's own exit code (3, or 1 for an unexpected crash), there is no decision.
+            echo "status=3" >> "$GITHUB_OUTPUT"
+            echo "sentinel score failed: no decision (SC-010)"
+            exit 0
+          fi
           "$SENTINEL" evaluate \
-            --findings "$RUNNER_TEMP/in/findings.ndjson" \
+            --findings "$RUNNER_TEMP/decision/findings.ndjson" \
             --repo "$REPO" --commit "$HEAD_SHA" --context "$CONTEXT" --ref "$REF" \
             --policy-dir policies \
             --opa "$RUNNER_TEMP/sentinel-tools/bin/opa" \
             "${versions[@]}" \
+            "${extra[@]}" \
+            --store "$RUNNER_TEMP/evidence" \
             --output "$RUNNER_TEMP/decision/decision.v1.json" || status=$?
           echo "status=$status" >> "$GITHUB_OUTPUT"
           echo "sentinel evaluate exited with $status (0 PASS/WARN, 1 BLOCK, 3 no decision)"
@@ -231,6 +293,15 @@ jobs:
         with:
           name: sentinel-decision
           path: ${{ runner.temp }}/decision/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload the evidence store (for `sentinel replay`)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sentinel-evidence
+          path: ${{ runner.temp }}/evidence/
           if-no-files-found: warn
           retention-days: 14
 
@@ -291,10 +362,14 @@ jobs:
           if [ -f "$in/sentinel-scan/pipeline-changes.txt" ]; then
             extra+=(--pipeline-changes "$in/sentinel-scan/pipeline-changes.txt")
           fi
+          # "N new" is shown only if this is the baseline the gate used (checked against baseline_digest).
+          if [ -f "$in/sentinel-scan/baseline.ndjson" ]; then
+            extra+=(--baseline "$in/sentinel-scan/baseline.ndjson")
+          fi
           status=0
           "$SENTINEL" report pr-comment \
             --decision "$in/sentinel-decision/decision.v1.json" \
-            --findings "$in/sentinel-scan/findings.ndjson" \
+            --findings "$in/sentinel-decision/findings.ndjson" \
             "${extra[@]}" \
             --out "$RUNNER_TEMP/comment.md" || status=$?
           echo "status=$status" >> "$GITHUB_OUTPUT"

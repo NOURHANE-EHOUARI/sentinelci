@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
+from sentinelci.scanners.errors import ScannerError, ScannerTimeout, ToolIntegrityError
 from sentinelci.scanners.installer import install_tools
 from sentinelci.scanners.lock import ToolLock, load_lock
 from sentinelci.scanners.runner import run_verified_tool
@@ -76,7 +76,7 @@ def test_timeout_fails_closed(
     tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
 ) -> None:
     lock, dest = install_script(tmp_path, releases, write_lock, "sleep 5\n")
-    with pytest.raises(ScannerError, match="rawtool timed out after 1 s"):
+    with pytest.raises(ScannerTimeout, match="rawtool timed out after 1 s"):  # a ScannerError subclass
         run_verified_tool(
             "rawtool", [], lock=lock, tools_dir=dest, platform=PLATFORM, cwd=tmp_path, timeout_s=1
         )
