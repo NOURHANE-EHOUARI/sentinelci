@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  INTENTIONALLY VULNERABLE benchmark dependencies (A9): the demo-shop report worker's build file. It holds no
+  code and is never built or deployed; it is here to be scanned. Both dependencies are listed in CISA KEV and in
+  demo-shop/ground-truth/findings.yaml:
+    GT-SCA-006  log4j-core 2.14.1    CVE-2021-44228 (Log4Shell), fixed in 2.15.0
+    GT-SCA-007  spring-beans 5.3.17  CVE-2022-22965 (Spring4Shell), fixed in 5.3.18
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>org.example.demoshop</groupId>
+  <artifactId>reports</artifactId>
+  <version>0.1.0</version>
+  <packaging>jar</packaging>
+
+  <properties>
+    <maven.compiler.release>17</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.logging.log4j</groupId>
+      <artifactId>log4j-core</artifactId>
+      <version>2.14.1</version>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-beans</artifactId>
+      <version>5.3.17</version>
+    </dependency>
+  </dependencies>
+</project>

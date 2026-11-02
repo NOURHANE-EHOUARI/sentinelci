@@ -207,6 +207,38 @@ waivers:
 - A file that cannot be read (bad YAML, wrong top-level shape, `version` other than 1) means no decision:
   exit code `3`.
 
+## `sentinel attest` and `sentinel verify` (release attestations, A4)
+
+ADR-0010. The attest job of the release workflow signs four in-toto statements about the image digest
+(release decision, CycloneDX SBOM, vulnerability scan, SLSA v1 provenance) with the pinned Cosign and a key pair,
+and writes them as Sigstore bundles under `<out>/attestations/`:
+
+```bash
+uv run sentinel attest registry.local/demo-shop/shop-api@sha256:<digest> \
+  --decision out/decision.v1.json --findings out/findings.ndjson --sbom out/sbom.cdx.json \
+  --key env://COSIGN_PRIVATE_KEY --out out/evidence
+```
+
+- It refuses (exit `3`, nothing signed) a BLOCK or non-`release` decision, a decision about another image,
+  findings or an SBOM other than the ones the decision recorded (`inputs.findings_digest`, `inputs.sbom_digest`),
+  an SBOM without a CycloneDX `serialNumber`, and a run outside GitHub Actions or on another repository or commit
+  than the decision's. All four bundles are written, or none.
+- `--key` is a key file or `env://VAR`; only that variable and `COSIGN_PASSWORD` reach Cosign. Private mode
+  (ADR-0006): no transparency-log upload.
+
+```bash
+uv run sentinel verify registry.local/demo-shop/shop-api@sha256:<digest> --evidence out/evidence \
+  --key cosign.pub --repo NOURHANE-EHOUARI/sentinelci \
+  --builder-id https://github.com/NOURHANE-EHOUARI/sentinelci/.github/workflows/<release workflow>@refs/heads/main
+```
+
+- Prints a trust report: every attestation signed by the key and about this digest; a valid release decision
+  about this image, from `--repo`, not BLOCK; provenance from `--builder-id`, built from the decision's commit;
+  a vulnerability result naming the decision, its findings and its SBOM; that SBOM's `serialNumber`.
+- Exit code `0` trusted, `1` not trusted (any check failed), `3` the verification could not run (for example
+  a Cosign binary that does not match `tools.lock.toml`). Offline: the evidence directory and the public key
+  are all it needs.
+
 ## `sentinel remediate` (verified remediation loop, A6)
 
 ```bash
@@ -243,4 +275,3 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
     tool status; for a `--tool-status` that is not the one the decision recorded, or that does not show the
     scanner of every target `ok`: a scan that failed, was skipped or never ran must not vouch for the patch;
   - `--out` can never be one of the inputs.
-
