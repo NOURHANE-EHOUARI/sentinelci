@@ -173,7 +173,7 @@ seeds:
     owner: A9
     category: SCA
     title: PyYAML 5.3.1, arbitrary code execution through full_load
-    location: {path: services/shop-api/requirements.txt, line: 18}
+    location: {path: services/shop-api/requirements.txt, line: 20}
     package: pkg:pypi/pyyaml@5.3.1
     vulnerability: GHSA-8q59-q68h-6hv4
     cve: CVE-2020-14343
@@ -187,7 +187,7 @@ seeds:
     owner: A9
     category: SCA
     title: requests 2.30.0 leaks the Proxy-Authorization header on an HTTPS redirect
-    location: {path: services/shop-api/requirements.txt, line: 20}
+    location: {path: services/shop-api/requirements.txt, line: 22}
     package: pkg:pypi/requests@2.30.0
     vulnerability: GHSA-j8r2-6x86-q33q
     cve: CVE-2023-32681
@@ -200,7 +200,7 @@ seeds:
     owner: A9
     category: SCA
     title: lxml 4.6.2 HTML cleaner XSS, in a dependency the service never imports
-    location: {path: services/shop-api/requirements.txt, line: 16}
+    location: {path: services/shop-api/requirements.txt, line: 18}
     package: pkg:pypi/lxml@4.6.2
     vulnerability: GHSA-jq4v-f5q6-mjqq
     cve: CVE-2021-28957
