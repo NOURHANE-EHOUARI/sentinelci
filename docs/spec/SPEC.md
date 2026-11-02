@@ -10,7 +10,9 @@
 
 | Version | Change |
 |---|---|
+| 1.1.24 | B1 acceptance changed after the plan, while GitHub Actions are blocked: "an upload (`sentinel upload`, 1.1.23) or a sync ingests a real run" replaces "a sync ingests a real run". M1 can then be met by uploading a local run; the GitHub sync (§4.1, the platform pulls each CI run's evidence) stays in B1 and lands once CI runs exist. Hand-off B1 → A3, A8: OpenAPI and the ingestion endpoints at the end of S1, the sync later. |
 | 1.1.14 | A1 CI workflow analysis (§5): `sentinel scan pipelines` runs the zizmor of the CLI's environment (a runtime dependency pinned in `uv.lock`), checked against the binary hashes pinned in `tools.lock.toml` (`[python_tools.zizmor]`), offline, with the repository's configuration, ignore comments and `.gitignore` never honoured. Workflows, actions and Dependabot must load; other files with a `jobs:` key are skipped and reported when zizmor cannot load them. PIPELINE fingerprint (§13.1) changed: a finding below a job or a top-level key also hashes the code it is about (the expression's line, a trigger's value, a Dependabot entry's ecosystem), so a new expression, trigger or entry is a new finding (IAC unchanged). |
+| 1.1.12 | A4 release attestations (§7, ADR-0010): `sentinel attest` signs the release decision, CycloneDX SBOM, vulnerability scan (`schemas/vuln-result.v1.json`) and SLSA v1 provenance of an image digest with the pinned Cosign and a key pair (no transparency log), only for a non-BLOCK release decision about that image that recorded these findings and this SBOM; `sentinel verify` checks the four Sigstore bundles offline and prints a trust report (exit 0 trusted, 1 not, 3 could not run). |
 | 1.1.6 | A9 first seeds (§17): 5 fake secrets, 6 IaC, 3 CI-workflow seeds and 4 clean controls in `demo-shop/`, with a draft ground-truth format (`demo-shop/ground-truth/`, final schema owned by B9) checked against the pinned Gitleaks, Trivy and zizmor. SentinelCI's Trivy configuration trusts only the kind registry for KSV0125. |
 | 1.1.5 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
 | 1.1.4 | Enrichment (B2, §6.1): `schemas/enrichment-snapshot.v1.json` (`schema_version` "1.0", `sources.kev.cves`: the CVEs the KEV lookup covered) and `schemas/sentinel-config.v1.json` (`sentinel.yaml`, canonical component paths); `sentinel enrich`. "Not listed in KEV" only for covered CVEs; `sentinel.yaml` read with a restricted YAML loader. |
@@ -397,9 +399,18 @@ store and when nothing was compared (every decision skipped; the previous-night 
 - **SBOM:** Syft → CycloneDX JSON (primary) + SPDX JSON, for source and image.
 - **Signing:** Cosign v3 (Sigstore bundle format). Private mode: key pair, no transparency-log upload. GitHub mode:
   keyless, identity = release workflow path + ref. Always sign digests, never tags.
-- **Attestations:** SLSA provenance, CycloneDX SBOM, vulnerability scan, release decision.
+- **Attestations:** SLSA provenance, CycloneDX SBOM, vulnerability scan, release decision (ADR-0010: one
+  in-toto statement each about the image digest, signed by the attest job only for a decision that is not BLOCK;
+  `sentinel attest` checks that the decision is about this image and recorded these findings and this SBOM, and
+  the vulnerability result, `schemas/vuln-result.v1.json`, names the decision, the findings and the SBOM's
+  CycloneDX `serialNumber`, so the four are bound together).
 - **`sentinel verify <image@digest>`:** checks signature, provenance, SBOM, decision; prints a trust report; must
-  fail on unsigned, wrong key/identity, modified image, missing or BLOCK decision (automated tests).
+  fail on unsigned, wrong key/identity, modified image, missing or BLOCK decision (automated tests). Each
+  attestation must be signed by `--key` and about this digest; the decision must be a release decision about
+  this image from `--repo`; the provenance must come from `--builder-id` and the decision's commit; the
+  vulnerability result and the SBOM must be the decision's. Exit 0 trusted, 1 not trusted, 3 could not run.
+  Offline from the evidence directory's Sigstore bundles (`--evidence`); registry mode with the release
+  workflow (A4b).
 - **Kyverno ImageValidatingPolicy** (apiVersion depends on the Kyverno release): match our images, attestor =
   our public key (private mode) or keyless identity (GitHub mode), require the decision attestation with
   verdict ≠ BLOCK and an SBOM attestation, `mutateDigest: true`. Negative tests on kind in CI.
@@ -549,7 +560,8 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
 | `tool-status.v1.json` | A3 → B4 | per tool: version, hashes, status (`ok` … `not_run`), detail; any non-`ok` status → SC-010; required in `pr`/`release`, and must list every required scanner |
 | `patch-proposal.v1.json` | B6 / A6 fixers → A6 | finding ids, strategy, diff, files, rationale, model (required for `llm:code`) |
 | `verification-result.v1.json` | A6 → B1, B8 | gate outcome; VERIFIED only if every condition holds |
-| evidence bundle layout | A4 → B1 | `manifest.json` (sha256 of each file, signed) + decision, findings, snapshot, SBOMs, raw outputs |
+| evidence bundle layout | A4 → B1 | `manifest.json` (sha256 of each file, signed) + decision, findings, snapshot, SBOMs, raw outputs; `attestations/<kind>.sigstore.json` (ADR-0010) |
+| `vuln-result.v1.json` | A4 attest → `sentinel verify`, Kyverno (A5), B1 | `scanner.result` of the vulnerability attestation: decision id, findings digest, SBOM digest and `serialNumber`, totals by severity and category, tool versions |
 | `openapi.yaml` | B1 → A3, A6, A8, B7 | Platform API |
 | `sentinel.yaml` (`sentinel-config.v1.json`) | target → B2, B4 | service, exposure, environment, data_classification, owners, policy_profile; optional `components` (path, exposure, data class) |
 | `enrichment-snapshot.v1.json` | B2 fetchers → B2 apply, evidence store | per vulnerability id: aliases, CVSS, fixed versions per purl base, EPSS, KEV; dated sources |
@@ -598,7 +610,7 @@ Vertical ownership; each track has DevOps, security, backend/UI and an AI compon
 
 | ID | Task | Deliverables / acceptance | Sprint | Size |
 |---|---|---|---|---|
-| B1 | Platform backend | FastAPI, PostgreSQL + Alembic, SeaweedFS (S3), Celery + Redis, GitHub sync, OpenAPI in `schemas/`. Accept: `make up`; a sync ingests a real run; contract tests | S1 | L |
+| B1 | Platform backend | FastAPI, PostgreSQL + Alembic, SeaweedFS (S3), Celery + Redis, GitHub sync, OpenAPI in `schemas/`. Accept: `make up`; an upload or a sync ingests a real run (changed in 1.1.24); contract tests | S1 | L |
 | B2 | Enrichment | EPSS, KEV, OSV, reachability, `sentinel.yaml`; snapshots + offline fixtures | S2 | M |
 | B3 | Risk engine | §6.2 model, bands, factor breakdown, CVSS baseline. Accept: property tests (monotonicity, bounds) | S2 | M |
 | B4 | Policy & decisions | Rego SC-001…SC-010, profiles, diff-aware mode, waivers + VEX, Decision v1, `evaluate`, `replay`; minimal SC-001 for S1. Accept: coverage ≥ 90%; replay identical | S1–S2 | L |
@@ -614,7 +626,7 @@ Vertical ownership; each track has DevOps, security, backend/UI and an AI compon
 |---|---|---|---|
 | Shared → all | schemas + fixtures | end S0 | — (done in Sprint 0) |
 | A2 → B2, B3, B4 | findings NDJSON | mid S1 | fixtures |
-| B1 → A3, A8 | OpenAPI + sync | end S1 | local JSON |
+| B1 → A3, A8 | OpenAPI + ingestion (sync later, 1.1.24) | end S1 | local JSON |
 | B4 → A4, A5 | Decision v1 | mid S2 | fixture decision |
 | A4 → A5, B1 | evidence bundle | end S2 | sample bundle |
 | B5 → A7 | LLMProvider | start S3 | fake provider (see `ai/tests`) |

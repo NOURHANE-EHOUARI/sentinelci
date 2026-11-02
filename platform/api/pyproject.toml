@@ -4,8 +4,12 @@ version = "0.1.0"
 description = "SentinelCI control-plane API: ingestion, GitHub sync and query endpoints."
 requires-python = ">=3.12"
 dependencies = [
+    "alembic>=1.16",
     "fastapi>=0.115",
+    "psycopg[binary]>=3.2.9",
+    "pyyaml>=6.0.2",
     "sentinelci",
+    "sqlalchemy>=2.0.40",
     "uvicorn>=0.38",
 ]
 
