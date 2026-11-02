@@ -24,4 +24,5 @@ ENV PATH=/opt/venv/bin:$PATH \
     PYTHONUNBUFFERED=1
 USER 10001
 EXPOSE 8000
-CMD ["uvicorn", "sentinel_api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Migrations first (idempotent), then the API. A failed migration stops the container instead of serving.
+CMD ["sh", "-c", "python -m sentinel_api.migrate && exec uvicorn --factory sentinel_api.main:app_from_env --host 0.0.0.0 --port 8000"]
