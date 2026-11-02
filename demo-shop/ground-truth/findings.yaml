@@ -2,7 +2,9 @@
 # Format: see README.md in this directory. Draft v1 proposed by A9; B9 owns the final schema.
 # Paths are relative to demo-shop/. Detections were verified with the pinned tools:
 # Gitleaks 8.30.1, Trivy 0.76.1 (embedded checks, SentinelCI configuration) and zizmor 1.31.1. Checkov is not
-# used (ADR-0012); a seed no pinned tool detects says why in `known_miss`.
+# used (ADR-0012); a seed no pinned tool detects says why in `known_miss`. SCA detections are Grype 0.121.0's
+# on the pinned Syft 1.55.0's SBOM, verified with the Grype database built 2026-11-01T06:20:12Z (schema
+# v6.1.10); they need such a database to be checked again (see README.md, Checks).
 version: 1
 
 seeds:
@@ -156,6 +158,124 @@ seeds:
       detections:
         - {tool: zizmor, rule: excessive-permissions}
         - {tool: zizmor, rule: unpinned-uses}
+
+  # ---------------------------------------------------------------- dependencies (A9)
+  # The seven packages of the offline feed fixtures (eval/feeds), and lodash-es under the same advisory, so
+  # enrichment, scoring and the gate run with no network. `vulnerability` is the id Grype reports, `cve` its
+  # CVE alias. `gate` is what the engine gives with those fixtures and no sentinel.yaml (an unknown exposure
+  # counts as internet-facing).
+  - id: GT-SCA-001
+    owner: A9
+    category: SCA
+    title: PyYAML 5.3.1, arbitrary code execution through full_load
+    location: {path: services/shop-api/requirements.txt, line: 20}
+    package: pkg:pypi/pyyaml@5.3.1
+    vulnerability: GHSA-8q59-q68h-6hv4
+    cve: CVE-2020-14343
+    kev: false
+    expected:
+      gate: SC-002
+      detections:
+        - {tool: grype, rule: GHSA-8q59-q68h-6hv4}
+
+  - id: GT-SCA-002
+    owner: A9
+    category: SCA
+    title: requests 2.30.0 leaks the Proxy-Authorization header on an HTTPS redirect
+    location: {path: services/shop-api/requirements.txt, line: 22}
+    package: pkg:pypi/requests@2.30.0
+    vulnerability: GHSA-j8r2-6x86-q33q
+    cve: CVE-2023-32681
+    kev: false
+    expected:  # MEDIUM, P2: no gate rule
+      detections:
+        - {tool: grype, rule: GHSA-j8r2-6x86-q33q}
+
+  - id: GT-SCA-003
+    owner: A9
+    category: SCA
+    title: lxml 4.6.2 HTML cleaner XSS, in a dependency the service never imports
+    location: {path: services/shop-api/requirements.txt, line: 18}
+    package: pkg:pypi/lxml@4.6.2
+    vulnerability: GHSA-jq4v-f5q6-mjqq
+    cve: CVE-2021-28957
+    kev: false
+    imported: false
+    expected:  # MEDIUM, P2: no gate rule
+      detections:
+        - {tool: grype, rule: GHSA-jq4v-f5q6-mjqq}
+
+  - id: GT-SCA-004
+    owner: A9
+    category: SCA
+    title: lodash 4.17.20 command injection through template
+    location: {path: services/web/package.json, line: 8}
+    package: pkg:npm/lodash@4.17.20
+    vulnerability: GHSA-35jh-r3h4-6jhm
+    cve: CVE-2021-23337
+    kev: false
+    expected:
+      gate: SC-002
+      detections:
+        - {tool: grype, rule: GHSA-35jh-r3h4-6jhm}
+
+  - id: GT-SCA-005
+    owner: A9
+    category: SCA
+    title: minimist 1.2.5 prototype pollution, in a dependency the front end never imports
+    location: {path: services/web/package.json, line: 10}
+    package: pkg:npm/minimist@1.2.5
+    vulnerability: GHSA-xvch-5gv4-984h
+    cve: CVE-2021-44906
+    kev: false
+    imported: false
+    expected:
+      gate: SC-002
+      detections:
+        - {tool: grype, rule: GHSA-xvch-5gv4-984h}
+
+  - id: GT-SCA-006
+    owner: A9
+    category: SCA
+    title: log4j-core 2.14.1 remote code execution (Log4Shell), listed in CISA KEV
+    location: {path: services/reports/pom.xml, line: 27}
+    package: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+    vulnerability: GHSA-jfh8-c2jp-5v3q
+    cve: CVE-2021-44228
+    kev: true
+    expected:
+      gate: SC-003
+      detections:
+        - {tool: grype, rule: GHSA-jfh8-c2jp-5v3q}
+
+  - id: GT-SCA-007
+    owner: A9
+    category: SCA
+    title: spring-beans 5.3.17 remote code execution (Spring4Shell), listed in CISA KEV
+    location: {path: services/reports/pom.xml, line: 32}
+    package: pkg:maven/org.springframework/spring-beans@5.3.17
+    vulnerability: GHSA-36p3-wjmg-h94x
+    cve: CVE-2022-22965
+    kev: true
+    expected:
+      gate: SC-003
+      detections:
+        - {tool: grype, rule: GHSA-36p3-wjmg-h94x}
+
+  - id: GT-SCA-008
+    owner: A9
+    category: SCA
+    title: lodash-es 4.17.20 command injection through template, left over and never imported
+    location: {path: services/web/package.json, line: 9}
+    package: pkg:npm/lodash-es@4.17.20
+    vulnerability: GHSA-35jh-r3h4-6jhm
+    cve: CVE-2021-23337
+    kev: false
+    imported: false
+    expected:
+      gate: SC-002
+      detections:
+        - {tool: grype, rule: GHSA-35jh-r3h4-6jhm}
 
 # Files that look sensitive but are safe: any detection by the listed tools is a false positive.
 controls:

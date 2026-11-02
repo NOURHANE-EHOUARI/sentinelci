@@ -1,5 +1,5 @@
 # INTENTIONALLY VULNERABLE (GT-IAC-006): end-of-life base image by mutable tag, remote script piped to a shell,
-# remote ADD, and the service runs as root. Built only inside the local benchmark, never deployed.
+# remote ADD, and the service runs as root. A scan target, never built.
 FROM python:3.9
 
 ADD https://example.com/install-tools.sh /tmp/install-tools.sh
