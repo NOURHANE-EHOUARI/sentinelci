@@ -119,3 +119,53 @@ def test_the_pipeline_change_warning_covers_every_input_read_from_the_base_commi
         "':(glob)**/sentinel.yaml'",
     ):
         assert f" {pathspec} " in step.replace("\\\n", " ").replace("\n", " "), pathspec
+
+
+SCAN_WORKFLOW = ROOT / ".github" / "workflows" / "sentinel-scan.yml"
+SETUP_MARGIN_S = 300  # checkouts, uv sync, tool installation, upload
+TRIVY_BACKSTOP_S = 60  # the runner's own limit on top of Trivy's --timeout (scanners/trivy.py)
+
+
+def _job(text: str, name: str, following: str) -> str:
+    return text[text.index(f"\n  {name}:\n") : text.index(f"\n  {following}:\n")]
+
+
+def _steps(job: str) -> list[str]:
+    return job.split("\n      - name: ")[1:]
+
+
+def test_the_scan_job_outlives_every_scanner_run() -> None:
+    # A scanner killed with its job leaves no tool status; one that hits its own limit is a recorded timeout.
+    text = SCAN_WORKFLOW.read_text(encoding="utf-8")
+    per_run = int(re.search(r'^  SCANNER_TIMEOUT_S: "(\d+)"$', text, re.MULTILINE)[1])  # type: ignore[index]
+    job = _job(text, "scan", "gate")
+    minutes = int(re.search(r"^    timeout-minutes: (\d+)$", job, re.MULTILINE)[1])  # type: ignore[index]
+    worst = SETUP_MARGIN_S
+    for step in _steps(job):
+        if "scan secrets" in step or "scan iac" in step:
+            assert '--timeout "$SCANNER_TIMEOUT_S"' in step, f"step without a scanner time limit: {step[:60]}"
+        if "scan secrets" in step:
+            worst += per_run * (2 if "--mode git" in step else 1)  # git mode: remerge pass + octopus pass
+        worst += step.count("scan iac") * (per_run + TRIVY_BACKSTOP_S)
+    assert worst <= minutes * 60, f"the scan job needs {worst} s, its timeout-minutes allow {minutes * 60} s"
+
+
+def test_the_gate_scores_with_the_base_model_then_evaluates_the_scored_findings() -> None:
+    text = SCAN_WORKFLOW.read_text(encoding="utf-8")
+    (step,) = [s for s in _steps(_job(text, "gate", "report")) if s.startswith("Evaluate the release gate")]
+    scored = '"$RUNNER_TEMP/decision/findings.ndjson"'
+    base, score, evaluate = (
+        step.index("cd pipeline"),
+        step.index("score --findings"),
+        step.index("evaluate \\"),
+    )
+    assert base < score < evaluate, "score, then evaluate, both from the base checkout"
+    score_call, evaluate_call = step[score:evaluate], step[evaluate:]
+    assert "--policy-dir policies" in score_call and "--policy-dir policies" in evaluate_call
+    assert f"--out {scored}" in score_call and f"--findings {scored}" in evaluate_call
+    failure = score_call[: score_call.index("fi\n")]
+    assert step[score - len('if ! "$SENTINEL" ') : score].startswith("if ! ")
+    assert 'echo "status=3"' in failure and "exit 0" in failure, "a scoring failure is no decision"
+    assert '--findings "$in/sentinel-decision/findings.ndjson"' in text, (
+        "the report shows the scored findings"
+    )

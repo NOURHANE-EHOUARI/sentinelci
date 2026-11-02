@@ -14,9 +14,12 @@ from sentinelci.cli import app
 from sentinelci.contracts.finding import Evidence, Finding, Location, Run, Tool
 from sentinelci.normalize.ndjson import dumps_ndjson
 from sentinelci.report.pr_comment import (
+    EVIDENCE_ARTIFACT,
     MARKER,
+    MAX_OTHER_LOCATIONS,
     MAX_ROWS,
     ReportError,
+    introduced,
     load_inputs,
     render_no_decision,
     render_pr_comment,
@@ -32,8 +35,17 @@ def fid(seed: str) -> str:
     return hashlib.sha256(seed.encode()).hexdigest()
 
 
-def secret(seed: str, path: str, line: int, *, rule: str = "generic-api-key", risk: Any = None) -> Finding:
+def secret(
+    seed: str,
+    path: str,
+    line: int,
+    *,
+    rule: str = "generic-api-key",
+    risk: Any = None,
+    others: list[tuple[str, int]] | None = None,
+) -> Finding:
     return Finding(
+        schema_version="1.1" if others else "1.0",
         id=fid(seed),
         tool=Tool(name="gitleaks", version="8.30.1"),
         rule_id=rule,
@@ -44,7 +56,26 @@ def secret(seed: str, path: str, line: int, *, rule: str = "generic-api-key", ri
         location=Location(path=path, start_line=line, end_line=line),
         evidence=Evidence(secret_hash=fid(seed + "-secret")),
         risk=risk,
+        other_locations=[Location(path=p, start_line=n, end_line=n) for p, n in others] if others else None,
     )
+
+
+def misconfig(seed: str, path: str) -> Finding:
+    return Finding(
+        id=fid(seed),
+        tool=Tool(name="trivy", version="0.76.1"),
+        rule_id="AVD-AWS-0086",
+        category="IAC",
+        title="S3 bucket does not block public ACLs",
+        severity="HIGH",
+        run=RUN,
+        location=Location(path=path, start_line=1, end_line=1),
+        evidence=Evidence(snippet='resource "aws_s3_bucket" "shop" {}'),
+    )
+
+
+def digest(data: bytes) -> str:
+    return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
 def decision_for(findings_bytes: bytes, **changes: Any) -> dict[str, Any]:
@@ -92,7 +123,13 @@ def check_golden(name: str, text: str) -> None:
 def block_case(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     hostile_path = "demo-shop/@NOURHANE-EHOUARI/<img src=x>|`#1`/con\u202efig.py"
     findings = [
-        secret("aws", "demo-shop/services/shop-api/app/config.py", 12, rule="aws-access-token"),
+        secret(
+            "aws",
+            "demo-shop/services/shop-api/app/config.py",
+            12,
+            rule="aws-access-token",
+            others=[("demo-shop/services/web/.env.example", 2)],
+        ),
         secret("hostile", hostile_path, 3),
         secret(
             "old",
@@ -116,11 +153,15 @@ def block_case(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
             "message": "Scanner failure: opengrep timed out",
         },
     ]
-    decision_path, findings_path, _ = write_case(
-        tmp_path, findings, verdict="BLOCK", violations=violations, waivers_applied=["W-2026-001"]
-    )
     baseline = tmp_path / "baseline.ndjson"
     baseline.write_text(dumps_ndjson([findings[2]]), encoding="utf-8", newline="\n")
+    decision_path, findings_path, decision = write_case(
+        tmp_path, findings, verdict="BLOCK", violations=violations, waivers_applied=["W-2026-001"]
+    )
+    decision["schema_version"] = "1.2"
+    decision["inputs"]["baseline_digest"] = digest(baseline.read_bytes())
+    decision["inputs"]["tool_status_digest"] = "sha256:" + "6" * 64
+    decision_path.write_text(json.dumps(decision, indent=2), encoding="utf-8")
     changes = tmp_path / "changes.txt"
     changes.write_text(
         "tools.lock.toml\npolicies/gate.rego\n\ntools.lock.toml\n.sentinel/waivers.yaml\n", encoding="utf-8"
@@ -196,6 +237,122 @@ def test_priorities_replace_severities_once_every_finding_is_scored(tmp_path: Pa
         tmp_path, [secret("a", "a.py", 1, risk=risk), secret("b", "b.py", 2, risk=risk)]
     )
     assert "**Findings:** 2 P0 (2 total)" in render_pr_comment(load_inputs(decision, findings))
+
+
+def baseline_case(
+    tmp_path: Path,
+    findings: list[Finding],
+    base: list[Finding],
+    *,
+    context: str = "pr",
+    recorded: bool = True,
+) -> tuple[Path, Path, Path]:
+    baseline = tmp_path / "baseline.ndjson"
+    baseline.write_text(dumps_ndjson(base), encoding="utf-8", newline="\n")
+    decision, findings_path, data = write_case(tmp_path, findings, schema_version="1.2")
+    data["subject"]["context"] = context
+    if recorded:
+        data["inputs"]["baseline_digest"] = digest(baseline.read_bytes())
+    decision.write_text(json.dumps(data), encoding="utf-8")
+    return decision, findings_path, baseline
+
+
+def test_new_means_what_the_gate_calls_introduced(tmp_path: Path) -> None:
+    kept = secret("kept", "a.py", 1)
+    moved_down = secret("moved", "b.py", 9)  # same file as on the base branch, another line: not new
+    copied = secret("copied", "c.py", 1, others=[("d.py", 1)])  # also in a file the base did not have: new
+    fresh = secret("fresh", "e.py", 1)
+    renamed = misconfig("iac", "infra/b.tf")  # only a secret counts again in a new file: not new
+    base = [kept, secret("moved", "b.py", 2), secret("copied", "c.py", 1), misconfig("iac", "infra/a.tf")]
+    decision, findings, baseline = baseline_case(tmp_path, [kept, moved_down, copied, fresh, renamed], base)
+
+    text = render_pr_comment(load_inputs(decision, findings, baseline_path=baseline))
+
+    assert "(5 total, 2 new)" in text
+    assert f"- Baseline `{digest(baseline.read_bytes())}` (verified against this report)" in text
+
+
+def test_the_report_and_the_gate_agree_on_what_is_new(
+    tmp_path: Path, opa_binary: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The real gate.rego decides; SC-001 lists exactly the secrets it considers introduced (none is waived).
+    current = [
+        secret("kept", "a.py", 1),
+        secret("moved", "b.py", 9),
+        secret("copied", "c.py", 1, others=[("d.py", 1)]),
+        secret("fresh", "e.py", 1),
+        misconfig("iac", "infra/b.tf"),
+    ]
+    base = [
+        secret("kept", "a.py", 1),
+        secret("moved", "b.py", 2),
+        secret("copied", "c.py", 1),
+        misconfig("iac", "infra/a.tf"),
+    ]
+    findings, baseline = tmp_path / "findings.ndjson", tmp_path / "baseline.ndjson"
+    findings.write_text(dumps_ndjson(current), encoding="utf-8", newline="\n")
+    baseline.write_text(dumps_ndjson(base), encoding="utf-8", newline="\n")
+    decision = tmp_path / "decision.json"
+    monkeypatch.chdir(tmp_path)  # no default waivers file
+    result = CliRunner().invoke(
+        app,
+        [
+            "evaluate", "--findings", str(findings), "--baseline", str(baseline),
+            "--repo", RUN.repo, "--commit", COMMIT, "--context", "pr",
+            "--evaluated-at", "2026-11-10T10:00:00Z", "--tool-version", "gitleaks=8.30.1",
+            "--policy-dir", str(Path(__file__).resolve().parents[3] / "policies"),
+            "--opa", str(opa_binary), "--output", str(decision),
+        ],
+    )  # fmt: skip
+    assert result.exit_code == 1, result.output  # BLOCK
+
+    inputs = load_inputs(decision, findings, baseline_path=baseline)
+    assert inputs.baseline is not None
+    gate_new = {i for v in inputs.decision.violations if v.rule == "SC-001" for i in v.finding_ids}
+    report_new = {f.id for f in inputs.findings.values() if introduced(f, inputs.baseline)}
+    assert report_new == gate_new == {fid("copied"), fid("fresh")}
+
+
+@pytest.mark.parametrize(
+    ("context", "recorded"),
+    [("pr", False), ("release", True)],
+    ids=["the-gate-used-no-baseline", "release-ignores-the-baseline"],
+)
+def test_a_baseline_the_gate_did_not_use_is_ignored(tmp_path: Path, context: str, recorded: bool) -> None:
+    decision, findings, baseline = baseline_case(
+        tmp_path, [secret("a", "a.py", 1)], [secret("a", "a.py", 1)], context=context, recorded=recorded
+    )
+    lines = render_pr_comment(load_inputs(decision, findings, baseline_path=baseline)).splitlines()
+    assert "**Findings:** 1 HIGH (1 total)" in lines
+    assert not any(
+        "(verified against this report)" in line for line in lines if line.startswith("- Baseline")
+    )
+
+
+def test_a_baseline_that_is_not_the_gate_s_one_is_refused(tmp_path: Path) -> None:
+    decision, findings, baseline = baseline_case(tmp_path, [secret("a", "a.py", 1)], [secret("a", "a.py", 1)])
+    baseline.write_text("", encoding="utf-8")  # an empty baseline would make every finding look new
+    with pytest.raises(ReportError, match="baseline_digest mismatch"):
+        load_inputs(decision, findings, baseline_path=baseline)
+
+
+def test_other_locations_are_listed_and_capped(tmp_path: Path) -> None:
+    others = [(f"copies/c{i}.py", i + 1) for i in range(MAX_OTHER_LOCATIONS + 2)]
+    finding = secret("spread", "app/a.py", 3, others=others)
+    violation = {"rule": "SC-001", "effect": "BLOCK", "finding_ids": [finding.id], "message": "x"}
+    decision, findings, _ = write_case(tmp_path, [finding], verdict="BLOCK", violations=[violation])
+    row = next(
+        line for line in render_pr_comment(load_inputs(decision, findings)).splitlines() if "SC-001" in line
+    )
+    shown = " · ".join(f"`copies/c{i}.py:{i + 1}`" for i in range(MAX_OTHER_LOCATIONS))
+    assert f"| `app/a.py:3` · {shown} and 2 more |" in row
+
+
+def test_the_replay_line_names_the_evidence_artifact(tmp_path: Path) -> None:
+    decision, findings, data = write_case(tmp_path, [])
+    text = render_pr_comment(load_inputs(decision, findings))
+    assert f"`sentinel replay {data['decision_id']} --store {EVIDENCE_ARTIFACT}`" in text
+    assert f"`{EVIDENCE_ARTIFACT}` artifact" in text
 
 
 # ---------------------------------------------------------------- fail closed
