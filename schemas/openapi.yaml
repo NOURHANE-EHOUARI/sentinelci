@@ -2,7 +2,7 @@
 openapi: 3.1.0
 info:
   title: SentinelCI API
-  version: 1.0.0
+  version: 1.2.0
 paths:
   /healthz:
     get:
@@ -25,7 +25,16 @@ paths:
       tags:
       - runs
       summary: Create Run
-      description: Record a pipeline run. Its findings are uploaded next, once.
+      description: 'Record a pipeline run. Its findings are uploaded next, once.
+
+
+        A CI run is recorded once: the same `repo`, `commit`, `context` and `run_id`
+        again (a re-run of the upload
+
+        step) is answered 409 with the existing run, which the client resumes instead
+        of recording the findings a
+
+        second time. A run without `run_id` (a local run) is always a new run.'
       operationId: create_run_api_v1_runs_post
       requestBody:
         content:
@@ -59,6 +68,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorOut'
+        '409':
+          description: 'This CI run (`repo`, `commit`, `context`, `run_id`) is recorded
+            already: see `run`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunExists'
         '422':
           description: Validation Error
           content:
@@ -89,7 +105,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/RunOut'
         '404':
-          description: No such run or finding.
+          description: No such run or finding, or no findings recorded for the run
+            (yet).
           content:
             application/json:
               schema:
@@ -145,7 +162,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorOut'
         '404':
-          description: No such run or finding.
+          description: No such run or finding, or no findings recorded for the run
+            (yet).
           content:
             application/json:
               schema:
@@ -188,6 +206,55 @@ paths:
           application/x-ndjson:
             schema:
               type: string
+    get:
+      tags:
+      - runs
+      summary: Get Run Findings
+      description: 'The run''s findings exactly as uploaded: what to hash, correlate
+        or replay against `findings_sha256`.'
+      operationId: get_run_findings_api_v1_runs__run_id__findings_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Run Id
+      responses:
+        '200':
+          description: 'The upload byte for byte: its sha256 is the run''s `findings_sha256`,
+            the ETag.'
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+        '404':
+          description: No such run or finding, or no findings recorded for the run
+            (yet).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '413':
+          description: The request body is larger than the limit (64 KiB, or the upload
+            limit for findings).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '503':
+          description: No database is configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/findings:
     get:
       tags:
@@ -332,7 +399,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/FindingDetail'
         '404':
-          description: No such run or finding.
+          description: No such run or finding, or no findings recorded for the run
+            (yet).
           content:
             application/json:
               schema:
@@ -508,6 +576,23 @@ components:
       - commit
       - context
       title: RunCreate
+    RunExists:
+      properties:
+        detail:
+          type: string
+          title: Detail
+        run:
+          $ref: '#/components/schemas/RunOut'
+      type: object
+      required:
+      - detail
+      - run
+      title: RunExists
+      description: '409 on `POST /runs`: this CI run is already recorded. `run` is
+        the existing run, so a re-run can resume
+
+        it (upload its findings if `findings_sha256` is null) instead of recording
+        the findings a second time.'
     RunOut:
       properties:
         id:

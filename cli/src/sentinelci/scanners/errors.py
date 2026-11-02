@@ -14,3 +14,7 @@ class ScannerError(Exception):
 
     Like ToolIntegrityError, it must be treated as rule SC-010 (fail closed), never as "no findings".
     """
+
+
+class ScannerTimeout(ScannerError):
+    """A verified scanner was killed after its time limit (reported as `timeout` in the tool status)."""
