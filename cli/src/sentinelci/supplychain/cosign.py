@@ -43,6 +43,11 @@ IN_TOTO_PAYLOAD = "application/vnd.in-toto+json"
 MAX_BUNDLE_BYTES = 64 << 20
 _ENV_KEY = re.compile(r"env://(?P<var>[A-Z_][A-Z0-9_]{0,63})")
 _PUBLIC_KEY = re.compile(r"-----BEGIN PUBLIC KEY-----\r?\n[A-Za-z0-9+/=\r\n]+-----END PUBLIC KEY-----")
+# What Cosign 3.1 says when the registry was read and holds nothing of a type; anything else (an HTTP error,
+# a refused connection) means the registry could not be read, and the release check must not pass on it.
+_NOTHING_ATTACHED = re.compile(
+    r"no matching attestations|none of the attestations matched the predicate type"
+)
 _TIMEOUT_S = 120
 
 
@@ -443,13 +448,17 @@ def refuse_another_release(
 
     A digest has one release per registry. A second, different one would make every later verification
     ambiguous (NOT TRUSTED), while Kyverno, which reads one statement per type, could still admit the image:
-    the two verifiers would disagree. Attaching the same statements again (a re-run) is allowed."""
+    the two verifiers would disagree. Attaching the same statements again (a re-run) is allowed. A registry
+    that cannot be read (an HTTP error, a refused connection) stops the release too: only Cosign's own
+    "nothing attached" answers count as an empty registry."""
     with tempfile.TemporaryDirectory(prefix="sentinel-release-check-") as private:
         public_key = Path(private) / "release.pub"
         public_key.write_text(signer.public_key(environ), encoding="ascii")
         verifier = Verifier(public_key, signer.lock, signer.tools_dir, signer.platform)
         for kind, (predicate_type, predicate) in statements.items():
             found = verifier.attached(image, predicate_type, registry, environ)
+            if found.reason is not None and not _NOTHING_ATTACHED.search(found.reason):
+                raise AttestationError(f"cannot read the {kind} attestations in the registry: {found.reason}")
             if set(found.predicates) - {canonical(predicate)}:
                 raise AttestationError(
                     f"the registry already holds a different {kind} attestation of {image.digest}, signed by "
