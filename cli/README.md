@@ -242,6 +242,36 @@ uv run sentinel verify registry.local/demo-shop/shop-api@sha256:<digest> --evide
   a Cosign binary that does not match `tools.lock.toml`). Offline: the evidence directory and the public key
   are all it needs.
 
+## `sentinel sbom` (SBOMs, A4)
+
+```bash
+uv run sentinel sbom demo-shop --name demo-shop --cyclonedx out/sbom.cdx.json --spdx out/sbom.spdx.json
+uv run sentinel sbom out/image-oci --source oci-dir --name demo-shop/shop-api \
+  --image-digest "sha256:<manifest digest>" --cyclonedx out/image.cdx.json --spdx out/image.spdx.json
+```
+
+- The pinned Syft, verified against `tools.lock.toml` right before it runs, in a private working directory and home
+  with `supplychain/configs/syft.yaml` passed explicitly: the target's `.syft.yaml` is never loaded, so the scanned
+  repository cannot hide a package. Offline (no enrichment, remote license lookup, Go tooling or git clone; the
+  proxy variables point at a closed port). No file catalog: the CycloneDX SBOM lists packages only, and the SPDX
+  SBOM still lists the files each package owns or was found from (paths in the image or the tree, never the
+  machine's).
+- `--source`: `dir` (default; `--base-path` stops links above the tree), or the OCI image layout the build wrote,
+  with one image manifest: `oci-dir` (a directory) or `oci-archive` (a tar of one). Never a registry pull.
+  - An image needs `--image-digest`, its manifest digest, and both SBOMs must name it (CycloneDX
+    `metadata.component.version`, the SPDX root package's `versionInfo`), or exit `3`.
+  - A Docker archive is not accepted: Syft names it by a digest it computes itself, which no registry knows.
+  - A plain `docker save` tar from Docker's containerd image store holds a nested index that Syft cannot read as
+    an `oci-archive`. The release workflow (A4c) is to write the layout with BuildKit's OCI exporter.
+- An SBOM is not reproducible: every run gets a new `serialNumber`, timestamp and SPDX namespace. Generate it
+  once per build, and pass that same file to `sentinel evaluate --sbom` and to `sentinel attest`, which refuses
+  an SBOM the decision did not record.
+- Exit code `3`, with neither file written, when Syft fails (its own error message is the reason) or does not
+  match the lock, or writes something other than a CycloneDX document with a `serialNumber` (what
+  `sentinel attest` binds, ADR-0010) and an SPDX document. An output inside the target, a directory, the same
+  file for both, or a path that cannot be cleared is refused before anything is written.
+- The package count it prints leaves out the operating-system component Syft adds for an image.
+
 ## `sentinel scan sast` (SAST, A1)
 
 ```bash

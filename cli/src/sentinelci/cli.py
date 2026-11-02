@@ -65,11 +65,19 @@ from sentinelci.report.pr_comment import ReportError, load_inputs, render_no_dec
 from sentinelci.risk import RiskModel, RiskModelError, score_finding
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
-from sentinelci.scanners.installer import VerificationReport, install_tools, verify_tools
-from sentinelci.scanners.lock import LOCK_FILE_NAME, load_lock
+from sentinelci.scanners.installer import VerificationReport, detect_platform, install_tools, verify_tools
+from sentinelci.scanners.lock import LOCK_FILE_NAME, ToolLock, load_lock
 from sentinelci.scanners.opengrep import rule_ids, scan_sast_with_run
+from sentinelci.scanners.runner import DEFAULT_TIMEOUT_S as SCAN_TIMEOUT_DEFAULT_S
+from sentinelci.scanners.status import (
+    outcome_from_error,
+    outcome_from_run,
+    tool_status_document,
+    write_tool_status,
+)
 from sentinelci.supplychain.attestations import KINDS, AttestationError, parse_image, release_predicates
 from sentinelci.supplychain.cosign import Signer, Verifier, check_public_key
+from sentinelci.supplychain.sbom import SOURCE_KINDS, SourceKind, generate_sbom
 from sentinelci.supplychain.verify import ATTESTATIONS_DIR, verify_evidence
 
 EXIT_UNTRUSTED_INPUT = 3
@@ -97,6 +105,16 @@ app.add_typer(report_app, name="report")
 
 LockOption = Annotated[Path, typer.Option("--lock", help="Path to the tool lock file.")]
 DestOption = Annotated[Path, typer.Option("--dest", help="Installation directory (bin/ and cache/).")]
+ScanTimeoutOption = Annotated[
+    int,
+    typer.Option(
+        "--timeout",
+        min=30,
+        max=3600,
+        help="Time limit of one scanner run, in seconds (Gitleaks git mode runs twice). A scanner that "
+        "outlives it is recorded as `timeout` (SC-010).",
+    ),
+]
 PlatformOption = Annotated[
     str | None, typer.Option("--platform", help="Override platform detection, e.g. linux-amd64.")
 ]
@@ -762,13 +780,24 @@ def scan_secrets_cmd(
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
     ] = (DEFAULT_TOOLS_DIR),
     platform: PlatformOption = None,
+    timeout: ScanTimeoutOption = SCAN_TIMEOUT_DEFAULT_S,
+    tool_status_out: Annotated[
+        Path | None,
+        typer.Option(
+            help="Also write a tool status (schemas/tool-status.v1.json), on success and on failure, so the "
+            "gate can record a failed scan as SC-010."
+        ),
+    ] = None,
 ) -> None:
     """Scan for secrets with the verified Gitleaks binary; raw secrets never leave memory."""
     out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
+    if tool_status_out is not None:
+        tool_status_out.unlink(missing_ok=True)  # nor an older status vouching for it
     if mode not in ("dir", "git"):
         raise typer.BadParameter("mode must be 'dir' or 'git'")
     scan_mode: GitleaksMode = "git" if mode == "git" else "dir"
     root = repo_root or target
+    tool_lock: ToolLock | None = None
     try:
         tool_lock = load_lock(lock)
         raw, tool_run = scan_secrets_with_run(
@@ -779,6 +808,7 @@ def scan_secrets_cmd(
             platform=platform,
             mode=scan_mode,
             log_opts=log_opts,
+            timeout_s=timeout,
         )
         findings = normalize_gitleaks(
             raw,
@@ -787,10 +817,31 @@ def scan_secrets_cmd(
             repo_root=root,
         )
     except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
+        if tool_status_out is not None and tool_lock is not None:  # no lock: no status, the gate blocks
+            outcome = outcome_from_error("gitleaks", exc, lock=tool_lock)
+            _write_status(tool_status_out, lock, platform or _host_platform(), {"gitleaks": outcome})
         raise _fail_closed(exc) from exc
     out.parent.mkdir(parents=True, exist_ok=True)
     write_ndjson(findings, out)
+    if tool_status_out is not None:  # last: an `ok` status never vouches for a findings file not yet written
+        host = platform or _host_platform()
+        outcome = outcome_from_run(tool_run, lock=tool_lock, platform=host)
+        _write_status(tool_status_out, lock, host, {"gitleaks": outcome})
     typer.echo(f"gitleaks {tool_run.version}: {len(findings)} finding(s) written to {out}")
+
+
+def _host_platform() -> str | None:
+    try:
+        return detect_platform()
+    except ToolIntegrityError:
+        return None
+
+
+def _write_status(
+    destination: Path, lock: Path, platform: str | None, outcomes: dict[str, dict[str, Any]]
+) -> None:
+    write_tool_status(tool_status_document(lock.read_bytes(), platform, outcomes), destination)
+    typer.echo(f"tool status written to {destination}", err=True)
 
 
 @scan_app.command("sast")
@@ -963,6 +1014,74 @@ def verify_command(
     typer.echo(report.render(), nl=False)
     if not report.trusted:
         raise typer.Exit(EXIT_UNTRUSTED)
+
+
+@app.command("sbom")
+def sbom_command(
+    target: Annotated[Path, typer.Argument(help="Source tree, or the image the build wrote to a file.")],
+    name: Annotated[str, typer.Option(help="Name of the SBOM's subject, e.g. demo-shop/shop-api.")],
+    cyclonedx: Annotated[Path, typer.Option(help="Destination of the CycloneDX JSON SBOM.")],
+    spdx: Annotated[Path, typer.Option(help="Destination of the SPDX JSON SBOM.")],
+    source: Annotated[
+        str, typer.Option(help=f"What the target is: {', '.join(SOURCE_KINDS)} (never a registry pull).")
+    ] = "dir",
+    image_digest: Annotated[
+        str | None,
+        typer.Option(
+            help="For an image source (required there): the manifest digest the build produced, "
+            "sha256:<hex>. Both SBOMs must name it."
+        ),
+    ] = None,
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    tools_dir: Annotated[
+        Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
+    ] = DEFAULT_TOOLS_DIR,
+    platform: PlatformOption = None,
+) -> None:
+    """Write the CycloneDX and SPDX SBOMs of a source tree or a built image with the pinned Syft (offline).
+
+    Exit code 3, with neither file written, when Syft fails, does not match tools.lock.toml, or writes
+    something other than a CycloneDX document with a serialNumber and an SPDX document.
+    """
+    if source not in SOURCE_KINDS:
+        raise typer.BadParameter(f"--source must be one of {', '.join(SOURCE_KINDS)}")
+    for out in (cyclonedx, spdx):  # checked before anything is deleted
+        if out.resolve().is_relative_to(target.resolve()) or out.is_dir():
+            typer.echo(
+                f"sentinel sbom: {out} is inside the target {target} or a directory; nothing was written",
+                err=True,
+            )
+            raise typer.Exit(EXIT_NO_DECISION)
+    if cyclonedx.resolve() == spdx.resolve():
+        typer.echo("sentinel sbom: --cyclonedx and --spdx are the same file; nothing was written", err=True)
+        raise typer.Exit(EXIT_NO_DECISION)
+    for out in (cyclonedx, spdx):
+        try:
+            out.unlink(missing_ok=True)  # a failed run must never leave an older SBOM behind
+        except OSError as exc:
+            typer.echo(f"sentinel sbom: cannot use {out}: {exc}; nothing was written", err=True)
+            raise typer.Exit(EXIT_NO_DECISION) from exc
+    kind: SourceKind = source  # narrowed by the membership check above
+    try:
+        sbom = generate_sbom(
+            target,
+            kind=kind,
+            name=name,
+            lock=load_lock(lock),
+            tools_dir=tools_dir,
+            image_digest=image_digest,
+            platform=platform,
+        )
+        for out, data in ((cyclonedx, sbom.cyclonedx), (spdx, sbom.spdx)):
+            out.parent.mkdir(parents=True, exist_ok=True)
+            _write_atomically(out, data.decode("utf-8"))
+    except (ToolIntegrityError, ScannerError, OSError, UnicodeDecodeError) as exc:
+        for out in (cyclonedx, spdx):
+            out.unlink(missing_ok=True)
+        raise _fail_closed(exc) from exc
+    typer.echo(
+        f"syft {sbom.run.version}: {sbom.packages} package(s), {sbom.serial_number} -> {cyclonedx}, {spdx}"
+    )
 
 
 if __name__ == "__main__":
