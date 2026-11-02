@@ -13,11 +13,12 @@ from importlib.resources import files
 from pathlib import Path
 
 import pytest
+import yaml
 from jsonschema import Draft202012Validator
 from typer.testing import CliRunner
 
 from sentinelci.cli import app
-from sentinelci.contracts.finding import Run, Tool
+from sentinelci.contracts.finding import Finding, Run, Tool
 from sentinelci.normalize.trivy import normalize_trivy_config
 from sentinelci.policy.tool_status import ToolStatus
 from sentinelci.scanners.errors import ScannerError, ScannerTimeout
@@ -130,6 +131,7 @@ def test_repository_configuration_is_never_loaded(
     assert (Path(_value(argv, "--config-data")) / "trusted-registries.yaml").is_file()
     assert (Path(_value(argv, "--config-check")) / "aws_iam_full_admin.rego").is_file()
     assert _value(argv, "--check-namespaces") == CHECK_NAMESPACE == "sentinelci"
+    assert _value(argv, "--rego-error-limit") == "0"
     assert results == REPORT["Results"] and run.tool == "trivy"
 
 
@@ -969,3 +971,94 @@ deny contains "planted" if true
         (repo / where).write_text(planted)
     rules = {rule for _, rule in _real_ids(repo)}
     assert "AWS-0086" in rules and "SENTINEL-AWS-9999" not in rules
+
+
+# Review of #53.
+
+
+@real
+@pytest.mark.integration
+def test_real_trivy_fails_closed_when_a_sentinelci_check_does_not_compile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A type error (here an unknown builtin) is not a parse error: without --rego-error-limit 0, Trivy logs
+    # it, drops the check and exits 0, so SENTINEL-AWS-0001 would silently stop reporting.
+    configs = tmp_path / "configs"
+    shipped = files("sentinelci.scanners.configs")
+    (configs / "trivy-data").mkdir(parents=True)
+    (configs / "trivy-checks").mkdir()
+    for name in ("trivy-data", "trivy-checks"):
+        for entry in shipped.joinpath(name).iterdir():
+            text = entry.read_text(encoding="utf-8").replace("json.unmarshal(", "json.unmarshall(")
+            (configs / name / entry.name).write_text(text, encoding="utf-8")
+    monkeypatch.setattr("sentinelci.scanners.trivy.files", lambda _package: configs)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "iam.tf").write_text(FULL_ADMIN["jsonencode"])
+    with pytest.raises(ScannerError, match="rego_type_error"):
+        _real_ids(repo)
+
+
+@real
+@pytest.mark.integration
+def test_real_trivy_does_not_adapt_json_cloudformation_policies(tmp_path: Path) -> None:
+    # Known gap, pinned so a Trivy upgrade that starts adapting JSON templates shows up: the same template as
+    # YAML is reported, as JSON it is not (Trivy's own AWS-0345 misses JSON policies too).
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    template = yaml.safe_load(FULL_ADMIN_CLOUDFORMATION["inline policy of an AWS::IAM::Role"])
+    (repo / "template.json").write_text(json.dumps(template))
+    assert "SENTINEL-AWS-0001" not in {rule for _, rule in _real_ids(repo)}
+
+
+WILDCARD_SPELLINGS = {
+    "double star": ('Action = "**"', True),
+    "question mark and star": ('Action = "*:?*"', True),
+    "question mark then star": ('Action = "?*"', True),
+    "every resource but one": ('Action = "*", NotResource = "arn:aws:s3:::audit"', True),
+    "nothing (NotResource *)": ('Action = "*", NotResource = "*"', False),
+    # IAM refuses Resource and NotResource together; with one ARN in Resource it is not every resource anyway.
+    "one resource, and a NotResource": (
+        'Action = "*", Resource = "arn:aws:s3:::b", NotResource = "arn:aws:s3:::audit"',
+        False,
+    ),
+    "one character": ('Action = "?"', False),
+    "one verb in every service": ('Action = "*:Get*"', False),
+    "every action but IAM (NotAction)": ('NotAction = "iam:*"', False),
+}
+
+
+@real
+@pytest.mark.integration
+@pytest.mark.parametrize("case", WILDCARD_SPELLINGS)
+def test_real_trivy_full_admin_spellings(tmp_path: Path, case: str) -> None:
+    clause, reported = WILDCARD_SPELLINGS[case]
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    statement = clause if "Resource" in clause else f'{clause}, Resource = "*"'
+    (repo / "iam.tf").write_text(
+        'resource "aws_iam_policy" "p" {\n  name   = "p"\n'
+        '  policy = jsonencode({ Version = "2012-10-17", Statement = '
+        f'[{{ Effect = "Allow", {statement} }}] }})\n}}\n'
+    )
+    assert (("iam.tf", "SENTINEL-AWS-0001") in _real_ids(repo)) is reported
+
+
+def _real_findings(root: Path) -> list[Finding]:
+    results, run = scan_iac_with_run(root, lock=load_lock(REPO_LOCK), tools_dir=Path(str(TOOLS_DIR)))
+    run_info = Run(repo="NOURHANE-EHOUARI/sentinelci", commit=COMMIT, context="pr")
+    return normalize_trivy_config(results, run=run_info, tool=Tool(name="trivy", version=run.version))
+
+
+@real
+@pytest.mark.integration
+def test_real_trivy_reports_full_admin_as_high_on_its_resource(tmp_path: Path) -> None:
+    # One resource among others still counts as every resource; the severity is what the risk model reads.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    policy = ALLOW_ALL.replace('Resource = "*"', 'Resource = ["arn:aws:s3:::b", "*"]')
+    (repo / "iam.tf").write_text(
+        f'resource "aws_iam_policy" "admin" {{\n  name   = "p"\n  policy = {policy}\n}}\n'
+    )
+    found = [f for f in _real_findings(repo) if f.rule_id == "SENTINEL-AWS-0001"]
+    assert [(f.severity, f.location.path if f.location else None) for f in found] == [("HIGH", "iam.tf")]

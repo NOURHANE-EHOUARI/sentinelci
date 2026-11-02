@@ -28,11 +28,13 @@ package sentinelci.aws.iam.sentinel_aws_0001
 
 import rego.v1
 
-# Every policy document Trivy adapted from the configuration (Terraform or CloudFormation): the policies it
-# declares, and the inline policies of the roles, users and groups it declares. Not seen, because Trivy does not
-# adapt them: a policy attached by ARN (such as the AWS-managed AdministratorAccess), whose document is not in
-# the configuration; a policy attached to a user or group the configuration does not declare; a Terraform
-# policy read with file(); and a CloudFormation AWS::IAM::ManagedPolicy.
+# Every policy document Trivy adapted from the configuration (Terraform, or CloudFormation YAML): the policies
+# it declares, and the inline policies of the roles, users and groups it declares. Not seen, because Trivy does
+# not adapt them: a policy attached by ARN (such as the AWS-managed AdministratorAccess), whose document is not
+# in the configuration; a policy attached to a role, user or group the configuration does not declare; a
+# Terraform policy read with file() or templatefile(); a CloudFormation AWS::IAM::ManagedPolicy; and any policy
+# of a CloudFormation JSON template (Trivy adapts no IAM policy from JSON). Not this check: an Allow with
+# NotAction on every resource (broad, but not every action).
 policies contains policy if {
 	some policy in input.aws.iam.policies
 }
@@ -43,14 +45,24 @@ policies contains policy if {
 	some policy in holder.policies
 }
 
-wildcard_actions := {"*", "*:*"}
+# An action pattern made only of IAM wildcards matches every action: "*" and "*:*", but also "**" or "*:?*".
+every_action(action) if regex.match(`^[*?]*\*[*?]*(:[*?]*\*[*?]*)?$`, action)
+
+# "*" among the resources, or NotResource (every resource but the ones it names) with no Resource.
+every_resource(statement) if "*" in statement.Resource
+
+every_resource(statement) if {
+	is_array(statement.NotResource)
+	count(statement.NotResource) > 0
+	not "*" in statement.NotResource
+	not is_array(statement.Resource)
+}
 
 full_admin(statement) if {
 	statement.Effect == "Allow"
 	some action in statement.Action
-	action in wildcard_actions
-	some resource in statement.Resource
-	resource == "*"
+	every_action(action)
+	every_resource(statement)
 }
 
 deny contains res if {

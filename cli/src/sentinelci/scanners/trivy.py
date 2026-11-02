@@ -11,7 +11,8 @@ written by the author of the change, so each one is neutralized:
 - WASM modules (`~/.trivy/modules`) and the check cache -> private, empty directories. The Rego checks are the
   ones embedded in the pinned binary (`--skip-check-update`), so the result depends on the lock only, plus
   SentinelCI's own checks (`configs/trivy-checks`, namespace `sentinelci`, ids `SENTINEL-*`) for gaps in
-  Trivy's (ADR-0012), which ship with the CLI like the rest of its scanner configuration;
+  Trivy's (ADR-0012), which ship with the CLI like the rest of its scanner configuration. A check that does
+  not compile stops the scan (`--rego-error-limit 0`): Trivy would otherwise drop it and exit 0;
 - check data -> SentinelCI's own `--config-data` (for example the trusted image registries).
 
 Trivy also downloads the remote Terraform modules that the scanned code names (`git::https://...`, registry
@@ -367,6 +368,9 @@ def scan_iac_with_run(
                 "--config-data", str(config_data),
                 "--config-check", str(checks),
                 "--check-namespaces", CHECK_NAMESPACE,
+                # Stop on any check that does not compile: Trivy would otherwise log a type error, drop the
+                # check and exit 0, so a SentinelCI check could silently stop reporting.
+                "--rego-error-limit", "0",
                 "--skip-check-update",
                 "--skip-version-check",
                 "--disable-telemetry",

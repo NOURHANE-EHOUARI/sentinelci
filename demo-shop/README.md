@@ -23,7 +23,7 @@ Layout: `services/shop-api/`, `services/web/`, `infra/terraform/`, `infra/k8s/`,
 | Category | Seeds | Where | Verified detections |
 |---|---|---|---|
 | Secrets (all fake) | 5 | settings, `.npmrc`, Terraform provider, Kubernetes Secret, GitOps values | Gitleaks 5/5 |
-| Infrastructure as code | 6 | Terraform (S3, security group, RDS, IAM), Kubernetes, Dockerfile | Trivy 5/6, Checkov 6/6 |
+| Infrastructure as code | 6 | Terraform (S3, security group, RDS, IAM), Kubernetes, Dockerfile | Trivy 6/6 (GT-IAC-004 through SentinelCI's own check SENTINEL-AWS-0001), Checkov 6/6 |
 | CI workflows (never executed) | 3 | `examples/bad-workflows/` | zizmor 3/3 |
 | Clean controls | 4 | placeholders, sensitive variable, hardened deployment, pinned workflow | no detection |
 
