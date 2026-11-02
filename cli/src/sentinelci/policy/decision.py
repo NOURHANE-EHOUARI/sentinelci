@@ -20,17 +20,20 @@ from pydantic import ValidationError
 
 from sentinelci import __version__
 from sentinelci.contracts.finding import Finding
-from sentinelci.enrich.models import EMPTY_SNAPSHOT, EnrichmentError, load_snapshot
+from sentinelci.enrich.models import EMPTY_SNAPSHOT, EnrichmentError, load_service_context, load_snapshot
 from sentinelci.policy.bundle import PolicyBundle
 from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaRunner
 from sentinelci.policy.tool_status import load_tool_status
+from sentinelci.policy.vex import load_vex
 from sentinelci.policy.waivers import load_waivers
 
 # 1.2 only when a 1.2 input (baseline, tool status) is given: a decision without them stays readable by
 # consumers that know 1.1, and both versions mean the same thing for it.
 SCHEMA_VERSION = "1.1"
 SCHEMA_VERSION_WITH_NEW_INPUTS = "1.2"
+SCHEMA_VERSION_WITH_SERVICE_CONTEXT = "1.3"
+SCHEMA_VERSION_WITH_VEX = "1.4"
 GATE_QUERY = "data.sentinel.gate.decision"
 CONTEXTS = ("pr", "release", "local")
 VERDICTS = ("PASS", "WARN", "BLOCK")
@@ -187,14 +190,27 @@ def evaluate(
     tool_status_data: bytes | None = None,
     enrichment_snapshot: bytes | None = None,
     sbom: bytes | None = None,
+    service_context: bytes | None = None,
+    vex_data: bytes | None = None,
 ) -> dict[str, Any]:
-    """Run the release gate and return a Decision v1 record."""
+    """Run the release gate and return a Decision v1 record.
+
+    `service_context` is the sentinel.yaml enrichment used (from the base branch): its exposure lowered or
+    kept the findings' scores, so its digest is evidence like the snapshot's (Decision 1.3).
+    """
     findings = load_findings(findings_data)
     if enrichment_snapshot is not None:  # a digest is recorded only for a snapshot that is one
         try:
             load_snapshot(enrichment_snapshot)
         except EnrichmentError as exc:
             raise EvaluationError(f"--enrichment-snapshot: {exc}") from exc
+    vex = None if vex_data is None else load_vex(vex_data)  # every statement, normalized for the gate
+    profile = None
+    if service_context is not None:  # likewise: only a valid sentinel.yaml is recorded
+        try:
+            profile = load_service_context(service_context).policy_profile
+        except EnrichmentError as exc:
+            raise EvaluationError(f"--service-context: {exc}") from exc
     # Each input is parsed from the same bytes that are digested: the record names exactly what was evaluated.
     waivers_data = b"" if waivers_data is None else waivers_data
     waivers = load_waivers(waivers_data)
@@ -222,6 +238,10 @@ def evaluate(
         inputs["baseline_digest"] = sha256_digest(baseline_data)
     if tool_status_data is not None:
         inputs["tool_status_digest"] = sha256_digest(tool_status_data)
+    if service_context is not None:
+        inputs["service_context_digest"] = sha256_digest(service_context)
+    if vex_data is not None:
+        inputs["vex_digest"] = sha256_digest(vex_data)
 
     gate_input: dict[str, Any] = {
         "evaluated_at": timestamp,
@@ -235,6 +255,10 @@ def evaluate(
         gate_input["baseline"] = baseline
     if tool_status is not None:
         gate_input["tool_status"] = tool_status
+    if profile is not None:  # from the base-branch sentinel.yaml; absent: the default profile
+        gate_input["policy_profile"] = profile
+    if vex is not None:
+        gate_input["vex"] = vex
 
     result = _check_policy_result(
         opa.eval(
@@ -245,8 +269,12 @@ def evaluate(
     )
 
     decision_id = decision_id_of(subject.to_json(), timestamp, inputs, __version__)
-    return {
-        "schema_version": SCHEMA_VERSION_WITH_NEW_INPUTS
+    decision: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION_WITH_VEX
+        if vex_data is not None
+        else SCHEMA_VERSION_WITH_SERVICE_CONTEXT
+        if service_context is not None
+        else SCHEMA_VERSION_WITH_NEW_INPUTS
         if baseline is not None or tool_status is not None
         else SCHEMA_VERSION,
         "decision_id": decision_id,
@@ -260,6 +288,12 @@ def evaluate(
         "inputs": inputs,
         "engine_version": __version__,
     }
+    if vex_data is not None:  # Decision 1.4: the package findings a not_affected statement covered
+        applied = result.get("vex_applied")
+        if not isinstance(applied, list):
+            raise EvaluationError("policy decision is missing vex_applied")
+        decision["vex_applied"] = sorted(applied)
+    return decision
 
 
 def decision_id_of(

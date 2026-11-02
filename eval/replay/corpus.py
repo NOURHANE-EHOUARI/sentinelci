@@ -56,6 +56,7 @@ class Case:
     baseline: tuple[str, ...] | None = None
     waivers: str | None = None
     tool_status: str | None = None
+    service_context: str | None = None  # a sentinel-config fixture name (Decision 1.3)
 
 
 # Every case but the last two models a complete pipeline: all required scanners reported ok.
@@ -86,6 +87,9 @@ CASES = (
         tool_status="all-ok",
     ),
     Case("release-clean", "PASS", tool_status="all-ok"),
+    Case(
+        "release-clean-with-service-context", "PASS", tool_status="all-ok", service_context="with-components"
+    ),
     Case("release-scanner-timeout", "BLOCK", tool_status="one-timeout"),
     Case("release-without-tool-status", "BLOCK"),
 )
@@ -126,6 +130,14 @@ def record_case(case: Case, store: Path, work: Path, opa: Path | None) -> dict[s
         args += ["--baseline", str(work / "baseline.ndjson")]
     if case.tool_status is not None:
         args += ["--tool-status", str(FIXTURES / "tool-status" / "valid" / f"{case.tool_status}.json")]
+    if case.service_context is not None:
+        config = json.loads(
+            (FIXTURES / "sentinel-config" / "valid" / f"{case.service_context}.json").read_text("utf-8")
+        )
+        (work / "sentinel.yaml").write_text(
+            json.dumps(config, sort_keys=True), encoding="utf-8"
+        )  # JSON is YAML
+        args += ["--service-context", str(work / "sentinel.yaml")]
     if opa is not None:
         args += ["--opa", str(opa)]
     code = app(args, standalone_mode=False)
