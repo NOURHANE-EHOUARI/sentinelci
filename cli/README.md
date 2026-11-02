@@ -218,16 +218,27 @@ SENTINEL_API_TOKEN=... uv run sentinel upload --findings out/findings.ndjson --a
 ```
 
 - **A report, never a decision.** It runs after the verdict and never changes it: exit `0` when the platform
-  recorded exactly these findings (also when it already had them), `4` when it did not. It never exits with
-  the gate's codes, `1` or `3`.
+  recorded exactly these findings (with `--resume`, also when it already had them), `4` when it did not. It
+  never exits with the gate's codes, `1` or `3`, and never with a traceback: a malformed answer, an unusable
+  URL or an unexpected error is exit `4` too, with one line that names no secret.
 - **The token** comes only from `SENTINEL_API_TOKEN`. It is never an argument and is never printed, not even
-  in an error. In CI the step runs only in a job that runs no repository code.
+  in an error. It must be visible ASCII (no space, line break or non-ASCII character). In CI the step runs only
+  in a job that runs no repository code.
 - **The URL** is `https://`, or `http://` on the loopback (`localhost`, `127.0.0.1`, `[::1]`). It holds no
-  credentials, query or fragment. A redirect is refused, because it would carry the token elsewhere.
+  credentials, query, fragment, white space or control character. A redirect is refused, because it would
+  carry the token elsewhere. Plain `http://` never goes through a proxy (`http_proxy` is ignored), since the
+  proxy would see the token in clear text; `https://` goes through `HTTPS_PROXY`, which only sees a `CONNECT`.
+- **Time limits:** 60 s for each network operation, and 120 s for each request as a whole, so a platform that
+  answers one byte at a time cannot hold the step.
 - **The findings are checked first**, as the API checks them: Finding v1, each id once, each about the run
   given by `--repo/--commit/--context` (and `--ref/--run-id` when the findings carry them). A bad file never
   leaves an empty run behind.
 - **The platform's `findings_sha256`** must be the sha256 of the bytes sent.
 - **Resuming.** After a failure the message names the run, and `--resume <run id>` finishes it without
-  creating another. A run that already holds other findings is refused.
+  creating another. A run that already holds other findings (another sha256 or another count) is refused.
+  When the findings are larger than the platform's upload limit, the message says so: `--resume` cannot help,
+  and the run stays empty.
+- **Re-running.** A re-run *without* `--resume` records a new run, so a CI job re-run would record its findings
+  twice. Until the platform recognises a CI run it has already recorded (B1 follow-up), a re-run passes
+  `--resume` with the run id printed by the first attempt.
 

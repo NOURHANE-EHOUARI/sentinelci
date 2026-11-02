@@ -3,9 +3,14 @@
 A report, never part of the decision: the verdict is made and written before, and an upload that fails changes
 nothing about it (its own step, its own exit code). The rules agreed with Track B:
 
-- the token comes only from `SENTINEL_API_TOKEN`: never an argument, never printed, never in an error;
+- the token comes only from `SENTINEL_API_TOKEN`: never an argument, never printed, never in an error. It
+  must be visible ASCII, so it can only ever be a header value;
 - the platform URL is `https://`, or `http://` on the loopback only (a local platform), with no credentials,
-  query or fragment in it; a redirect is refused, since it would carry the token elsewhere;
+  query, fragment or white space in it; a redirect is refused, since it would carry the token elsewhere, and
+  plain http never goes through a proxy (the token would leave the machine in clear text). An https URL goes
+  through the job's `HTTPS_PROXY`, which only sees a CONNECT;
+- whatever happens, an upload fails with its own exit code (4) and one line that names no secret: every
+  request has an overall deadline, and a malformed answer is an upload failure like a refused one;
 - in CI it runs in a job that never runs repository code.
 
 The findings are checked locally first, as the API checks them (Finding v1, each listed once, each about this
@@ -16,13 +21,15 @@ platform recorded these same bytes.
 """
 
 import hashlib
+import http.client
 import json
 import os
 import re
+import threading
 import urllib.error
 import urllib.request
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -31,10 +38,12 @@ from sentinelci.policy.errors import EvaluationError
 
 TOKEN_VARIABLE = "SENTINEL_API_TOKEN"  # noqa: S105 (the variable's name, not a token)
 NDJSON = "application/x-ndjson"
-TIMEOUT_S = 60.0
+TIMEOUT_S = 60.0  # each socket operation
+DEADLINE_S = 120.0  # each request, from connecting to the last byte of the answer
 MAX_RESPONSE_BYTES = 1024 * 1024
 LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_TOKEN = re.compile(r"[\x21-\x7e]+")
 
 
 class UploadError(Exception):
@@ -64,6 +73,9 @@ class Uploaded:
 
 def check_api_url(url: str) -> str:
     """The base URL without a trailing slash, or UploadError: https, or http on the loopback."""
+    if any(char.isspace() or not char.isprintable() for char in url):
+        # urlsplit drops tabs and line breaks, so the check would read another URL than the request.
+        raise UploadError("--api-url must not hold white space or control characters")
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
     if parts.scheme not in ("https", "http") or not host:
@@ -72,6 +84,11 @@ def check_api_url(url: str) -> str:
         raise UploadError("--api-url over plain http is allowed on localhost only")
     if parts.username or parts.password or parts.query or parts.fragment:
         raise UploadError("--api-url must not hold credentials, a query or a fragment")
+    try:
+        parts.port  # noqa: B018 (urlsplit checks the port only when it is read)
+        host.encode("idna")
+    except (ValueError, UnicodeError) as exc:
+        raise UploadError(f"--api-url is not a usable URL: {type(exc).__name__}") from exc
     return url.rstrip("/")
 
 
@@ -79,6 +96,11 @@ def token_from(environ: Mapping[str, str]) -> str:
     token = environ.get(TOKEN_VARIABLE, "").strip()
     if not token:
         raise UploadError(f"{TOKEN_VARIABLE} is not set: the platform token comes only from the environment")
+    if not _TOKEN.fullmatch(token):
+        raise UploadError(
+            f"{TOKEN_VARIABLE} holds white space, a line break or a non-ASCII character, which a token "
+            "cannot have (it is not printed)"
+        )
     return token
 
 
@@ -110,10 +132,32 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         raise UploadError("the platform answered with a redirect: refused, the token would follow it")
 
 
+def _within_deadline[T](call: Callable[[], T]) -> T:
+    """`call()`, or UploadError once DEADLINE_S has passed: TIMEOUT_S bounds each socket operation only, so a
+    platform that sends one byte at a time could otherwise hold the step for as long as it likes. The worker
+    is a daemon thread: the CLI exits without waiting for it."""
+    outcome: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            outcome["value"] = call()
+        except BaseException as exc:  # re-raised in the caller's thread
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=run, name="sentinel-upload", daemon=True)
+    worker.start()
+    worker.join(DEADLINE_S)
+    if worker.is_alive():
+        raise UploadError(f"the platform did not answer within {DEADLINE_S:g} s")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]  # type: ignore[no-any-return]
+
+
 @dataclass(frozen=True)
 class Platform:
     base_url: str
-    token: str
+    token: str = field(repr=False)
 
     def _request(
         self, method: str, path: str, body: bytes | None, content_type: str | None
@@ -124,15 +168,25 @@ class Platform:
         request.add_header("Accept", "application/json")
         if content_type is not None:
             request.add_header("Content-Type", content_type)
-        opener = urllib.request.build_opener(_NoRedirect)
-        try:
-            with opener.open(request, timeout=TIMEOUT_S) as response:
-                return response.status, _json(response.read(MAX_RESPONSE_BYTES + 1))
-        except urllib.error.HTTPError as exc:
-            return exc.code, _json(exc.read(MAX_RESPONSE_BYTES + 1))
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            reason = getattr(exc, "reason", exc)
-            raise UploadError(f"the platform could not be reached: {type(exc).__name__}: {reason}") from exc
+        # Plain http is loopback only: never through a proxy, which would see the token in clear text.
+        proxies = urllib.request.ProxyHandler({} if request.type == "http" else None)
+        opener = urllib.request.build_opener(proxies, _NoRedirect)
+
+        def send() -> tuple[int, Any]:
+            try:
+                with opener.open(request, timeout=TIMEOUT_S) as response:
+                    return response.status, _json(response.read(MAX_RESPONSE_BYTES + 1))
+            except urllib.error.HTTPError as exc:
+                return exc.code, _json(exc.read(MAX_RESPONSE_BYTES + 1))
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                reason = getattr(exc, "reason", exc)
+                raise UploadError(
+                    f"the platform could not be reached: {type(exc).__name__}: {reason}"
+                ) from exc
+            except http.client.HTTPException as exc:
+                raise UploadError(f"the platform sent a malformed answer: {type(exc).__name__}") from exc
+
+        return _within_deadline(send)
 
     def create_run(self, run: RunInfo) -> str:
         status, body = self._request(
@@ -165,7 +219,9 @@ def _why(status: int, body: Any) -> str:
     detail = body.get("detail") if isinstance(body, dict) else None
     if isinstance(detail, list):  # 422: FastAPI's list of validation errors
         detail = "; ".join(str(item.get("msg")) for item in detail[:3] if isinstance(item, dict))
-    return f"HTTP {status}" + (f": {str(detail)[:300]}" if detail else "")
+    # The platform's own words, quoted and without control characters: they cannot pass for the CLI's.
+    said = "".join(char for char in str(detail) if char.isprintable())[:300] if detail else ""
+    return f"HTTP {status}" + (f", the platform says {said!r}" if said else "")
 
 
 def upload(data: bytes, run: RunInfo, platform: Platform, *, resume: str | None = None) -> Uploaded:
@@ -179,13 +235,18 @@ def upload(data: bytes, run: RunInfo, platform: Platform, *, resume: str | None 
         if any(recorded.get(k) != v for k, v in run.body().items()):
             raise UploadError(f"run {resume} is not this run (repo, commit, context, ref or run id differ)")
         if recorded.get("findings_sha256") is not None:
-            return _already(resume, recorded, digest)
+            return _already(resume, recorded, digest, count)
         run_id = resume
     else:
         run_id = platform.create_run(run)
     status, body = platform.upload(run_id, data)
     if status == 409:
-        return _already(run_id, platform.run(run_id), digest)
+        return _already(run_id, platform.run(run_id), digest, count)
+    if status == 413:
+        raise UploadError(
+            f"run {run_id} stays empty: the findings are larger than the platform's upload limit, so "
+            f"--resume will not help ({_why(status, body)})"
+        )
     if status != 201 or not isinstance(body, dict):
         raise UploadError(f"uploading the findings of run {run_id} failed: {_why(status, body)}")
     if body.get("findings_sha256") != digest or body.get("finding_count") != count:
@@ -193,10 +254,12 @@ def upload(data: bytes, run: RunInfo, platform: Platform, *, resume: str | None 
     return Uploaded(run_id=run_id, finding_count=count, findings_sha256=digest)
 
 
-def _already(run_id: str, recorded: Mapping[str, Any], digest: str) -> Uploaded:
-    if recorded.get("findings_sha256") != digest:
-        raise UploadError(f"run {run_id} already holds other findings (findings_sha256 differs)")
-    return Uploaded(run_id, int(recorded.get("finding_count", 0)), digest, already_recorded=True)
+def _already(run_id: str, recorded: Mapping[str, Any], digest: str, count: int) -> Uploaded:
+    """The run already holds findings: uploaded only if they are these bytes and this many findings. The
+    platform's data is compared, never converted."""
+    if recorded.get("findings_sha256") != digest or recorded.get("finding_count") != count:
+        raise UploadError(f"run {run_id} already holds other findings (findings_sha256 or count differs)")
+    return Uploaded(run_id, count, digest, already_recorded=True)
 
 
 def platform_from(api_url: str, environ: Mapping[str, str] = os.environ) -> Platform:

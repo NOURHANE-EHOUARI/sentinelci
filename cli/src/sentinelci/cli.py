@@ -498,8 +498,9 @@ def upload_command(
     """Send one run's findings to the SentinelCI platform (B1 ingestion API), after the decision.
 
     The token comes only from the SENTINEL_API_TOKEN environment variable. Exit code 0 when the platform
-    recorded exactly these findings (also when it already had them), 4 when it did not: an upload never
-    changes the verdict, which was decided before.
+    recorded exactly these findings (with --resume, also when it already had them), 4 when it did not, for
+    whatever reason: an upload never changes the verdict, which was decided before. A re-run without --resume
+    records a new run.
     """
     run = RunInfo(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id)
     try:
@@ -510,6 +511,15 @@ def upload_command(
             f"sentinel upload: {exc}\nthe findings were not uploaded (the verdict is unchanged)", err=True
         )
         raise typer.Exit(EXIT_UPLOAD_FAILED) from exc
+    except Exception as exc:
+        # Last resort: an upload never ends with 1 or a traceback. Only the type is printed: an unexpected
+        # error's text could hold anything, the token included.
+        typer.echo(
+            f"sentinel upload: unexpected {type(exc).__name__}\nthe findings were not uploaded "
+            "(the verdict is unchanged)",
+            err=True,
+        )
+        raise typer.Exit(EXIT_UPLOAD_FAILED) from None
     typer.echo(
         json.dumps(
             {
