@@ -261,3 +261,14 @@ def test_a_patch_that_forks_without_end_is_contained() -> None:
     problems = run("patch-sqli-python", {"diff": patch_of(forks + fixed), "rationale": "x"})
 
     assert any("Resource temporarily unavailable" in p or "BlockingIOError" in p for p in problems), problems
+
+
+def test_every_embedding_group_is_a_root_cause_stage_2b_may_merge() -> None:
+    """Separation scores pairs within a group against pairs across groups. Stage 2b never merges secrets
+    (each one is rotated on its own), so the bench must not reward putting them together; and a group needs
+    two texts or it adds no pair within."""
+    groups = BENCH.EMBED_GROUPS
+    assert all(len(texts) >= 2 for texts in groups.values()), groups
+    words = ("secret", "gitleaks", "access key", "token")
+    secret_like = [t for texts in groups.values() for t in texts if any(w in t.lower() for w in words)]
+    assert not secret_like, secret_like
