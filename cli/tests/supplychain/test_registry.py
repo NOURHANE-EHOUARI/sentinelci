@@ -349,7 +349,8 @@ def test_an_unreachable_registry_signs_nothing_and_verifies_nothing(
 ) -> None:
     image = f"127.0.0.1:{_free_port()}/demo-shop/shop-api@sha256:{'b' * 64}"
     result = attest(tmp_path, image, keys["release.key"])
-    assert result.exit_code == 3 and "the registry may hold part of the set (not trusted)" in result.output
+    # #44 re-review: the release check cannot read the registry, so the run stops before anything is signed.
+    assert result.exit_code == 3 and "cannot read" in result.output and "nothing was signed" in result.output
     assert not list((tmp_path / "evidence" / "attestations").glob("*")), "all four or none"
     assert verify(image, keys["release.pub"]).exit_code == 1
 
