@@ -213,7 +213,8 @@ waivers:
 uv run sentinel remediate kubernetes --findings out/findings.ndjson --repo-root . --out out/proposal.json
 git apply --check <(jq -r .diff out/proposal.json)   # the bot applies it on a branch and opens a PR
 uv run sentinel remediate verify --proposal out/proposal.json --before out/base.ndjson \
-  --after out/patched.ndjson --decision out/patched-decision.json --build-ok --tests-ok --out out/result.json
+  --after out/patched.ndjson --decision out/patched-decision.json --tool-status out/patched-tool-status.json \
+  --build-ok --tests-ok --out out/result.json
 ```
 
 - `kubernetes` proposes (`schemas/patch-proposal.v1.json`), it never applies. It hardens the workloads of the
@@ -235,8 +236,11 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
     its file (a renamed container moves a finding, it does not fix it); a base finding that rises to MEDIUM or
     higher counts as new;
   - exit `3` for a proposal whose id does not match its content, that claims findings `--before` does not
-    have, or whose diff does anything but edit, in place, the files those findings are in;
+    have, or whose diff does anything but edit, in place, the files those findings are in. Each hunk is read
+    to its line counts, as git reads it: a `---`/`+++` pair after the last hunk (which git applies as one more
+    file) is refused;
   - exit `3` for a decision not made on `--after` (`inputs.findings_digest`), not in pr context, or without the
-    tool status: a scan that failed or was skipped must not vouch for the patch;
+    tool status; for a `--tool-status` that is not the one the decision recorded, or that does not show the
+    scanner of every target `ok`: a scan that failed, was skipped or never ran must not vouch for the patch;
   - `--out` can never be one of the inputs.
 

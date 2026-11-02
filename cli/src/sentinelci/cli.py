@@ -63,6 +63,7 @@ from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaError, OpaRunner
 from sentinelci.policy.replay import ReplayResult, check_identity, replay, skip_reason
 from sentinelci.policy.store import EvidenceStore, StoreError
+from sentinelci.policy.tool_status import load_tool_status
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
 from sentinelci.remediation.gate import check_proposal, verify_proposal
 from sentinelci.remediation.kubernetes import propose as propose_kubernetes
@@ -881,6 +882,13 @@ def remediate_verify(
     before: Annotated[Path, typer.Option(help="Findings NDJSON of the commit the patch applies to.")],
     after: Annotated[Path, typer.Option(help="Findings NDJSON of the patched commit (same scanners).")],
     decision: Annotated[Path, typer.Option(help="Decision v1 record of the patched commit.")],
+    tool_status: Annotated[
+        Path,
+        typer.Option(
+            "--tool-status",
+            help="The tool status that decision recorded: every target's scanner must be in it, ok.",
+        ),
+    ],
     build: Annotated[bool, typer.Option("--build-ok/--build-failed", help="Did the patched commit build?")],
     tests: Annotated[bool, typer.Option("--tests-ok/--tests-failed", help="Did its tests pass?")],
     out: Annotated[
@@ -894,9 +902,12 @@ def remediate_verify(
     Exit code 0 when VERIFIED, 1 when REJECTED or FAILED (the result is written either way), 3 when the inputs
     cannot be trusted (nothing is written): a proposal whose id does not match its content, that claims
     findings the base scan does not have or edits anything but where they are; a decision that was not made in
-    pr context, on the patched findings, with the tool status.
+    pr context, on the patched findings, with this tool status; a tool status that does not show the scanner
+    of every target ok (a scanner that never ran finds nothing, and nothing must not vouch for the patch).
     """
-    _refuse_input_as_output(out, [proposal, before, after, decision], "sentinel remediate verify")
+    _refuse_input_as_output(
+        out, [proposal, before, after, decision, tool_status], "sentinel remediate verify"
+    )
     out.unlink(missing_ok=True)
     try:
         applied = PatchProposal.model_validate_json(proposal.read_bytes())
@@ -909,8 +920,18 @@ def remediate_verify(
                 "the decision must be a pr-context decision that saw the tool status (a scan that failed "
                 "must not vouch for the patch)"
             )
+        status_data = tool_status.read_bytes()
+        if record.inputs.tool_status_digest != "sha256:" + hashlib.sha256(status_data).hexdigest():
+            raise RemediationError("the tool status is not the one the decision recorded (--tool-status)")
+        statuses = load_tool_status(status_data)["tools"]
         base_findings = _read_findings(before, "base findings")
         check_proposal(applied, base_findings)
+        for scanner in sorted({base_findings[finding_id].tool.name for finding_id in applied.finding_ids}):
+            if statuses.get(scanner, {}).get("status") != "ok":
+                raise RemediationError(
+                    f"the tool status does not show {scanner} ok: the patched scan's silence about its "
+                    "targets proves nothing"
+                )
         result = verify_proposal(
             applied,
             before=base_findings,
@@ -921,7 +942,7 @@ def remediate_verify(
             verified_at=_now(),
             pull_request=pull_request,
         )
-    except (OSError, ValidationError, RemediationError) as exc:
+    except (OSError, ValidationError, RemediationError, EvaluationError) as exc:
         typer.echo(f"sentinel remediate verify: {exc}\nFAIL CLOSED: nothing is verified.", err=True)
         raise typer.Exit(EXIT_NO_DECISION) from exc
     _write_atomically(out, result.model_dump_json(indent=2, exclude_none=True) + "\n")
