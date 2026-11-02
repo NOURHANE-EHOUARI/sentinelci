@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from jsonschema import Draft202012Validator, FormatChecker
 from typer.testing import CliRunner
 
 from sentinelci.cli import app
@@ -506,3 +507,47 @@ def test_a_decision_file_that_is_not_its_id_is_refused(tmp_path: Path, opa_binar
 def test_replay_needs_exactly_one_of_a_decision_or_all(args: list[str]) -> None:
     result = CliRunner().invoke(app, ["replay", *args])
     assert result.exit_code == 2, result.output
+
+
+# ---------------------------------------------------------------- Decision 1.3: service context as evidence
+
+SENTINEL_YAML = (
+    b"version: 1\nservice: demo-shop\nexposure: internal\ncomponents:\n  - {path: infra, exposure: offline}\n"
+)
+
+
+def decision_schema() -> Draft202012Validator:
+    schema = json.loads((Path(__file__).resolve().parents[2] / "schemas/decision.v1.json").read_text("utf-8"))
+    return Draft202012Validator(schema, format_checker=FormatChecker())
+
+
+def test_the_service_context_is_recorded_stored_and_replayed(tmp_path: Path, opa_binary: Path) -> None:
+    code, _, decision = evaluate(
+        tmp_path, opa_binary, ndjson(SECRET), service_context=SENTINEL_YAML, tool_status=TOOLS_OK
+    )
+    assert code == 1
+    assert decision["schema_version"] == "1.3"
+    assert decision["inputs"]["service_context_digest"] == sha256(SENTINEL_YAML)
+    decision_schema().validate(decision)
+    assert EvidenceStore(tmp_path / "store").get(sha256(SENTINEL_YAML)) == SENTINEL_YAML
+    code, out = replay(tmp_path, opa_binary, decision["decision_id"])
+    assert code == 0, out
+
+
+def test_another_service_context_is_another_decision(tmp_path: Path, opa_binary: Path) -> None:
+    _, _, first = evaluate(tmp_path / "a", opa_binary, ndjson(SECRET), service_context=SENTINEL_YAML)
+    other = SENTINEL_YAML.replace(b"internal", b"internet-facing")
+    _, _, second = evaluate(tmp_path / "b", opa_binary, ndjson(SECRET), service_context=other)
+    _, _, none = evaluate(tmp_path / "c", opa_binary, ndjson(SECRET))
+    assert len({first["decision_id"], second["decision_id"], none["decision_id"]}) == 3
+    assert "service_context_digest" not in none["inputs"] and none["schema_version"] == "1.1"
+
+
+def test_a_service_context_missing_from_the_store_cannot_be_replayed(
+    tmp_path: Path, opa_binary: Path
+) -> None:
+    _, _, decision = evaluate(tmp_path, opa_binary, ndjson(SECRET), service_context=SENTINEL_YAML)
+    blob = EvidenceStore(tmp_path / "store").root / "sha256" / sha256(SENTINEL_YAML).split(":", 1)[1]
+    blob.unlink()
+    code, out = replay(tmp_path, opa_binary, decision["decision_id"])
+    assert code == 3, out
