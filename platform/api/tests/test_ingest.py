@@ -393,6 +393,86 @@ def test_the_upload_must_be_ndjson(client: TestClient, headers: dict[str, str]) 
 # ---------------------------------------------------------------- queries
 
 
+# ---------------------------------------------------------------- the exact upload (correlation, replay)
+
+
+def test_the_exact_upload_is_served_back(client: TestClient, headers: dict[str, str]) -> None:
+    """The bytes the run was recorded with, unchanged: a consumer that hashes them gets `findings_sha256`
+    (the correlation document's `findings_sha256`, a replay). JSONB rows cannot give them back."""
+    run_id = create_run(client, headers)
+    body = (
+        json.dumps(SECRET, ensure_ascii=False)
+        + "\n\n"
+        + json.dumps(SCA | {"message": "first\u2028second"}, ensure_ascii=False, separators=(",", ":"))
+        + "\n"
+    ).encode("utf-8")
+    assert upload(client, headers, run_id, body).status_code == 201
+    response = client.get(f"/api/v1/runs/{run_id}/findings")
+    assert response.status_code == 200, response.text
+    assert response.content == body
+    assert response.headers["content-type"].split(";")[0] == "application/x-ndjson"
+    recorded = client.get(f"/api/v1/runs/{run_id}").json()["findings_sha256"]
+    assert hashlib.sha256(response.content).hexdigest() == recorded
+    assert response.headers["etag"] == f'"{recorded}"'
+
+
+def test_a_clean_run_serves_an_empty_upload(client: TestClient, headers: dict[str, str]) -> None:
+    run_id = create_run(client, headers)
+    assert upload(client, headers, run_id, b"").status_code == 201
+    response = client.get(f"/api/v1/runs/{run_id}/findings")
+    assert (response.status_code, response.content) == (200, b"")
+
+
+def test_findings_not_uploaded_yet_are_not_found(client: TestClient, headers: dict[str, str]) -> None:
+    run_id = create_run(client, headers)
+    response = client.get(f"/api/v1/runs/{run_id}/findings")
+    assert response.status_code == 404 and "no findings recorded" in response.json()["detail"]
+    missing = "00000000-0000-4000-8000-000000000000"
+    assert client.get(f"/api/v1/runs/{missing}/findings").json()["detail"] == "no such run"
+
+
+def test_a_run_recorded_before_the_bytes_were_kept_says_so(client: TestClient, database_url: str) -> None:
+    import psycopg
+
+    with psycopg.connect(database_url, autocommit=True) as conn:
+        (run_id,) = conn.execute(
+            "INSERT INTO runs (id, repo, commit, context, findings_sha256, findings_uploaded_at) VALUES "
+            "(gen_random_uuid(), 'o/r', repeat('a', 40), 'pr', repeat('0', 64), now()) RETURNING id"
+        ).fetchone()  # type: ignore[misc]
+    response = client.get(f"/api/v1/runs/{run_id}/findings")
+    assert response.status_code == 404 and "not kept" in response.json()["detail"]
+
+
+KEPT_BYTES_REFUSED = {
+    "another-digest": (
+        "UPDATE runs SET findings_sha256 = repeat('0', 64), findings_uploaded_at = now(),"
+        " findings_ndjson = 'x'::bytea WHERE id = %s"
+    ),
+    "no-digest": "UPDATE runs SET findings_ndjson = 'x'::bytea WHERE id = %s",
+}
+
+
+@pytest.mark.parametrize("case", KEPT_BYTES_REFUSED)
+def test_the_database_keeps_only_bytes_that_hash_to_the_recorded_digest(
+    client: TestClient, headers: dict[str, str], database_url: str, case: str
+) -> None:
+    import psycopg
+
+    run_id = create_run(client, headers)
+    with psycopg.connect(database_url, autocommit=True) as conn, pytest.raises(psycopg.errors.CheckViolation):
+        conn.execute(KEPT_BYTES_REFUSED[case], (run_id,))
+
+
+def test_recorded_bytes_cannot_change(client: TestClient, headers: dict[str, str], database_url: str) -> None:
+    import psycopg
+
+    run_id = create_run(client, headers)
+    assert upload(client, headers, run_id, ndjson(SECRET)).status_code == 201
+    with psycopg.connect(database_url, autocommit=True) as conn, pytest.raises(psycopg.errors.RaiseException):
+        conn.execute("UPDATE runs SET findings_ndjson = %s WHERE id = %s", (ndjson(SCA), run_id))
+    assert client.get(f"/api/v1/runs/{run_id}/findings").content == ndjson(SECRET)
+
+
 def test_findings_can_be_filtered(client: TestClient, headers: dict[str, str]) -> None:
     run_id = create_run(client, headers)
     upload(client, headers, run_id, ndjson(SECRET, SCA, CONTAINER))
@@ -450,6 +530,7 @@ def test_writes_declare_the_bearer_scheme_and_reads_do_not(client: TestClient) -
     [
         ("POST", "/api/v1/runs", {"201", "401", "409", "413", "422", "503"}),
         ("GET", "/api/v1/runs/{run_id}", {"200", "404", "413", "422", "503"}),
+        ("GET", "/api/v1/runs/{run_id}/findings", {"200", "404", "413", "422", "503"}),
         ("POST", "/api/v1/runs/{run_id}/findings", {"201", "401", "404", "409", "413", "415", "422", "503"}),
         ("GET", "/api/v1/findings", {"200", "413", "422", "503"}),
         ("GET", "/api/v1/findings/{finding_id}", {"200", "404", "413", "422", "503"}),
@@ -491,7 +572,7 @@ def test_the_contract_version_is_the_apis_own(client: TestClient) -> None:
     from sentinelci import __version__ as engine_version
 
     document = client.app.openapi()  # type: ignore[attr-defined]
-    assert document["info"]["version"] == API_VERSION == "1.1.0"
+    assert document["info"]["version"] == API_VERSION == "1.2.0"
     assert client.get("/healthz").json() == {"status": "ok", "engine_version": engine_version}
 
 

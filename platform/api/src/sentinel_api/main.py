@@ -15,7 +15,7 @@ from sentinel_api.limits import BodyLimit
 from sentinelci import __version__ as engine_version
 
 # The version of the API contract (schemas/openapi.yaml), not of the engine: it changes only with the API.
-API_VERSION = "1.1.0"
+API_VERSION = "1.2.0"
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

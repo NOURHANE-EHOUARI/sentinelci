@@ -11,7 +11,7 @@ from typing import Annotated, Any
 import psycopg.errors
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -45,7 +45,7 @@ def _errors(*codes: int) -> dict[int | str, dict[str, Any]]:
     """The documented error responses of a route (schemas/openapi.yaml must list every status it returns)."""
     reasons = {
         401: "No valid ingestion token (`Authorization: Bearer <token>`).",
-        404: "No such run or finding.",
+        404: "No such run or finding, or no findings recorded for the run (yet).",
         409: "This run's findings are already recorded; compare `findings_sha256` from `GET /runs/{run_id}`.",
         413: "The request body is larger than the limit (64 KiB, or the upload limit for findings).",
         415: f"The findings upload is not `{NDJSON_TYPE}`.",
@@ -278,7 +278,10 @@ def _store(session: Session, run_id: uuid.UUID, body: bytes) -> UploadResult:
             update(Run)
             .where(Run.id == run_id, Run.findings_sha256.is_(None))
             .values(
-                findings_sha256=digest, findings_uploaded_at=datetime.now(UTC), finding_count=len(findings)
+                findings_sha256=digest,
+                findings_uploaded_at=datetime.now(UTC),
+                finding_count=len(findings),
+                findings_ndjson=body,
             )
             .execution_options(synchronize_session=False)
         )
@@ -313,6 +316,35 @@ async def upload_findings(run_id: uuid.UUID, request: Request, session: SessionD
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, f"findings are uploaded as {NDJSON_TYPE}")
     body = await _read_body(request, request.app.state.settings.max_upload_bytes)
     return await run_in_threadpool(_store, session, run_id, body)
+
+
+@router.get(
+    "/runs/{run_id}/findings",
+    tags=["runs"],
+    response_class=Response,
+    responses={
+        200: {
+            "description": "The upload byte for byte: its sha256 is the run's `findings_sha256`, the ETag.",
+            "content": {NDJSON_TYPE: {"schema": {"type": "string"}}},
+        },
+        **_errors(404, 413, 503),
+    },
+)
+def get_run_findings(run_id: uuid.UUID, session: SessionDep) -> Response:
+    """The run's findings exactly as uploaded: what to hash, correlate or replay against `findings_sha256`."""
+    run = session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such run")
+    if run.findings_sha256 is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no findings recorded for this run yet")
+    data = run.findings_ndjson
+    if data is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "the uploaded bytes were not kept (the run predates API 1.2.0)"
+        )
+    if hashlib.sha256(data).hexdigest() != run.findings_sha256:  # the database refuses this (migration 0004)
+        raise RuntimeError(f"run {run.id}: the kept upload does not match its findings_sha256")
+    return Response(data, media_type=NDJSON_TYPE, headers={"ETag": f'"{run.findings_sha256}"'})
 
 
 @router.get("/findings", tags=["findings"], responses=_errors(413, 503))
