@@ -268,11 +268,13 @@ uv run sentinel verify <registry>/demo-shop/shop-api@sha256:<digest> --key cosig
 - Trust is per digest; the repository name is informational. A plain copy of the image to another repository
   carries no attestation, but a copy that includes the `sha256-<hex>` index (`crane copy` of both, or
   `cosign save` / `cosign load`) is the same release, and is trusted there too.
-- `--registry-http` allows plain HTTP for a local registry only: a loopback host (`localhost`, `127.0.0.1`), or
-  a single-label host with a port (kind's `kind-registry:5000`). Any other host is refused (exit `3`), since
-  the image and the registry credentials would cross the network in clear. Registry credentials come only
-  from `DOCKER_CONFIG` (the directory of a Docker `config.json`), when it is set; no other variable reaches
-  Cosign.
+- `--registry-http` allows plain HTTP for a local registry only: a loopback host (`localhost`, `127.0.0.1`),
+  or a single-label host with a port (kind's `kind-registry:5000`). Any other host is refused (exit `3`),
+  since the image and the registry credentials would cross the network in clear. A single-label name is still
+  resolved through the machine's DNS search domains, so on a network that has one, `registry:5000` can reach a
+  remote host: use such a name only where it names the local registry (kind's network). Registry credentials
+  come only from `DOCKER_CONFIG` (the directory of a Docker `config.json`), when it is set; no other variable
+  reaches Cosign.
 - With `--push`, a registry failure while pushing is exit `3`, and no bundle is kept. The registry may then
   hold part of the set, which is not trusted. Re-running the same release completes it.
 - An unavailable registry: when the connection is refused, `verify` reports every check failed (exit `1`).
