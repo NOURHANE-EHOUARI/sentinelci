@@ -224,14 +224,25 @@ def test_a_patch_that_never_ends_is_stopped_and_its_container_removed(
 ) -> None:
     monkeypatch.setattr(BENCH, "SANDBOX_TIMEOUT_S", 3)
     endless = patch_of("while True:\n    pass\n" + BENCH.SQLI_FILE)
+    # Record the name of this check's own container: other runs on a shared daemon have sandboxes too.
+    names: list[str] = []
+    real_run = subprocess.run
+
+    def recording_run(args: Any, *rest: Any, **kwargs: Any) -> Any:
+        if isinstance(args, list) and args[1:2] == ["run"] and "--name" in args:
+            names.append(args[args.index("--name") + 1])
+        return real_run(args, *rest, **kwargs)
+
+    monkeypatch.setattr(BENCH.subprocess, "run", recording_run)
 
     problems = run("patch-sqli-python", {"diff": endless, "rationale": "x"})
 
     assert any("did not finish within 3 s" in p for p in problems), problems
+    assert len(names) == 1 and names[0].startswith("sentinel-bench-"), names
     docker = shutil.which("docker")
     assert docker is not None
-    left = subprocess.run(
-        [docker, "ps", "-aq", "--filter", "name=sentinel-bench-"], capture_output=True, text=True, check=True
+    left = real_run(
+        [docker, "ps", "-aq", "--filter", f"name=^/{names[0]}$"], capture_output=True, text=True, check=True
     )
     assert left.stdout.strip() == "", "no sandbox container may outlive the check"
 
@@ -250,3 +261,14 @@ def test_a_patch_that_forks_without_end_is_contained() -> None:
     problems = run("patch-sqli-python", {"diff": patch_of(forks + fixed), "rationale": "x"})
 
     assert any("Resource temporarily unavailable" in p or "BlockingIOError" in p for p in problems), problems
+
+
+def test_every_embedding_group_is_a_root_cause_stage_2b_may_merge() -> None:
+    """Separation scores pairs within a group against pairs across groups. Stage 2b never merges secrets
+    (each one is rotated on its own), so the bench must not reward putting them together; and a group needs
+    two texts or it adds no pair within."""
+    groups = BENCH.EMBED_GROUPS
+    assert all(len(texts) >= 2 for texts in groups.values()), groups
+    words = ("secret", "gitleaks", "access key", "token")
+    secret_like = [t for texts in groups.values() for t in texts if any(w in t.lower() for w in words)]
+    assert not secret_like, secret_like

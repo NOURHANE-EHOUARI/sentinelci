@@ -217,12 +217,17 @@ introduced(f) if {
 	not baseline_paths[f.id]
 }
 
-# A known secret in a file where the base branch did not have it is a new copy. Paths, not lines, so a secret
-# that only moved down its file does not count. Every place counts: a 1.0 finding names one, a 1.1 finding lists
-# the others in `other_locations`, so full-tree scans see a copy wherever it sorts.
+# Secrets and dependencies have fingerprints without a path (SPEC section 13.1), so a known one can appear in a
+# new place under its old id. A known secret in a file where the base branch did not have it is a new copy; a known
+# vulnerable package in a manifest where the base did not have it is a service newly exposed, with its own
+# exposure and reachability. Paths, not lines, so a finding that only moved down its file does not count. Every
+# place counts: a 1.0 finding names one, a 1.1 finding lists the others in `other_locations`, so full-tree scans
+# see a new place wherever it sorts.
+path_less_fingerprint := {"SECRET", "SCA"}
+
 introduced(f) if {
 	diff_aware
-	f.category == "SECRET"
+	f.category in path_less_fingerprint
 	some path in finding_paths(f)
 	not path in baseline_paths[f.id]
 }
@@ -304,10 +309,12 @@ block contains v if {
 }
 
 # SC-011: a misconfiguration that exposes the service by itself (policies/exposing.rego), whatever its score: it
-# creates the exposure the risk model's exposure factor would otherwise discount.
+# creates the exposure the risk model's exposure factor would otherwise discount. The ids are Trivy's, so only
+# Trivy findings match: another tool reporting the same rule_id was never checked against the list.
 exposing_ids contains f.id if {
 	some f in input.findings
 	f.category == "IAC"
+	f.tool.name == "trivy"
 	f.rule_id in exposing.rule_ids
 	counts(f)
 }

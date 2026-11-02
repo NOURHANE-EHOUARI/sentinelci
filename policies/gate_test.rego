@@ -296,6 +296,41 @@ test_pr_new_copy_that_becomes_the_primary_location_blocks if {
 	gate.decision.verdict == "BLOCK" with input as pr_with([head], [located(secret, "app/config.py")])
 }
 
+# A dependency's fingerprint has no path (SPEC section 13.1: purl base and advisory), so a known vulnerable package
+# that a second service starts to use keeps its id. It is a new place with its own exposure and reachability: it
+# counts as introduced, as a secret copied to a new file does.
+sca_p0 := scored(vuln(h("e"), "HIGH"), "P0")
+
+test_pr_known_vulnerable_package_in_a_new_service_blocks if {
+	head := spread(sca_p0, "services/shop-api/requirements.txt", ["services/admin/requirements.txt"])
+	d := gate.decision with input as pr_with([head], [located(sca_p0, "services/shop-api/requirements.txt")])
+	d.violations == [{"rule": "SC-002", "effect": "BLOCK", "finding_ids": [sca_p0.id], "message": "P0 finding not waived"}]
+}
+
+test_pr_known_vulnerable_package_only_in_a_new_manifest_blocks if {
+	head := located(sca_p0, "services/web/package-lock.json")
+	d := gate.decision with input as pr_with([head], [located(sca_p0, "services/shop-api/requirements.txt")])
+	d.verdict == "BLOCK"
+}
+
+test_pr_vulnerable_package_already_in_every_manifest_does_not_block if {
+	both := spread(sca_p0, "services/shop-api/requirements.txt", ["services/admin/requirements.txt"])
+	gate.decision.verdict == "PASS" with input as pr_with([both], [both])
+}
+
+test_pr_removing_a_service_that_used_the_package_does_not_block if {
+	base_finding := spread(sca_p0, "services/shop-api/requirements.txt", ["services/admin/requirements.txt"])
+	head := located(sca_p0, "services/shop-api/requirements.txt")
+	gate.decision.verdict == "PASS" with input as pr_with([head], [base_finding])
+}
+
+# Categories whose fingerprint already holds the path keep the fingerprint rule: a known id is not new.
+test_pr_path_rule_is_for_secrets_and_dependencies_only if {
+	issue := scored(pipeline_issue(h("f"), "HIGH"), "P0")
+	head := spread(issue, ".github/workflows/ci.yml", [".github/workflows/release.yml"])
+	gate.decision.verdict == "PASS" with input as pr_with([head], [located(issue, ".github/workflows/ci.yml")])
+}
+
 test_pr_without_baseline_counts_every_finding if {
 	i := object.union(with_findings([secret]), {"context": "pr"})
 	gate.decision.verdict == "BLOCK" with input as i
@@ -543,7 +578,10 @@ test_medium_pipeline_issue_does_not_block if {
 	gate.decision.verdict == "PASS" with input as with_findings([pipeline_issue(h("e"), "MEDIUM")])
 }
 
-iac_issue(id, rule_id, severity) := {"id": id, "category": "IAC", "rule_id": rule_id, "severity": severity}
+iac_issue(id, rule_id, severity) := {
+	"id": id, "category": "IAC", "rule_id": rule_id, "severity": severity,
+	"tool": {"name": "trivy", "version": "0.76.1"},
+}
 
 sc011_violation(ids) := {
 	"rule": "SC-011",
@@ -584,6 +622,14 @@ test_other_misconfigurations_keep_their_priority if {
 test_sc011_is_for_iac_findings_only if {
 	f := scored(object.union(vuln(h("a"), "LOW"), {"rule_id": "KSV-0017"}), "P3")
 	gate.decision.verdict == "PASS" with input as with_findings([f])
+}
+
+# The ids are Trivy's (#29 review): another IaC tool reporting the same rule_id keeps its risk-model priority.
+test_sc011_is_for_trivy_findings_only if {
+	every name in ["checkov", "Trivy", "trivy-fork"] {
+		f := scored(object.union(iac_issue(h("a"), "KSV-0017", "HIGH"), {"tool": {"name": name, "version": "1"}}), "P3")
+		gate.decision.verdict == "PASS" with input as with_findings([f])
+	}
 }
 
 test_an_exposing_misconfiguration_is_reported_once if {
