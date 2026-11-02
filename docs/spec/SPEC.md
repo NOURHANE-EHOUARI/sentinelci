@@ -16,6 +16,7 @@
 | 1.1.24 | B1 acceptance changed after the plan, while GitHub Actions are blocked: "an upload (`sentinel upload`, 1.1.23) or a sync ingests a real run" replaces "a sync ingests a real run". M1 can then be met by uploading a local run; the GitHub sync (§4.1, the platform pulls each CI run's evidence) stays in B1 and lands once CI runs exist. Hand-off B1 → A3, A8: OpenAPI and the ingestion endpoints at the end of S1, the sync later. |
 | 1.1.13 | A4 SBOMs (§7): `sentinel sbom` writes CycloneDX and SPDX JSON with the pinned Syft, offline and never configured by the scanned repository (private working directory and home, SentinelCI's `supplychain/configs/syft.yaml` passed explicitly, no network lookup, no file catalog); images come from the OCI layout the build wrote, and both SBOMs must name the image's manifest digest; an output inside the target is refused before anything is deleted. |
 | 1.1.12 | A4 release attestations (§7, ADR-0010): `sentinel attest` signs the release decision, CycloneDX SBOM, vulnerability scan (`schemas/vuln-result.v1.json`) and SLSA v1 provenance of an image digest with the pinned Cosign and a key pair (no transparency log), only for a non-BLOCK release decision about that image that recorded these findings and this SBOM; `sentinel verify` checks the four Sigstore bundles offline and prints a trust report (exit 0 trusted, 1 not, 3 could not run). |
+| 1.1.10 | B4: strict policy profile (`policies/profiles.rego`; any P1 is an SC-006 BLOCK) chosen by the base-branch `sentinel.yaml`; OpenVEX `not_affected` statements (`schemas/vex.v1.json`, `.sentinel/vex.json`), Decision 1.4 (`inputs.vex_digest`, `vex_applied`). A statement of any other status about the finding disputes `not_affected` (the gate does not order statements); `not_affected` applies for 90 days after it was made, like a waiver; a VEX date after `evaluated_at` is SC-010; `pkg:oci` products and duplicate JSON keys are refused. |
 | 1.1.9 | Decision 1.3: `inputs.service_context_digest`, the `sentinel.yaml` enrichment used (from the base branch), recorded by `sentinel evaluate --service-context`, stored with `--store` and given back on replay; an invalid `sentinel.yaml` is never recorded (exit 3). |
 | 1.1.7 | A3b evidence (§5, §6.5): every scan writes a tool status (`sentinel scan secrets --tool-status-out`), so a failed, timed-out or tampered scanner becomes a recorded BLOCK (SC-010) instead of a bare red job. PR mode scans the base commit's tree as the baseline. The gate stores its evidence (`--store`), uploaded as the `sentinel-evidence` artifact; the PR comment names it in its replay line and shows "N new" only for the baseline the gate used. The nightly replay also replays the last release decisions of `demo-shop.yml` on main. The gate scores findings with the base risk model before deciding, and every scanner run has a time limit the scan job outlives. |
 | 1.1.6 | A9 first seeds (§17): 5 fake secrets, 6 IaC, 3 CI-workflow seeds and 4 clean controls in `demo-shop/`, with a draft ground-truth format (`demo-shop/ground-truth/`, final schema owned by B9) checked against the pinned Gitleaks, Trivy and zizmor. SentinelCI's Trivy configuration trusts only the kind registry for KSV0125. |
@@ -329,7 +330,11 @@ worst case, `100 × severity_weight` banded, so CRITICAL and HIGH are P0 until s
 specific rule (SC-001, SC-003, SC-009 or SC-011 before SC-002/SC-006). SC-011 exists because the exposure factor
 X discounts a misconfiguration by its service's exposure, while a privileged pod or a public bucket creates the
 exposure itself; every other misconfiguration keeps its risk-model priority (IaC weight 0.5). Waivers and diff-aware PR mode apply to every finding
-rule. Not yet implemented: SC-004 (A4 attestations), SC-007, SC-008, the strict profile and VEX.
+rule; a not_affected VEX statement covers its package findings the same way (§6.4).
+**Profiles** (`policies/profiles.rego`): `policy_profile` of the base-branch `sentinel.yaml`, given to `sentinel
+evaluate --service-context`; `default` (or none) keeps SC-006 a WARN, `strict` makes any P1 an SC-006 BLOCK (the
+threshold, `p1_block_above: 0`, is policy data). An unknown profile is malformed input (SC-010). Not yet
+implemented: SC-004 (A4 attestations), SC-007, SC-008.
 
 Policy rules use `input.evaluated_at`, never `time.now_ns()`. Reference implementation of the verdict logic
 (verified with OPA 1.21):
@@ -362,15 +367,28 @@ else := "PASS"
 ### 6.4 Waivers and VEX
 
 Waivers in `.sentinel/waivers.yaml` (finding id or vuln + purl, owner, justification, expiry ≤ 90 days), added by
-PR and approved by CODEOWNERS; expired waivers stop applying. OpenVEX statements for "not affected". The AI may
+PR and approved by CODEOWNERS; expired waivers stop applying. OpenVEX statements for "not affected":
+`.sentinel/vex.json` (`schemas/vex.v1.json`, an OpenVEX v0.2.0 subset), read from the base branch like the waivers
+and recorded by digest. A `not_affected` statement (a justification is required) covers a package finding when one
+of its vulnerability ids is one of the finding's ids and one of its products is the finding's package (the purl base
+for every version, or one version when the purl names it); a covered finding counts for no rule and is listed in
+`vex_applied`. A statement of any other status about the finding disputes `not_affected`, whatever their order (the
+gate does not order statements; fail closed): a document must not keep an earlier statement of another status about
+the same product and vulnerability, so remove it when you add `not_affected`. Like a waiver, a `not_affected`
+statement applies for 90 days after it was made (its `last_updated` or `timestamp`, else the document's), and a
+statement or document dated after `evaluated_at` blocks (SC-010). Products are package purls: a statement covers that
+package in every image and context gated with this repository, and `pkg:oci` products are refused. Aliases are taken
+as written, so reviewers check them. Secrets are never covered. The AI may
 draft a waiver PR; only a human approval makes it effective.
 
 ### 6.5 Decision record and replay
 
 Schema: `schemas/decision.v1.json`. Fields: `decision_id`, `evaluated_at`, `subject` (repo, ref, commit, image
-digest, context), `verdict`, `violations` (rule, effect, finding ids, message), `waivers_applied`, `inputs`
+digest, context), `verdict`, `violations` (rule, effect, finding ids, message), `waivers_applied`, `vex_applied`
+(since 1.4, when VEX was given), `inputs`
 (digests of findings, SBOM, enrichment snapshot, policy bundle, waivers file (since 1.1), base-branch findings
-baseline and tool status (since 1.2, when given), service context `sentinel.yaml` (since 1.3, when given); risk
+baseline and tool status (since 1.2, when given), service context `sentinel.yaml` (since 1.3, when given), VEX
+document (since 1.4, when given); risk
 model version;
 tool versions),
 `engine_version`. The schema enforces verdict consistency (BLOCK ⇒ at least one BLOCK violation; PASS ⇒ none).

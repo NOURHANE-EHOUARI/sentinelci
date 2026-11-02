@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.4",
+  "decision_id": "0193f2c4-7a1e-7b3c-9d2e-4f5a6b7c8d9f",
+  "evaluated_at": "2026-11-10T10:05:00+00:00",
+  "subject": {
+    "repo": "NOURHANE-EHOUARI/sentinelci",
+    "ref": "refs/pull/12/merge",
+    "commit": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    "context": "pr"
+  },
+  "verdict": "PASS",
+  "violations": [],
+  "waivers_applied": [
+    "waiver-2026-001"
+  ],
+  "inputs": {
+    "findings_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "enrichment_snapshot_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "policy_bundle_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "risk_model_version": "1.0.0",
+    "tool_versions": {
+      "opa": "1.21.4"
+    },
+    "waivers_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "baseline_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+    "tool_status_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+    "service_context_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+  },
+  "engine_version": "0.1.0",
+  "vex_applied": [
+    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  ]
+}
