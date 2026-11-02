@@ -10,7 +10,9 @@
 # check fails that test instead of silently turning SC-011 off. Excluded after checking with the pinned Trivy:
 # GCP-0027 and AZU-0047 (also fire on public HTTPS), AWS-0040/0041 (EKS defaults), AWS-0086/0087/0091/0093
 # (a private bucket without a public access block), GCP-0017 (any Cloud SQL instance with a public IP, provider
-# defaults and an office-only range included). Keep one id per line: sentinelci.policy.exposing reads them.
+# defaults and an office-only range included). The gate matches these ids on Trivy findings only.
+# Trivy 0.76.1 blind spots, which no id here can catch: see cli/tests/scanners/test_trivy_exposing.py.
+# Keep one id per line: sentinelci.policy.exposing reads them.
 package sentinel.exposing
 
 import rego.v1
