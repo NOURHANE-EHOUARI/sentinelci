@@ -877,6 +877,7 @@ def scan_sast_cmd(
             rules=rule_ids(),
             scan_target=scan.target,
             scan_root=scan.target.relative_to(root.resolve()).as_posix(),
+            gaps=scan.gaps,
         )
     except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
         raise _fail_closed(exc) from exc

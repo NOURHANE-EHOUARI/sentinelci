@@ -14,7 +14,7 @@
 | 1.1.28 | Platform API 1.1.0 (B1, §13.3): one run per CI run. `POST /api/v1/runs` with the `repo`, `commit`, `context` and `run_id` of a run already recorded (a re-run of `sentinel upload`, #50) is answered 409 with the existing run, which the client resumes instead of recording the findings a second time; a unique index decides between concurrent requests. A run without `run_id` is always new. Migration 0003 stops, changing nothing, on a database that already holds a CI run twice. |
 | 1.1.27 | Diff-aware PR mode (§5, B4): a known vulnerable package (SCA) in a manifest where the base branch did not have it counts as introduced, like a known secret in a new file. SCA fingerprints hold no path, so a second service that starts to use a vulnerable package kept the old id and passed as "not new", although that service has its own exposure and reachability. A moved manifest now counts as new too, which errs toward blocking. Agreed on #52. |
 | 1.1.24 | B1 acceptance changed after the plan, while GitHub Actions are blocked: "an upload (`sentinel upload`, 1.1.23) or a sync ingests a real run" replaces "a sync ingests a real run". M1 can then be met by uploading a local run; the GitHub sync (§4.1, the platform pulls each CI run's evidence) stays in B1 and lands once CI runs exist. Hand-off B1 → A3, A8: OpenAPI and the ingestion endpoints at the end of S1, the sync later. |
-| 1.1.15 | A1 SAST (§5): `sentinel scan sast` runs the pinned Opengrep (no checksum file upstream: pinned by hash after checking each asset's keyless signature, recorded in `tools.lock.toml` with its signer identity) with SentinelCI's own rules only (`configs/opengrep/`, each pinned by cases it must flag and leave alone), offline, with `nosemgrep` comments, `.semgrepignore`, `.gitignore`, the size and per-file time limits and repository rule files never honoured, and links leaving the tree refused; a file Opengrep cannot analyse for more than half of its lines, and any other error even reported as a warning, fails closed; findings are category SAST with the §13.1 SAST fingerprint, plus the occurrence number for repeated identical matches in a file (each copy is its own finding, so a copy is new in a PR and a waiver covers one place). |
+| 1.1.15 | A1 SAST (§5): `sentinel scan sast` runs the pinned Opengrep (no checksum file upstream: pinned by hash after checking each asset's keyless signature, recorded in `tools.lock.toml` with its signer identity) with SentinelCI's own rules only (`configs/opengrep/`, each pinned by cases it must flag and leave alone), offline, with `nosemgrep` comments, `.semgrepignore`, `.gitignore`, the size and per-file time limits and repository rule files never honoured, and links leaving the tree refused; a file Opengrep cannot analyse for more than half of its lines, and any other error even reported as a warning, fails closed; findings are category SAST with the §13.1 SAST fingerprint, plus the occurrence number for repeated identical matches in a file (each copy is its own finding, so a copy is new in a PR and a waiver covers one place); each smaller gap Opengrep could not parse is a SAST HIGH finding of its own (`sentinel-sast-not-analysed`, fingerprinted on the skipped text, its message naming the lines and quoting no code), so padding cannot hide unparsed code, and valid syntax Opengrep cannot parse yet is waived with an expiry. |
 | 1.1.13 | A4 SBOMs (§7): `sentinel sbom` writes CycloneDX and SPDX JSON with the pinned Syft, offline and never configured by the scanned repository (private working directory and home, SentinelCI's `supplychain/configs/syft.yaml` passed explicitly, no network lookup, no file catalog); images come from the OCI layout the build wrote, and both SBOMs must name the image's manifest digest; an output inside the target is refused before anything is deleted. |
 | 1.1.12 | A4 release attestations (§7, ADR-0010): `sentinel attest` signs the release decision, CycloneDX SBOM, vulnerability scan (`schemas/vuln-result.v1.json`) and SLSA v1 provenance of an image digest with the pinned Cosign and a key pair (no transparency log), only for a non-BLOCK release decision about that image that recorded these findings and this SBOM; `sentinel verify` checks the four Sigstore bundles offline and prints a trust report (exit 0 trusted, 1 not, 3 could not run). |
 | 1.1.9 | Decision 1.3: `inputs.service_context_digest`, the `sentinel.yaml` enrichment used (from the base branch), recorded by `sentinel evaluate --service-context`, stored with `--store` and given back on replay; an invalid `sentinel.yaml` is never recorded (exit 3). |
@@ -206,8 +206,13 @@ executable, `.mts`, `.cts`, `.pyw`, notebooks) is not scanned, and the guarantee
 error Opengrep reports fails closed, even a warning (too many matches in a file, out of memory: Opengrep then drops
 the file's results), except a file it could parse only in part: that fails closed too when more than half of the
 file's lines were not analysed (all of them when it could not parse the file at all), since one line of syntax
-Opengrep does not know can hide a whole file; a smaller gap is named in the job log with its line count, and the
-code in it is not analysed.
+Opengrep does not know can hide a whole file. Each smaller gap (overlapping or adjacent spans merged) is a finding
+of its own, so blank lines or a long docstring around unparsable code cannot hide it: rule
+`sentinel-sast-not-analysed`, SAST HIGH (unscored, so P0: it blocks until fixed or waived), fingerprinted like a
+match on the skipped text with the same occurrence numbering (§13.1), with a message that names the lines and
+quotes no code. Valid modern syntax Opengrep cannot parse yet (a PEP 695 `def f[T]`, some TypeScript constructs)
+shows up this way until Opengrep catches up: the way out is a reviewed waiver with an expiry, never a scanner
+flag.
 
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
@@ -561,7 +566,8 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
 - SAST: `sha256(rule id | path | hash of normalized snippet)` — survives line shifts — plus the occurrence number
   for repeated identical matches in a file: in line order, the first keeps that id and the n-th (n ≥ 2) is
   `sha256(<that id> | n)`, its own finding. A copy of a vulnerable line is then new in a PR, and a waiver covers
-  one place.
+  one place. Code Opengrep could not parse (rule `sentinel-sast-not-analysed`) uses the same formula, with the
+  skipped lines as the snippet.
 - SECRET: `sha256(rule id | sha256(secret value))`.
 - IAC / PIPELINE: `sha256(rule id | path | resource or job id)`.
 

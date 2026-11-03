@@ -298,5 +298,10 @@ uv run sentinel scan sast demo-shop --repo-root . --out out/sast.ndjson \
 - Exit code `3` (SC-010), and no findings file, when Opengrep fails, reports an error (even as a warning: too
   many matches in a file, out of memory, ...), names a rule that is not SentinelCI's, or does not match the
   lock. A file Opengrep could parse only in part exits `3` when more than half of its lines were not analysed
-  (all of them for a file it could not parse at all); a smaller gap is a warning that names the file and
-  counts the lines, and the code in it is not analysed.
+  (all of them for a file it could not parse at all).
+- Each smaller gap is a finding: rule `sentinel-sast-not-analysed`, SAST HIGH, one per contiguous range of
+  skipped lines, fingerprinted on the skipped text like a match (a gap that moves keeps its id, a new one is
+  new, and the same text twice in a file is two findings). Its message names the lines and quotes no code
+  (`Opengrep did not analyse lines 12-19 of app.py (PartialParsing). ...`). Valid modern syntax Opengrep cannot
+  parse yet (a PEP 695 `def f[T]`, some TypeScript) shows up this way until Opengrep catches up: waive it with
+  a reviewed expiry, never with a scanner flag. The job log still names each file and counts its lines.

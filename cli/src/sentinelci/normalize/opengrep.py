@@ -6,12 +6,20 @@ keeps the id; a new match is a new finding. The same code several times in a fil
 numbered in line order (SPEC §13.1): the first keeps the fingerprint, the n-th is `sha256(fingerprint | n)`.
 A copy of a vulnerable line is then new in a pull request, and a waiver covers the one place it was reviewed
 for. No code is kept: the snippet is only hashed, and the messages are the rules' fixed text (SentinelCI's
-rules never interpolate code into them)."""
+rules never interpolate code into them).
+
+Code Opengrep could not parse, in a file it otherwise analysed (at most half of it: more fails the scan), is a
+finding too: rule `sentinel-sast-not-analysed`, SAST HIGH, one per gap, fingerprinted like a match on the
+skipped text (and numbered the same way), with a message that names the lines and quotes no code. A new gap is
+then new in a pull request, a gap that only moved keeps its id, and a waiver for one gap never covers another.
+Valid syntax Opengrep cannot parse yet shows up this way too: the way out is a reviewed waiver with an expiry,
+never a scanner flag."""
 
 import posixpath
 import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +39,21 @@ _CWE = re.compile(r"CWE-[0-9]+")
 # flagged `is_ignored`. It stays a finding: the scanned repository cannot silence a scanner.
 IGNORED_NOTE = "A nosemgrep comment covers it; SentinelCI does not honour those (use a waiver)."
 _RANK = ("INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL")
+NOT_ANALYSED_RULE = "sentinel-sast-not-analysed"
+_ERROR_TYPE = re.compile(r"[A-Za-z][A-Za-z ]{0,63}")
+
+
+@dataclass(frozen=True)
+class ParseGap:
+    """Lines Opengrep could not parse and skipped, in a file it otherwise analysed: `path` relative to the
+    scanned directory, the first and last line (from 1, inclusive), Opengrep's error type, and the skipped
+    text (only ever hashed)."""
+
+    path: str
+    start: int
+    end: int
+    error: str
+    text: str
 
 
 def _field(mapping: Mapping[str, Any], key: str, index: int, kind: type) -> Any:
@@ -59,9 +82,11 @@ def normalize_opengrep(
     rules: frozenset[str],
     scan_target: Path,
     scan_root: str = ".",
+    gaps: Sequence[ParseGap] = (),
 ) -> list[Finding]:
-    """Convert Opengrep results into Finding v1 records. `scan_target` is the scanned directory (result paths
-    are absolute, under it) and `scan_root` that directory relative to the repository root."""
+    """Convert Opengrep results, and the code it could not analyse (`gaps`), into Finding v1 records.
+    `scan_target` is the scanned directory (result paths are absolute, under it) and `scan_root` that
+    directory relative to the repository root."""
     groups: dict[str, list[tuple[str, int, int, Mapping[str, Any]]]] = defaultdict(list)
     for index, result in enumerate(results):
         rule = _field(result, "check_id", index, str)
@@ -91,7 +116,43 @@ def normalize_opengrep(
             findings.append(
                 _finding(occurrence_fingerprint(fingerprint, occurrence), same, path, start, end, run, tool)
             )
+    findings += _gap_findings(gaps, scan_root, run, tool)
     return sorted(findings, key=lambda f: f.id)
+
+
+def _gap_findings(gaps: Sequence[ParseGap], scan_root: str, run: Run, tool: Tool) -> list[Finding]:
+    """One SAST HIGH finding per gap, numbered like matches: the same skipped text twice in a file is two
+    findings, in line order."""
+    groups: dict[str, dict[tuple[int, int], tuple[str, ParseGap]]] = defaultdict(dict)
+    for gap in gaps:
+        if gap.end < gap.start or gap.start < 1 or not _ERROR_TYPE.fullmatch(gap.error):
+            raise NormalizationError(f"a malformed gap in what Opengrep analysed ({gap.path})")
+        path = to_repo_relative(posixpath.join(scan_root, to_repo_relative(gap.path)))
+        groups[sast_fingerprint(NOT_ANALYSED_RULE, path, gap.text)][(gap.start, gap.end)] = (path, gap)
+    findings: list[Finding] = []
+    for fingerprint, places in groups.items():
+        for occurrence, (_, (path, gap)) in enumerate(sorted(places.items()), start=1):
+            lines = f"line {gap.start}" if gap.start == gap.end else f"lines {gap.start}-{gap.end}"
+            findings.append(
+                Finding(
+                    schema_version="1.0",
+                    id=occurrence_fingerprint(fingerprint, occurrence),
+                    tool=tool,
+                    rule_id=NOT_ANALYSED_RULE,
+                    category="SAST",
+                    title="Code that SAST did not analyse",
+                    message=(
+                        f"Opengrep did not analyse {lines} of {path} ({gap.error}). SentinelCI does not skip "
+                        "code silently: make it parse, or, for valid syntax Opengrep cannot read yet, waive "
+                        "this finding with a reviewed expiry."
+                    ),
+                    severity="HIGH",
+                    severity_source="SentinelCI (code not analysed)",
+                    location=Location(path=path, start_line=gap.start, end_line=gap.end),
+                    run=run,
+                )
+            )
+    return findings
 
 
 def _finding(

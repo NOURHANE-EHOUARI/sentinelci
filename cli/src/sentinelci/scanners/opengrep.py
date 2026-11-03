@@ -19,7 +19,9 @@ the author of the change, so each one is neutralized:
   built and run, so the target is refused when it has one (a link loop too);
 - a file Opengrep cannot parse in full   -> Opengrep skips the code it could not parse and only warns: when
   that is more than half of the file's lines (one line of modern syntax can hide a whole file), the scan
-  fails closed; a smaller gap is a warning that names the file and counts the lines not analysed;
+  fails closed; each smaller gap (overlapping or adjacent spans merged) is returned with its lines and text,
+  and becomes a SAST HIGH finding of its own (`sentinel-sast-not-analysed`), so blank lines or a long
+  docstring around unparsable code cannot hide it;
 - any other problem, even a warning      -> fails closed: Opengrep drops the file's results (too many matches
   in one file, out of memory, ...).
 
@@ -36,6 +38,7 @@ from typing import Any
 
 import yaml
 
+from sentinelci.normalize.opengrep import ParseGap
 from sentinelci.scanners.errors import ScannerError
 from sentinelci.scanners.lock import ToolLock
 from sentinelci.scanners.runner import DEFAULT_TIMEOUT_S, ToolRun, is_within, run_verified_tool
@@ -72,6 +75,7 @@ class SastScan:
     run: ToolRun
     target: Path  # resolved: result paths are absolute, under it
     warnings: list[str]  # files Opengrep parsed in part, for at most half of their lines
+    gaps: list[ParseGap]  # the code it skipped in those files, one entry per contiguous range of lines
 
 
 def rule_ids() -> frozenset[str]:
@@ -140,6 +144,27 @@ def line_count(data: bytes) -> int:
     return data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
 
 
+def merged_ranges(spans: list[tuple[int, int]], total: int) -> list[tuple[int, int]]:
+    """The (start, end) spans within lines 1..total, overlapping or adjacent ones merged, in line order."""
+    ranges: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        end = min(end, total)
+        if end < start:
+            continue
+        if ranges and start <= ranges[-1][1] + 1:
+            ranges[-1] = (ranges[-1][0], max(ranges[-1][1], end))
+        else:
+            ranges.append((start, end))
+    return ranges
+
+
+def _lines(data: bytes, start: int, end: int) -> str:
+    """Lines start..end as Opengrep numbers them ("\n" only), each with its newline when it has one."""
+    segments = data.split(b"\n")
+    chunk = b"\n".join(segments[start - 1 : end]) + (b"\n" if end < len(segments) else b"")
+    return chunk.decode("utf-8", errors="replace")
+
+
 def lines_covered(spans: list[tuple[int, int]], total: int) -> int:
     """How many of lines 1..total the (start, end) spans cover, overlaps counted once."""
     covered, reached = 0, 0
@@ -157,21 +182,29 @@ def _relative(where: Any, target: Path) -> str | None:
     return None
 
 
-def _parse_gap(name: str, where: str, spans: list[tuple[int, int]] | None, target: Path) -> tuple[bool, str]:
-    """(fatal, text) for a file Opengrep parsed only in part (`spans` None: not at all)."""
+def _parse_gap(
+    name: str, where: str, spans: list[tuple[int, int]] | None, target: Path
+) -> tuple[bool, str, list[ParseGap]]:
+    """(fatal, text, gaps) for a file Opengrep parsed only in part (`spans` None: not at all)."""
     try:
-        total = line_count((target / where).read_bytes())
+        data = (target / where).read_bytes()
     except OSError:
-        return True, f"{name} in {where}: the file cannot be read to count what was not analysed"
+        return True, f"{name} in {where}: the file cannot be read to count what was not analysed", []
+    total = line_count(data)
     skipped = total if spans is None else lines_covered(spans, total)
-    return 2 * skipped > total, f"{name} in {where}: {skipped} of {total} lines not analysed"
+    gaps = [
+        ParseGap(path=where, start=start, end=end, error=name, text=_lines(data, start, end))
+        for start, end in merged_ranges(spans or [], total)
+    ]
+    return 2 * skipped > total, f"{name} in {where}: {skipped} of {total} lines not analysed", gaps
 
 
-def _problems(report: dict[str, Any], target: Path) -> tuple[list[str], list[str]]:
-    """(fatal, warnings) from Opengrep's `errors`. Only a file parsed in part, for at most half of its lines,
-    is a warning: anything else means part of the scan did not run."""
+def _problems(report: dict[str, Any], target: Path) -> tuple[list[str], list[str], list[ParseGap]]:
+    """(fatal, warnings, gaps) from Opengrep's `errors`. Only a file parsed in part, for at most half of its
+    lines, is a warning, with its gaps: anything else means part of the scan did not run."""
     fatal: list[str] = []
     warnings: list[str] = []
+    found: list[ParseGap] = []
     errors = report.get("errors")
     if not isinstance(errors, list):
         raise ScannerError("opengrep's JSON report has no `errors` list")
@@ -195,9 +228,11 @@ def _problems(report: dict[str, Any], target: Path) -> tuple[list[str], list[str
         where = where or error.get("path")
         fatal.append(f"{name or 'error'}{f' in {where}' if isinstance(where, str) and where else ''}")
     for path, (first, skipped) in sorted(gaps.items()):
-        is_fatal, text = _parse_gap(first, path, skipped, target)
+        is_fatal, text, ranges = _parse_gap(first, path, skipped, target)
         (fatal if is_fatal else warnings).append(text)
-    return fatal, warnings
+        if not is_fatal:
+            found += ranges
+    return fatal, warnings, found
 
 
 def scan_sast_with_run(
@@ -244,7 +279,7 @@ def scan_sast_with_run(
         raise ScannerError("opengrep's JSON report has no `results` list")
     if report.get("version") != run.version:
         raise ScannerError(f"opengrep reports version {report.get('version')!r}, the lock pins {run.version}")
-    fatal, warnings = _problems(report, source)
+    fatal, warnings, gaps = _problems(report, source)
     if fatal:
         raise ScannerError(f"opengrep could not scan everything: {_listed(fatal)}")
     results = report["results"]
@@ -260,4 +295,4 @@ def scan_sast_with_run(
         stderr=run.stderr,
         duration_s=run.duration_s,
     )
-    return SastScan(results=results, run=kept, target=source, warnings=warnings)
+    return SastScan(results=results, run=kept, target=source, warnings=warnings, gaps=gaps)

@@ -201,6 +201,32 @@ def test_a_file_parsed_in_part_for_at_most_half_of_its_lines_is_a_warning(
     assert scan.warnings == [f"PartialParsing in app/w.py: {skipped} lines not analysed"]
 
 
+def test_each_gap_is_listed_with_its_lines_and_the_text_opengrep_skipped(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
+) -> None:
+    """#40 review: each smaller gap becomes a finding, so the scan says which lines and gives their text.
+    Overlapping or adjacent spans are one gap; a span past the last line stops there."""
+    text = "".join(f"line {n}\n" for n in range(1, 11))
+    scan = _gap_scan(
+        tmp_path, releases, write_lock,
+        lambda t: [
+            _parse_error(t, W, (2, 3), (3, 4)), _parse_error(t, W, (7, 7)), _parse_error(t, W, (8, 8)),
+        ],
+        text,
+    )  # fmt: skip
+    assert [(g.path, g.start, g.end, g.error) for g in scan.gaps] == [
+        ("app/w.py", 2, 4, "PartialParsing"), ("app/w.py", 7, 8, "PartialParsing"),
+    ]  # fmt: skip
+    assert scan.gaps[0].text == "line 2\nline 3\nline 4\n"
+
+
+def test_a_gap_past_the_last_line_stops_there(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
+) -> None:
+    scan = _gap_scan(tmp_path, releases, write_lock, lambda t: [_parse_error(t, W, (9, 40))], TEN)
+    assert [(g.start, g.end, g.text) for g in scan.gaps] == [(9, 10, "x = 1\nx = 1\n")]
+
+
 @pytest.mark.parametrize(
     ("errors", "message"),
     [
@@ -314,11 +340,13 @@ def test_cli_writes_repository_relative_sast_findings(
     out = tmp_path / "out" / "sast.ndjson"
     code, output = _cli(tmp_path, dest, services, out, repo)
     assert code == 0, output
-    (finding,) = [json.loads(line) for line in out.read_text().splitlines()]
-    assert (finding["category"], finding["rule_id"]) == ("SAST", "python-sql-built-from-strings")
-    assert finding["location"]["path"] == "services/app/sql.py"
+    findings = {f["rule_id"]: f for f in (json.loads(line) for line in out.read_text().splitlines())}
+    finding, gap = findings["python-sql-built-from-strings"], findings["sentinel-sast-not-analysed"]
+    assert finding["category"] == "SAST" and finding["location"]["path"] == "services/app/sql.py"
     assert finding["tool"] == {"name": "opengrep", "version": "1.0.0"}
-    assert "1 finding(s)" in output and "PartialParsing in app/w.js: 1 of 2 lines not analysed" in output
+    assert gap["location"] == {"path": "services/app/w.js", "start_line": 2, "end_line": 2}
+    assert (gap["category"], gap["severity"]) == ("SAST", "HIGH") and "let b" not in gap["message"]
+    assert "2 finding(s)" in output and "PartialParsing in app/w.js: 1 of 2 lines not analysed" in output
 
 
 def test_cli_failure_leaves_no_findings(

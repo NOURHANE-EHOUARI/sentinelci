@@ -20,7 +20,7 @@ from sentinelci.contracts.finding import Location, Run, Tool
 from sentinelci.normalize.errors import NormalizationError
 from sentinelci.normalize.fingerprint import sast_fingerprint
 from sentinelci.normalize.ndjson import dumps_ndjson
-from sentinelci.normalize.opengrep import normalize_opengrep
+from sentinelci.normalize.opengrep import NOT_ANALYSED_RULE, ParseGap, normalize_opengrep
 from sentinelci.scanners.opengrep import rule_ids
 
 FIXTURES = Path(__file__).parent / "fixtures" / "opengrep"
@@ -228,3 +228,63 @@ def _broken(edit: Any) -> list[dict[str, Any]]:
 def test_malformed_results_fail_closed(results: list[dict[str, Any]], message: str) -> None:
     with pytest.raises(NormalizationError, match=message):
         _normalize(results)
+
+
+# ---------------------------------------------------------------- code Opengrep did not analyse (#40 review)
+
+GAP_TEXT = "    def f[T](x: T) -> T:\n        return os.system(x)\n"
+
+
+def _gap(path: str = "app/new.py", start: int = 12, end: int = 13, text: str = GAP_TEXT) -> ParseGap:
+    return ParseGap(path=path, start=start, end=end, error="PartialParsing", text=text)
+
+
+def _gaps(*gaps: ParseGap, scan_root: str = "."):  # type: ignore[no-untyped-def]
+    return normalize_opengrep(
+        [], run=RUN, tool=TOOL, rules=RULES, scan_target=TARGET, scan_root=scan_root, gaps=gaps
+    )
+
+
+def test_each_part_not_analysed_is_a_sast_high_finding_that_quotes_no_code(
+    finding_validator: Draft202012Validator,
+) -> None:
+    (finding,) = _gaps(_gap(), scan_root="services")
+    assert (finding.category, finding.severity, finding.rule_id) == ("SAST", "HIGH", NOT_ANALYSED_RULE)
+    assert finding.rule_id == "sentinel-sast-not-analysed"
+    assert finding.location == Location(path="services/app/new.py", start_line=12, end_line=13)
+    assert finding.message.startswith(
+        "Opengrep did not analyse lines 12-13 of services/app/new.py (PartialParsing)."
+    )
+    assert finding.id == sast_fingerprint(NOT_ANALYSED_RULE, "services/app/new.py", GAP_TEXT)
+    output = dumps_ndjson([finding])
+    for code in ("def f", "os.system", "return"):
+        assert code not in output
+    assert not [e.message for e in finding_validator.iter_errors(json.loads(output))]
+    (one_line,) = _gaps(_gap(start=7, end=7))
+    assert "did not analyse line 7 of app/new.py" in one_line.message
+
+
+def test_a_gap_that_moves_or_is_re_indented_keeps_its_id_and_new_code_is_new() -> None:
+    (first,) = _gaps(_gap())
+    (moved,) = _gaps(_gap(start=40, end=41, text="\n" + GAP_TEXT.replace("    ", "  ")))
+    (other,) = _gaps(_gap(text="    def g[T](x: T) -> T:\n        return x\n"))
+    (elsewhere,) = _gaps(_gap(path="app/other.py"))
+    assert moved.id == first.id
+    assert len({first.id, other.id, elsewhere.id}) == 3
+
+
+def test_the_same_gap_twice_in_a_file_is_one_finding_per_place_numbered_in_line_order() -> None:
+    """A waiver for one gap never covers another, even with the same text in the same file."""
+    later, earlier = _gap(start=30, end=31), _gap(start=2, end=3)
+    findings = sorted(_gaps(later, earlier), key=lambda f: f.location.start_line)
+    first = sast_fingerprint(NOT_ANALYSED_RULE, "app/new.py", GAP_TEXT)
+    assert [f.id for f in findings] == [first, hashlib.sha256(f"{first}|2".encode()).hexdigest()]
+
+
+def test_a_gap_and_a_rule_match_on_the_same_lines_are_two_findings() -> None:
+    sql = next(r for r in _results() if r["check_id"] == "python-sql-built-from-strings")
+    findings = normalize_opengrep(
+        [sql], run=RUN, tool=TOOL, rules=RULES, scan_target=TARGET,
+        gaps=[_gap(path="app/sql.py", start=2, end=2, text=sql["extra"]["lines"])],
+    )  # fmt: skip
+    assert sorted(f.rule_id for f in findings) == ["python-sql-built-from-strings", NOT_ANALYSED_RULE]

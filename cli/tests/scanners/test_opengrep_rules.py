@@ -14,12 +14,16 @@ from typing import Any
 import pytest
 import yaml
 
+from sentinelci.contracts.finding import Run, Tool
+from sentinelci.normalize.opengrep import NOT_ANALYSED_RULE, normalize_opengrep
 from sentinelci.scanners.errors import ScannerError
 from sentinelci.scanners.lock import load_lock
 from sentinelci.scanners.opengrep import RULES_DIR, RULES_PACKAGE, rule_ids, scan_sast_with_run
 
 REPO_LOCK = Path(__file__).resolve().parents[3] / "tools.lock.toml"
 TOOLS_DIR = os.environ.get("SENTINEL_TOOLS_DIR")
+RUN = Run(repo="NOURHANE-EHOUARI/sentinelci", commit="4b825dc642cb6eb9a060e54bf8d69288fbee4904", context="pr")
+TOOL = Tool(name="opengrep", version="1.33.1")
 
 # (rule, file name, must the rule flag it, code)
 CASES: list[tuple[str, str, bool, str]] = [
@@ -304,3 +308,25 @@ def test_a_small_parse_gap_is_a_warning_and_the_rest_is_analysed(tmp_path: Path)
         "PartialParsing in alias.py: 1 of 7 lines not analysed",
         "PartialParsing in small.py: 4 of 13 lines not analysed",
     ]
+    assert [(g.path, g.start, g.end) for g in scan.gaps] == [("alias.py", 3, 3), ("small.py", 5, 8)]
+    assert scan.gaps[0].text == "type Alias = list[int]\n"
+
+
+@pytest.mark.skipif(not TOOLS_DIR, reason="set SENTINEL_TOOLS_DIR to a `sentinel tools install` directory")
+@pytest.mark.integration
+def test_padding_cannot_hide_a_gap_it_is_a_finding_of_its_own(tmp_path: Path) -> None:
+    """#40 review: blank lines or a long docstring keep a gap under half of the file, and the call inside the
+    gap is never analysed. The gap is then a SAST HIGH finding (`sentinel-sast-not-analysed`)."""
+    hidden = "import os\n\n" + GENERIC + "    " + CALL
+    padded = hidden + "\n" * 40 + "x = 1\n"
+    docstring = hidden + '"""' + "\n".join(f"doc line {n}" for n in range(60)) + '"""\n'
+    scan = _scan_files(tmp_path, {"padded.py": padded, "docstring.py": docstring})
+    assert scan.results == [], "the call inside the gap is not analysed"
+    findings = normalize_opengrep(
+        scan.results, run=RUN, tool=TOOL, rules=rule_ids(), scan_target=scan.target, gaps=scan.gaps
+    )
+    assert sorted((f.rule_id, f.severity, f.location.path, f.location.start_line, f.location.end_line)
+                  for f in findings) == [
+        (NOT_ANALYSED_RULE, "HIGH", "docstring.py", 1, 5), (NOT_ANALYSED_RULE, "HIGH", "padded.py", 1, 5),
+    ]  # fmt: skip
+    assert len({f.id for f in findings}) == 2 and all("os.system" not in f.message for f in findings)
