@@ -30,9 +30,12 @@ HTTP_500 = (
 REFUSED = 'error during command execution: Get "https://127.0.0.1:5000/v2/": connect: connection refused'
 
 
-def _check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reason: str) -> None:
+def _check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reason: str, listed: dict[str, int] | None = None
+) -> None:
     pem = "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n"
     monkeypatch.setattr(Signer, "public_key", lambda *_: pem)
+    monkeypatch.setattr(Verifier, "listed", lambda *_: listed or {})
 
     def attached(*_: Any) -> Attached:
         return Attached({}, reason)
@@ -56,3 +59,12 @@ def test_a_registry_that_could_not_be_read_stops_the_release_before_signing(
 ) -> None:
     with pytest.raises(AttestationError, match="cannot read"):
         _check(tmp_path, monkeypatch, reason)
+
+
+def test_a_listed_bundle_the_key_did_not_verify_stops_the_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cosign 3.1 skips a bundle it cannot fetch (a 500 on its manifest or blob) and then says "no matching
+    attestations", as for an empty registry. The index still lists the bundle: that stops the release."""
+    with pytest.raises(AttestationError, match="lists 1 decision attestation"):
+        _check(tmp_path, monkeypatch, EMPTY, listed={KINDS["decision"]: 1})

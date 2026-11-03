@@ -254,10 +254,12 @@ class Verified:
 @dataclass(frozen=True)
 class Attached:
     """What the key signed about an image in its registry, for one type: distinct predicates by canonical
-    JSON, or why Cosign verified none (`reason`)."""
+    JSON, or why Cosign verified none (`reason`), and how many bundles Cosign verified (`verified`, before
+    identical statements are merged)."""
 
     predicates: dict[str, Any]
     reason: str | None
+    verified: int = 0
 
 
 def canonical(predicate: Any) -> str:
@@ -407,13 +409,42 @@ class Verifier:
         if run.returncode != 0:
             return Attached({}, _last_line(run.stderr))
         predicates: dict[str, Any] = {}
+        lines = [line for line in run.stdout.splitlines() if line.strip()]
         try:
-            for line in (line for line in run.stdout.splitlines() if line.strip()):
+            for line in lines:
                 predicate = check_statement(statement_of_envelope(json.loads(line)), image, predicate_type)
                 predicates[canonical(predicate)] = predicate
         except ValueError as exc:
             raise AttestationError(f"unreadable Cosign output: {exc}") from exc
-        return Attached(predicates, None if predicates else "Cosign verified no statement")
+        return Attached(predicates, None if predicates else "Cosign verified no statement", len(lines))
+
+    def listed(self, image: Image, registry: Registry, environ: Mapping[str, str]) -> dict[str, int]:
+        """The bundles the registry lists for the digest (its `sha256-<hex>` tag index), by predicate type,
+        read with the pinned crane. Cosign 3.1 skips a bundle it cannot fetch and then says "no matching
+        attestations", as for an empty registry, so that answer alone proves nothing. No index: {} (nothing
+        attached, or a registry with the OCI referrers API, which crane cannot list: ADR-0010 decision 4)."""
+        index = f"{_repository(image)}:sha256-{image.digest_hex}"
+        with tempfile.TemporaryDirectory(prefix="sentinel-release-check-") as private:
+            run = run_verified_tool(
+                "crane", ["manifest", *(["--insecure"] if registry.allow_http else []), index],
+                lock=self.lock, tools_dir=self.tools_dir, cwd=Path(private), platform=self.platform,
+                timeout_s=_TIMEOUT_S, allowed_exit_codes=(0, 1), extra_env=Registry.env(environ),
+            )  # fmt: skip
+        if run.returncode != 0:
+            if "MANIFEST_UNKNOWN" in run.stderr:
+                return {}
+            raise AttestationError(
+                f"cannot read the attestation index in the registry: {_last_line(run.stderr)}"
+            )
+        counts: dict[str, int] = {}
+        try:
+            for entry in json.loads(run.stdout).get("manifests", []):
+                kind = (entry.get("annotations") or {}).get("dev.sigstore.bundle.predicateType")
+                if isinstance(kind, str):
+                    counts[kind] = counts.get(kind, 0) + 1
+        except (AttributeError, ValueError) as exc:
+            raise AttestationError(f"unreadable attestation index: {type(exc).__name__}") from exc
+        return counts
 
     def verify_in_registry(
         self, image: Image, predicate_type: str, registry: Registry, environ: Mapping[str, str]
@@ -446,22 +477,34 @@ def refuse_another_release(
     A digest has one release per registry. A second, different one would make every later verification
     ambiguous (NOT TRUSTED), while Kyverno, which reads one statement per type, could still admit the image:
     the two verifiers would disagree. Attaching the same statements again (a re-run) is allowed. A registry
-    that cannot be read (an HTTP error, a refused connection) stops the release too: only Cosign's own
-    "nothing attached" answers count as an empty registry."""
+    that cannot be read (an HTTP error, a refused connection) stops the release too: Cosign's own "nothing
+    attached" answers count as an empty registry only when the tag index lists no more bundles of the type
+    than Cosign verified (Cosign skips a bundle it cannot fetch). A listed bundle the key did not verify,
+    unreadable or signed by another key, stops the release as well."""
     with tempfile.TemporaryDirectory(prefix="sentinel-release-check-") as private:
         public_key = Path(private) / "release.pub"
         public_key.write_text(signer.public_key(environ), encoding="ascii")
         verifier = Verifier(public_key, signer.lock, signer.tools_dir, signer.platform)
+        listed = verifier.listed(image, registry, environ)
+        recovery = (
+            f"on a registry without the referrers API: crane delete {_repository(image)}:"
+            f"sha256-{image.digest_hex}"
+        )
         for kind, (predicate_type, predicate) in statements.items():
             found = verifier.attached(image, predicate_type, registry, environ)
+            if (count := listed.get(predicate_type, 0)) > found.verified:
+                raise AttestationError(
+                    f"the registry lists {count} {kind} attestation(s) of {image.digest}, and the release "
+                    f"key verified {found.verified}: one could not be read, or another key signed it. If the "
+                    f"registry reads fine, remove the old release first ({recovery}), then attest again"
+                )
             if found.reason is not None and not _NOTHING_ATTACHED.search(found.reason):
                 raise AttestationError(f"cannot read the {kind} attestations in the registry: {found.reason}")
             if set(found.predicates) - {canonical(predicate)}:
                 raise AttestationError(
                     f"the registry already holds a different {kind} attestation of {image.digest}, signed by "
-                    "this key: a digest has one release per registry. Remove the old release first (on a "
-                    f"registry without the referrers API: crane delete {_repository(image)}:"
-                    f"sha256-{image.digest_hex}), then attest again"
+                    "this key: a digest has one release per registry. Remove the old release first "
+                    f"({recovery}), then attest again"
                 )
 
 

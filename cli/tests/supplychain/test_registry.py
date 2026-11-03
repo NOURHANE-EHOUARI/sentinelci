@@ -224,6 +224,14 @@ def test_a_re_run_of_the_attest_job_is_still_trusted(
     result = verify(pushed, keys["release.pub"])
     assert result.exit_code == 0, result.output
     assert "TRUSTED: 16/16" in result.output and "signed by the key (2 signature(s))" in result.output
+    # A third run: the index now lists two identical bundles of each type, and Cosign verifies both, so the
+    # release check (bundles listed vs verified, #44 re-review of 594bce8) still lets it through.
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "3")
+    third = tmp_path / "third"
+    third.mkdir()
+    result = attest(third, pushed, keys["release.key"])
+    assert result.exit_code == 0, result.output
+    assert "signed by the key (3 signature(s))" in verify(pushed, keys["release.pub"]).output
 
 
 SECOND_DECISION = "0193f2c4-7a1e-7b3c-9d2e-4f5a6b7c8da0"
@@ -256,6 +264,32 @@ def test_a_second_release_of_the_digest_is_refused_before_anything_is_signed(
     assert attest(third, pushed, keys["release.key"], decision_id=SECOND_DECISION).exit_code == 0
     result = verify(pushed, keys["release.pub"])
     assert result.exit_code == 0 and "TRUSTED: 16/16" in result.output, result.output
+
+
+def test_a_listed_bundle_cosign_cannot_read_stops_the_release(
+    pushed: str, tmp_path: Path, keys: dict[str, Path]
+) -> None:
+    """#44 re-review of 594bce8: Cosign 3.1 skips a bundle whose manifest it cannot fetch, then says "no
+    matching attestations", as for an empty registry. Here the four attestation bundles' manifests are gone
+    while the tag index still lists them (a registry failing those reads looks the same to Cosign): the
+    release check counts what the index lists, with crane, and stops before signing."""
+    image, lock, tools = parse_image(pushed), load_lock(REPO_LOCK), Path(str(TOOLS_DIR))
+    index = run_verified_tool(
+        "crane", ["manifest", f"{image.name}:sha256-{image.digest_hex}", "--insecure"],
+        lock=lock, tools_dir=tools, cwd=tmp_path,
+    )  # fmt: skip
+    for entry in json.loads(index.stdout)["manifests"]:
+        if (entry.get("annotations") or {}).get("dev.sigstore.bundle.predicateType") in KINDS.values():
+            run_verified_tool(
+                "crane", ["delete", f"{image.name}@{entry['digest']}", "--insecure"],
+                lock=lock, tools_dir=tools, cwd=tmp_path,
+            )  # fmt: skip
+    again = tmp_path / "again"
+    again.mkdir()
+    second = attest(again, pushed, keys["release.key"], decision_id=SECOND_DECISION)
+    assert second.exit_code == 3, second.output
+    assert "lists 1 decision attestation(s)" in second.output and "nothing was signed" in second.output
+    assert not list((again / "evidence" / "attestations").glob("*"))
 
 
 def test_an_image_never_attested_is_not_trusted(

@@ -74,11 +74,16 @@ signed predicate is not byte-identical to the file it came from.
      6). Two different statements of one type make that attestation ambiguous: it fails;
    - a digest has **one release per registry**. `sentinel attest --push` refuses, before signing anything,
      when the registry already holds a different statement of one of the four types signed by the same key
-     about this digest. The way out is to remove the old release first (on a registry without the referrers
-     API, `crane delete <repository>:sha256-<hex>`). Kyverno reads one statement per type and cannot see a
-     second one (A5): someone holding the key who attaches a second release with Cosign directly would make
-     admission admit an image that `sentinel verify` refuses as ambiguous. That difference is accepted and
-     named here;
+     about this digest. Cosign 3.1 skips a bundle it cannot fetch and then answers "no matching attestations",
+     as for an empty registry, so the check also reads the `sha256-<hex>` tag index with the pinned crane and
+     refuses when it lists more bundles of a type than Cosign verified with the key (one unreadable, or signed
+     by another key); a registry whose index cannot be read refuses too. Limit: crane cannot list the OCI
+     referrers API, so on a registry that has it, only Cosign's answer counts. The registries of the private
+     phase (kind's `registry:2`, crane's test registry) have no referrers API. The way out is to remove the
+     old release first (on a registry without the referrers API, `crane delete <repository>:sha256-<hex>`).
+     Kyverno reads one statement per type and cannot see a second one (A5): someone holding the key who
+     attaches a second release with Cosign directly would make admission admit an image that `sentinel verify`
+     refuses as ambiguous. That difference is accepted and named here;
    - trust is per digest, and the repository name is informational: a copy that includes the `sha256-<hex>`
      index (`crane copy`, `cosign save` / `cosign load`) is the same release;
    - a verification that ran and failed (Cosign exit codes 1 and 10 to 13), or a registry that refuses the
