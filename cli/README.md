@@ -263,8 +263,11 @@ uv run sentinel verify <registry>/demo-shop/shop-api@sha256:<digest> --key cosig
   (`cosign public-key`) and refuses (exit `3`, nothing signed) when the registry already holds a different
   statement of one of the four types, signed by the same key, about this digest. A second release would make
   `sentinel verify` refuse the image as ambiguous, while Kyverno, which reads one statement per type, could
-  still admit it. To release the digest again, remove the old release first: on a registry without the OCI
-  referrers API, `crane delete <repository>:sha256-<hex>`.
+  still admit it. Cosign skips a bundle it cannot fetch and then reports nothing attached, so the check also
+  counts the bundles the `sha256-<hex>` tag index lists (with the pinned crane) and refuses when Cosign
+  verified fewer: one could not be read, or another key signed it. A registry with the OCI referrers API is
+  not counted (crane cannot list it). To release the digest again, remove the old release first: on a registry
+  without the OCI referrers API, `crane delete <repository>:sha256-<hex>`.
 - Trust is per digest; the repository name is informational. A plain copy of the image to another repository
   carries no attestation, but a copy that includes the `sha256-<hex>` index (`crane copy` of both, or
   `cosign save` / `cosign load`) is the same release, and is trusted there too.
