@@ -17,13 +17,17 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
 import typer
+from pydantic import ValidationError
 
 from sentinelci import __version__
+from sentinelci.contracts.decision import Decision
 from sentinelci.contracts.finding import Finding, Run, RunContext, Tool
+from sentinelci.contracts.remediation import PatchProposal
 from sentinelci.enrich import (
     EMPTY_SNAPSHOT,
     EnrichmentError,
@@ -59,8 +63,21 @@ from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaError, OpaRunner
 from sentinelci.policy.replay import ReplayResult, check_identity, replay, skip_reason
 from sentinelci.policy.store import EvidenceStore, StoreError
+from sentinelci.policy.tool_status import load_tool_status
+from sentinelci.policy.vex import DEFAULT_VEX_PATH
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
-from sentinelci.report.pr_comment import ReportError, load_inputs, render_no_decision, render_pr_comment
+from sentinelci.remediation.apply import apply_proposal
+from sentinelci.remediation.dockerfile import propose as propose_dockerfile
+from sentinelci.remediation.gate import check_proposal, verify_proposal
+from sentinelci.remediation.kubernetes import propose as propose_kubernetes
+from sentinelci.remediation.proposal import RemediationError
+from sentinelci.report.pr_comment import (
+    ReportError,
+    load_inputs,
+    parse_findings,
+    render_no_decision,
+    render_pr_comment,
+)
 from sentinelci.risk import RiskModel, RiskModelError, score_finding
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
@@ -100,6 +117,11 @@ app.add_typer(policy_app, name="policy")
 app.add_typer(tools_app, name="tools")
 app.add_typer(scan_app, name="scan")
 app.add_typer(report_app, name="report")
+remediate_app = typer.Typer(
+    help="Verified remediation loop (SPEC §9): deterministic fixers propose, the gate verifies.",
+    no_args_is_help=True,
+)
+app.add_typer(remediate_app, name="remediate")
 
 LockOption = Annotated[Path, typer.Option("--lock", help="Path to the tool lock file.")]
 DestOption = Annotated[Path, typer.Option("--dest", help="Installation directory (bin/ and cache/).")]
@@ -131,6 +153,7 @@ def _fail_closed(exc: Exception) -> typer.Exit:
 EXIT_BLOCK = 1
 EXIT_REPLAY_DIFFERS = 1
 EXIT_NO_DECISION = 3
+EXIT_NOT_VERIFIED = 1
 DEFAULT_STORE = Path("out/evidence")
 
 
@@ -392,6 +415,13 @@ def evaluate_command(
             "digest (Decision 1.3)."
         ),
     ] = None,
+    vex: Annotated[
+        Path | None,
+        typer.Option(
+            help="OpenVEX statements (schemas/vex.v1.json), from the base branch. "
+            f"Default: {DEFAULT_VEX_PATH} if present."
+        ),
+    ] = None,
     sbom: Annotated[Path | None, typer.Option(help="SBOM file to record by digest.")] = None,
     opa: Annotated[
         Path | None, typer.Option(help="OPA binary. Default: $SENTINEL_OPA, then opa on PATH.")
@@ -408,7 +438,9 @@ def evaluate_command(
     """
     if waivers is None and Path(DEFAULT_WAIVERS_PATH).is_file():
         waivers = Path(DEFAULT_WAIVERS_PATH)
-    inputs = [findings, waivers, baseline, tool_status, enrichment_snapshot, service_context, sbom, opa]
+    if vex is None and Path(DEFAULT_VEX_PATH).is_file():
+        vex = Path(DEFAULT_VEX_PATH)
+    inputs = [findings, waivers, baseline, tool_status, enrichment_snapshot, service_context, sbom, vex, opa]
     dirs = {"--policy-dir": policy_dir, "--store": store}
     _refuse_output(output, inputs, "sentinel evaluate", "--output", dirs)
     # A stale decision from an earlier run must never be mistaken for this run's result.
@@ -423,6 +455,7 @@ def evaluate_command(
             enrichment_snapshot=enrichment_snapshot.read_bytes() if enrichment_snapshot else None,
             sbom=sbom.read_bytes() if sbom else None,
             service_context=service_context.read_bytes() if service_context else None,
+            vex=vex.read_bytes() if vex else None,
         )
         bundle = PolicyBundle.load(policy_dir)
         decision = evaluate(
@@ -438,6 +471,7 @@ def evaluate_command(
             enrichment_snapshot=data.enrichment_snapshot,
             sbom=data.sbom,
             service_context=data.service_context,
+            vex_data=data.vex,
         )
         if store is not None:
             _store_evidence(EvidenceStore(store), decision, bundle, data)
@@ -456,6 +490,8 @@ def evaluate_command(
         typer.echo(f"  {rule}  {effect:<5}  {message}  ({count} {noun})")
     if decision["waivers_applied"]:
         typer.echo(f"Waivers applied: {', '.join(decision['waivers_applied'])}")
+    if decision.get("vex_applied"):
+        typer.echo(f"VEX not_affected: {', '.join(decision['vex_applied'])}")
     typer.echo(f"Decision written to {output}")
     if decision["verdict"] == "BLOCK":
         raise typer.Exit(EXIT_BLOCK)
@@ -470,6 +506,7 @@ class _Inputs:
     enrichment_snapshot: bytes | None
     sbom: bytes | None
     service_context: bytes | None
+    vex: bytes | None
 
 
 def _store_evidence(
@@ -487,6 +524,7 @@ def _store_evidence(
         ),
         "sbom_digest": data.sbom,
         "service_context_digest": data.service_context,
+        "vex_digest": data.vex,
     }
     for key, blob in stored.items():
         if blob is not None and store.put(blob) != inputs[key]:
@@ -1034,6 +1072,222 @@ def sbom_command(
     typer.echo(
         f"syft {sbom.run.version}: {sbom.packages} package(s), {sbom.serial_number} -> {cyclonedx}, {spdx}"
     )
+
+
+# ---------------------------------------------------------------- remediate
+
+
+def _now() -> datetime:
+    return datetime.now(UTC).replace(microsecond=0)
+
+
+def _refuse_input_as_output(out: Path, inputs: list[Path], command: str) -> None:
+    """Exit 3, before anything is deleted, when `out` is an input: clearing it would lose the evidence."""
+    if any(out.resolve() == path.resolve() for path in inputs):
+        typer.echo(f"{command}: --out is one of the inputs; nothing was written", err=True)
+        raise typer.Exit(EXIT_NO_DECISION)
+
+
+def _read_findings(path: Path, what: str) -> dict[str, Finding]:
+    try:
+        return parse_findings(path.read_bytes(), source=what)
+    except (OSError, ReportError, UnicodeDecodeError) as exc:
+        raise RemediationError(f"{what} {path}: {exc}") from exc
+
+
+FindingsOption = Annotated[
+    Path, typer.Option(help="Findings NDJSON (the scanner's IAC findings are the input).")
+]
+ProposalOut = Annotated[
+    Path, typer.Option(help="Destination of the patch proposal (schemas/patch-proposal.v1.json).")
+]
+RepoRootOption = Annotated[Path, typer.Option(help="Repository root the finding paths are relative to.")]
+AttemptOption = Annotated[int, typer.Option(min=1, max=3, help="Attempt number (1, then up to two retries).")]
+
+
+def _propose(command: str, fixer: Any, findings: Path, out: Path, repo_root: Path, attempt: int) -> None:
+    _refuse_input_as_output(out, [findings], f"sentinel remediate {command}")
+    out.unlink(missing_ok=True)
+    try:
+        plan = fixer(
+            list(_read_findings(findings, "findings").values()), repo_root, attempt=attempt, created_at=_now()
+        )
+    except RemediationError as exc:
+        typer.echo(f"sentinel remediate {command}: {exc}", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    for path, reason in plan.skipped.items():
+        typer.echo(f"warning: {path} left alone: {reason}", err=True)
+    if plan.proposal is None:
+        typer.echo("nothing to propose: no finding this fixer resolves")
+        return
+    _write_atomically(out, plan.proposal.model_dump_json(indent=2, exclude_none=True) + "\n")
+    typer.echo(
+        f"proposal {plan.proposal.proposal_id}: {len(plan.proposal.finding_ids)} finding(s) in "
+        f"{len(plan.proposal.files)} file(s) -> {out}"
+    )
+
+
+@remediate_app.command("kubernetes")
+def remediate_kubernetes(
+    findings: FindingsOption,
+    out: ProposalOut,
+    repo_root: RepoRootOption = Path("."),
+    attempt: AttemptOption = 1,
+) -> None:
+    """Propose hardening for the Kubernetes findings the deterministic fixer resolves (it never applies it).
+
+    Exit code 0 with a proposal, or with nothing to propose (no file written); 3 when the input is unusable.
+    """
+    _propose("kubernetes", propose_kubernetes, findings, out, repo_root, attempt)
+
+
+@remediate_app.command("dockerfile")
+def remediate_dockerfile(
+    findings: FindingsOption,
+    out: ProposalOut,
+    repo_root: RepoRootOption = Path("."),
+    attempt: AttemptOption = 1,
+) -> None:
+    """Propose fixes for the Dockerfile findings the deterministic fixer resolves (it never applies them):
+    a non-root USER, COPY instead of ADD for local files, apt-get --no-install-recommends.
+
+    Exit code 0 with a proposal, or with nothing to propose (no file written); 3 when the input is unusable.
+    """
+    _propose("dockerfile", propose_dockerfile, findings, out, repo_root, attempt)
+
+
+@remediate_app.command("apply")
+def remediate_apply(
+    proposal: Annotated[
+        Path, typer.Option(help="The patch proposal to commit (schemas/patch-proposal.v1.json).")
+    ],
+    findings: Annotated[
+        Path,
+        typer.Option(help="Findings NDJSON of the base commit: the proposal may claim and edit only those."),
+    ],
+    repo_root: Annotated[Path, typer.Option(help="A local clone of the repository.")] = Path("."),
+    base: Annotated[str, typer.Option(help="The commit the proposal was made against.")] = "HEAD",
+    branch: Annotated[
+        str | None, typer.Option(help="New branch name, under sentinel/fix/ (default: from the proposal id).")
+    ] = None,
+) -> None:
+    """Commit a proposal on a new sentinel/fix/ branch of a local clone, and print it as JSON. It never
+    pushes, never changes the working tree, the index or the current branch, and runs no hook, filter or
+    fsmonitor the clone configures (nothing is checked out).
+
+    Exit code 0 when committed; 3, with nothing created, when the proposal id does not match its content, it
+    claims a finding the base scan does not have or edits a file none of its findings is in, or the diff does
+    anything the proposal does not list (another file, a new, deleted, renamed or executable file) or does not
+    apply to the base.
+    """
+    try:
+        applied = apply_proposal(
+            PatchProposal.model_validate_json(proposal.read_bytes()),
+            repo_root,
+            findings=list(_read_findings(findings, "base findings").values()),
+            base=base,
+            branch=branch,
+        )
+    except (OSError, ValidationError, RemediationError) as exc:
+        typer.echo(f"sentinel remediate apply: {exc}\nnothing was committed", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    typer.echo(
+        json.dumps({
+            "branch": applied.branch, "commit": applied.commit, "base": applied.base,
+            "diff_sha256": applied.diff_sha256,
+        })
+    )  # fmt: skip
+
+
+@remediate_app.command("verify")
+def remediate_verify(
+    proposal: Annotated[Path, typer.Option(help="The patch proposal that was applied.")],
+    before: Annotated[Path, typer.Option(help="Findings NDJSON of the commit the patch applies to.")],
+    after: Annotated[Path, typer.Option(help="Findings NDJSON of the patched commit (same scanners).")],
+    decision: Annotated[Path, typer.Option(help="Decision v1 record of the patched commit.")],
+    tool_status: Annotated[
+        Path,
+        typer.Option(
+            "--tool-status",
+            help="The tool status that decision recorded: every target's scanner must be in it, ok.",
+        ),
+    ],
+    build: Annotated[bool, typer.Option("--build-ok/--build-failed", help="Did the patched commit build?")],
+    tests: Annotated[bool, typer.Option("--tests-ok/--tests-failed", help="Did its tests pass?")],
+    out: Annotated[
+        Path, typer.Option(help="Destination of the result (schemas/verification-result.v1.json).")
+    ],
+    pull_request: Annotated[int | None, typer.Option(min=1, help="The bot's pull request number.")] = None,
+) -> None:
+    """Apply the verification gate: VERIFIED only if it builds, its tests pass, the target fingerprints are
+    gone, no new finding of severity MEDIUM or higher appeared, and the decision is not BLOCK.
+
+    Exit code 0 when VERIFIED, 1 when REJECTED or FAILED (the result is written either way), 3 when the inputs
+    cannot be trusted (nothing is written): a proposal whose id does not match its content, that claims
+    findings the base scan does not have or edits anything but where they are; a decision that was not made in
+    pr context, on the patched findings, with this tool status; a tool status that does not show the scanner
+    of every target ok (a scanner that never ran finds nothing, and nothing must not vouch for the patch).
+    """
+    _refuse_input_as_output(
+        out, [proposal, before, after, decision, tool_status], "sentinel remediate verify"
+    )
+    out.unlink(missing_ok=True)
+    try:
+        applied = PatchProposal.model_validate_json(proposal.read_bytes())
+        record = Decision.model_validate_json(decision.read_bytes())
+        after_data = after.read_bytes()
+        if record.inputs.findings_digest != "sha256:" + hashlib.sha256(after_data).hexdigest():
+            raise RemediationError("the decision was not made on the patched findings (--after)")
+        if record.subject.context != "pr" or record.inputs.tool_status_digest is None:
+            raise RemediationError(
+                "the decision must be a pr-context decision that saw the tool status (a scan that failed "
+                "must not vouch for the patch)"
+            )
+        status_data = tool_status.read_bytes()
+        if record.inputs.tool_status_digest != "sha256:" + hashlib.sha256(status_data).hexdigest():
+            raise RemediationError("the tool status is not the one the decision recorded (--tool-status)")
+        statuses = load_tool_status(status_data)["tools"]
+        base_findings = _read_findings(before, "base findings")
+        check_proposal(applied, base_findings)
+        for scanner in sorted({base_findings[finding_id].tool.name for finding_id in applied.finding_ids}):
+            if statuses.get(scanner, {}).get("status") != "ok":
+                raise RemediationError(
+                    f"the tool status does not show {scanner} ok: the patched scan's silence about its "
+                    "targets proves nothing"
+                )
+        result = verify_proposal(
+            applied,
+            before=base_findings,
+            after=_read_findings(after, "patched findings"),
+            build_ok=build,
+            tests_ok=tests,
+            verdict=record.verdict,
+            verified_at=_now(),
+            pull_request=pull_request,
+        )
+    except (OSError, ValidationError, RemediationError, EvaluationError) as exc:
+        typer.echo(f"sentinel remediate verify: {exc}\nFAIL CLOSED: nothing is verified.", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    _write_atomically(out, result.model_dump_json(indent=2, exclude_none=True) + "\n")
+    reasons = [
+        name
+        for name, ok in (
+            ("the build failed", result.build_ok),
+            ("tests failed", result.tests_ok),
+            ("a target finding is still reported", result.target_resolved),
+            (
+                f"{len(result.new_findings)} new finding(s) of severity MEDIUM or higher",
+                not result.new_findings,
+            ),
+            ("the decision is BLOCK", result.verdict != "BLOCK"),
+        )
+        if not ok
+    ]
+    typer.echo(
+        f"{result.outcome} (attempt {result.attempt})" + (f": {'; '.join(reasons)}" if reasons else "")
+    )
+    if result.outcome != "VERIFIED":
+        raise typer.Exit(EXIT_NOT_VERIFIED)
 
 
 if __name__ == "__main__":

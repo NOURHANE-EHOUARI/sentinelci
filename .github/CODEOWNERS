@@ -4,3 +4,5 @@
 
 # sentinel.yaml lowers or raises risk scores (exposure): every change to it is reviewed by both (SPEC 6.1).
 **/sentinel.yaml @NOURHANE-EHOUARI @Hiba-elouazi
+# Waivers and VEX statements silence findings: every change to them is reviewed by both (SPEC 6.4).
+**/.sentinel/ @NOURHANE-EHOUARI @Hiba-elouazi
