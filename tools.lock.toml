@@ -6,12 +6,11 @@
 #
 # Hashes were copied from each project's published checksum file for that exact release (linked below) on
 # 2026-10-28. To upgrade a tool: open a PR that changes the version, URLs and hashes together, and link the
-# upstream checksum file in the PR description so the reviewer can check every value.
+# upstream checksum file in the PR description so the reviewer can check every value. A Trivy upgrade also
+# re-checks GT-IAC-004 (demo-shop ground truth): its known_miss names Trivy's version.
 #
 # Opengrep publishes no checksum file: each asset is signed keyless (Sigstore) by its release workflow. Its
 # hashes were taken from the assets after verifying each signature (see the opengrep entry).
-#
-# Not pinned here: checkov (PyPI), installed through uv with a hash-locked version.
 
 schema_version = 1
 

@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "group_id": "79bd7d7fd684b399857c582b1b7172ddf277d4fe1b027ec52b28da3ae381e675",
+  "finding_ids": [
+    "3333333333333333333333333333333333333333333333333333333333333333"
+  ],
+  "stage": "structural",
+  "labelled_by": "template",
+  "key": "rule:KSV-0014@infra/k8s/my app.yaml",
+  "title": "Hard-coded GitHub token in settings.yaml",
+  "root_cause": "One secret, reported by one tool.",
+  "single_fix": null
+}
