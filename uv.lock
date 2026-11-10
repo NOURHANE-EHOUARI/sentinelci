@@ -1418,6 +1418,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "ruamel-yaml" },
     { name = "typer" },
+    { name = "zizmor" },
 ]
 
 [package.metadata]
@@ -1426,6 +1427,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "ruamel-yaml", specifier = ">=0.18" },
     { name = "typer", specifier = ">=0.15" },
+    { name = "zizmor", specifier = "==1.31.1" },
 ]
 
 [[package]]
@@ -1449,7 +1451,6 @@ dev = [
     { name = "pytest" },
     { name = "ruff" },
     { name = "types-pyyaml" },
-    { name = "zizmor" },
 ]
 
 [package.metadata]
@@ -1470,7 +1471,6 @@ dev = [
     { name = "pytest", specifier = ">=8.3" },
     { name = "ruff", specifier = ">=0.11" },
     { name = "types-pyyaml", specifier = ">=6.0.12" },
-    { name = "zizmor", specifier = ">=1.30" },
 ]
 
 [[package]]

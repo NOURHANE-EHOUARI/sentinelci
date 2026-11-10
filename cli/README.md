@@ -281,6 +281,31 @@ uv run sentinel sbom out/image-oci --source oci-dir --name demo-shop/shop-api \
   file for both, or a path that cannot be cleared is refused before anything is written.
 - The package count it prints leaves out the operating-system component Syft adds for an image.
 
+## `sentinel scan pipelines` (CI workflows, A1)
+
+```bash
+uv run sentinel scan pipelines demo-shop --repo-root . --out out/pipelines.ndjson \
+  --repo NOURHANE-EHOUARI/sentinelci --commit "$GITHUB_SHA" --context pr
+```
+
+- zizmor, a runtime dependency of the CLI (`uv.lock`). Right before it runs, the binary of the CLI's own
+  environment (never one from `PATH`) must be one that a wheel pinned in `tools.lock.toml` carries
+  (`[python_tools.zizmor]`, at the pinned version): another version, a replaced binary, or zizmor missing
+  exits `3` (SC-010).
+- The scanned repository cannot configure or silence it: `--no-config`, `--no-ignores` (a finding covered by an
+  inline `# zizmor: ignore[...]` comment is kept, and its message says so), `--collect=all` (`.gitignore` is not
+  honoured), `--offline`, and a minimal environment.
+- Inputs: what GitHub runs (every YAML file under `.github/workflows/`, every `action.yml` / `action.yaml`,
+  `.github/dependabot.yml`) must load (`--strict-collection`), or exit `3`. Any other YAML file with a top-level
+  `jobs:` key is audited too; one zizmor cannot load as a GitHub workflow (another CI's file) is skipped, named
+  in a warning, and never counted as audited. `--persona=regular`: zizmor's default audits.
+- Findings are category PIPELINE. A finding about a whole job or file is one per rule, file and job; any other
+  also hashes the code it is about: the line holding the expression or action reference, a trigger or
+  permission's value, a Dependabot entry's setting with its `package-ecosystem`. So a new expression, trigger or
+  Dependabot entry is a new finding, while a moved line, an added step or an edit to another line of the same
+  script keeps the id. The same code twice in a job is one finding with `other_locations`. No workflow code is
+  kept (only its hash). A HIGH one that the pull request introduces blocks it (SC-009).
+
 ## `sentinel remediate` (verified remediation loop, A6)
 
 ```bash
