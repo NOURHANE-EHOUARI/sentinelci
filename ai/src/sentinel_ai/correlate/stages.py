@@ -16,9 +16,9 @@
   as `skipped`, with the failure: advice degrades, it never vanishes, and an outage never reads as a choice.
 
 Labels are templates (`labelled_by: template`): what the members share, and a fix only when one change
-resolves every member (each a package with known fixed versions). Stage 3 (a model labels the groups it is
-given; it never forms them) comes later. Everything here is advisory: the release gate never reads it, and the
-same findings in any order give the same groups.
+resolves every member (each a package with known fixed versions). Stage 3 (`labels.label_groups`: a model
+labels the groups it is given; it never forms them) runs on the document `correlate_run` writes. Everything
+here is advisory: the release gate never reads it, and the same findings in any order give the same groups.
 
 `DEFAULT_THRESHOLD` is provisional: it is calibrated on a labelled set other than demo-shop (SPEC section 17),
 then committed with the embedding model's digest before the demo-shop run.
