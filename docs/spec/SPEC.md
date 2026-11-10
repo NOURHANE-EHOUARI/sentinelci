@@ -10,6 +10,18 @@
 
 | Version | Change |
 |---|---|
+| 1.1.30 | Platform API migrations (B1, §13.3): going below 0004 stops, changing nothing, while any run keeps its uploaded findings bytes, which are the only copy `findings_sha256` was taken of; before, the downgrade dropped them without a word. A database without kept bytes still goes down. Raised on #57. |
+| 1.1.29 | Platform API 1.2.0 (B1, §13.3): the platform keeps each run's findings upload byte for byte and serves it at `GET /api/v1/runs/{id}/findings`, so a consumer that must match `findings_sha256` (the correlator's run document, #47; a replay) reads the exact bytes; the JSONB rows keep neither key order nor bytes. The database keeps only bytes that hash to the recorded digest, and the recorded-run trigger makes them immutable. Runs recorded before have none, and the API says so. |
+| 1.1.28 | Platform API 1.1.0 (B1, §13.3): one run per CI run. `POST /api/v1/runs` with the `repo`, `commit`, `context` and `run_id` of a run already recorded (a re-run of `sentinel upload`, #50) is answered 409 with the existing run, which the client resumes instead of recording the findings a second time; a unique index decides between concurrent requests. A run without `run_id` is always new. Migration 0003 stops, changing nothing, on a database that already holds a CI run twice. |
+| 1.1.27 | Diff-aware PR mode (§5, B4): a known vulnerable package (SCA) in a manifest where the base branch did not have it counts as introduced, like a known secret in a new file. SCA fingerprints hold no path, so a second service that starts to use a vulnerable package kept the old id and passed as "not new", although that service has its own exposure and reachability. A moved manifest now counts as new too, which errs toward blocking. Agreed on #52. |
+| 1.1.24 | B1 acceptance changed after the plan, while GitHub Actions are blocked: "an upload (`sentinel upload`, 1.1.23) or a sync ingests a real run" replaces "a sync ingests a real run". M1 can then be met by uploading a local run; the GitHub sync (§4.1, the platform pulls each CI run's evidence) stays in B1 and lands once CI runs exist. Hand-off B1 → A3, A8: OpenAPI and the ingestion endpoints at the end of S1, the sync later. |
+| 1.1.21 | A6 apply step (§9): `sentinel remediate apply` commits a patch proposal on a new `sentinel/fix/` branch of a local clone with plumbing commands on a temporary index (never pushes, checks nothing out, so no hook, filter or fsmonitor of the clone runs), after checking that the proposal id matches its content, that its findings are in the base scan (`--findings`) and its files are where they were found, and that the diff edits exactly the listed regular files in place (no file created, deleted, renamed, made executable or symlink retargeted). The commit has a `Sentinel-Diff` trailer and the proposal's dates. |
+| 1.1.17 | A6b remediation (§9): `sentinel remediate dockerfile`: the deterministic Dockerfile fixer (`USER 10001:10001` added to the final stage after its last RUN and USER, never rewriting a USER line; COPY instead of ADD only when every source is a directory or a plain file of the repository, neither a tar nor compressed, judged by content; `apt-get install --no-install-recommends`; each checked against the pinned Trivy), sharing the per-file loop with the Kubernetes fixer. An edit leaves alone an instruction that carries a finding it does not resolve (its fingerprint would change), a proposal claims only the findings an edit resolved, and CRLF files are left alone. The USER change can change what the image does, and the rationale says so. |
+| 1.1.16 | A6a remediation (§9): `sentinel remediate kubernetes` proposes hardening for the Trivy findings the deterministic Kubernetes fixer resolves (16 rule ids, each checked against the pinned Trivy; manifests edited round-trip, so the diff shows only the hardening; a non-root UID/GID, a read-only root file system and dropped capabilities can change how a workload runs, and the rationale says so), as a `PatchProposal`; `sentinel remediate verify` applies the verification gate and writes a `VerificationResult`. The gate refuses (exit 3) a proposal whose id does not match its content, that claims findings the base scan lacks or edits anything but where they are, and a decision not made in pr context on the patched findings with the tool status (which must show every target's scanner ok); a target re-reported under a new fingerprint (same tool, rule and file) is not gone, and a base finding that rises to MEDIUM or higher is new. Read models for both contracts; the §9 states and their transitions. New dependency: ruamel.yaml. |
+| 1.1.13 | A4 SBOMs (§7): `sentinel sbom` writes CycloneDX and SPDX JSON with the pinned Syft, offline and never configured by the scanned repository (private working directory and home, SentinelCI's `supplychain/configs/syft.yaml` passed explicitly, no network lookup, no file catalog); images come from the OCI layout the build wrote, and both SBOMs must name the image's manifest digest; an output inside the target is refused before anything is deleted. |
+| 1.1.12 | A4 release attestations (§7, ADR-0010): `sentinel attest` signs the release decision, CycloneDX SBOM, vulnerability scan (`schemas/vuln-result.v1.json`) and SLSA v1 provenance of an image digest with the pinned Cosign and a key pair (no transparency log), only for a non-BLOCK release decision about that image that recorded these findings and this SBOM; `sentinel verify` checks the four Sigstore bundles offline and prints a trust report (exit 0 trusted, 1 not, 3 could not run). |
+| 1.1.10 | B4: strict policy profile (`policies/profiles.rego`; any P1 is an SC-006 BLOCK) chosen by the base-branch `sentinel.yaml`; OpenVEX `not_affected` statements (`schemas/vex.v1.json`, `.sentinel/vex.json`), Decision 1.4 (`inputs.vex_digest`, `vex_applied`). A statement of any other status about the finding disputes `not_affected` (the gate does not order statements); `not_affected` applies for 90 days after it was made, like a waiver; a VEX date after `evaluated_at` is SC-010; `pkg:oci` products and duplicate JSON keys are refused. |
+| 1.1.9 | Decision 1.3: `inputs.service_context_digest`, the `sentinel.yaml` enrichment used (from the base branch), recorded by `sentinel evaluate --service-context`, stored with `--store` and given back on replay; an invalid `sentinel.yaml` is never recorded (exit 3). |
 | 1.1.8 | A1c IaC scanning (§5): `sentinel scan iac` runs the pinned Trivy (`trivy config`) offline, with repository configuration and ignore files never loaded, remote modules not fetched and not evaluated, and inline ignore comments (also in any repository Terraform or OpenTofu file outside the scan path when the scan path declares a module, and in files named like Dockerfiles), symbolic links leaving the scan path, and directory or Terraform file links leaving the repository when a module may load them, refused (SC-010); findings are category IAC with the §13.1 config fingerprint. `sentinel scan combine` merges the scanners' findings and tool statuses for the gate; `sentinel-scan.yml` runs both scanners on the head and, in pull requests, on the base tree as the baseline. |
 | 1.1.7 | A3b evidence (§5, §6.5): every scan writes a tool status (`sentinel scan secrets --tool-status-out`), so a failed, timed-out or tampered scanner becomes a recorded BLOCK (SC-010) instead of a bare red job. PR mode scans the base commit's tree as the baseline. The gate stores its evidence (`--store`), uploaded as the `sentinel-evidence` artifact; the PR comment names it in its replay line and shows "N new" only for the baseline the gate used. The nightly replay also replays the last release decisions of `demo-shop.yml` on main. The gate scores findings with the base risk model before deciding, and every scanner run has a time limit the scan job outlives. |
 | 1.1.6 | A9 first seeds (§17): 5 fake secrets, 6 IaC, 3 CI-workflow seeds and 4 clean controls in `demo-shop/`, with a draft ground-truth format (`demo-shop/ground-truth/`, final schema owned by B9) checked against the pinned Gitleaks, Trivy and zizmor. SentinelCI's Trivy configuration trusts only the kind registry for KSV0125. |
@@ -202,20 +214,21 @@ checks are off. Legitimate exceptions go through waivers (§6.4).
 the pipeline (CLI, `tools.lock.toml`, policies, waivers) at the **base** commit and the change only as data to
 scan; tools live in `$RUNNER_TEMP` (ADR-0008).
 
-**PR mode (diff-aware):** only findings new to the PR (fingerprints not in the base-branch baseline) can block. A known
-secret also counts as new in a file where the base did not have it (every place counts: `location` plus
-`other_locations`, Finding 1.1). The baseline is the base commit's tree, exported with `git archive` outside the
-pipeline checkout and scanned in dir mode by the same pinned scanners. If it cannot be produced, every finding
-counts (the strict side). The PR comment shows "N new" only when the gate used that baseline (checked against
-`inputs.baseline_digest`), with the gate's own definition of new.
-**Scanner failures** (any mode): each scanner writes a tool status (`schemas/tool-status.v1.json`) on success and
-on failure, and the scan job keeps going, so a failed, timed-out or tampered scanner becomes a recorded BLOCK
-(SC-010) with its reason. A missing tool status is SC-010 too. Each scanner run has a time limit
-(`--timeout`, 300 s in `sentinel-scan.yml`), and the scan job's own limit outlives the sum of its runs, so a slow
-scanner ends as a recorded `timeout`, not as a killed job.
+**PR mode (diff-aware):** only findings new to the PR (fingerprints not in the base-branch baseline) can block. A
+known secret also counts as new in a file where the base did not have it, and so does a known vulnerable package in
+a manifest where the base did not have it: both fingerprints hold no path (§13.1), and a new place has its own
+exposure. Every place counts: `location` plus `other_locations`, Finding 1.1. The baseline is the base commit's
+tree, exported with `git archive` outside the pipeline checkout and scanned in dir mode by the same pinned scanners.
+If it cannot be produced, every finding counts (the strict side). The PR comment shows "N new" only when the gate
+used that baseline (checked against `inputs.baseline_digest`), with the gate's own definition of new.
+**Scanner failures** (any mode): each scanner writes a tool status (`schemas/tool-status.v1.json`) on success and on
+failure, and the scan job keeps going, so a failed, timed-out or tampered scanner becomes a recorded BLOCK (SC-010)
+with its reason. A missing tool status is SC-010 too. Each scanner run has a time limit (`--timeout`, 300 s in
+`sentinel-scan.yml`), and the scan job's own limit outlives the sum of its runs, so a slow scanner ends as a
+recorded `timeout`, not as a killed job.
 **Scoring:** the gate job scores the findings with the base commit's risk model (`sentinel score`, §6.2) before
-`sentinel evaluate`; the decision records, and the PR comment shows, the scored findings. A scoring failure
-means no decision (exit 3).
+`sentinel evaluate`; the decision records, and the PR comment shows, the scored findings. A scoring failure means no
+decision (exit 3).
 **Release mode:** full evaluation, then signing. In this single repo, `demo-shop/` is scanned by its own workflow
 calling `$/.github/workflows/sentinel-scan.yml` (GitHub's self-repository syntax: the workflow at the running
 commit); the self-scan of SentinelCI excludes `demo-shop/`.
@@ -328,7 +341,7 @@ analysis kind; a category without a `non_cve` weight counts as E = 1.0.
 | SC-008 | WARN | Copyleft licence in a distributed component |
 | SC-009 | BLOCK | High-severity CI workflow issue introduced by the PR |
 | SC-010 | BLOCK | Scanner failure, timeout or tool-integrity mismatch; a required scanner (`policies/required_tools.rego`) missing from the tool status, or no tool status where one is required (`pr`, `release`); malformed gate input |
-| SC-011 | BLOCK | Misconfiguration that exposes the service by itself, introduced by the PR (privileged pod, host namespaces, root mounts or kernel modules; a public bucket, database or dataset; SSH, RDP or database ports open to the internet): a short list of Trivy rule ids in `policies/exposing.rego`, whatever the finding's score |
+| SC-011 | BLOCK | Misconfiguration that exposes the service by itself, introduced by the PR (privileged pod, host namespaces, root mounts or kernel modules; a public bucket, database or dataset; SSH, RDP or database ports open to the internet): a short list of Trivy rule ids in `policies/exposing.rego`, matched on Trivy findings only, whatever the finding's score |
 
 Priority-based rules (SC-002, SC-006) read `risk.priority` (B3), only when `risk.model_version` is the bundle's
 risk model (`inputs.risk_model_version`); an unscored finding, or one scored with another model, counts at its
@@ -336,7 +349,11 @@ worst case, `100 × severity_weight` banded, so CRITICAL and HIGH are P0 until s
 specific rule (SC-001, SC-003, SC-009 or SC-011 before SC-002/SC-006). SC-011 exists because the exposure factor
 X discounts a misconfiguration by its service's exposure, while a privileged pod or a public bucket creates the
 exposure itself; every other misconfiguration keeps its risk-model priority (IaC weight 0.5). Waivers and diff-aware PR mode apply to every finding
-rule. Not yet implemented: SC-004 (A4 attestations), SC-007, SC-008, the strict profile and VEX.
+rule; a not_affected VEX statement covers its package findings the same way (§6.4).
+**Profiles** (`policies/profiles.rego`): `policy_profile` of the base-branch `sentinel.yaml`, given to `sentinel
+evaluate --service-context`; `default` (or none) keeps SC-006 a WARN, `strict` makes any P1 an SC-006 BLOCK (the
+threshold, `p1_block_above: 0`, is policy data). An unknown profile is malformed input (SC-010). Not yet
+implemented: SC-004 (A4 attestations), SC-007, SC-008.
 
 Policy rules use `input.evaluated_at`, never `time.now_ns()`. Reference implementation of the verdict logic
 (verified with OPA 1.21):
@@ -369,15 +386,29 @@ else := "PASS"
 ### 6.4 Waivers and VEX
 
 Waivers in `.sentinel/waivers.yaml` (finding id or vuln + purl, owner, justification, expiry ≤ 90 days), added by
-PR and approved by CODEOWNERS; expired waivers stop applying. OpenVEX statements for "not affected". The AI may
+PR and approved by CODEOWNERS; expired waivers stop applying. OpenVEX statements for "not affected":
+`.sentinel/vex.json` (`schemas/vex.v1.json`, an OpenVEX v0.2.0 subset), read from the base branch like the waivers
+and recorded by digest. A `not_affected` statement (a justification is required) covers a package finding when one
+of its vulnerability ids is one of the finding's ids and one of its products is the finding's package (the purl base
+for every version, or one version when the purl names it); a covered finding counts for no rule and is listed in
+`vex_applied`. A statement of any other status about the finding disputes `not_affected`, whatever their order (the
+gate does not order statements; fail closed): a document must not keep an earlier statement of another status about
+the same product and vulnerability, so remove it when you add `not_affected`. Like a waiver, a `not_affected`
+statement applies for 90 days after it was made (its `last_updated` or `timestamp`, else the document's), and a
+statement or document dated after `evaluated_at` blocks (SC-010). Products are package purls: a statement covers that
+package in every image and context gated with this repository, and `pkg:oci` products are refused. Aliases are taken
+as written, so reviewers check them. Secrets are never covered. The AI may
 draft a waiver PR; only a human approval makes it effective.
 
 ### 6.5 Decision record and replay
 
 Schema: `schemas/decision.v1.json`. Fields: `decision_id`, `evaluated_at`, `subject` (repo, ref, commit, image
-digest, context), `verdict`, `violations` (rule, effect, finding ids, message), `waivers_applied`, `inputs`
+digest, context), `verdict`, `violations` (rule, effect, finding ids, message), `waivers_applied`, `vex_applied`
+(since 1.4, when VEX was given), `inputs`
 (digests of findings, SBOM, enrichment snapshot, policy bundle, waivers file (since 1.1), base-branch findings
-baseline and tool status (since 1.2, when given); risk model version;
+baseline and tool status (since 1.2, when given), service context `sentinel.yaml` (since 1.3, when given), VEX
+document (since 1.4, when given); risk
+model version;
 tool versions),
 `engine_version`. The schema enforces verdict consistency (BLOCK ⇒ at least one BLOCK violation; PASS ⇒ none).
 Attached to the image as an in-toto attestation, predicate type
@@ -409,12 +440,26 @@ bump.
 
 ## 7. Supply-chain integrity and deploy-time enforcement
 
-- **SBOM:** Syft → CycloneDX JSON (primary) + SPDX JSON, for source and image.
+- **SBOM:** Syft → CycloneDX JSON (primary) + SPDX JSON, for source and image (`sentinel sbom`: the pinned Syft,
+  verified before it runs, in a private working directory and home with SentinelCI's own configuration passed
+  explicitly, so the scanned repository's `.syft.yaml` is never loaded; offline, no remote lookup or tooling;
+  no file catalog; images read from the OCI layout the build wrote (a directory or a tar of one), never pulled,
+  and both SBOMs must name the image's manifest digest (`--image-digest`); `--base-path` stops links above the
+  tree; a CycloneDX document without `serialNumber` or an SPDX document that is not one fails closed).
 - **Signing:** Cosign v3 (Sigstore bundle format). Private mode: key pair, no transparency-log upload. GitHub mode:
   keyless, identity = release workflow path + ref. Always sign digests, never tags.
-- **Attestations:** SLSA provenance, CycloneDX SBOM, vulnerability scan, release decision.
+- **Attestations:** SLSA provenance, CycloneDX SBOM, vulnerability scan, release decision (ADR-0010: one
+  in-toto statement each about the image digest, signed by the attest job only for a decision that is not BLOCK;
+  `sentinel attest` checks that the decision is about this image and recorded these findings and this SBOM, and
+  the vulnerability result, `schemas/vuln-result.v1.json`, names the decision, the findings and the SBOM's
+  CycloneDX `serialNumber`, so the four are bound together).
 - **`sentinel verify <image@digest>`:** checks signature, provenance, SBOM, decision; prints a trust report; must
-  fail on unsigned, wrong key/identity, modified image, missing or BLOCK decision (automated tests).
+  fail on unsigned, wrong key/identity, modified image, missing or BLOCK decision (automated tests). Each
+  attestation must be signed by `--key` and about this digest; the decision must be a release decision about
+  this image from `--repo`; the provenance must come from `--builder-id` and the decision's commit; the
+  vulnerability result and the SBOM must be the decision's. Exit 0 trusted, 1 not trusted, 3 could not run.
+  Offline from the evidence directory's Sigstore bundles (`--evidence`); registry mode with the release
+  workflow (A4b).
 - **Kyverno ImageValidatingPolicy** (apiVersion depends on the Kyverno release): match our images, attestor =
   our public key (private mode) or keyless identity (GitHub mode), require the decision attestation with
   verdict ≠ BLOCK and an SBOM attestation, `mutateDigest: true`. Negative tests on kind in CI.
@@ -447,13 +492,39 @@ States: PROPOSED → PATCH_READY → PR_OPEN → VERIFYING → VERIFIED | REJECT
 | Strategy | Applies to | How |
 |---|---|---|
 | Dependency bump | SCA with fixed version | minimal fixed version, regenerate lockfile |
-| Dockerfile fixer | container hygiene | non-root USER, base pinned by digest, no `curl \| sh` |
+| Dockerfile fixer | container hygiene | non-root USER, COPY for plain local ADD sources, `apt-get --no-install-recommends` (base digest pin and `curl \| sh`: later, they need a registry or the application) |
 | Kubernetes fixer | manifest findings | runAsNonRoot, readOnlyRootFilesystem, drop ALL, limits |
 | LLM code fixer (B6) | SAST | diff restricted to flagged files; retried with CI logs |
 
 **Verification gate (all must hold; encoded in `schemas/verification-result.v1.json`):** build OK · tests pass ·
 target fingerprint gone · no new ≥ MEDIUM finding · verdict ≠ BLOCK. Bot uses `pull_request` (never
 `pull_request_target`), verification jobs get no secrets, the bot never merges.
+
+Implemented (A6a, A6b): `sentinel remediate kubernetes`, `sentinel remediate dockerfile` and `sentinel remediate
+verify`. The Dockerfile fixer adds `USER 10001:10001` to the final stage after its last RUN and USER (a USER line is
+never rewritten), turns ADD into COPY only when ADD would do nothing more (sources judged by their content in the
+repository: no tar, nothing compressed, no URL, glob or variable), and adds `--no-install-recommends`; an
+instruction that carries another finding is left alone, and only the findings an edit resolved are claimed. Its
+USER change can still break an image that writes as root at run time. The Kubernetes fixer maps each
+Trivy rule id it resolves to one edit (privileged, privilege escalation, capabilities, non-root UID and GID,
+read-only root file system, seccomp profile, host namespaces), each checked against the pinned Trivy: the edit makes
+that rule's finding disappear and adds none. What the fix would have to choose for the application (hostPath
+volumes, image tags, resource limits, added capabilities) is left alone, and those findings stay open. Some edits
+can still change how a workload runs: a non-root UID/GID (a UID or GID above 10000 is kept), a read-only root file
+system and dropped capabilities can stop a workload that writes into its image, owns files by another UID or needs
+a capability. The rationale names them, and "build OK" does not include a cluster deploy test yet. A file with a
+workload kind the fixer does not edit is left alone, so no finding on it is claimed.
+Manifests are edited round-trip (comments, order and quoting kept); a file whose layout cannot be reproduced exactly
+is left alone. A proposal touches only flagged files and its diff applies with `git apply`. The gate verifies only
+a proposal it could verify honestly (its id matches its content; its findings are in the base scan; its diff edits,
+in place, only the files they are in, each hunk read to its line counts as git reads it) against the decision made
+on the patched scan (`inputs.findings_digest`), in pr context, with the tool status it recorded, which must show
+the scanner of every target `ok`. A target is gone only when no new fingerprint of the same tool and rule appears
+in its file. A failing patch is REJECTED while an attempt is left (at most three), FAILED after the last one.
+`sentinel remediate apply` (A6c) commits a proposal on a new `sentinel/fix/` branch of a local clone with plumbing
+commands on a temporary index (no checkout, so no hook, filter or fsmonitor of the clone runs, and nothing is
+pushed), after the same proposal check as the gate against the base findings and a check that the diff applies to
+the base and edits regular files in place.
 
 ## 10. Dashboard and observability
 
@@ -541,14 +612,15 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
 | `tool-status.v1.json` | A3 → B4 | per tool: version, hashes, status (`ok` … `not_run`), detail; any non-`ok` status → SC-010; required in `pr`/`release`, and must list every required scanner |
 | `patch-proposal.v1.json` | B6 / A6 fixers → A6 | finding ids, strategy, diff, files, rationale, model (required for `llm:code`) |
 | `verification-result.v1.json` | A6 → B1, B8 | gate outcome; VERIFIED only if every condition holds |
-| evidence bundle layout | A4 → B1 | `manifest.json` (sha256 of each file, signed) + decision, findings, snapshot, SBOMs, raw outputs |
+| evidence bundle layout | A4 → B1 | `manifest.json` (sha256 of each file, signed) + decision, findings, snapshot, SBOMs, raw outputs; `attestations/<kind>.sigstore.json` (ADR-0010) |
+| `vuln-result.v1.json` | A4 attest → `sentinel verify`, Kyverno (A5), B1 | `scanner.result` of the vulnerability attestation: decision id, findings digest, SBOM digest and `serialNumber`, totals by severity and category, tool versions |
 | `openapi.yaml` | B1 → A3, A6, A8, B7 | Platform API |
 | `sentinel.yaml` (`sentinel-config.v1.json`) | target → B2, B4 | service, exposure, environment, data_classification, owners, policy_profile; optional `components` (path, exposure, data class) |
 | `enrichment-snapshot.v1.json` | B2 fetchers → B2 apply, evidence store | per vulnerability id: aliases, CVSS, fixed versions per purl base, EPSS, KEV; dated sources |
 
 ### 13.3 Platform API v1 (first cut)
 
-`POST /api/v1/runs` · `POST /api/v1/runs/{id}/findings` (NDJSON) · `POST /api/v1/runs/{id}/artifacts` ·
+`POST /api/v1/runs` (409 with the existing run for a CI run already recorded) · `POST /api/v1/runs/{id}/findings` (NDJSON) · `GET /api/v1/runs/{id}/findings` (the exact upload) · `POST /api/v1/runs/{id}/artifacts` ·
 `POST /api/v1/sync/github` · `GET /api/v1/findings[/{id}]` · `POST /api/v1/findings/{id}/explain` ·
 `GET /api/v1/groups` (A) · `POST|GET /api/v1/remediations` (A) · `GET /api/v1/releases[/{digest}/evidence]` (A) ·
 `GET /metrics` · `GET /healthz`.
@@ -590,7 +662,7 @@ Vertical ownership; each track has DevOps, security, backend/UI and an AI compon
 
 | ID | Task | Deliverables / acceptance | Sprint | Size |
 |---|---|---|---|---|
-| B1 | Platform backend | FastAPI, PostgreSQL + Alembic, SeaweedFS (S3), Celery + Redis, GitHub sync, OpenAPI in `schemas/`. Accept: `make up`; a sync ingests a real run; contract tests | S1 | L |
+| B1 | Platform backend | FastAPI, PostgreSQL + Alembic, SeaweedFS (S3), Celery + Redis, GitHub sync, OpenAPI in `schemas/`. Accept: `make up`; an upload or a sync ingests a real run (changed in 1.1.24); contract tests | S1 | L |
 | B2 | Enrichment | EPSS, KEV, OSV, reachability, `sentinel.yaml`; snapshots + offline fixtures | S2 | M |
 | B3 | Risk engine | §6.2 model, bands, factor breakdown, CVSS baseline. Accept: property tests (monotonicity, bounds) | S2 | M |
 | B4 | Policy & decisions | Rego SC-001…SC-010, profiles, diff-aware mode, waivers + VEX, Decision v1, `evaluate`, `replay`; minimal SC-001 for S1. Accept: coverage ≥ 90%; replay identical | S1–S2 | L |
@@ -606,7 +678,7 @@ Vertical ownership; each track has DevOps, security, backend/UI and an AI compon
 |---|---|---|---|
 | Shared → all | schemas + fixtures | end S0 | — (done in Sprint 0) |
 | A2 → B2, B3, B4 | findings NDJSON | mid S1 | fixtures |
-| B1 → A3, A8 | OpenAPI + sync | end S1 | local JSON |
+| B1 → A3, A8 | OpenAPI + ingestion (sync later, 1.1.24) | end S1 | local JSON |
 | B4 → A4, A5 | Decision v1 | mid S2 | fixture decision |
 | A4 → A5, B1 | evidence bundle | end S2 | sample bundle |
 | B5 → A7 | LLMProvider | start S3 | fake provider (see `ai/tests`) |
