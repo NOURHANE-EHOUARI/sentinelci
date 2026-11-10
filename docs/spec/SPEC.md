@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.36 | A6 verification run (§9, ADR-0013 decision 5): the bot verifies the pull requests it opened in the same run. `verify` (read-only, no secret, the scanned commit's pipeline) rebuilds each pull request's commit from its proposal and the scanned commit and requires it to be the same commit; scans both commits with the scanners the pr gate requires (Gitleaks on the commits, Trivy on the tree); builds and tests the patch with `sentinel remediate check`; evaluates the gate on the patched commit in pr context with the scanned commit as baseline; then runs `sentinel remediate verify`. `report` (no repository code) re-checks each result against the gate's invariant, comments it and sets the `sentinelci/remediation` commit status; a pull request without a trustworthy result is reported FAILED and the run fails. `sentinel remediate check`: for IaC, build = every edited file still parses into the same resources (a manifest's documents, a Dockerfile's stages), tests = the patch changes only what its strategy may change; exit 3 for a strategy with no build or tests defined (LLM code fixes, B6). `publish` also refuses a proposal that lists a file outside the scanned path or whose file name is not a plain name, and reports a branch it could not push or a pull request it could not open instead of stopping. |
 | 1.1.35 | A6 remediation bot (§9, ADR-0013): `sentinel-remediate.yml` proposes in a read-only job and publishes in a job that runs no repository code; a branch is pushed and its pull request opened only if its bundle holds exactly one commit, on the scanned commit, with the proposal's id and exactly its files edited in place; never twice, never merged. |
 | 1.1.30 | Platform API migrations (B1, §13.3): going below 0004 stops, changing nothing, while any run keeps its uploaded findings bytes, which are the only copy `findings_sha256` was taken of; before, the downgrade dropped them without a word. A database without kept bytes still goes down. Raised on #57. |
 | 1.1.29 | Platform API 1.2.0 (B1, §13.3): the platform keeps each run's findings upload byte for byte and serves it at `GET /api/v1/runs/{id}/findings`, so a consumer that must match `findings_sha256` (the correlator's run document, #47; a replay) reads the exact bytes; the JSONB rows keep neither key order nor bytes. The database keeps only bytes that hash to the recorded digest, and the recorded-run trigger makes them immutable. Runs recorded before have none, and the API says so. |
@@ -556,8 +557,18 @@ read-only `propose` job scans the commit, runs the fixers and `apply`, and hands
 A `publish` job, the only one with a write token, runs no repository code (the runner's git, jq and gh only):
 it pushes a branch and opens its pull request only if the bundle holds exactly that `sentinel/fix/` branch, one
 commit on the scanned commit, carrying the proposal's id and editing in place exactly the files the proposal
-lists; an existing branch is not opened twice. The verification run is dispatched with the A3 wiring (the
-workflow token's pull requests start no workflow by themselves).
+lists, all under the scanned path; an existing branch is not opened twice. The workflow token's pull requests
+start no workflow by themselves, so the same run verifies them (A6e). A read-only `verify` job, with the scanned
+commit's pipeline and no secret, rebuilds each pull request's commit from its proposal and requires it to be the
+same commit, scans both commits with the scanners the pr gate requires, builds and tests the patch, evaluates the
+gate on the patched commit in pr context (the scanned commit as baseline) and runs `sentinel remediate verify`. A
+`report` job, which runs no repository code, re-checks each result against the gate's invariant, comments it on its
+pull request and sets the `sentinelci/remediation` commit status; a pull request without a trustworthy result is
+reported FAILED. For the IaC strategies, `sentinel remediate check` defines the build (every edited file still
+parses into the same resources: a manifest's documents, a Dockerfile's stages) and the tests (the patch changes only
+what its strategy may change: a manifest's pod and container security settings; a Dockerfile's added `USER
+10001:10001` after the final stage's last RUN, ADD → COPY, `--no-install-recommends`). A strategy with no build or
+tests defined there (the LLM code fixer, B6) is never verified until it has them.
 
 ## 10. Dashboard and observability
 

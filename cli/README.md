@@ -311,6 +311,7 @@ uv run sentinel scan pipelines demo-shop --repo-root . --out out/pipelines.ndjso
 ```bash
 uv run sentinel remediate kubernetes --findings out/findings.ndjson --repo-root . --out out/proposal.json
 uv run sentinel remediate apply --proposal out/proposal.json --findings out/base.ndjson --repo-root .
+uv run sentinel remediate check --proposal out/proposal.json --base-root out/base --patched-root out/patched
 uv run sentinel remediate verify --proposal out/proposal.json --before out/base.ndjson \
   --after out/patched.ndjson --decision out/patched-decision.json --tool-status out/patched-tool-status.json \
   --build-ok --tests-ok --out out/result.json
@@ -385,3 +386,25 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
     tool status; for a `--tool-status` that is not the one the decision recorded, or that does not show the
     scanner of every target `ok`: a scan that failed, was skipped or never ran must not vouch for the patch;
   - `--out` can never be one of the inputs.
+- `check` builds and tests an infrastructure-as-code proposal for `verify`, on the trees of the base and the
+  patched commit (exported with `git archive`, never checked out), and prints `{proposal_id, strategy,
+  build_ok, tests_ok, problems}`. A manifest or a Dockerfile has no compiler or unit test of its own, so:
+  - **build**: every edited file still parses as what it was, into the same resources. A manifest keeps its
+    documents, each with the same apiVersion, kind, name and namespace; a Dockerfile keeps its stages (the same
+    FROM lines) and holds only Dockerfile instructions. A scanner reports nothing in a file it cannot parse,
+    so without this a broken file would make its findings "gone";
+  - **tests**: the patch changes only what its strategy may change. A manifest read as data is the same once
+    the pod's and every container's `securityContext` and the pod's host namespaces are set aside; a Dockerfile
+    is the same line for line once its added `USER 10001:10001` lines are skipped (each an instruction of its
+    own after the final stage's last RUN), except ADD → COPY and an added `--no-install-recommends`. Whether
+    the new settings are right is the scanners' part: a weaker one is a new finding;
+  - manifests are read with a safe loader that refuses aliases and duplicate keys;
+  - exit `0` when both hold, `1` when one does not (the problems name the file and why), `3` when they cannot
+    be checked honestly: a strategy with no build or tests defined here (an LLM code fix, B6), a file that is
+    not a regular file of both trees, a base file this check cannot read.
+
+The bot (`.github/workflows/sentinel-remediate.yml`, ADR-0013) chains them: `propose` (read-only) scans, runs
+the fixers and `apply`; `publish` (no repository code) pushes each branch and opens its pull request; `verify`
+(read-only, the scanned commit's pipeline) rebuilds each pull request's commit, scans both commits with the
+scanners the pr gate requires, runs `check`, the gate in pr context and `verify`; `report` (no repository code)
+comments each result and sets the `sentinelci/remediation` commit status.
