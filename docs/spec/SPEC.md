@@ -23,6 +23,7 @@
 | 1.1.12 | A4 release attestations (§7, ADR-0010): `sentinel attest` signs the release decision, CycloneDX SBOM, vulnerability scan (`schemas/vuln-result.v1.json`) and SLSA v1 provenance of an image digest with the pinned Cosign and a key pair (no transparency log), only for a non-BLOCK release decision about that image that recorded these findings and this SBOM; `sentinel verify` checks the four Sigstore bundles offline and prints a trust report (exit 0 trusted, 1 not, 3 could not run). |
 | 1.1.10 | B4: strict policy profile (`policies/profiles.rego`; any P1 is an SC-006 BLOCK) chosen by the base-branch `sentinel.yaml`; OpenVEX `not_affected` statements (`schemas/vex.v1.json`, `.sentinel/vex.json`), Decision 1.4 (`inputs.vex_digest`, `vex_applied`). A statement of any other status about the finding disputes `not_affected` (the gate does not order statements); `not_affected` applies for 90 days after it was made, like a waiver; a VEX date after `evaluated_at` is SC-010; `pkg:oci` products and duplicate JSON keys are refused. |
 | 1.1.9 | Decision 1.3: `inputs.service_context_digest`, the `sentinel.yaml` enrichment used (from the base branch), recorded by `sentinel evaluate --service-context`, stored with `--store` and given back on replay; an invalid `sentinel.yaml` is never recorded (exit 3). |
+| 1.1.8 | A1c IaC scanning (§5): `sentinel scan iac` runs the pinned Trivy (`trivy config`) offline, with repository configuration and ignore files never loaded, remote modules not fetched and not evaluated, and inline ignore comments (also in any repository Terraform or OpenTofu file outside the scan path when the scan path declares a module, and in files named like Dockerfiles), symbolic links leaving the scan path, and directory or Terraform file links leaving the repository when a module may load them, refused (SC-010); findings are category IAC with the §13.1 config fingerprint. `sentinel scan combine` merges the scanners' findings and tool statuses for the gate; `sentinel-scan.yml` runs both scanners on the head and, in pull requests, on the base tree as the baseline. |
 | 1.1.7 | A3b evidence (§5, §6.5): every scan writes a tool status (`sentinel scan secrets --tool-status-out`), so a failed, timed-out or tampered scanner becomes a recorded BLOCK (SC-010) instead of a bare red job. PR mode scans the base commit's tree as the baseline. The gate stores its evidence (`--store`), uploaded as the `sentinel-evidence` artifact; the PR comment names it in its replay line and shows "N new" only for the baseline the gate used. The nightly replay also replays the last release decisions of `demo-shop.yml` on main. The gate scores findings with the base risk model before deciding, and every scanner run has a time limit the scan job outlives. |
 | 1.1.6 | A9 first seeds (§17): 5 fake secrets, 6 IaC, 3 CI-workflow seeds and 4 clean controls in `demo-shop/`, with a draft ground-truth format (`demo-shop/ground-truth/`, final schema owned by B9) checked against the pinned Gitleaks, Trivy and zizmor. SentinelCI's Trivy configuration trusts only the kind registry for KSV0125. |
 | 1.1.5 | A3 pipeline (§5): reusable `sentinel-scan.yml` (scan · gate · report) and `demo-shop.yml`. Pull requests are judged by the base branch's pipeline: CLI, lock, scanner configuration, policies and waivers come from the base commit, and the change is only data (ADR-0008). `sentinel report pr-comment` renders the deterministic, injection-safe comment and fails closed. |
@@ -169,7 +170,10 @@ Local CLI runs can **push** to the same ingestion API. No self-hosted runners (a
 | 1 | Secrets | Gitleaks (Betterleaks-compatible config) | SARIF | SC-001 |
 | 2 | SAST | Opengrep + Semgrep-format rules | SARIF/JSON | risk + policy |
 | 3 | SCA | Syft source SBOM → Grype; OSV | JSON | risk + policy |
+| 4 | IaC + CI config | Trivy `config` (offline); Checkov; zizmor | JSON, SARIF | policy |
+
 | 4 | IaC + CI config | Trivy (config); zizmor | JSON | policy |
+
 | 5 | Tests | pytest / npm test | JUnit | must pass |
 | 6 | Build | docker buildx, by digest | image@sha256 | — |
 | 7 | Image analysis | Syft (CycloneDX + SPDX), Grype, Trivy | SBOM, JSON | risk + policy |
@@ -191,8 +195,22 @@ harmless options. Merge commits are scanned with `--diff-merges=remerge`, so a s
 (an "evil merge") is found while an honest merge of the base branch blames nobody (octopus merges excepted:
 remerge does not diff them, so they get a second `first-parent` pass, which also reports what the other parents
 already had; the PR baseline drops what the base branch has). Each Gitleaks pass gets the full scanner time
-limit, so git mode can take twice as long. Dir mode opens archives (`.zip`, nested up to 3 levels). Legitimate
-exceptions go through waivers (§6.4).
+limit, so git mode can take twice as long. Dir mode opens archives (`.zip`, nested up to 3 levels). Trivy
+(`sentinel scan iac`) never loads the repository's `trivy.yaml` or `.trivyignore` (`--config ""`,
+`--ignorefile ""`), refuses a tree that contains inline `trivy:ignore` / `tfsec:ignore` comments (no flag turns
+them off), uses the checks embedded in the pinned binary with SentinelCI's own check data, and runs offline: proxy
+variables point at a closed local port and `GIT_ALLOW_PROTOCOL=none`, so remote Terraform modules named by the
+scanned code are never fetched and not evaluated (the CLI lists the sources of their `module` blocks in the job log,
+following local modules). Trivy also loads local modules outside the scan path (`source = "../mod"`), transitively,
+and honours an ignore above a `module` block for the whole called module. Which directories it loads depends on its
+own evaluation of the sources, so the check over-approximates: when the scan path declares any module, every
+Terraform or OpenTofu file (`.tf`, `.tofu` and their `.json` forms) of the repository outside it gets the marker
+check before the run, and a directory or Terraform file link in the repository that leaves it is refused; after the
+run, a file Trivy read outside the repository is refused, and the directories it read outside the scan path get the
+marker check. Trivy does not follow symbolic links while Terraform and kubectl do, so a link that leaves the scan
+path is refused too. The marker check skips only files Trivy never parses (source code, documentation, images),
+never a name Trivy reads as a Dockerfile (`Dockerfile.*`, `Containerfile.*`, `*.dockerfile`). Telemetry and version
+checks are off. Legitimate exceptions go through waivers (§6.4).
 
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
@@ -537,7 +555,10 @@ Prometheus names: `sentinel_gate_decisions_total{verdict,context}`, `sentinel_fi
 | Core | Python 3.12, uv workspace (locked with hashes), Typer, Pydantic v2 |
 | Secrets / SAST | Gitleaks (Betterleaks-compatible) / Opengrep + Semgrep-format rules |
 | SCA / container | Syft → Grype; Trivy (pinned, verified) as second engine; OSV |
+| IaC / CI config | Trivy `config` (A1c) / Checkov / zizmor |
+
 | IaC / CI config | Trivy (config) / zizmor (Checkov dropped, ADR-0012) |
+
 | Signing / provenance | Cosign v3 (key pair now, keyless later); GitHub attestations after going public |
 | VEX / policy / admission | OpenVEX / OPA (Rego v1) / Kyverno ImageValidatingPolicy |
 | Backend / data | FastAPI, SQLAlchemy 2, Alembic, Celery, Redis / PostgreSQL + pgvector, SeaweedFS (S3) |
