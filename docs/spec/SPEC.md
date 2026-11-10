@@ -15,6 +15,7 @@
 | 1.1.28 | Platform API 1.1.0 (B1, §13.3): one run per CI run. `POST /api/v1/runs` with the `repo`, `commit`, `context` and `run_id` of a run already recorded (a re-run of `sentinel upload`, #50) is answered 409 with the existing run, which the client resumes instead of recording the findings a second time; a unique index decides between concurrent requests. A run without `run_id` is always new. Migration 0003 stops, changing nothing, on a database that already holds a CI run twice. |
 | 1.1.27 | Diff-aware PR mode (§5, B4): a known vulnerable package (SCA) in a manifest where the base branch did not have it counts as introduced, like a known secret in a new file. SCA fingerprints hold no path, so a second service that starts to use a vulnerable package kept the old id and passed as "not new", although that service has its own exposure and reachability. A moved manifest now counts as new too, which errs toward blocking. Agreed on #52. |
 | 1.1.24 | B1 acceptance changed after the plan, while GitHub Actions are blocked: "an upload (`sentinel upload`, 1.1.23) or a sync ingests a real run" replaces "a sync ingests a real run". M1 can then be met by uploading a local run; the GitHub sync (§4.1, the platform pulls each CI run's evidence) stays in B1 and lands once CI runs exist. Hand-off B1 → A3, A8: OpenAPI and the ingestion endpoints at the end of S1, the sync later. |
+| 1.1.16 | A6a remediation (§9): `sentinel remediate kubernetes` proposes hardening for the Trivy findings the deterministic Kubernetes fixer resolves (16 rule ids, each checked against the pinned Trivy; manifests edited round-trip, so the diff shows only the hardening; a non-root UID/GID, a read-only root file system and dropped capabilities can change how a workload runs, and the rationale says so), as a `PatchProposal`; `sentinel remediate verify` applies the verification gate and writes a `VerificationResult`. The gate refuses (exit 3) a proposal whose id does not match its content, that claims findings the base scan lacks or edits anything but where they are, and a decision not made in pr context on the patched findings with the tool status (which must show every target's scanner ok); a target re-reported under a new fingerprint (same tool, rule and file) is not gone, and a base finding that rises to MEDIUM or higher is new. Read models for both contracts; the §9 states and their transitions. New dependency: ruamel.yaml. |
 | 1.1.13 | A4 SBOMs (§7): `sentinel sbom` writes CycloneDX and SPDX JSON with the pinned Syft, offline and never configured by the scanned repository (private working directory and home, SentinelCI's `supplychain/configs/syft.yaml` passed explicitly, no network lookup, no file catalog); images come from the OCI layout the build wrote, and both SBOMs must name the image's manifest digest; an output inside the target is refused before anything is deleted. |
 | 1.1.12 | A4 release attestations (§7, ADR-0010): `sentinel attest` signs the release decision, CycloneDX SBOM, vulnerability scan (`schemas/vuln-result.v1.json`) and SLSA v1 provenance of an image digest with the pinned Cosign and a key pair (no transparency log), only for a non-BLOCK release decision about that image that recorded these findings and this SBOM; `sentinel verify` checks the four Sigstore bundles offline and prints a trust report (exit 0 trusted, 1 not, 3 could not run). |
 | 1.1.10 | B4: strict policy profile (`policies/profiles.rego`; any P1 is an SC-006 BLOCK) chosen by the base-branch `sentinel.yaml`; OpenVEX `not_affected` statements (`schemas/vex.v1.json`, `.sentinel/vex.json`), Decision 1.4 (`inputs.vex_digest`, `vex_applied`). A statement of any other status about the finding disputes `not_affected` (the gate does not order statements); `not_affected` applies for 90 days after it was made, like a waiver; a VEX date after `evaluated_at` is SC-010; `pkg:oci` products and duplicate JSON keys are refused. |
@@ -481,6 +482,23 @@ States: PROPOSED → PATCH_READY → PR_OPEN → VERIFYING → VERIFIED | REJECT
 **Verification gate (all must hold; encoded in `schemas/verification-result.v1.json`):** build OK · tests pass ·
 target fingerprint gone · no new ≥ MEDIUM finding · verdict ≠ BLOCK. Bot uses `pull_request` (never
 `pull_request_target`), verification jobs get no secrets, the bot never merges.
+
+Implemented (A6a): `sentinel remediate kubernetes` and `sentinel remediate verify`. The Kubernetes fixer maps each
+Trivy rule id it resolves to one edit (privileged, privilege escalation, capabilities, non-root UID and GID,
+read-only root file system, seccomp profile, host namespaces), each checked against the pinned Trivy: the edit makes
+that rule's finding disappear and adds none. What the fix would have to choose for the application (hostPath
+volumes, image tags, resource limits, added capabilities) is left alone, and those findings stay open. Some edits
+can still change how a workload runs: a non-root UID/GID (a UID or GID above 10000 is kept), a read-only root file
+system and dropped capabilities can stop a workload that writes into its image, owns files by another UID or needs
+a capability. The rationale names them, and "build OK" does not include a cluster deploy test yet. A file with a
+workload kind the fixer does not edit is left alone, so no finding on it is claimed.
+Manifests are edited round-trip (comments, order and quoting kept); a file whose layout cannot be reproduced exactly
+is left alone. A proposal touches only flagged files and its diff applies with `git apply`. The gate verifies only
+a proposal it could verify honestly (its id matches its content; its findings are in the base scan; its diff edits,
+in place, only the files they are in, each hunk read to its line counts as git reads it) against the decision made
+on the patched scan (`inputs.findings_digest`), in pr context, with the tool status it recorded, which must show
+the scanner of every target `ok`. A target is gone only when no new fingerprint of the same tool and rule appears
+in its file. A failing patch is REJECTED while an attempt is left (at most three), FAILED after the last one.
 
 ## 10. Dashboard and observability
 
