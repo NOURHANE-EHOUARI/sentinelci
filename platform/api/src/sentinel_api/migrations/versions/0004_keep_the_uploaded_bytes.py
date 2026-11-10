@@ -8,6 +8,9 @@ The database keeps only bytes that hash to the run's recorded digest (`runs_find
 trigger of 0002 already refuses any change to a recorded run, these bytes included. Runs recorded before this
 migration have no bytes (null), and the API says so.
 
+Going back below 0004 would drop the only copy of those bytes, so the downgrade stops, changing nothing, while
+any run keeps them (like 0003 on a CI run recorded twice).
+
 Revision ID: 0004
 Revises: 0003
 """
@@ -33,6 +36,17 @@ def upgrade() -> None:
     )
 
 
+KEPT = "SELECT count(*) FROM runs WHERE findings_ndjson IS NOT NULL"
+
+
 def downgrade() -> None:
+    kept = op.get_bind().execute(sa.text(KEPT)).scalar_one()
+    if kept:
+        raise RuntimeError(
+            f"{kept} run(s) keep their uploaded findings bytes (runs.findings_ndjson), the only copy that "
+            "findings_sha256 was taken of, so going below 0004 would lose them. Stay at 0004 or later, or "
+            "export them first (GET /api/v1/runs/{id}/findings) and go down on a new, empty database; a "
+            "recorded run cannot be cleared (trigger runs_keep_recorded_evidence). Nothing was changed."
+        )
     op.drop_constraint("runs_findings_bytes_match", "runs", type_="check")
     op.drop_column("runs", "findings_ndjson")
