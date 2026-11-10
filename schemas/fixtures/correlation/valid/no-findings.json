@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "findings_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+  "correlator": {
+    "version": "0.1.0",
+    "stages": [
+      "dedup",
+      "structural"
+    ]
+  },
+  "groups": []
+}

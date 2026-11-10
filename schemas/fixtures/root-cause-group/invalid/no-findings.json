@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "group_id": "3138bb9bc78df27c473ecfd1410f7bd45ebac1f59cf3ff9cfe4db77aab7aedd3",
+  "finding_ids": [],
+  "stage": "dedup",
+  "labelled_by": "template",
+  "title": "t",
+  "root_cause": "r",
+  "single_fix": null
+}
