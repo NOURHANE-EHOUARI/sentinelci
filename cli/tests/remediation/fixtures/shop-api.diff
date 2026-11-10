@@ -1,0 +1,37 @@
+diff --git a/demo-shop/infra/k8s/shop-api.yaml b/demo-shop/infra/k8s/shop-api.yaml
+--- a/demo-shop/infra/k8s/shop-api.yaml
++++ b/demo-shop/infra/k8s/shop-api.yaml
+@@ -15,15 +15,24 @@
+       labels:
+         app: shop-api
+     spec:
+-      hostNetwork: true
++      hostNetwork: false
+       containers:
+         - name: shop-api
+           image: registry.local/demo-shop/shop-api:latest
+           ports:
+             - containerPort: 8000
+           securityContext:
+-            privileged: true
+-            runAsUser: 0
++            privileged: false
++            runAsUser: 10001
++            allowPrivilegeEscalation: false
++            capabilities:
++              drop:
++                - ALL
++            runAsNonRoot: true
++            readOnlyRootFilesystem: true
++            runAsGroup: 10001
++            seccompProfile:
++              type: RuntimeDefault
+           volumeMounts:
+             - name: host-root
+               mountPath: /host
+@@ -31,3 +40,5 @@
+         - name: host-root
+           hostPath:
+             path: /
++      securityContext:
++        runAsNonRoot: true

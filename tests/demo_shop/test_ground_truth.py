@@ -1,7 +1,7 @@
 """The demo-shop benchmark (SPEC section 17): every seed is documented, scanners find exactly the seeds.
 
 - Structure tests always run: ids, paths, lines, fake secrets, and each seeded file names its ground-truth id.
-- zizmor runs always (it is a dev dependency).
+- zizmor runs always (a dependency of the CLI, installed by `uv sync`).
 - Gitleaks and Trivy run as integration tests when SENTINEL_TOOLS_DIR points to a `sentinel tools install`
   directory, through the verified runner, with SentinelCI's own scanner configuration.
 
@@ -15,8 +15,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
-from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +23,7 @@ import yaml
 
 from sentinelci.scanners.gitleaks import scan_secrets
 from sentinelci.scanners.lock import load_lock
-from sentinelci.scanners.runner import run_verified_tool
+from sentinelci.scanners.trivy import scan_iac_with_run
 
 ROOT = Path(__file__).resolve().parents[2]
 DEMO = ROOT / "demo-shop"
@@ -143,21 +141,10 @@ def test_gitleaks_finds_exactly_the_secret_seeds() -> None:
 @real
 @pytest.mark.integration
 def test_trivy_finds_every_iac_seed_and_nothing_in_controls() -> None:
-    with (
-        tempfile.TemporaryDirectory(prefix="sentinel-trivy-") as work,
-        as_file(files("sentinelci.scanners.configs").joinpath("trivy-data")) as config_data,
-    ):
-        report = Path(work) / "report.json"
-        args = ["config", "--quiet", "--skip-check-update", "--cache-dir", str(Path(work) / "cache")]
-        args += ["--config-data", str(config_data), "--format", "json", "--output", str(report), "."]
-        run_verified_tool(
-            "trivy",
-            args,
-            lock=load_lock(ROOT / "tools.lock.toml"),
-            tools_dir=Path(str(TOOLS_DIR)),
-            cwd=DEMO,
-        )
-        results = json.loads(report.read_text(encoding="utf-8")).get("Results", [])
+    # The hardened adapter (`sentinel scan iac`): offline, no repository config, SentinelCI's check data.
+    results, _ = scan_iac_with_run(
+        DEMO, lock=load_lock(ROOT / "tools.lock.toml"), tools_dir=Path(str(TOOLS_DIR))
+    )
     found = {
         (r["Target"], m["ID"])
         for r in results
