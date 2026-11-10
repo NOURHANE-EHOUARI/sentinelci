@@ -1368,10 +1368,16 @@ version = "0.1.0"
 source = { editable = "ai" }
 dependencies = [
     { name = "pydantic" },
+    { name = "sentinelci" },
+    { name = "typer" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pydantic", specifier = ">=2.10" }]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.10" },
+    { name = "sentinelci", editable = "cli" },
+    { name = "typer", specifier = ">=0.15" },
+]
 
 [[package]]
 name = "sentinel-api"
