@@ -148,9 +148,42 @@ class Tool(_Strict):
         return self
 
 
+class Wheel(_Strict):
+    """One wheel of a Python-packaged tool: its hash as uv.lock pins it, and the hash of the binary inside it
+    (read from the wheel's own RECORD, so it is vouched for by the wheel hash, not by the installed tree)."""
+
+    file: str = Field(pattern=r"^[A-Za-z0-9_.+-]+\.whl$")
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    binary_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class PythonTool(_Strict):
+    """A tool installed by `uv sync --locked` from PyPI (no GitHub release checksum file): the installed
+    binary must be the one a pinned wheel carries."""
+
+    version: str = Field(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$")
+    binary: str
+    wheels: list[Wheel] = Field(min_length=1)
+
+    @field_validator("binary")
+    @classmethod
+    def _binary(cls, value: str) -> str:
+        if not _BINARY.fullmatch(value):
+            raise ValueError("binary must be a plain file name")
+        return value
+
+    @model_validator(mode="after")
+    def _wheels_of_this_version(self) -> "PythonTool":
+        for wheel in self.wheels:
+            if not wheel.file.startswith(f"{self.binary}-{self.version}-"):
+                raise ValueError(f"{wheel.file} is not a wheel of {self.binary} {self.version}")
+        return self
+
+
 class ToolLock(_Strict):
     schema_version: Literal[1]
     tools: dict[str, Tool] = Field(min_length=1)
+    python_tools: dict[str, PythonTool] = Field(default_factory=dict)
 
 
 def load_lock(path: Path) -> ToolLock:

@@ -237,3 +237,39 @@ def test_a_release_workflow_at_a_ref_named_after_the_version_loads(
     content = _signed_lock(GOOD_SHA).replace("release.yml@refs/tags/v1.0.0", f"release.yaml@{ref}")
     tool = load_lock(write_lock(content)).tools["rawtool"]
     assert tool.signer_identity == f"https://github.com/example/rawtool/.github/workflows/release.yaml@{ref}"
+
+
+PYTHON_TOOL = """
+[python_tools.zizmor]
+version = "1.31.1"
+binary = "zizmor"
+
+[[python_tools.zizmor.wheels]]
+file = "zizmor-1.31.1-py3-none-manylinux_2_28_x86_64.whl"
+sha256 = "{wheel}"
+binary_sha256 = "{binary}"
+"""
+
+
+def test_the_repository_pins_its_python_tools() -> None:
+    zizmor = load_lock(REPO_LOCK).python_tools["zizmor"]
+    hashes = [hash_ for wheel in zizmor.wheels for hash_ in (wheel.sha256, wheel.binary_sha256)]
+    assert len(hashes) == len(set(hashes)), "two wheels or binaries share a hash: copy-paste mistake"
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ('file = "zizmor-1.31.1-', 'file = "zizmor-1.30.0-'),  # a wheel of another version
+        ('file = "zizmor-1.31.1-', 'file = "evil-1.31.1-'),  # a wheel of another project
+        ('binary = "zizmor"', 'binary = "../zizmor"'),
+        ('binary_sha256 = "', 'binary_sha256 = "F'),
+        ("[[python_tools.zizmor.wheels]]", "[[python_tools.zizmor.wheel]]"),
+    ],
+    ids=["other-version", "other-project", "binary-path", "bad-hash", "unknown-field"],
+)
+def test_an_invalid_python_tool_is_rejected(write_lock: Callable[[str], Path], old: str, new: str) -> None:
+    good = archive_tool_lock(GOOD_SHA) + PYTHON_TOOL.format(wheel=GOOD_SHA, binary=sha256(b"y"))
+    assert load_lock(write_lock(good)).python_tools["zizmor"].wheels[0].binary_sha256 == sha256(b"y")
+    with pytest.raises(ToolIntegrityError):
+        load_lock(write_lock(good.replace(old, new, 1)))
