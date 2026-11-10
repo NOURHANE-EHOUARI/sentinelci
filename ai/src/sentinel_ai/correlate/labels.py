@@ -221,7 +221,7 @@ def label_groups(
             input_sha256=hashlib.sha256(user.encode("utf-8")).hexdigest(),
         )  # fmt: skip
         labelled = RootCauseGroup.model_validate(
-            group.model_dump()
+            group.document()  # the contract's object: an absent field stays absent, never null
             | {
                 "labelled_by": "llm",
                 "model": reference.model_dump(),
@@ -236,6 +236,6 @@ def label_groups(
         groups.append(labelled)
         outcomes.append(Outcome(group.group_id, "labelled", ""))
     labelled_run = Correlation.model_validate(
-        correlation.model_dump() | {"groups": [g.model_dump() for g in groups]}
+        correlation.document() | {"groups": [group.document() for group in groups]}
     )
     return labelled_run, outcomes
