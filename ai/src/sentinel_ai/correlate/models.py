@@ -7,7 +7,7 @@ sha256 of the members, and a run whose groups do not hold each finding exactly o
 """
 
 import hashlib
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -31,6 +31,17 @@ STAGE_ORDERS: tuple[list[Stage], ...] = (
 class _Contract(BaseModel):
     # Strict: "0.9" is not 0.9 and true is not a similarity, as in the schema.
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    _NULLABLE: ClassVar[frozenset[str]] = frozenset()  # the fields the schema lets be null
+
+    @model_validator(mode="before")
+    @classmethod
+    def _absent_is_not_null(cls, data: Any) -> Any:
+        """An optional field is absent, never null, as in the schemas (only `single_fix` may be null)."""
+        if isinstance(data, dict):
+            nulls = sorted(k for k, v in data.items() if v is None and k not in cls._NULLABLE)
+            if nulls:
+                raise ValueError(f"{', '.join(nulls)}: leave the field out instead of null")
+        return data
 
 
 class ModelRef(_Contract):
@@ -43,6 +54,7 @@ class ModelRef(_Contract):
 
 
 class RootCauseGroup(_Contract):
+    _NULLABLE: ClassVar[frozenset[str]] = frozenset({"single_fix"})
     schema_version: Literal["1.0"]
     group_id: Fingerprint
     finding_ids: list[Fingerprint] = Field(min_length=1)
