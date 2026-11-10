@@ -19,9 +19,7 @@ the diff shows only the hardening. A file whose layout the parser cannot reprodu
 """
 
 import io
-from collections import defaultdict
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -31,9 +29,9 @@ from ruamel.yaml.comments import CommentedMap
 from ruamel.yaml.error import YAMLError
 
 from sentinelci.contracts.finding import Finding
-from sentinelci.contracts.remediation import PatchProposal
-from sentinelci.remediation.proposal import build_proposal
-from sentinelci.scanners.runner import is_within
+from sentinelci.remediation.proposal import Fixed, NotFixable, Plan, propose_fixes
+
+__all__ = ["FIXES", "NotFixable", "fix_manifest", "propose"]
 
 NON_ROOT_ID = 10001  # above 10000 (KSV-0020, KSV-0021), so no collision with a host account
 _INDENTS = ((2, 4, 2), (2, 2, 0), (4, 4, 2), (4, 6, 4), (2, 4, 0))  # (mapping, sequence, offset) styles
@@ -137,16 +135,6 @@ FIXES: dict[str, tuple[str, Edit]] = {
 }
 
 
-class NotFixable(Exception):
-    """The file cannot be edited minimally (unparsable, or a layout the parser would rewrite)."""
-
-
-@dataclass(frozen=True)
-class FixedManifest:
-    text: str
-    changes: list[str]  # what was hardened, for the proposal's rationale
-
-
 def _yaml(mapping: int, sequence: int, offset: int) -> YAML:
     yaml = YAML(typ="rt")
     yaml.preserve_quotes = True
@@ -208,7 +196,7 @@ def _pod_specs(document: Any) -> list[Any]:
     return [node] if isinstance(node, dict) else []
 
 
-def fix_manifest(text: str, rule_ids: Iterable[str]) -> FixedManifest:
+def fix_manifest(text: str, rule_ids: Iterable[str]) -> Fixed:
     """Apply the edits of `rule_ids` (those this fixer knows) to every workload container of the manifest."""
     edits: dict[str, Edit] = {}
     for rule in sorted(set(rule_ids) & FIXES.keys()):
@@ -223,13 +211,7 @@ def fix_manifest(text: str, rule_ids: Iterable[str]) -> FixedManifest:
                 edit(pod, container)
     out = io.StringIO()
     yaml.dump_all(documents, out)
-    return FixedManifest(text=out.getvalue(), changes=sorted(edits))
-
-
-@dataclass(frozen=True)
-class KubernetesPlan:
-    proposal: PatchProposal | None  # None: nothing this fixer can resolve
-    skipped: dict[str, str]  # path -> why it was left alone
+    return Fixed(text=out.getvalue(), changes=sorted(edits))
 
 
 def _fixable(finding: Finding) -> bool:
@@ -242,54 +224,25 @@ def _fixable(finding: Finding) -> bool:
     )
 
 
-def propose(
-    findings: Sequence[Finding], repo_root: Path, *, attempt: int = 1, created_at: datetime
-) -> KubernetesPlan:
-    """One proposal for every Kubernetes finding of `findings` this fixer resolves, across their manifests."""
-    by_path: dict[str, list[Finding]] = defaultdict(list)
-    for finding in findings:
-        if _fixable(finding) and finding.location is not None:
-            by_path[finding.location.path].append(finding)
-    changes: dict[str, tuple[str, str]] = {}
-    fixed_ids: list[str] = []
-    labels: set[str] = set()
-    skipped: dict[str, str] = {}
-    for path, flagged in sorted(by_path.items()):
-        file = repo_root / path
-        if file.is_symlink() or not file.is_file() or not is_within(file, repo_root):
-            skipped[path] = "not a regular file inside the repository"
-            continue
-        try:
-            old = file.read_bytes().decode("utf-8")  # as stored: CRLF is not turned into LF
-            fixed = fix_manifest(old, {f.rule_id for f in flagged})
-        except UnicodeDecodeError:
-            skipped[path] = "not UTF-8 text"
-            continue
-        except NotFixable as exc:
-            skipped[path] = str(exc)
-            continue
-        if fixed.text == old:
-            skipped[path] = "already hardened: the findings are stale"
-            continue
-        changes[path] = (old, fixed.text)
-        fixed_ids += [f.id for f in flagged]
-        labels.update(fixed.changes)
-    if not changes:
-        return KubernetesPlan(proposal=None, skipped=skipped)
-    rationale = (
-        f"Harden the workloads of {len(changes)} manifest(s): {'; '.join(sorted(labels))}. Left as they are: "
-        "what the fix would have to choose for the application (hostPath volumes, image tags, resource "
-        "limits, added capabilities); their findings stay open. Check before merging: a non-root UID/GID, a "
-        "read-only root file system and dropped capabilities can stop a workload that writes into its "
-        "image, owns files by another UID or needs a capability; the build and tests do not run it."
+def _rationale(files: int, labels: list[str]) -> str:
+    return (
+        f"Harden the workloads of {files} manifest(s): {'; '.join(labels)}. Left as they are: what the fix "
+        "would have to choose for the application (hostPath volumes, image tags, resource limits, added "
+        "capabilities); their findings stay open. Check before merging: a non-root UID/GID, a read-only root "
+        "file system and dropped capabilities can stop a workload that writes into its image, owns files by "
+        "another UID or needs a capability; the build and tests do not run it."
     )
-    proposal = build_proposal(
+
+
+def propose(findings: Sequence[Finding], repo_root: Path, *, attempt: int = 1, created_at: datetime) -> Plan:
+    """One proposal for every Kubernetes finding of `findings` this fixer resolves, across their manifests."""
+    return propose_fixes(
+        findings,
+        repo_root,
+        select=_fixable,
+        fix=lambda text, rule_ids, _context: fix_manifest(text, rule_ids),
         strategy="deterministic:kubernetes",
-        finding_ids=fixed_ids,
-        changes=changes,
-        flagged_paths=set(by_path),
-        rationale=rationale,
+        rationale=_rationale,
         attempt=attempt,
         created_at=created_at,
     )
-    return KubernetesPlan(proposal=proposal, skipped=skipped)

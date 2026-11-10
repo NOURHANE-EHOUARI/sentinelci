@@ -1,0 +1,9 @@
+diff --git a/demo-shop/services/shop-api/Dockerfile b/demo-shop/services/shop-api/Dockerfile
+--- a/demo-shop/services/shop-api/Dockerfile
++++ b/demo-shop/services/shop-api/Dockerfile
+@@ -10,4 +10,5 @@
+ RUN pip install -r requirements.txt
+ 
+ EXPOSE 8000
++USER 10001:10001
+ CMD ["python", "-m", "app"]
