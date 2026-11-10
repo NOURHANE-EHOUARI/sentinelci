@@ -109,8 +109,11 @@ def run_verified_tool(
 
 
 def is_within(path: Path, root: Path) -> bool:
+    """Whether `path`, links resolved, is inside `root`. A path that cannot be resolved is not inside: on
+    Python 3.12 a link loop raises RuntimeError here (3.13 returns the path unresolved), so callers refuse
+    what they cannot place instead of crashing without a reason."""
     try:
         path.resolve().relative_to(root.resolve())
-    except ValueError:
+    except (ValueError, RuntimeError, OSError):
         return False
     return True
