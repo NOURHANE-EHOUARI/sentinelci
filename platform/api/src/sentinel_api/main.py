@@ -12,10 +12,11 @@ from sqlalchemy.orm import sessionmaker
 from sentinel_api.api import router
 from sentinel_api.config import Settings, sqlalchemy_url
 from sentinel_api.limits import BodyLimit
+from sentinel_api.metrics import router as metrics_router
 from sentinelci import __version__ as engine_version
 
 # The version of the API contract (schemas/openapi.yaml), not of the engine: it changes only with the API.
-API_VERSION = "1.2.0"
+API_VERSION = "1.3.0"
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -42,6 +43,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "ok", "engine_version": engine_version}
 
     app.include_router(router)
+    app.include_router(metrics_router)
     return app
 
 

@@ -2,7 +2,7 @@
 openapi: 3.1.0
 info:
   title: SentinelCI API
-  version: 1.2.0
+  version: 1.3.0
 paths:
   /healthz:
     get:
@@ -424,6 +424,27 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /metrics:
+    get:
+      tags:
+      - ops
+      summary: Metrics
+      description: 'Prometheus metrics (SPEC section 10): read-only aggregates, bounded
+        labels, absent until stored.'
+      operationId: metrics_metrics_get
+      responses:
+        '200':
+          description: Prometheus text.
+          content:
+            text/plain; version=0.0.4; charset=utf-8:
+              schema:
+                type: string
+        '503':
+          description: No database is configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
 components:
   schemas:
     ErrorOut:
