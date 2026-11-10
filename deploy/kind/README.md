@@ -4,7 +4,8 @@ Task A5b, SPEC §7, ADR-0011 decision 5. A local Kubernetes cluster where only S
 - the Kyverno admission controller admits an image only if `sentinel verify` would trust it, with the policy
   that `sentinel admission-policy` renders (#45);
 - Argo CD deploys the demo-shop release from a local GitOps repository, by digest, and only after
-  `sentinel verify` trusted it.
+  `sentinel verify` trusted it;
+- `make demo-attack` shows each way around that being refused, while the release keeps running.
 
 ```mermaid
 flowchart LR
@@ -28,6 +29,7 @@ flowchart LR
 make kind-up        # registry, GitOps repository, cluster, Kyverno, Argo CD, git server (safe to run twice)
 make kind-policy    # render the release admission policy from deploy/keys/release.pub and apply it
 make demo-release   # deploy the release bundle out/release/bundle through GitOps (safe to run twice)
+make demo-attack    # try to run what must not run next to the release, and show who refuses it
 make kind-down      # delete the cluster and its registry (the GitOps repository is kept)
 ```
 
@@ -50,7 +52,7 @@ a bundle from `cosign save` do.
 6. Installs Kyverno, then Argo CD core, from their pinned manifests, and waits until they are available. Both
    manifests are checked before either is applied.
 7. Applies `deploy/argocd/git-server.yaml` (the GitOps git server) and `deploy/argocd/demo-shop-namespace.yaml`
-   (Pod Security "restricted"), and waits for the git server.
+   (Pod Security "restricted", and the API server's image policy, below), and waits for the git server.
 
 **Registry names:**
 - From the host, the registry is `127.0.0.1:5001`: that is where `sentinel attest --push --registry-http`
@@ -109,6 +111,20 @@ The `demo-shop` AppProject allows:
 
 The Application syncs automatically, with prune and self-heal.
 
+### What may run in demo-shop
+
+Three admission checks, each independent of the others:
+
+| Check | Where | Refuses |
+|---|---|---|
+| Pod Security "restricted" | the namespace's labels | root, privilege escalation, added capabilities, no seccomp profile |
+| The API server's image policy | `demo-shop-namespace.yaml` (a `ValidatingAdmissionPolicy`, CEL, no webhook) | any image not under `kind-registry:5000/demo-shop/`, in any container (init and ephemeral ones too) of a Pod or any Pod controller |
+| Kyverno's release policy | `make kind-policy` | an image under that prefix without the release key's signature and evidence |
+
+The image policy closes a gap: Kyverno's policy matches the release repository only, so without it, an image
+from any other registry would not even be looked at. Its prefix is the one the Kyverno policy matches, and a
+longer repository name (`demo-shop-evil/`) is not that prefix.
+
 ### The chart (`deploy/helm/demo-shop`)
 
 - The image by digest only. `values.schema.json` refuses a missing or malformed digest, and the template
@@ -118,6 +134,28 @@ The Application syncs automatically, with prune and self-heal.
 - Pod Security "restricted": non-root, `RuntimeDefault` seccomp, no privilege escalation, all capabilities
   dropped, a read-only root file system.
 - No service-account token mounted.
+
+## What `make demo-attack` does
+
+`deploy/kind/demo.py attack` needs a running release (`make demo-release`) and the release key's policy. It tries
+each attack next to the release, prints who refused it and with what message, and undoes anything an attack
+left:
+
+| # | Attack | Must be refused by |
+|---|---|---|
+| 1 | **A tampered release**: one layer (a text file) appended to the release with crane, pushed to the release repository. A new digest, which nothing signed. | `sentinel verify` (NOT TRUSTED, 0/16) |
+| 2 | **That image through GitOps**: its digest committed to the GitOps repository, as someone who can write there would. | Kyverno, when Argo CD syncs it: the sync fails with Kyverno's denial and the release keeps running. The release is then committed back, whatever happened, and Argo CD must sync it again. |
+| 3 | **That image with kubectl**: a copy of the release's Deployment, under another name, with that image. | Kyverno |
+| 4 | **An image from elsewhere**: the same copy with an image from another registry (Argo CD's, already in the cluster). | The API server's image policy |
+| 5 | **The BLOCK image**: the image `make release` built and `sentinel attest` refused to sign (an OCI layout, `out/release/block-image`, or `BLOCK=...`), pushed to the release repository. Skipped until A4c writes it. | Kyverno |
+
+- **A fair test.** The kubectl attacks copy the running release's Deployment and change only its name and
+  image, so its Pod Security context passes and only the image can be the reason for a denial. They are real
+  `kubectl create` calls, not dry runs; a Deployment that is created anyway is deleted at once.
+- **Evidence.** The GitOps attack and the restore stay in the repository's history.
+- **Exit codes.** `0` every attack refused; `1` one was not (it is reported, and undone); `3` an attack could
+  not be run. A `kubectl create` that fails for another reason than an admission denial is a `3`: it proves
+  nothing.
 
 ## Pins
 
@@ -144,12 +182,13 @@ change the version and the pin together in one PR, and say in its description wh
 | Test | Needs | What it checks |
 |---|---|---|
 | `tests/deploy/test_kind.py` | nothing | The pins; `up`, `down` and `policy` against a recording fake: the loopback binding, both registry names, the GitOps mount, the install order, a second `up` that keeps what exists, a cluster without the mount, a manifest that is not the pinned one. The git server's own command and environment, run with the local `git daemon`: it serves the one repository, even when another user owns it, and refuses a push. |
+| `tests/deploy/test_attack.py` | git | `make demo-attack` against a fake cluster: each attack and the check that refuses it; the GitOps attack and restore commits, and the restore even when Argo CD never answers; the attack Deployments are the release's with another image; an admitted Deployment reported and deleted, a tampered image Argo CD deploys reported and rolled back; nothing tried without a running release; a create that fails before admission. 6 mutants of `demo.py` each killed. |
 | `tests/deploy/test_demo.py` | git | `make demo-release`'s steps against a fake cluster, with real git: their order; the GitOps commit and its content; no second commit; nothing committed when `sentinel verify` refuses or the policy is not the key's; a Kyverno denial during the sync; a timeout; another image running. That the Argo CD files name the same repository, chart path, values file and namespace as the git server and `demo.py`. |
 | `tests/deploy/test_chart.py` | Go | The chart rendered as Helm renders it (`chart_render.py`: values merged and checked against the schema, templates run by Go's own `text/template` with Helm's `required`, any other function an error): the three resources the AppProject allows, the image by digest, Pod Security "restricted", the release image's contract, and the values it refuses. |
-| `cli/tests/supplychain/test_demo_bundle.py` | pinned tools | A real release saved with `cosign save`: `demo.py` reads its digest, loads it into another registry and `sentinel verify` trusts it there; the other key and an unsigned image are not trusted. |
-| `cli/tests/supplychain/test_admission.py` | pinned tools, Go | The chart's Deployment, rendered for a real registry, admitted by the Kyverno CLI for a release and refused for an unsigned image. |
+| `cli/tests/supplychain/test_demo_bundle.py` | pinned tools | A real release saved with `cosign save`: `demo.py` reads its digest, loads it into another registry and `sentinel verify` trusts it there; the other key and an unsigned image are not trusted. The tampering with the pinned crane: the release's layers and one more, not trusted (0/16), the release still trusted. |
+| `cli/tests/supplychain/test_admission.py` | pinned tools, Go | The chart's Deployment, rendered for a real registry, admitted by the Kyverno CLI for a release and refused for an unsigned image. The demo-shop image policy, run by the Kyverno CLI: releases pass (also by an upper-case host, in a Deployment and a CronJob); an image from elsewhere is refused in a Pod, an init container, a Deployment, a StatefulSet, a CronJob and under a longer repository name; another namespace is not bound. |
 | `cli/tests/supplychain/test_kind_admission.py` | a cluster | On server-side dry runs, Kyverno **admits** a release that `sentinel attest --push` attested, and **denies**, each with the policy's own message, an unsigned image, a BLOCK decision signed with the release key, and a Deployment with an unsigned image. |
-| `cli/tests/supplychain/test_kind_demo.py` | a cluster, Go | `make demo-release`'s steps on a release that runs (a static health server on 8080 as UID 10001, attested and saved): Argo CD syncs the GitOps commit, the Deployment runs that digest and is ready, a second release changes nothing, another key is refused at the policy check. |
+| `cli/tests/supplychain/test_kind_demo.py` | a cluster, Go | `make demo-release`'s steps on a release that runs (a static health server on 8080 as UID 10001, attested and saved): Argo CD syncs the GitOps commit, the Deployment runs that digest and is ready, a second release changes nothing, another key is refused at the policy check. Then `make demo-attack`: all five attacks refused, each by its check and with its message, the release still running and ready, no attack Deployment left, the GitOps history ending with the attack and the restore. |
 
 The cluster tests are opt-in (`SENTINEL_KIND_CONTEXT=kind-sentinel` and `SENTINEL_TOOLS_DIR`). **The
 `sentinel-kind` workflow** creates the cluster with `make kind-up` and runs both. It runs by hand, and on pull
@@ -166,4 +205,4 @@ minutes, so it does not run on every push (GitHub Free minutes).
   server in `sentinel-gitops`: the policy covers the demo's images (`kind-registry:5000/demo-shop/`).
 - The chart is rendered by Argo CD's Helm in the cluster. Without a cluster, the tests render it with Go's
   `text/template`, the engine Helm uses, and allow no Helm function but `required`; Helm itself is not run.
-- Next step (A5b): `make demo-attack`, the refused cases shown on the running cluster.
+- `make demo-attack`'s BLOCK image waits for `make release` (A4c), which writes it.

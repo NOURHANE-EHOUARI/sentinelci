@@ -1,7 +1,9 @@
-# Where the demo-shop release runs (task A5b). Two admission checks guard it:
-# - Kyverno's release policy (`make kind-policy`): only an image signed by the release key, with its evidence;
-# - Pod Security "restricted": no root, no privilege escalation, no added capability, a seccomp profile.
-# Created by `make kind-up`, not by Argo CD: the demo-shop AppProject may create no cluster-scoped resource.
+# Where the demo-shop release runs, and what may run there (task A5b). Created by `make kind-up`, not by Argo
+# CD: the demo-shop AppProject may create no cluster-scoped resource. Three admission checks guard it:
+# - Pod Security "restricted": no root, no privilege escalation, no added capability, a seccomp profile;
+# - the API server's own policy below: every image comes from the release repository, kind-registry:5000/demo-shop/
+#   (without it, an image from anywhere else would not even be matched by Kyverno's policy);
+# - Kyverno's release policy (`make kind-policy`): every such image is signed by the release key, with its evidence.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -12,3 +14,63 @@ metadata:
     pod-security.kubernetes.io/enforce-version: latest
     pod-security.kubernetes.io/warn: restricted
     pod-security.kubernetes.io/warn-version: latest
+---
+# A ValidatingAdmissionPolicy runs in the API server (CEL), with no webhook to be down or slow. It checks the Pods
+# and every Pod controller, so a Deployment with another image is refused when applied, and every container:
+# init and ephemeral (`kubectl debug`) ones too. Like the Kyverno policy, it compares the lower-cased reference
+# with the prefix, and a longer repository name (demo-shop-evil/) is not that prefix.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: demo-shop-release-images-only
+  labels:
+    app.kubernetes.io/part-of: sentinelci-demo
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods", "pods/ephemeralcontainers"]
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["jobs", "cronjobs"]
+  variables:
+    - name: pod
+      expression: >-
+        object.kind == 'Pod' ? object.spec :
+        object.kind == 'CronJob' ? object.spec.jobTemplate.spec.template.spec :
+        object.spec.template.spec
+    - name: images
+      expression: >-
+        variables.pod.containers.map(c, c.image)
+        + (has(variables.pod.initContainers) ? variables.pod.initContainers.map(c, c.image) : [])
+        + (has(variables.pod.ephemeralContainers) ? variables.pod.ephemeralContainers.map(c, c.image) : [])
+    - name: foreign
+      expression: "variables.images.filter(i, !i.lowerAscii().startsWith('kind-registry:5000/demo-shop/'))"
+  validations:
+    - expression: "size(variables.foreign) == 0"
+      messageExpression: >-
+        'demo-shop runs SentinelCI releases only, from kind-registry:5000/demo-shop/: not '
+        + variables.foreign.join(', ')
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: demo-shop-release-images-only
+  labels:
+    app.kubernetes.io/part-of: sentinelci-demo
+spec:
+  policyName: demo-shop-release-images-only
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: demo-shop

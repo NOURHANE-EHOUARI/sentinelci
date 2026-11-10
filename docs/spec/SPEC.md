@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.33 | A5b attacks (§7): the demo-shop namespace gets a `ValidatingAdmissionPolicy` that admits images of `kind-registry:5000/demo-shop/` only, in every container of Pods and Pod controllers. `make demo-attack` shows a tampered release refused by `sentinel verify`, by Kyverno through Argo CD's sync (the release keeps running, the GitOps repository is restored) and through kubectl, an image from elsewhere refused by the API server's policy, and the BLOCK image refused by Kyverno. |
 | 1.1.32 | A5b GitOps deploy (§7): `make kind-up` also installs Argo CD core (pinned by sha256), a read-only `git daemon` for the local GitOps repository (`.sentinel/gitops/demo-shop.git`, mounted read-only into kind) and the demo-shop namespace (Pod Security "restricted"). `deploy/helm/demo-shop` renders the release by digest only (values schema). `make demo-release` checks the cluster's policy against the release key, loads the release bundle into the cluster's registry, runs `sentinel verify` there, commits the digest to the GitOps repository and waits for Argo CD's sync and the rollout. |
 | 1.1.31 | A5b demo cluster (§7): `make kind-up` creates a kind cluster (`deploy/kind/`) with its registry, published on 127.0.0.1:5001 and named `kind-registry:5000` inside the cluster, and installs Kyverno; kind (tools.lock.toml), the node and registry images (by digest) and Kyverno's install manifest (by sha256, refused if it differs) are pinned. `make kind-policy` applies the release admission policy for the cluster's registry. The `sentinel-kind` workflow (by hand, and on pull requests that change the cluster or the policy) checks on a real cluster that Kyverno admits a release `sentinel attest --push` attested and denies an unsigned image, a BLOCK decision and a Deployment with an unsigned image. |
 | 1.1.29 | Platform API 1.2.0 (B1, §13.3): the platform keeps each run's findings upload byte for byte and serves it at `GET /api/v1/runs/{id}/findings`, so a consumer that must match `findings_sha256` (the correlator's run document, #47; a replay) reads the exact bytes; the JSONB rows keep neither key order nor bytes. The database keeps only bytes that hash to the recorded digest, and the recorded-run trigger makes them immutable. Runs recorded before have none, and the API says so. |
@@ -450,6 +451,14 @@ bump.
   GitOps repository (nothing if unchanged), and waits for Argo CD's sync of that commit and the rollout; a sync
   Kyverno denies stops it with the denial. Tested with fakes, with the pinned tools on the bundle path, with the
   Kyverno CLI on the chart's Deployment, and end to end in the `sentinel-kind` workflow.
+- **What may run in demo-shop, and the attacks:** besides Pod Security "restricted" and Kyverno, a
+  `ValidatingAdmissionPolicy` bound to the namespace (CEL in the API server) refuses any image outside
+  `kind-registry:5000/demo-shop/`, in any container of a Pod or Pod controller, which Kyverno's policy would not
+  match. `make demo-attack` runs, next to the release, a tampered release (one layer appended: `sentinel verify`
+  does not trust it), that image committed to the GitOps repository (Argo CD's sync denied by Kyverno; the
+  release keeps running and is committed back), that image applied with kubectl (Kyverno), an image from another
+  registry (the API server's policy) and the BLOCK image of `make release` (Kyverno). Exit 1 if one is not
+  refused.
 
 ## 8. AI layer
 
