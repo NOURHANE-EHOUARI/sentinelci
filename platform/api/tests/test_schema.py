@@ -74,3 +74,27 @@ def test_a_ci_run_recorded_twice_stops_the_unique_index_migration(postgres_serve
     with psycopg.connect(url) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == ("0002",)
         assert conn.execute("SELECT count(*) FROM runs").fetchone() == (2,)
+
+
+def test_going_below_0004_stops_while_a_run_keeps_its_uploaded_bytes(postgres_server: str) -> None:
+    """Dropping `runs.findings_ndjson` would lose the only bytes `findings_sha256` was taken of.
+
+    The downgrade stops, changing nothing, while any run keeps them. Without kept bytes it still goes down
+    (test_the_migrations_go_down_and_up_again).
+    """
+    name = f"t_{uuid.uuid4().hex}"
+    with psycopg.connect(f"{postgres_server}/sentinel", autocommit=True) as conn:
+        conn.execute(f'CREATE DATABASE "{name}"')
+    url = f"{postgres_server}/{name}"
+    upgrade(url)
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO runs (id, repo, commit, context, findings_sha256, findings_uploaded_at, "
+            "findings_ndjson) VALUES (gen_random_uuid(), 'o/r', repeat('a', 40), 'pr', "
+            "encode(sha256('{}'::bytea), 'hex'), now(), '{}'::bytea)"
+        )
+    with pytest.raises(RuntimeError, match=r"1 run\(s\) keep their uploaded findings bytes"):
+        downgrade(url, "0003")
+    with psycopg.connect(url) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == ("0004",)
+        assert conn.execute("SELECT findings_ndjson FROM runs").fetchone() == (b"{}",)
