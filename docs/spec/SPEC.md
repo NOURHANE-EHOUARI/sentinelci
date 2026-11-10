@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.32 | A5b GitOps deploy (§7): `make kind-up` also installs Argo CD core (pinned by sha256), a read-only `git daemon` for the local GitOps repository (`.sentinel/gitops/demo-shop.git`, mounted read-only into kind) and the demo-shop namespace (Pod Security "restricted"). `deploy/helm/demo-shop` renders the release by digest only (values schema). `make demo-release` checks the cluster's policy against the release key, loads the release bundle into the cluster's registry, runs `sentinel verify` there, commits the digest to the GitOps repository and waits for Argo CD's sync and the rollout. |
 | 1.1.31 | A5b demo cluster (§7): `make kind-up` creates a kind cluster (`deploy/kind/`) with its registry, published on 127.0.0.1:5001 and named `kind-registry:5000` inside the cluster, and installs Kyverno; kind (tools.lock.toml), the node and registry images (by digest) and Kyverno's install manifest (by sha256, refused if it differs) are pinned. `make kind-policy` applies the release admission policy for the cluster's registry. The `sentinel-kind` workflow (by hand, and on pull requests that change the cluster or the policy) checks on a real cluster that Kyverno admits a release `sentinel attest --push` attested and denies an unsigned image, a BLOCK decision and a Deployment with an unsigned image. |
 | 1.1.29 | Platform API 1.2.0 (B1, §13.3): the platform keeps each run's findings upload byte for byte and serves it at `GET /api/v1/runs/{id}/findings`, so a consumer that must match `findings_sha256` (the correlator's run document, #47; a replay) reads the exact bytes; the JSONB rows keep neither key order nor bytes. The database keeps only bytes that hash to the recorded digest, and the recorded-run trigger makes them immutable. Runs recorded before have none, and the API says so. |
 | 1.1.28 | Platform API 1.1.0 (B1, §13.3): one run per CI run. `POST /api/v1/runs` with the `repo`, `commit`, `context` and `run_id` of a run already recorded (a re-run of `sentinel upload`, #50) is answered 409 with the existing run, which the client resumes instead of recording the findings a second time; a unique index decides between concurrent requests. A run without `run_id` is always new. Migration 0003 stops, changing nothing, on a database that already holds a CI run twice. |
@@ -438,6 +439,17 @@ bump.
   the host, `kind-registry:5000` in the cluster) and Kyverno, all pinned, and the `sentinel-kind` workflow
   checks that the admission controller admits a release `sentinel attest --push` attested and denies an
   unsigned image, a BLOCK decision and a Deployment with an unsigned image.
+- **GitOps deploy** (ADR-0011, decision 5): Argo CD core (no UI, API server or login; manifest pinned by
+  sha256) deploys the demo-shop Helm chart (`deploy/helm/demo-shop`: by digest only, Pod Security
+  "restricted", writes only to `/tmp`) from a local GitOps repository (`.sentinel/gitops/demo-shop.git`, never
+  pushed), which kind mounts read-only and an in-cluster `git daemon` serves read-only to Argo CD's repo server
+  alone (`deploy/argocd/`). The AppProject allows that one repository, the demo-shop namespace and the chart's
+  three kinds of resource. `make demo-release` takes the release bundle (`cosign save`), checks that the
+  cluster's admission policy is the one rendered from the release key, `cosign load`s the bundle into the
+  cluster's registry (digest unchanged), runs `sentinel verify` there, commits the digest and the chart to the
+  GitOps repository (nothing if unchanged), and waits for Argo CD's sync of that commit and the rollout; a sync
+  Kyverno denies stops it with the denial. Tested with fakes, with the pinned tools on the bundle path, with the
+  Kyverno CLI on the chart's Deployment, and end to end in the `sentinel-kind` workflow.
 
 ## 8. AI layer
 

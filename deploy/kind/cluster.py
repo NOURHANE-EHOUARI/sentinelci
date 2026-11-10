@@ -1,22 +1,27 @@
-"""The SentinelCI demo cluster: kind, its local registry and Kyverno (task A5b, SPEC section 7, ADR-0011).
+"""The SentinelCI demo cluster: kind, its registry, Kyverno and Argo CD (task A5b, SPEC section 7, ADR-0011).
 
     uv run python deploy/kind/cluster.py up        # safe to run twice: what exists is kept
     uv run python deploy/kind/cluster.py policy --key deploy/keys/release.pub
     uv run python deploy/kind/cluster.py down
 
-`up` starts the registry container, creates the cluster, tells containerd where the registry is, and installs
-Kyverno. `policy` renders the release admission policy with `sentinel admission-policy`'s code, for the images
-of the cluster's registry, and applies it. `down` deletes both.
+`up` starts the registry container, creates the GitOps repository and the cluster, tells containerd where the
+registry is, and installs Kyverno, Argo CD, the git server that serves the GitOps repository to Argo CD, and
+the demo-shop namespace. `policy` renders the release admission policy with `sentinel admission-policy`'s
+code, for the images of the cluster's registry, and applies it. `down` deletes the cluster and the registry;
+the GitOps repository is kept (it is on the laptop, in .sentinel/gitops).
 
 Everything `up` runs or applies is pinned: kind by sha256 in tools.lock.toml (installed and checked with
 `sentinel tools`, and verified again before it runs), the node image by digest in kind-config.yaml, the
-registry image by digest and Kyverno's install manifest by sha256 in cluster.toml. A manifest whose sha256
-differs is refused before anything is applied. Docker and kubectl come from the machine.
+registry image by digest and the Kyverno and Argo CD install manifests by sha256 in cluster.toml. A manifest
+whose sha256 differs is refused before anything is applied. Docker, git and kubectl come from the machine.
 
 The registry is published on the host's loopback only (127.0.0.1:5001). Inside the cluster's network it is
 `kind-registry:5000`, plain HTTP, and that is the name the admission policy matches: containerd on the nodes
 and Kyverno both reach it there, and `localhost:5001` is an alias of it on the nodes, so a push from the host
 and a pull in the cluster name the same images.
+
+The GitOps repository (.sentinel/gitops/demo-shop.git, written by `make demo-release`, deploy/kind/demo.py) is
+mounted read-only into the node at /sentinel-gitops, and served from there by deploy/argocd/git-server.yaml.
 """
 
 from __future__ import annotations
@@ -33,10 +38,17 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
 HERE = ROOT / "deploy" / "kind"
+ARGOCD_DIR = ROOT / "deploy" / "argocd"
 KIND_CONFIG = HERE / "kind-config.yaml"
 PINS = HERE / "cluster.toml"
+CACHE = ROOT / ".sentinel" / "cache" / "kind"
+GITOPS_DIR = ROOT / ".sentinel" / "gitops"
+GITOPS_REPOSITORY = "demo-shop.git"
+NODE_GITOPS = "/sentinel-gitops"
 CLUSTER = "sentinel"
 CONTEXT = f"kind-{CLUSTER}"
 IMAGE_GLOB = "kind-registry:5000/demo-shop/*"
@@ -44,8 +56,10 @@ REPO = "NOURHANE-EHOUARI/sentinelci"
 BUILDER_ID = f"https://github.com/{REPO}/.github/workflows/sentinel-release.yml@refs/heads/main"
 _PINNED_IMAGE = re.compile(r"^[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[a-f0-9]{64}$")
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
-_RELEASE_URL = re.compile(
-    r"^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/releases/download/[^/]+/[^/]+$"
+# A release asset, or a file of the repository at a release tag: either way the version is in the path.
+_MANIFEST_URL = re.compile(
+    r"^https://(github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/releases/download"
+    r"|raw\.githubusercontent\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/v(?P<version>[^/]+)/[A-Za-z0-9_./-]+\.yaml$"
 )
 _TIMEOUT_S = 600
 
@@ -55,13 +69,22 @@ class ClusterError(Exception):
 
 
 @dataclass(frozen=True)
+class Manifest:
+    """An install manifest, pinned by version and sha256."""
+
+    name: str
+    version: str
+    url: str
+    sha256: str
+
+
+@dataclass(frozen=True)
 class Pins:
     registry_image: str
     registry_container: str
     registry_port: int
-    kyverno_version: str
-    kyverno_url: str
-    kyverno_sha256: str
+    kyverno: Manifest
+    argocd: Manifest
 
     @property
     def registry_in_cluster(self) -> str:
@@ -72,17 +95,29 @@ class Pins:
         return f"localhost:{self.registry_port}"
 
 
+def _manifest(path: Path, name: str, table: dict[str, str]) -> Manifest:
+    pinned = Manifest(name=name, version=table["version"], url=table["url"], sha256=table["sha256"])
+    match = _MANIFEST_URL.fullmatch(pinned.url)
+    if match is None or match["version"] != pinned.version:
+        raise ClusterError(
+            f"{path}: {name}'s manifest must be a release asset, or a file at the release tag, of version "
+            f"{pinned.version}"
+        )
+    if not _SHA256.fullmatch(pinned.sha256):
+        raise ClusterError(f"{path}: {name}'s manifest needs its sha256")
+    return pinned
+
+
 def load_pins(path: Path = PINS) -> Pins:
-    """The pins of cluster.toml, checked: the image by digest, the manifest a release asset with a sha256."""
+    """The pins of cluster.toml, checked: the image by digest, each manifest of its version with a sha256."""
     data = tomllib.loads(path.read_text(encoding="utf-8"))
-    registry, kyverno = data["registry"], data["kyverno"]
+    registry = data["registry"]
     pins = Pins(
         registry_image=registry["image"],
         registry_container=registry["container"],
         registry_port=int(registry["host_port"]),
-        kyverno_version=kyverno["version"],
-        kyverno_url=kyverno["url"],
-        kyverno_sha256=kyverno["sha256"],
+        kyverno=_manifest(path, "Kyverno", data["kyverno"]),
+        argocd=_manifest(path, "Argo CD", data["argocd"]),
     )
     if not _PINNED_IMAGE.fullmatch(pins.registry_image):
         raise ClusterError(f"{path}: the registry image must be pinned by tag and digest")
@@ -90,12 +125,6 @@ def load_pins(path: Path = PINS) -> Pins:
         raise ClusterError(f"{path}: the registry container name must be a plain DNS label")
     if not 1024 <= pins.registry_port <= 65535:
         raise ClusterError(f"{path}: the registry port must be an unprivileged port")
-    if not _RELEASE_URL.fullmatch(pins.kyverno_url) or f"/v{pins.kyverno_version}/" not in pins.kyverno_url:
-        raise ClusterError(
-            f"{path}: Kyverno's manifest must be the release asset of version {pins.kyverno_version}"
-        )
-    if not _SHA256.fullmatch(pins.kyverno_sha256):
-        raise ClusterError(f"{path}: Kyverno's manifest needs its sha256")
     return pins
 
 
@@ -133,23 +162,49 @@ def kind_binary(tools_dir: Path) -> str:
     return str(entry.path)
 
 
-def manifest(pins: Pins, cache: Path) -> Path:
-    """Kyverno's install manifest, downloaded once into `cache` and checked against its pinned sha256 every
-    time: a file that does not match is deleted and refused."""
+def manifest(pinned: Manifest, cache: Path) -> Path:
+    """An install manifest, downloaded once into `cache` and checked against its pinned sha256 every time: a
+    file that does not match is deleted and refused."""
     cache.mkdir(parents=True, exist_ok=True)
-    path = cache / f"kyverno-{pins.kyverno_version}-install.yaml"
+    slug = re.sub(r"[^a-z0-9]+", "-", pinned.name.lower())
+    path = cache / f"{slug}-{pinned.version}-{pinned.url.rsplit('/', 1)[-1]}"
     if not path.exists():
         partial = path.with_suffix(".part")
-        with urllib.request.urlopen(pins.kyverno_url, timeout=120) as response:  # noqa: S310 (pinned https)
+        with urllib.request.urlopen(pinned.url, timeout=120) as response:  # noqa: S310 (pinned https)
             partial.write_bytes(response.read())
         partial.replace(path)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    if digest != pins.kyverno_sha256:
+    if digest != pinned.sha256:
         path.unlink()
         raise ClusterError(
-            f"Kyverno's install manifest has sha256 {digest}, not the pinned {pins.kyverno_sha256}: "
+            f"{pinned.name}'s install manifest has sha256 {digest}, not the pinned {pinned.sha256}: "
             "not applied"
         )
+    return path
+
+
+def ensure_gitops_repository(gitops: Path, run: Run = run_command) -> Path:
+    """The demo's GitOps repository: a bare repository with one branch, main, that the git server exports.
+    Created empty if missing; an existing one is kept as it is."""
+    repository = gitops / GITOPS_REPOSITORY
+    if not (repository / "HEAD").exists():
+        repository.mkdir(parents=True, exist_ok=True)
+        run(["git", "init", "--quiet", "--bare", "--initial-branch=main", str(repository)])
+    (repository / "git-daemon-export-ok").touch()
+    return repository
+
+
+def kind_config(gitops: Path, cache: Path) -> Path:
+    """kind-config.yaml with the GitOps directory mounted, read-only, into every node. kind needs the absolute
+    path of this checkout, so the file is written into the cache."""
+    config = yaml.safe_load(KIND_CONFIG.read_text(encoding="utf-8"))
+    for node in config["nodes"]:
+        node["extraMounts"] = [
+            {"hostPath": str(gitops.resolve()), "containerPath": NODE_GITOPS, "readOnly": True}
+        ]
+    cache.mkdir(parents=True, exist_ok=True)
+    path = cache / "kind-config.yaml"
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     return path
 
 
@@ -157,8 +212,9 @@ def _hosts_toml(pins: Pins) -> str:
     return f'[host."http://{pins.registry_in_cluster}"]\n  capabilities = ["pull", "resolve"]\n'
 
 
-def up(pins: Pins, kind: str, cache: Path, run: Run = run_command) -> None:
-    """Registry, cluster, registry configuration on the nodes, Kyverno. What already exists is kept."""
+def up(pins: Pins, kind: str, cache: Path, run: Run = run_command, *, gitops: Path = GITOPS_DIR) -> None:
+    """Registry, GitOps repository, cluster, registry configuration on the nodes, Kyverno, Argo CD, the git
+    server and the demo-shop namespace. What already exists is kept."""
     state = run(["docker", "inspect", "-f", "{{.State.Running}}", pins.registry_container], check=False)
     if state.returncode != 0:
         run([
@@ -169,12 +225,21 @@ def up(pins: Pins, kind: str, cache: Path, run: Run = run_command) -> None:
     elif state.stdout.strip() != "true":
         run(["docker", "start", pins.registry_container])
 
+    ensure_gitops_repository(gitops, run)
     if CLUSTER not in run([kind, "get", "clusters"]).stdout.split():
-        run([kind, "create", "cluster", "--name", CLUSTER, "--config", str(KIND_CONFIG), "--wait", "180s"])
+        config = kind_config(gitops, cache)
+        run([kind, "create", "cluster", "--name", CLUSTER, "--config", str(config), "--wait", "180s"])
 
     # containerd resolves both names to the registry container: kind-registry:5000 (what the cluster's
     # manifests and the policy name) and localhost:5001 (what a push from the host names).
     for node in run([kind, "get", "nodes", "--name", CLUSTER]).stdout.split():
+        if run(
+            ["docker", "exec", node, "test", "-d", f"{NODE_GITOPS}/{GITOPS_REPOSITORY}"], check=False
+        ).returncode:
+            raise ClusterError(
+                f"node {node} does not see the GitOps repository at {NODE_GITOPS}: the cluster was created "
+                "without its mount (an older `make kind-up`). Run `make kind-down`, then `make kind-up`."
+            )
         for host in (pins.registry_in_cluster, pins.registry_on_host):
             directory = f"/etc/containerd/certs.d/{host}"
             run(["docker", "exec", node, "mkdir", "-p", directory])
@@ -191,9 +256,25 @@ def up(pins: Pins, kind: str, cache: Path, run: Run = run_command) -> None:
 
     kubectl = ["kubectl", "--context", CONTEXT]
     run([*kubectl, "apply", "-f", "-"], input=_registry_config_map(pins))
-    run([*kubectl, "apply", "--server-side", "-f", str(manifest(pins, cache))])
+    # Both manifests are checked before either is applied.
+    kyverno, argocd = manifest(pins.kyverno, cache), manifest(pins.argocd, cache)
+    run([*kubectl, "apply", "--server-side", "-f", str(kyverno)])
     run([*kubectl, "wait", "--namespace", "kyverno", "--for=condition=Available", "deployment", "--all",
          "--timeout=300s"])  # fmt: skip
+    run([*kubectl, "apply", "-f", "-"], input=_namespace("argocd"))
+    run([*kubectl, "apply", "--server-side", "--namespace", "argocd", "-f", str(argocd)])
+    run([*kubectl, "wait", "--namespace", "argocd", "--for=condition=Available", "deployment", "--all",
+         "--timeout=300s"])  # fmt: skip
+    run([*kubectl, "rollout", "status", "--namespace", "argocd", "statefulset/argocd-application-controller",
+         "--timeout=300s"])  # fmt: skip
+    for name in ("git-server.yaml", "demo-shop-namespace.yaml"):
+        run([*kubectl, "apply", "-f", str(ARGOCD_DIR / name)])
+    run([*kubectl, "wait", "--namespace", "sentinel-gitops", "--for=condition=Available", "deployment/gitops",
+         "--timeout=180s"])  # fmt: skip
+
+
+def _namespace(name: str) -> str:
+    return f"apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {name}\n"
 
 
 def _registry_config_map(pins: Pins) -> str:
@@ -235,7 +316,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--tools-dir", type=Path, default=Path(os.environ.get("SENTINEL_TOOLS_DIR", ".sentinel/tools"))
     )
-    parser.add_argument("--cache", type=Path, default=ROOT / ".sentinel" / "cache" / "kind")
+    parser.add_argument("--cache", type=Path, default=CACHE)
     parser.add_argument("--key", type=Path, default=ROOT / "deploy" / "keys" / "release.pub")
     parser.add_argument("--repo", default=REPO)
     parser.add_argument("--builder-id", default=BUILDER_ID)
