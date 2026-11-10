@@ -453,11 +453,17 @@ def test_only_module_sources_are_listed_as_remote_modules(tmp_path: Path) -> Non
         'module "net" {\n  # a } in a comment, and a { in a string\n  description = "{"\n'
         '  source = "git::https://example.invalid/net.git"\n}\n'
         'resource "x" "y" {\n  source = "not-a-module"\n}\n'
+        # Third review of #26: a block comment holding a brace, and an unquoted label.
+        'module bare {\n  /* } */\n  source = "git::https://example.invalid/bare.git"\n}\n'
     )
     (tmp_path / "more.tofu.json").write_text(
         json.dumps([{"module": {"k": {"source": "registry.example/ns/k/aws"}}}, {"terraform": {}}])
     )
-    assert remote_modules(tmp_path) == ["git::https://example.invalid/net.git", "registry.example/ns/k/aws"]
+    assert remote_modules(tmp_path) == [
+        "git::https://example.invalid/bare.git",
+        "git::https://example.invalid/net.git",
+        "registry.example/ns/k/aws",
+    ]
 
 
 def test_remote_modules_are_listed(tmp_path: Path) -> None:
@@ -587,7 +593,9 @@ def test_cli_records_a_refused_scan_and_fails_closed(
 ) -> None:
     dest, _, _ = fake_trivy(tmp_path, releases, write_lock)
     repo = _repo(tmp_path)
-    (repo / "infra" / "main.tf").write_text("#trivy:ignore:*\n")
+    (repo / "infra" / "main.tf").write_text(
+        '#trivy:ignore:*\nmodule "m" {\n  source = "git::https://example.invalid/m.git"\n}\n'
+    )
 
     code, output, out, status = _cli(tmp_path, dest, repo, repo)
 
@@ -595,6 +603,28 @@ def test_cli_records_a_refused_scan_and_fails_closed(
     assert not out.exists()
     trivy = json.loads(status.read_text())["tools"]["trivy"]
     assert trivy["status"] == "failed" and "inline trivy:ignore" in trivy["detail"]
+    assert "remote Terraform module" not in output, "a refused scan lists nothing as if it had been evaluated"
+
+
+@pytest.mark.parametrize("where", ["scan-tree", "outside-module"])
+def test_a_link_loop_is_refused_with_a_reason_on_every_python(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path], where: str
+) -> None:
+    """Third review of #26, repros L1 and L2: on Python 3.12 (CI) `resolve()` raised RuntimeError, a traceback
+    and no tool status; on 3.13 the loop passed as a file inside the tree."""
+    dest, argv_file, _ = fake_trivy(tmp_path, releases, write_lock)
+    repo = tmp_path / "repo"
+    _module_chain(repo, ignore=False)
+    loop_dir = repo / ("demo-shop" if where == "scan-tree" else "moda")
+    (loop_dir / "x.tf").symlink_to("y.tf")
+    (loop_dir / "y.tf").symlink_to("x.tf")
+    code, output, out, status = _cli(tmp_path, dest, repo / "demo-shop", repo)
+    assert code == 3 and not out.exists() and not argv_file.exists(), output
+    detail = json.loads(status.read_text())["tools"]["trivy"]["detail"]
+    expected = (
+        "the scanned tree (x.tf, y.tf)" if where == "scan-tree" else "the repository (moda/x.tf, moda/y.tf)"
+    )
+    assert f"symbolic links leave {expected}" in detail
 
 
 SENTINEL_CHECKS = files("sentinelci.scanners.configs").joinpath("trivy-checks")

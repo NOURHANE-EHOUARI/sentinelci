@@ -24,7 +24,8 @@ reusable workflows called with `./` or `$/`. A pull request can therefore always
 
 1. Every job of `sentinel-scan.yml` checks out the **pipeline** at the base commit
    (`github.event.pull_request.base.sha`, or the pushed commit outside pull requests): CLI, lock, scanner
-   configurations, policies, waivers and the service context (`sentinel.yaml`). The pull request head is
+   configurations, policies, waivers, the VEX document (`.sentinel/vex.json`) and the service context
+   (`sentinel.yaml`). The pull request head is
    checked out only as **data** to scan, in a
    separate directory, and no job runs its code. `gate` and `report` never check it out at all.
 2. Tools are installed in `$RUNNER_TEMP`, outside both checkouts, and `sentinel` re-verifies each binary

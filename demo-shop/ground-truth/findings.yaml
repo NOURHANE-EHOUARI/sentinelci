@@ -1,10 +1,11 @@
 # Ground truth of the demo-shop benchmark (SPEC section 17).
 # Format: see README.md in this directory. Draft v1 proposed by A9; B9 owns the final schema.
 # Paths are relative to demo-shop/. Detections were verified with the pinned tools:
-# Gitleaks 8.30.1, Trivy 0.76.1 (embedded checks plus SentinelCI's own, SentinelCI configuration),
-# zizmor 1.31.1, and Checkov 3.4.0 (not pinned yet: its adapter is part of A1). SCA detections are Grype
-# 0.121.0's on the pinned Syft 1.55.0's SBOM, verified with the Grype database built 2026-11-01T06:20:12Z
-# (schema v6.1.10); they need such a database to be checked again (see README.md, Checks).
+# Gitleaks 8.30.1, Trivy 0.76.1 (embedded checks plus SentinelCI's own, SentinelCI configuration) and
+# zizmor 1.31.1. Checkov is not used (ADR-0012); a seed no pinned tool detects says why in `known_miss`.
+# SCA detections are Grype 0.121.0's on the pinned Syft 1.55.0's SBOM, verified with the Grype database
+# built 2026-11-01T06:20:12Z (schema v6.1.10); they need such a database to be checked again (see
+# README.md, Checks).
 version: 1
 
 seeds:
@@ -41,7 +42,6 @@ seeds:
       gate: SC-001
       detections:
         - {tool: gitleaks, rule: aws-access-token}
-        - {tool: checkov, rule: CKV_AWS_41}
 
   - id: GT-SECRET-004
     owner: A9
@@ -75,7 +75,6 @@ seeds:
       detections:
         - {tool: trivy, rule: AWS-0092}
         - {tool: trivy, rule: AWS-0086}
-        - {tool: checkov, rule: CKV_AWS_20}
 
   - id: GT-IAC-002
     owner: A9
@@ -85,7 +84,6 @@ seeds:
     expected:
       detections:
         - {tool: trivy, rule: AWS-0107}
-        - {tool: checkov, rule: CKV_AWS_24}
 
   - id: GT-IAC-003
     owner: A9
@@ -96,8 +94,6 @@ seeds:
       detections:
         - {tool: trivy, rule: AWS-0180}
         - {tool: trivy, rule: AWS-0080}
-        - {tool: checkov, rule: CKV_AWS_17}
-        - {tool: checkov, rule: CKV_AWS_16}
 
   - id: GT-IAC-004
     owner: A9
@@ -109,8 +105,6 @@ seeds:
     expected:
       detections:
         - {tool: trivy, rule: SENTINEL-AWS-0001}
-        - {tool: checkov, rule: CKV_AWS_62}
-        - {tool: checkov, rule: CKV_AWS_355}
 
   - id: GT-IAC-005
     owner: A9
@@ -122,7 +116,6 @@ seeds:
         - {tool: trivy, rule: KSV-0017}
         - {tool: trivy, rule: KSV-0009}
         - {tool: trivy, rule: KSV-0023}
-        - {tool: checkov, rule: CKV_K8S_16}
 
   - id: GT-IAC-006
     owner: A9
@@ -132,7 +125,6 @@ seeds:
     expected:
       detections:
         - {tool: trivy, rule: DS-0002}
-        - {tool: checkov, rule: CKV_DOCKER_3}
 
   # ---------------------------------------------------------------- CI workflows (A9), never executed
   - id: GT-PIPELINE-001
@@ -298,14 +290,14 @@ controls:
     category: SECRET
     title: Terraform variable marked sensitive, no literal credential
     location: {path: infra/terraform/variables.tf}
-    must_not_detect: [gitleaks, trivy, checkov]
+    must_not_detect: [gitleaks, trivy]
 
   - id: GT-CLEAN-003
     owner: A9
     category: IAC
     title: Hardened deployment with a network policy
     location: {path: infra/k8s/web.yaml}
-    must_not_detect: [gitleaks, trivy, checkov]
+    must_not_detect: [gitleaks, trivy]
 
   - id: GT-CLEAN-004
     owner: A9

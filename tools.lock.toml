@@ -6,12 +6,12 @@
 #
 # Hashes were copied from each project's published checksum file for that exact release (linked below) on
 # 2026-10-28. To upgrade a tool: open a PR that changes the version, URLs and hashes together, and link the
-# upstream checksum file in the PR description so the reviewer can check every value.
+# upstream checksum file in the PR description so the reviewer can check every value. A Trivy upgrade must
+# keep SentinelCI's own check SENTINEL-AWS-0001 compiling and detecting GT-IAC-004 (demo-shop ground truth).
 #
 # Not pinned here yet:
 # - opengrep: publishes keyless Cosign signatures but no checksum file; it will be pinned once
 #   `sentinel tools pin` verifies the signature and records the digest (follow-up of task A1).
-# - checkov (PyPI) and zizmor (PyPI): installed through uv with hash-locked versions.
 
 schema_version = 1
 
@@ -93,6 +93,9 @@ sha256 = "7be39d3a0428c664ce0183e4aba31ed9accffce9eda7e7f6fa84e9c512285f27"
 
 # Second container-scanning engine (stage 7). Pinned by hash on purpose: in March 2026 the trivy-action
 # tags were force-pushed to malware (CVE-2026-33634); a moved tag cannot change what this lock accepts.
+# A Trivy bump must re-run cli/tests/scanners/test_trivy_exposing.py with SENTINEL_TOOLS_DIR set and put the
+# result in the PR: rule SC-011 matches Trivy rule ids (policies/exposing.rego), and a renamed check would turn
+# it off silently. That file's test without Trivy fails until its VERIFIED_WITH names the new version.
 [tools.trivy]
 version = "0.76.1"
 homepage = "https://github.com/aquasecurity/trivy"
@@ -168,3 +171,46 @@ sha256 = "8802bd39bc14b58a705e6b3d4f4dd14f7f24ee657f0362c737338be243190c7e"
 url = "https://github.com/open-policy-agent/opa/releases/download/v1.21.4/opa_darwin_arm64_static"
 checksums_url = "https://github.com/open-policy-agent/opa/releases/download/v1.21.4/opa_darwin_arm64_static.sha256"
 sha256 = "4c105208a9282f590385bccbe600875c011f0894ccf9431782dfe855e1f99aa6"
+
+
+# Python tools (SPEC §5): installed by `uv sync --locked` from PyPI, where the project publishes no checksum file
+# for its binaries. uv checks each wheel against uv.lock at install time; the CLI checks the installed binary
+# against `binary_sha256` right before every run, so a binary replaced or reinstalled later never runs.
+# `sha256` must equal the wheel's hash in uv.lock (a test checks it), and `binary_sha256` was read from the
+# RECORD inside that wheel (`zizmor-<version>.data/scripts/zizmor`) on 2026-11-01. To upgrade: bump the
+# sentinelci dependency with `uv add`, then update the version and every wheel here in the same PR.
+
+# CI workflow analysis (stage 4).
+[python_tools.zizmor]
+version = "1.31.1"
+binary = "zizmor"
+
+[[python_tools.zizmor.wheels]]
+file = "zizmor-1.31.1-py3-none-manylinux_2_28_x86_64.whl"
+sha256 = "58e878eb2dbd2c6183c105e1ac28c14f7dd1eca44a783f1fe2a69647d012c410"
+binary_sha256 = "5c7ded5347e2f3c96046457668405dffbceda2ad065a26abd59717252c51686f"
+
+[[python_tools.zizmor.wheels]]
+file = "zizmor-1.31.1-py3-none-musllinux_1_2_x86_64.whl"
+sha256 = "e7fdf82d31cc67eb1d5030bf2372b25ee2a1c3ad05017e18da70ed138c4accd6"
+binary_sha256 = "1531663bb46f0e48370ce46277df632d49d79b29c795e7aae820c90e5e633aaf"
+
+[[python_tools.zizmor.wheels]]
+file = "zizmor-1.31.1-py3-none-manylinux_2_24_aarch64.whl"
+sha256 = "d9b36840c560a8abe39d9ef3d077239aabf6d572c5c2b629c970592a617dbf6f"
+binary_sha256 = "3739db83f215bf243ebf162af1627188164582eb76bb8c46aaaab3558e967c65"
+
+[[python_tools.zizmor.wheels]]
+file = "zizmor-1.31.1-py3-none-musllinux_1_2_aarch64.whl"
+sha256 = "c5ccb17fd820bb1ddc63cc9a715e97c063025487e585f640389a86d9dfc97cda"
+binary_sha256 = "8bad31a558322de5de0a3ba78d6443fe60c8f680ced2c19c479e213f6971a0b6"
+
+[[python_tools.zizmor.wheels]]
+file = "zizmor-1.31.1-py3-none-macosx_10_12_x86_64.whl"
+sha256 = "9696d3c10919a3a2eb086c102f1bc10717f53ef3700a0d6c55a709c274995476"
+binary_sha256 = "171595997a5d0542f787779cadc2ef7321f54fc50a2e3ed3261d07406cdf1525"
+
+[[python_tools.zizmor.wheels]]
+file = "zizmor-1.31.1-py3-none-macosx_11_0_arm64.whl"
+sha256 = "4a70ee3c2721122aff04d5bbad5e448d15384f45de2ecb3c9493fe9dac2bc95f"
+binary_sha256 = "6308a392298bd5161bc78ec6a8e5d54d20fb84284bd845088fa52eaa341fbe83"
