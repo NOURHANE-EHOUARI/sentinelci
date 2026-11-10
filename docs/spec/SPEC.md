@@ -19,8 +19,10 @@
 | 1.1.21 | A6 apply step (§9): `sentinel remediate apply` commits a patch proposal on a new `sentinel/fix/` branch of a local clone with plumbing commands on a temporary index (never pushes, checks nothing out, so no hook, filter or fsmonitor of the clone runs), after checking that the proposal id matches its content, that its findings are in the base scan (`--findings`) and its files are where they were found, and that the diff edits exactly the listed regular files in place (no file created, deleted, renamed, made executable or symlink retargeted). The commit has a `Sentinel-Diff` trailer and the proposal's dates. |
 | 1.1.17 | A6b remediation (§9): `sentinel remediate dockerfile`: the deterministic Dockerfile fixer (`USER 10001:10001` added to the final stage after its last RUN and USER, never rewriting a USER line; COPY instead of ADD only when every source is a directory or a plain file of the repository, neither a tar nor compressed, judged by content; `apt-get install --no-install-recommends`; each checked against the pinned Trivy), sharing the per-file loop with the Kubernetes fixer. An edit leaves alone an instruction that carries a finding it does not resolve (its fingerprint would change), a proposal claims only the findings an edit resolved, and CRLF files are left alone. The USER change can change what the image does, and the rationale says so. |
 | 1.1.16 | A6a remediation (§9): `sentinel remediate kubernetes` proposes hardening for the Trivy findings the deterministic Kubernetes fixer resolves (16 rule ids, each checked against the pinned Trivy; manifests edited round-trip, so the diff shows only the hardening; a non-root UID/GID, a read-only root file system and dropped capabilities can change how a workload runs, and the rationale says so), as a `PatchProposal`; `sentinel remediate verify` applies the verification gate and writes a `VerificationResult`. The gate refuses (exit 3) a proposal whose id does not match its content, that claims findings the base scan lacks or edits anything but where they are, and a decision not made in pr context on the patched findings with the tool status (which must show every target's scanner ok); a target re-reported under a new fingerprint (same tool, rule and file) is not gone, and a base finding that rises to MEDIUM or higher is new. Read models for both contracts; the §9 states and their transitions. New dependency: ruamel.yaml. |
+| 1.1.14 | A1 CI workflow analysis (§5): `sentinel scan pipelines` runs the zizmor of the CLI's environment (a runtime dependency pinned in `uv.lock`), checked against the binary hashes pinned in `tools.lock.toml` (`[python_tools.zizmor]`), offline, with the repository's configuration, ignore comments and `.gitignore` never honoured. Workflows, actions and Dependabot must load; other files with a `jobs:` key are skipped and reported when zizmor cannot load them. PIPELINE fingerprint (§13.1) changed: a finding below a job or a top-level key also hashes the code it is about (the expression's line, a trigger's value, a Dependabot entry's ecosystem), so a new expression, trigger or entry is a new finding (IAC unchanged). |
 | 1.1.13 | A4 SBOMs (§7): `sentinel sbom` writes CycloneDX and SPDX JSON with the pinned Syft, offline and never configured by the scanned repository (private working directory and home, SentinelCI's `supplychain/configs/syft.yaml` passed explicitly, no network lookup, no file catalog); images come from the OCI layout the build wrote, and both SBOMs must name the image's manifest digest; an output inside the target is refused before anything is deleted. |
 | 1.1.12 | A4 release attestations (§7, ADR-0010): `sentinel attest` signs the release decision, CycloneDX SBOM, vulnerability scan (`schemas/vuln-result.v1.json`) and SLSA v1 provenance of an image digest with the pinned Cosign and a key pair (no transparency log), only for a non-BLOCK release decision about that image that recorded these findings and this SBOM; `sentinel verify` checks the four Sigstore bundles offline and prints a trust report (exit 0 trusted, 1 not, 3 could not run). |
+| 1.1.11 | SC-011 (§6.3; B4 #29 and A1d #28): a misconfiguration that exposes the service by itself, one of 20 Trivy rule ids in `policies/exposing.rego`, blocks whatever its score. `cli/tests/scanners/test_trivy_exposing.py` pins every listed id against the pinned Trivy (one probe each, with ordinary configurations that must report none), and fails without Trivy when `tools.lock.toml` names a Trivy the list was not verified with. |
 | 1.1.10 | B4: strict policy profile (`policies/profiles.rego`; any P1 is an SC-006 BLOCK) chosen by the base-branch `sentinel.yaml`; OpenVEX `not_affected` statements (`schemas/vex.v1.json`, `.sentinel/vex.json`), Decision 1.4 (`inputs.vex_digest`, `vex_applied`). A statement of any other status about the finding disputes `not_affected` (the gate does not order statements); `not_affected` applies for 90 days after it was made, like a waiver; a VEX date after `evaluated_at` is SC-010; `pkg:oci` products and duplicate JSON keys are refused. |
 | 1.1.9 | Decision 1.3: `inputs.service_context_digest`, the `sentinel.yaml` enrichment used (from the base branch), recorded by `sentinel evaluate --service-context`, stored with `--store` and given back on replay; an invalid `sentinel.yaml` is never recorded (exit 3). |
 | 1.1.8 | A1c IaC scanning (§5): `sentinel scan iac` runs the pinned Trivy (`trivy config`) offline, with repository configuration and ignore files never loaded, remote modules not fetched and not evaluated, and inline ignore comments (also in any repository Terraform or OpenTofu file outside the scan path when the scan path declares a module, and in files named like Dockerfiles), symbolic links leaving the scan path, and directory or Terraform file links leaving the repository when a module may load them, refused (SC-010); findings are category IAC with the §13.1 config fingerprint. `sentinel scan combine` merges the scanners' findings and tool statuses for the gate; `sentinel-scan.yml` runs both scanners on the head and, in pull requests, on the base tree as the baseline. |
@@ -208,9 +210,25 @@ Terraform or OpenTofu file (`.tf`, `.tofu` and their `.json` forms) of the repos
 check before the run, and a directory or Terraform file link in the repository that leaves it is refused; after the
 run, a file Trivy read outside the repository is refused, and the directories it read outside the scan path get the
 marker check. Trivy does not follow symbolic links while Terraform and kubectl do, so a link that leaves the scan
-path is refused too. The marker check skips only files Trivy never parses (source code, documentation, images),
+path is refused too (a link loop counts as leaving, on every Python version). The marker check skips only files Trivy never parses (source code, documentation, images),
 never a name Trivy reads as a Dockerfile (`Dockerfile.*`, `Containerfile.*`, `*.dockerfile`). Telemetry and version
 checks are off. Legitimate exceptions go through waivers (§6.4).
+
+zizmor (`sentinel scan pipelines`, findings of category PIPELINE for SC-009) is a runtime dependency of the CLI,
+installed from its PyPI wheel (`uv.lock`; it publishes no checksum file for its binaries). Right before each run,
+the binary of the CLI's own environment, never one from `PATH`, must be one that a wheel pinned in `tools.lock.toml`
+(`[python_tools.zizmor]`) carries, at the pinned version; those hashes were read from the wheels whose sha256
+`uv.lock` pins, and a test keeps the two files in step. It runs offline with `--no-config` (no `zizmor.yml`),
+`--no-ignores` and `--collect=all` (a workflow listed in `.gitignore` is still audited), and `--persona=regular`,
+zizmor's default audits (the pedantic and auditor personas are for manual review, too noisy for a blocking gate).
+With `--no-ignores`, a finding covered by an inline `# zizmor: ignore[...]` comment is reported flagged `ignored`;
+it stays a finding, and its message says the comment is not honoured. SentinelCI collects the inputs: what GitHub
+runs (every YAML file under `.github/workflows/`, every `action.yml` / `action.yaml`, `.github/dependabot.yml`) must
+load (`--strict-collection`), or the scan fails (SC-010); any other YAML file with a top-level `jobs:` key is
+audited too, and one that zizmor cannot load as a GitHub workflow (another CI's file) is skipped and named in the
+job log, never counted as audited. Fingerprints (§13.1) use the job (`jobs.<id>`) and, for a finding inside a step,
+the code it is about, never the step's position, so adding a step does not make a job's findings new, while a new
+expression in a job is a new finding.
 
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
@@ -358,6 +376,12 @@ rule; a not_affected VEX statement covers its package findings the same way (§6
 evaluate --service-context`; `default` (or none) keeps SC-006 a WARN, `strict` makes any P1 an SC-006 BLOCK (the
 threshold, `p1_block_above: 0`, is policy data). An unknown profile is malformed input (SC-010). Not yet
 implemented: SC-004 (A4 attestations), SC-007, SC-008.
+
+exposure itself; every other misconfiguration keeps its risk-model priority (IaC weight 0.5). The listed ids are
+pinned against the pinned Trivy (`cli/tests/scanners/test_trivy_exposing.py`, which also records Trivy 0.76.1's
+blind spots), so a Trivy bump that renames a check fails a test instead of turning SC-011 off. Waivers and diff-aware PR mode apply to every finding
+rule. Not yet implemented: SC-004 (A4 attestations), SC-007, SC-008, the strict profile and VEX.
+
 
 Policy rules use `input.evaluated_at`, never `time.now_ns()`. Reference implementation of the verdict logic
 (verified with OPA 1.21):
@@ -609,7 +633,30 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
   architectures and Grype/Trivy qualifier differences keep the same fingerprint. Waivers use the same purl base.
 - SAST: `sha256(rule id | path | hash of normalized snippet)` — survives line shifts.
 - SECRET: `sha256(rule id | sha256(secret value))`.
-- IAC / PIPELINE: `sha256(rule id | path | resource or job id)`.
+- IAC: `sha256(rule id | path | resource)`.
+- PIPELINE: about a whole job or file, `sha256(rule id | path | job id, or "workflow" for the file)`; any other
+  finding (below a job, or at or below a top-level key), `sha256(rule id | path | job id or top-level key |
+  sha256(normalized code))`, the code being the source text the finding is about, normalized like a SAST snippet
+  with the spaces inside `${{ }}` dropped:
+  - an expression or an action reference: only the line(s) of the step holding it, so an edit to another line
+    of the same `run:` script keeps the id;
+  - a top-level key itself: its value (`on: pull_request_target` is the trigger, as in the list and mapping
+    forms, which give the same id);
+  - a Dependabot entry: the flagged line and the entry's `package-ecosystem`. Two entries of the same ecosystem
+    with the same setting (in different directories) still share one id, the second as an `other_location`.
+    zizmor names no ecosystem for an insufficient `cooldown`, so two entries with the same short cooldown share
+    one (MEDIUM) id;
+  - an expression zizmor gives no route for (`overprovisioned-secrets`, `unredacted-secrets`): the `${{ }}`
+    expression itself (job id "workflow"). The same expression in another job shares the id, as zizmor names no
+    job; a finding about the whole file (the workflow-level `excessive-permissions`) hashes no code;
+  - otherwise the text zizmor points at (a step, a permission).
+
+  The same line in two steps of one job (or of one action) is one finding, the second place an `other_location`:
+  the job is the trust boundary, since code run by the first step already controls the later steps of the job
+  (`$GITHUB_ENV`, the workspace).
+  A job holds many steps: a new expression, trigger or Dependabot entry must be a new finding, and a waiver
+  must not cover it. Line moves, re-indentation and added steps keep the fingerprint; a position (a step or
+  entry index) is never part of it.
 
 ### 13.2 Other contracts
 

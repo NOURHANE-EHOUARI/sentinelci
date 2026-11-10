@@ -51,6 +51,7 @@ from sentinelci.normalize.errors import NormalizationError
 from sentinelci.normalize.gitleaks import load_gitleaks_report, normalize_gitleaks
 from sentinelci.normalize.ndjson import dumps_ndjson, write_ndjson
 from sentinelci.normalize.trivy import normalize_trivy_config
+from sentinelci.normalize.zizmor import normalize_zizmor
 from sentinelci.policy.bundle import BundleError, PolicyBundle
 from sentinelci.policy.decision import (
     CONTEXTS,
@@ -95,6 +96,7 @@ from sentinelci.scanners.status import (
     write_tool_status,
 )
 from sentinelci.scanners.trivy import remote_modules, scan_iac_with_run
+from sentinelci.scanners.zizmor import scan_pipelines_with_run
 from sentinelci.supplychain.attestations import KINDS, AttestationError, parse_image, release_predicates
 from sentinelci.supplychain.cosign import Signer, Verifier, check_public_key
 from sentinelci.supplychain.sbom import SOURCE_KINDS, SourceKind, generate_sbom
@@ -995,6 +997,54 @@ def _write_status(
 ) -> None:
     write_tool_status(tool_status_document(lock.read_bytes(), platform, outcomes), destination)
     typer.echo(f"tool status written to {destination}", err=True)
+
+
+@scan_app.command("pipelines")
+def scan_pipelines_cmd(
+    target: Annotated[Path, typer.Argument(help="Directory whose GitHub workflows and actions to audit.")],
+    out: Annotated[Path, typer.Option(help="Destination NDJSON file.")],
+    repo: Annotated[str, typer.Option(help="Repository as owner/name.")],
+    commit: Annotated[str, typer.Option(help="Commit SHA that was scanned.")],
+    context: Annotated[RunContext, typer.Option(help="Run context.")],
+    ref: Annotated[str | None, typer.Option(help="Git ref that was scanned.")] = None,
+    run_id: Annotated[str | None, typer.Option(help="CI run identifier.")] = None,
+    repo_root: Annotated[
+        Path | None, typer.Option(help="Repository root (default: the target itself).")
+    ] = None,
+    lock: LockOption = Path(LOCK_FILE_NAME),
+) -> None:
+    """Audit CI workflows with the zizmor of this environment, checked against tools.lock.toml (offline, never
+    configured by the scanned repository): findings of category PIPELINE, for rule SC-009."""
+    out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
+    root = repo_root or target
+    try:
+        if not target.is_dir():
+            raise ScannerError(f"{target} is not a directory")
+        scan_root = target.resolve().relative_to(root.resolve()).as_posix()
+        scan = scan_pipelines_with_run(target, lock=load_lock(lock))
+        findings = normalize_zizmor(
+            scan.results,
+            run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
+            tool=Tool(name="zizmor", version=scan.version),
+            scan_root=scan_root,
+        )
+    except ValueError as exc:
+        raise _fail_closed(ScannerError(f"{target} is outside the repository root {root}")) from exc
+    except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
+        raise _fail_closed(exc) from exc
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_ndjson(findings, out)
+    if scan.skipped:  # never counted as audited: say which ones, in the job log
+        typer.echo(
+            f"warning: {len(scan.skipped)} file(s) with a `jobs:` key are not GitHub workflows zizmor can "
+            f"load, not audited: {', '.join(scan.skipped)}",
+            err=True,
+        )
+    skipped = f", {len(scan.skipped)} skipped" if scan.skipped else ""
+    typer.echo(
+        f"zizmor {scan.version}: {len(scan.audited)} file(s) audited{skipped}, {len(findings)} finding(s) "
+        f"written to {out}"
+    )
 
 
 # ---------------------------------------------------------------- report
