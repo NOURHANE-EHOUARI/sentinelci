@@ -141,9 +141,18 @@ Runs the OPA policies in `policies/` and writes a Decision record (`schemas/deci
   the decision, so a failed scan still produces a record.
 - `--service-context <sentinel.yaml>`: the same base-branch file given to `sentinel enrich --config`. Its exposure
   shaped the scores, so the decision records its digest (`inputs.service_context_digest`, Decision 1.3) and
-  `--store` keeps it for replay. An invalid file is never recorded (exit 3).
+  `--store` keeps it for replay. An invalid file is never recorded (exit 3). Its `policy_profile` picks the profile:
+  `strict` makes any P1 an SC-006 BLOCK (`policies/profiles.rego`).
+- `--vex <json>` (default `.sentinel/vex.json` if present, from the base branch): OpenVEX `not_affected`
+  statements (`schemas/vex.v1.json`, justification required). A covered package finding counts for no rule and is
+  listed in `vex_applied` (Decision 1.4); the command prints a `VEX not_affected:` line. A statement of any other
+  status about the same finding disputes `not_affected` whatever the order, so remove an earlier
+  `under_investigation` or `affected` statement when you add `not_affected`. Like a waiver, `not_affected` applies
+  for 90 days after it was made (its `last_updated` or `timestamp`, else the document's `timestamp`), and a
+  statement or document dated after `--evaluated-at` blocks (SC-010). Products are package purls (`pkg:oci` is
+  refused: an image matches no finding). An invalid document, a duplicate JSON key, or one over 4 MiB exits 3.
 - Required scanners (`policies/required_tools.rego`, part of the policy bundle, so read from the base branch):
-  gitleaks in `pr` and `release`, none in `local`. A required tool left out of the tool status, or no tool
+  gitleaks and trivy in `pr` and `release`, none in `local`. A required tool left out of the tool status, or no tool
   status at all in a context that requires tools, is an SC-010 BLOCK (`Scanner missing` /
   `Tool status missing`): a workflow that drops a scanner cannot turn its silence into a pass.
 - The decision is `schema_version` 1.2 (with `baseline_digest` / `tool_status_digest`) when either option is
@@ -271,3 +280,149 @@ uv run sentinel sbom out/image-oci --source oci-dir --name demo-shop/shop-api \
   `sentinel attest` binds, ADR-0010) and an SPDX document. An output inside the target, a directory, the same
   file for both, or a path that cannot be cleared is refused before anything is written.
 - The package count it prints leaves out the operating-system component Syft adds for an image.
+
+## `sentinel upload` (findings to the platform, M1)
+
+Sends one run's findings to the SentinelCI platform (the B1 ingestion API, `schemas/openapi.yaml`): first
+`POST /api/v1/runs`, then the NDJSON exactly as the scan wrote it.
+
+```bash
+SENTINEL_API_TOKEN=... uv run sentinel upload --findings out/findings.ndjson --api-url http://localhost:8000 \
+  --repo NOURHANE-EHOUARI/sentinelci --commit <sha> --context local
+```
+
+- **A report, never a decision.** It runs after the verdict and never changes it: exit `0` when the platform
+  recorded exactly these findings (with `--resume`, also when it already had them), `4` when it did not. It
+  never exits with the gate's codes, `1` or `3`, and never with a traceback: a malformed answer, an unusable
+  URL or an unexpected error is exit `4` too, with one line that names no secret.
+- **The token** comes only from `SENTINEL_API_TOKEN`. It is never an argument and is never printed, not even
+  in an error: if the platform's answer quotes it back, the message shows `<SENTINEL_API_TOKEN>` instead. It
+  must be visible ASCII (no space, line break or non-ASCII character). In CI the step runs only in a job that
+  runs no repository code.
+- **The URL** is `https://`, or `http://` on the loopback (`localhost`, `127.0.0.1`, `[::1]`). It is ASCII
+  (an international host name in its `xn--` form) and holds no credentials, query, fragment, white space or
+  control character. A redirect is refused, because it would
+  carry the token elsewhere. Plain `http://` never goes through a proxy (`http_proxy` is ignored), since the
+  proxy would see the token in clear text; `https://` goes through `HTTPS_PROXY`, which only sees a `CONNECT`.
+- **Time limits:** 60 s for each network operation, and 120 s for each request as a whole, so a platform that
+  answers one byte at a time cannot hold the step.
+- **The findings are checked first**, as the API checks them: Finding v1, each id once, each about the run
+  given by `--repo/--commit/--context` (and `--ref/--run-id` when the findings carry them). A bad file never
+  leaves an empty run behind.
+- **The platform's `findings_sha256`** must be the sha256 of the bytes sent.
+- **Resuming.** Once the run exists, any failure names it, a lost or malformed answer included, and
+  `--resume <run id>` finishes it without creating another (or confirms that the platform has these findings).
+  A run that already holds other findings (another sha256 or another count) is refused, and so is a run about
+  another repo, commit, context, ref or run id: the message names the fields that differ. When the findings are
+  larger than the platform's upload limit, the message says so: `--resume` cannot help, and the run stays empty.
+- **CI runs resume themselves.** With `--run-id`, the platform answers the same CI run again with 409 and the
+  run it has (API 1.1.0), so the same command again finishes or confirms that run, with no `--resume`. The run
+  id is free text: in GitHub Actions it is `<run id>/<run attempt>` (the scan's `--run-id` too, since the
+  findings carry it), so a re-run of the job is a new run, as it is a new scan and a new decision. A run with no
+  `--run-id` (a local run) is recorded anew each time.
+
+
+## `sentinel scan pipelines` (CI workflows, A1)
+
+```bash
+uv run sentinel scan pipelines demo-shop --repo-root . --out out/pipelines.ndjson \
+  --repo NOURHANE-EHOUARI/sentinelci --commit "$GITHUB_SHA" --context pr
+```
+
+- zizmor, a runtime dependency of the CLI (`uv.lock`). Right before it runs, the binary of the CLI's own
+  environment (never one from `PATH`) must be one that a wheel pinned in `tools.lock.toml` carries
+  (`[python_tools.zizmor]`, at the pinned version): another version, a replaced binary, or zizmor missing
+  exits `3` (SC-010).
+- The scanned repository cannot configure or silence it: `--no-config`, `--no-ignores` (a finding covered by an
+  inline `# zizmor: ignore[...]` comment is kept, and its message says so), `--collect=all` (`.gitignore` is not
+  honoured), `--offline`, and a minimal environment.
+- Inputs: what GitHub runs (every YAML file under `.github/workflows/`, every `action.yml` / `action.yaml`,
+  `.github/dependabot.yml`) must load (`--strict-collection`), or exit `3`. Any other YAML file with a top-level
+  `jobs:` key is audited too; one zizmor cannot load as a GitHub workflow (another CI's file) is skipped, named
+  in a warning, and never counted as audited. `--persona=regular`: zizmor's default audits.
+- Findings are category PIPELINE. A finding about a whole job or file is one per rule, file and job; any other
+  also hashes the code it is about: the line holding the expression or action reference, a trigger or
+  permission's value, a Dependabot entry's setting with its `package-ecosystem`. So a new expression, trigger or
+  Dependabot entry is a new finding, while a moved line, an added step or an edit to another line of the same
+  script keeps the id. The same code twice in a job is one finding with `other_locations`. No workflow code is
+  kept (only its hash). A HIGH one that the pull request introduces blocks it (SC-009).
+
+## `sentinel remediate` (verified remediation loop, A6)
+
+```bash
+uv run sentinel remediate kubernetes --findings out/findings.ndjson --repo-root . --out out/proposal.json
+uv run sentinel remediate apply --proposal out/proposal.json --findings out/base.ndjson --repo-root .
+uv run sentinel remediate verify --proposal out/proposal.json --before out/base.ndjson \
+  --after out/patched.ndjson --decision out/patched-decision.json --tool-status out/patched-tool-status.json \
+  --build-ok --tests-ok --out out/result.json
+```
+
+- `kubernetes` proposes (`schemas/patch-proposal.v1.json`), it never applies. It hardens the workloads of the
+  manifests that Trivy flagged, for the rule ids it knows (each edit checked against the pinned Trivy), and
+  leaves alone what the fix would have to choose for the application (hostPath volumes, image tags, resource
+  limits, added capabilities). Comments, key order and quoting are kept, and so are `---` / `...` markers; a
+  file it cannot edit without reformatting, with CRLF line endings, or with a workload kind it does not edit
+  is named in a warning and left alone. With nothing to fix, it writes no file and exits `0`.
+  - **It can change how a workload runs**: a non-root UID/GID (10001; a UID or GID above 10000 is kept), a
+    read-only root file system and dropped capabilities can stop a workload that writes into its image, owns
+    files by another UID or needs a capability. The proposal's rationale says so. `--build-ok` and
+    `--tests-ok` come from the build and unit tests, which do not run the workload: there is no cluster
+    deploy test yet.
+- `dockerfile` does the same for Dockerfiles:
+  - **USER.** `USER 10001:10001` is added to the final stage after its last RUN and USER, before the next
+    CMD/ENTRYPOINT or at the end, so every RUN still runs as the user it ran as. A USER line is never
+    rewritten. The final stage is the last FROM: an image built with `--target` an earlier stage is not
+    changed (Trivy checks the last stage too).
+  - **ADD → COPY**, only when ADD would do nothing more. ADD unpacks a local tar by its content, so every
+    source must be in the repository (next to the Dockerfile, then at the root) and be a directory or a plain
+    file that is neither a tar nor compressed. A URL, a git source, a glob, a variable, a missing source or an
+    ADD-only flag keeps ADD (COPY's `--chown`, `--chmod`, `--link` and `--exclude` are fine). A zip is copied:
+    ADD never unpacks one.
+  - **apt-get.** `apt-get install` gets `--no-install-recommends`.
+  - **What it leaves alone.** An instruction that carries a finding the edit does not resolve is not edited:
+    Trivy names a Dockerfile finding by its instruction's text, so the other finding would get a new
+    fingerprint. Only the findings an edit resolved are claimed; a file where nothing could be resolved is
+    reported as "nothing this fixer can resolve". The base image's tag or digest, a HEALTHCHECK and a script
+    piped to a shell are left alone too, and so is a file with an `escape` directive, a heredoc or CRLF line
+    endings.
+  - **It can change what the image does**: files it writes at run time must be writable by UID 10001, and an
+    image that needs root at run time breaks. The rationale says so.
+- `apply` turns a proposal into one commit on a new `sentinel/fix/<id>` branch of a local clone, and prints
+  the branch, the commit, the base and the diff's sha256 as JSON. The bot's workflow pushes it and opens the
+  pull request.
+  - **What it never does:** push, or change the working tree, the index or the current branch. Nothing is
+    checked out: the commit is built on a temporary index with plumbing commands (`read-tree`,
+    `apply --cached`, `write-tree`, `commit-tree`, `update-ref`), so no smudge or clean filter, fsmonitor or
+    hook the clone configures can run. What in the clone's `.git/config` could run code is overridden on the
+    command line (`core.hooksPath`, `core.fsmonitor`, `commit.gpgsign`), and so are line-ending and white-space
+    rewrites (`core.autocrlf`, `apply.whitespace`), so the commit is exactly base + diff; the user's and system
+    configuration are not read, nor are the caller's `GIT_*` variables.
+  - **What it checks first:** the proposal id is recomputed from its strategy, attempt, findings and diff, so
+    the branch name and the trailers identify the content. The id covers those four only, not `created_at` or
+    the rationale (the commit date and message): a second proposal with the same id is refused anyway, because
+    its branch already exists. Every finding it claims must be in `--findings`
+    (the base scan), and every file it changes must be where one of them was found. The diff changes exactly
+    the files the proposal lists, each a regular file at the base. It creates, deletes, renames or makes
+    executable no file, and does not retarget a symbolic link (git applies a new link target as an in-place
+    edit, so the file mode at the base is what tells them apart). The diff must apply to the base.
+  - **The commit** carries `Sentinel-Proposal`, `Sentinel-Strategy`, `Sentinel-Diff: sha256:<hex>` and one
+    `Sentinel-Finding` trailer per finding. Its dates are the proposal's `created_at`, so the same proposal on
+    the same base is the same commit.
+  - **Ownership:** git's `safe.directory` comes from the user's configuration, which is not read. A clone owned
+    by another user (a container job on a runner) is refused as "dubious ownership": exit `3`, fail closed.
+  - A branch exists once per proposal. Exit `3`, with nothing created, otherwise.
+- `verify` writes a `VerificationResult` (`schemas/verification-result.v1.json`): VERIFIED only if the patched
+  commit builds, its tests pass, every target is gone, no new finding of severity MEDIUM or higher appeared,
+  and its decision is not BLOCK. Exit `0` VERIFIED, `1` REJECTED (a retry is left) or FAILED (the third
+  attempt), `3` when an input cannot be trusted (nothing is written). In detail:
+  - a target is gone when its fingerprint is gone and no new fingerprint of the same tool and rule appears in
+    its file (a renamed container moves a finding, it does not fix it); a base finding that rises to MEDIUM or
+    higher counts as new;
+  - exit `3` for a proposal whose id does not match its content, that claims findings `--before` does not
+    have, or whose diff does anything but edit, in place, the files those findings are in. Each hunk is read
+    to its line counts, as git reads it: a `---`/`+++` pair after the last hunk (which git applies as one more
+    file) is refused;
+  - exit `3` for a decision not made on `--after` (`inputs.findings_digest`), not in pr context, or without the
+    tool status; for a `--tool-status` that is not the one the decision recorded, or that does not show the
+    scanner of every target `ok`: a scan that failed, was skipped or never ran must not vouch for the patch;
+  - `--out` can never be one of the inputs.

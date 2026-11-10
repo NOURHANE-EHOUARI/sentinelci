@@ -5,7 +5,7 @@ attestation, verification). It mirrors every rule of the JSON Schema, including 
 malformed or tampered record is rejected instead of being reported as a PASS. Minor versions only add fields
 (`_SINCE`), and an older version must not carry a field a later one introduced. What each version requires
 is the schema's `allOf` table, copied in `_REQUIRED`: `waivers_digest` from 1.1, `service_context_digest`
-in 1.3.
+in 1.3, `vex_digest` and `vex_applied` from 1.4.
 """
 
 import re
@@ -21,7 +21,7 @@ DecisionContext = Literal["pr", "release", "local"]
 
 _SHA256_HEX = r"^[a-f0-9]{64}$"
 _PREFIXED_SHA256 = r"^sha256:[a-f0-9]{64}$"
-SchemaVersion = Literal["1.0", "1.1", "1.2", "1.3"]
+SchemaVersion = Literal["1.0", "1.1", "1.2", "1.3", "1.4"]
 
 # The version that introduced each optional field (an older record must not carry it) ...
 _SINCE: dict[str, tuple[int, int]] = {
@@ -29,13 +29,17 @@ _SINCE: dict[str, tuple[int, int]] = {
     "inputs.baseline_digest": (1, 2),
     "inputs.tool_status_digest": (1, 2),
     "inputs.service_context_digest": (1, 3),
+    "inputs.vex_digest": (1, 4),
+    "vex_applied": (1, 4),
 }
-# ... and the fields each version requires, as in the schema's allOf.
+# ... and the fields each version requires, as in the schema's allOf (1.4 records the service context only
+# when one was given, as 1.2 does the baseline and the tool status).
 _REQUIRED: dict[str, frozenset[str]] = {
     "1.0": frozenset(),
     "1.1": frozenset({"inputs.waivers_digest"}),
     "1.2": frozenset({"inputs.waivers_digest"}),
     "1.3": frozenset({"inputs.waivers_digest", "inputs.service_context_digest"}),
+    "1.4": frozenset({"inputs.waivers_digest", "inputs.vex_digest", "vex_applied"}),
 }
 
 _RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$")
@@ -87,6 +91,7 @@ class Inputs(_Contract):
     baseline_digest: str | None = Field(default=None, pattern=_PREFIXED_SHA256)
     tool_status_digest: str | None = Field(default=None, pattern=_PREFIXED_SHA256)
     service_context_digest: str | None = Field(default=None, pattern=_PREFIXED_SHA256)
+    vex_digest: str | None = Field(default=None, pattern=_PREFIXED_SHA256)
 
     @field_validator("tool_versions")
     @classmethod
@@ -106,6 +111,7 @@ class Decision(_Contract):
     waivers_applied: tuple[str, ...]
     inputs: Inputs
     engine_version: str = Field(min_length=1)
+    vex_applied: tuple[str, ...] | None = None
 
     @field_validator("decision_id")
     @classmethod
@@ -131,8 +137,23 @@ class Decision(_Contract):
             raise ValueError("waivers_applied must hold unique, non-empty ids")
         return value
 
+    @field_validator("vex_applied")
+    @classmethod
+    def _vex(cls, value: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        if value is None:
+            return value
+        for finding_id in value:
+            if not re.fullmatch(_SHA256_HEX, finding_id):
+                raise ValueError(f"vex_applied holds finding ids (sha256 fingerprints), got {finding_id!r}")
+        if len(set(value)) != len(value):
+            raise ValueError("vex_applied must hold unique finding ids")
+        return value
+
     def _present(self) -> set[str]:
-        return {f"inputs.{name}" for name in self.inputs.model_fields_set}  # never null: see _no_null
+        fields = {f"inputs.{name}" for name in self.inputs.model_fields_set}  # never null: see _no_null
+        if "vex_applied" in self.model_fields_set:
+            fields.add("vex_applied")
+        return fields
 
     @model_validator(mode="after")
     def _consistent(self) -> "Decision":
