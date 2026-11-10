@@ -448,3 +448,25 @@ def test_every_field_that_differs_is_named_and_none_of_the_platforms_values() ->
     with pytest.raises(up.UploadError) as caught:
         up._same_run("r", recorded, run)
     assert str(caught.value) == "run r is not this run (commit, ref differ)"
+
+
+@pytest.mark.parametrize(
+    ("token", "pad"),
+    [
+        ("fake-token-with-a\\backslash", 0),
+        ("fake-token-with-'and\"", 0),
+        ("fake-token-cut-by-the-limit", 255),
+    ],
+    ids=["backslash", "both-quotes", "cut-at-300"],  # repr escapes \\ and ', the limit cuts the token
+)
+def test_the_token_is_masked_before_the_platforms_words_are_quoted_or_cut(
+    tmp_path: Path, raw: Callable[[Answer], tuple[str, list[bytes]]], token: str, pad: int
+) -> None:
+    def answer(request: bytes) -> bytes:
+        auth = next(x for x in request.split(b"\r\n") if x.lower().startswith(b"authorization:"))
+        detail = "x" * pad + f"rejected {auth.decode()}"
+        return _response("401 Unauthorized", json.dumps({"detail": detail}).encode())
+
+    url, _ = raw(answer)
+    result = run_upload(tmp_path, url, findings(), token=token)
+    assert result.exit_code == 4 and "fake-token" not in result.output, result.output

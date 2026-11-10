@@ -239,8 +239,11 @@ def _why(status: int, body: Any) -> str:
     detail = body.get("detail") if isinstance(body, dict) else None
     if isinstance(detail, list):  # 422: FastAPI's list of validation errors
         detail = "; ".join(str(item.get("msg")) for item in detail[:3] if isinstance(item, dict))
-    # The platform's own words, quoted and without control characters: they cannot pass for the CLI's.
-    said = "".join(char for char in str(detail) if char.isprintable())[:300] if detail else ""
+    # The platform's own words, quoted and without control characters: they cannot pass for the CLI's. The
+    # token is masked first: repr escapes a backslash or a quote, and the cut could split the token.
+    said = "".join(char for char in str(detail) if char.isprintable()) if detail else ""
+    token = os.environ.get(TOKEN_VARIABLE, "").strip()
+    said = (said.replace(token, f"<{TOKEN_VARIABLE}>") if token else said)[:300]
     return f"HTTP {status}" + (f", the platform says {said!r}" if said else "")
 
 
