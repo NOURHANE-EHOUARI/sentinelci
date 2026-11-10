@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.35 | A6 remediation bot (§9, ADR-0013): `sentinel-remediate.yml` proposes in a read-only job and publishes in a job that runs no repository code; a branch is pushed and its pull request opened only if its bundle holds exactly one commit, on the scanned commit, with the proposal's id and exactly its files edited in place; never twice, never merged. |
 | 1.1.30 | Platform API migrations (B1, §13.3): going below 0004 stops, changing nothing, while any run keeps its uploaded findings bytes, which are the only copy `findings_sha256` was taken of; before, the downgrade dropped them without a word. A database without kept bytes still goes down. Raised on #57. |
 | 1.1.29 | Platform API 1.2.0 (B1, §13.3): the platform keeps each run's findings upload byte for byte and serves it at `GET /api/v1/runs/{id}/findings`, so a consumer that must match `findings_sha256` (the correlator's run document, #47; a replay) reads the exact bytes; the JSONB rows keep neither key order nor bytes. The database keeps only bytes that hash to the recorded digest, and the recorded-run trigger makes them immutable. Runs recorded before have none, and the API says so. |
 | 1.1.28 | Platform API 1.1.0 (B1, §13.3): one run per CI run. `POST /api/v1/runs` with the `repo`, `commit`, `context` and `run_id` of a run already recorded (a re-run of `sentinel upload`, #50) is answered 409 with the existing run, which the client resumes instead of recording the findings a second time; a unique index decides between concurrent requests. A run without `run_id` is always new. Migration 0003 stops, changing nothing, on a database that already holds a CI run twice. |
@@ -549,6 +550,14 @@ in its file. A failing patch is REJECTED while an attempt is left (at most three
 commands on a temporary index (no checkout, so no hook, filter or fsmonitor of the clone runs, and nothing is
 pushed), after the same proposal check as the gate against the base findings and a check that the diff applies to
 the base and edits regular files in place.
+
+The bot (A6d, ADR-0013, `.github/workflows/sentinel-remediate.yml`, by hand only) splits the work in two jobs. A
+read-only `propose` job scans the commit, runs the fixers and `apply`, and hands over each branch as a git bundle.
+A `publish` job, the only one with a write token, runs no repository code (the runner's git, jq and gh only):
+it pushes a branch and opens its pull request only if the bundle holds exactly that `sentinel/fix/` branch, one
+commit on the scanned commit, carrying the proposal's id and editing in place exactly the files the proposal
+lists; an existing branch is not opened twice. The verification run is dispatched with the A3 wiring (the
+workflow token's pull requests start no workflow by themselves).
 
 ## 10. Dashboard and observability
 
