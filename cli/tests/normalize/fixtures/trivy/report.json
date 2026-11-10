@@ -1,0 +1,127 @@
+{
+  "SchemaVersion": 2,
+  "Trivy": {"Version": "0.76.1"},
+  "ArtifactName": "demo-shop",
+  "ArtifactType": "filesystem",
+  "Results": [
+    {
+      "Target": "infra/terraform",
+      "Class": "config",
+      "Type": "terraform",
+      "MisconfSummary": {"Successes": 73, "Failures": 0}
+    },
+    {
+      "Target": "infra/terraform/database.tf",
+      "Class": "config",
+      "Type": "terraform",
+      "MisconfSummary": {"Successes": 0, "Failures": 2},
+      "Misconfigurations": [
+        {
+          "Type": "Terraform Security Check",
+          "ID": "AWS-0080",
+          "Title": "RDS encryption has not been enabled at a DB Instance level.",
+          "Description": "Encryption should be enabled for an RDS Database instances.",
+          "Message": "Instance does not have storage encryption enabled.",
+          "Namespace": "builtin.aws.rds.aws0080",
+          "Resolution": "Enable encryption for RDS instances",
+          "Severity": "HIGH",
+          "PrimaryURL": "https://avd.aquasec.com/misconfig/aws-0080",
+          "Status": "FAIL",
+          "CauseMetadata": {
+            "Resource": "aws_db_instance.orders",
+            "Provider": "AWS",
+            "Service": "rds",
+            "StartLine": 2,
+            "EndLine": 13,
+            "Code": {
+              "Lines": [
+                {"Number": 2, "Content": "resource \"aws_db_instance\" \"orders\" {", "IsCause": true},
+                {"Number": 9, "Content": "  password = \"fake-db-password-0003-not-real\"", "IsCause": true}
+              ]
+            }
+          }
+        },
+        {
+          "Type": "Terraform Security Check",
+          "ID": "AWS-0177",
+          "Title": "RDS Deletion Protection Disabled",
+          "Message": "Instance does not have Deletion Protection enabled",
+          "Severity": "UNKNOWN",
+          "Status": "FAIL",
+          "CauseMetadata": {"Resource": "aws_db_instance.orders", "StartLine": 2, "EndLine": 13}
+        },
+        {
+          "ID": "AWS-0077",
+          "Title": "RDS Cluster and RDS instance should have backup retention longer than default 1 day",
+          "Severity": "MEDIUM",
+          "Status": "PASS",
+          "CauseMetadata": {"Resource": "aws_db_instance.orders", "StartLine": 2, "EndLine": 13}
+        }
+      ]
+    },
+    {
+      "Target": "infra/k8s/shop-api.yaml",
+      "Class": "config",
+      "Type": "kubernetes",
+      "MisconfSummary": {"Successes": 76, "Failures": 3},
+      "Misconfigurations": [
+        {
+          "ID": "KSV-0017",
+          "Title": "Privileged container",
+          "Message": "Container 'shop-api' of Deployment 'shop-api' should set 'securityContext.privileged' to false",
+          "Severity": "HIGH",
+          "Status": "FAIL",
+          "CauseMetadata": {
+            "Provider": "Kubernetes",
+            "Service": "general",
+            "StartLine": 20,
+            "EndLine": 29,
+            "Code": {"Lines": [{"Number": 20, "Content": "        - name:   shop-api", "IsCause": true}]}
+          }
+        },
+        {
+          "ID": "KSV-0017",
+          "Title": "Privileged container",
+          "Message": "Container 'shop-api' of Deployment 'shop-api-canary' should set 'securityContext.privileged' to false",
+          "Severity": "HIGH",
+          "Status": "FAIL",
+          "CauseMetadata": {
+            "Provider": "Kubernetes",
+            "Service": "general",
+            "StartLine": 52,
+            "EndLine": 61,
+            "Code": {"Lines": [{"Number": 52, "Content": "        - name: shop-api", "IsCause": true}]}
+          }
+        },
+        {
+          "ID": "KSV-0009",
+          "Title": "Access to host network",
+          "Message": "Deployment 'shop-api' should not set 'spec.template.spec.hostNetwork' to true",
+          "Severity": "HIGH",
+          "Status": "EXCEPTION",
+          "CauseMetadata": {
+            "StartLine": 8,
+            "EndLine": 33,
+            "Code": {"Lines": [{"Number": 8, "Content": "spec:", "IsCause": true}]}
+          }
+        }
+      ]
+    },
+    {
+      "Target": "services/shop-api/Dockerfile",
+      "Class": "config",
+      "Type": "dockerfile",
+      "MisconfSummary": {"Successes": 25, "Failures": 1},
+      "Misconfigurations": [
+        {
+          "ID": "DS-0002",
+          "Title": "Image user should not be 'root'",
+          "Message": "Specify at least 1 USER command in Dockerfile with non-root user as argument",
+          "Severity": "HIGH",
+          "Status": "FAIL",
+          "CauseMetadata": {"Provider": "Dockerfile", "Service": "general"}
+        }
+      ]
+    }
+  ]
+}

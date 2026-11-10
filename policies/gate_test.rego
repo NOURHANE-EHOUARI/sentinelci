@@ -25,7 +25,7 @@ base := {
 	"context": "release",
 	"findings": [],
 	"waivers": [],
-	"tool_status": {"schema_version": 1, "lock_sha256": "x", "tools": {"gitleaks": ok_tool}},
+	"tool_status": {"schema_version": 1, "lock_sha256": "x", "tools": {"gitleaks": ok_tool, "trivy": ok_tool}},
 	"risk_model_version": "1.0.0",
 }
 
@@ -52,7 +52,7 @@ sc005(d) := [v | some v in d.violations; v.rule == "SC-005"]
 
 test_no_findings_pass if {
 	d := gate.decision with input as base
-	d == {"verdict": "PASS", "violations": [], "waivers_applied": []}
+	d == {"verdict": "PASS", "violations": [], "waivers_applied": [], "vex_applied": []}
 }
 
 # A LOW finding is P3 at worst: no rule applies to it.
@@ -81,13 +81,13 @@ test_secrets_grouped_in_one_sorted_violation if {
 
 test_waived_secret_passes_and_is_recorded if {
 	d := gate.decision with input as with_waivers([secret], [waiver("w-1", secret)])
-	d == {"verdict": "PASS", "violations": [], "waivers_applied": ["w-1"]}
+	d == {"verdict": "PASS", "violations": [], "waivers_applied": ["w-1"], "vex_applied": []}
 }
 
 test_several_waivers_for_one_finding_are_all_recorded if {
 	w2 := object.union(waiver("w-2", secret), {"expires_at": "2027-01-15T00:00:00Z"})
 	d := gate.decision with input as with_waivers([secret], [waiver("w-1", secret), w2])
-	d == {"verdict": "PASS", "violations": [], "waivers_applied": ["w-1", "w-2"]}
+	d == {"verdict": "PASS", "violations": [], "waivers_applied": ["w-1", "w-2"], "vex_applied": []}
 }
 
 test_waiver_for_another_finding_does_not_apply if {
@@ -98,7 +98,7 @@ test_waiver_for_another_finding_does_not_apply if {
 
 test_unused_waiver_is_not_recorded if {
 	d := gate.decision with input as with_waivers([], [waiver("w-1", secret)])
-	d == {"verdict": "PASS", "violations": [], "waivers_applied": []}
+	d == {"verdict": "PASS", "violations": [], "waivers_applied": [], "vex_applied": []}
 }
 
 test_package_waiver_matches_any_version_by_cve_alias_or_rule_id if {
@@ -352,7 +352,7 @@ tools(entries) := object.union(without_tool_status, {"tool_status": {"schema_ver
 ok_tool := {"version": "8.30.1", "binary_sha256": "abc", "status": "ok"}
 
 test_all_tools_ok_pass if {
-	gate.decision.verdict == "PASS" with input as tools({"gitleaks": ok_tool, "opa": ok_tool})
+	gate.decision.verdict == "PASS" with input as tools({"gitleaks": ok_tool, "trivy": ok_tool, "opa": ok_tool})
 }
 
 test_each_failed_tool_blocks_with_sc010 if {
@@ -369,7 +369,7 @@ test_each_failed_tool_blocks_with_sc010 if {
 }
 
 test_tool_without_status_is_not_ok if {
-	[v] := gate.decision.violations with input as tools({"gitleaks": {"version": "8.30.1"}})
+	[v] := gate.decision.violations with input as tools({"gitleaks": {"version": "8.30.1"}, "trivy": ok_tool})
 	v.message == "Scanner failure: gitleaks unknown"
 }
 
@@ -384,14 +384,24 @@ test_pr_and_release_without_tool_status_block_with_sc010 if {
 			"rule": "SC-010",
 			"effect": "BLOCK",
 			"finding_ids": [],
-			"message": sprintf("Tool status missing: %s requires gitleaks", [context]),
+			"message": sprintf("Tool status missing: %s requires gitleaks, trivy", [context]),
 		}]
 	}
 }
 
 test_required_tool_absent_from_the_status_blocks_with_sc010 if {
-	[v] := gate.decision.violations with input as tools({"opa": ok_tool})
+	[v] := gate.decision.violations with input as tools({"opa": ok_tool, "trivy": ok_tool})
 	v == {"rule": "SC-010", "effect": "BLOCK", "finding_ids": [], "message": "Scanner missing: gitleaks (required in release)"}
+}
+
+test_every_required_scanner_is_reported_missing if {
+	every context in ["pr", "release"] {
+		d := gate.decision with input as object.union(tools({"opa": ok_tool}), {"context": context})
+		d.violations == [
+			{"rule": "SC-010", "effect": "BLOCK", "finding_ids": [], "message": sprintf("Scanner missing: gitleaks (required in %s)", [context])},
+			{"rule": "SC-010", "effect": "BLOCK", "finding_ids": [], "message": sprintf("Scanner missing: trivy (required in %s)", [context])},
+		]
+	}
 }
 
 test_local_requires_no_tool if {
@@ -399,7 +409,7 @@ test_local_requires_no_tool if {
 }
 
 test_a_failed_required_tool_is_one_violation_not_two if {
-	[v] := gate.decision.violations with input as tools({"gitleaks": {"version": "8.30.1", "status": "failed", "detail": "exit 2"}})
+	[v] := gate.decision.violations with input as tools({"gitleaks": {"version": "8.30.1", "status": "failed", "detail": "exit 2"}, "trivy": ok_tool})
 	v.message == "Scanner failure: gitleaks failed (exit 2)"
 }
 
@@ -668,4 +678,203 @@ test_pr_mode_only_blocks_what_the_change_introduces if {
 	new := scored(vuln(h("f"), "HIGH"), "P0")
 	[v] := gate.decision.violations with input as pr_with([old, new], [old])
 	v.finding_ids == [new.id]
+}
+
+# ---------------------------------------------------------------- policy profiles (policies/profiles.rego)
+
+with_profile(fs, name) := object.union(with_findings(fs), {"policy_profile": name})
+
+test_p1_is_a_warning_in_the_default_profile if {
+	f := scored(vuln(h("6"), "HIGH"), "P1")
+	every input_doc in [with_findings([f]), with_profile([f], "default")] {
+		d := gate.decision with input as input_doc
+		d.verdict == "WARN"
+		d.violations == [{"rule": "SC-006", "effect": "WARN", "finding_ids": [f.id], "message": "P1 finding"}]
+	}
+}
+
+test_any_p1_blocks_in_the_strict_profile if {
+	f := scored(vuln(h("6"), "HIGH"), "P1")
+	d := gate.decision with input as with_profile([f], "strict")
+	d.verdict == "BLOCK"
+	d.violations == [{"rule": "SC-006", "effect": "BLOCK", "finding_ids": [f.id], "message": "P1 finding, strict profile"}]
+}
+
+test_the_strict_profile_changes_nothing_without_p1 if {
+	f := scored(vuln(h("7"), "MEDIUM"), "P2")
+	gate.decision.verdict == "PASS" with input as with_profile([f], "strict")
+}
+
+test_the_threshold_comes_from_the_profile if {
+	fs := [scored(vuln(h("6"), "HIGH"), "P1"), scored(vuln(h("7"), "HIGH"), "P1")]
+	lenient := {"default": {}, "strict": {"p1_block_above": 2}}
+	d := gate.decision with input as with_profile(fs, "strict") with data.sentinel.config.profiles as lenient
+	d.verdict == "WARN"
+}
+
+test_a_waived_p1_does_not_block_in_strict if {
+	f := scored(vuln(h("6"), "HIGH"), "P1")
+	w := {
+		"id": "w-1", "finding_id": f.id, "owner": "@Hiba-elouazi", "justification": "accepted",
+		"expires_at": "2026-12-01T00:00:00Z",
+	}
+	gate.decision.verdict == "PASS" with input as object.union(with_profile([f], "strict"), {"waivers": [w]})
+}
+
+test_an_unknown_profile_fails_closed if {
+	every name in ["lenient", 7, null] {
+		d := gate.decision with input as with_profile([], name)
+		d.verdict == "BLOCK"
+		some v in d.violations
+		v.rule == "SC-010"
+		contains(v.message, "unknown policy profile")
+	}
+}
+
+# ---------------------------------------------------------------- VEX (not_affected statements)
+
+critical_sca := object.union(sca, {"severity": "CRITICAL"}) # unscored CRITICAL: P0, SC-002 blocks
+
+statement(ids, products) := {
+	"status": "not_affected", "vulnerabilities": ids, "products": products, "justification": "component_not_present",
+	"made": "2026-11-01T00:00:00.000000Z", "document_updated": "2026-11-01T00:00:00.000000Z",
+}
+
+other_status(status, ids, products) := object.union(
+	object.remove(statement(ids, products), ["justification"]),
+	{"status": status},
+)
+
+with_vex(fs, statements) := object.union(with_findings(fs), {"vex": statements})
+
+test_a_not_affected_statement_covers_a_package_finding if {
+	d := gate.decision with input as with_vex([critical_sca], [statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": null}])])
+	d == {"verdict": "PASS", "violations": [], "waivers_applied": [], "vex_applied": [critical_sca.id]}
+}
+
+test_vex_matches_any_id_of_the_finding_in_any_case if {
+	every id in ["GHSA-aaaa-bbbb-cccc", "PYSEC-2026-1", "cve-2026-12345"] {
+		d := gate.decision with input as with_vex([critical_sca], [statement([id], [{"base": "pkg:pypi/example-lib", "version": null}])])
+		d.vex_applied == [critical_sca.id]
+	}
+}
+
+test_vex_with_a_version_covers_only_that_version if {
+	same := statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": "1.2.0"}])
+	other := statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": "1.2.1"}])
+	gate.decision.verdict == "PASS" with input as with_vex([critical_sca], [same])
+	gate.decision.verdict == "BLOCK" with input as with_vex([critical_sca], [other])
+}
+
+test_vex_compares_pypi_names_in_canonical_form if {
+	spelled := object.union(critical_sca, {"package": {"purl": "pkg:pypi/Example_Lib@1.2.0"}})
+	d := gate.decision with input as with_vex([spelled], [statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": null}])])
+	d.vex_applied == [spelled.id]
+}
+
+test_vex_for_another_vulnerability_or_package_covers_nothing if {
+	every s in [
+		statement(["CVE-2026-99999"], [{"base": "pkg:pypi/example-lib", "version": null}]),
+		statement(["CVE-2026-12345"], [{"base": "pkg:pypi/other-lib", "version": null}]),
+		statement(["CVE-2026-12345"], [{"base": "pkg:npm/example-lib", "version": null}]),
+	] {
+		d := gate.decision with input as with_vex([critical_sca], [s])
+		d.verdict == "BLOCK"
+		d.vex_applied == []
+	}
+}
+
+test_vex_never_covers_a_secret if {
+	secret_with_ids := object.union(secret, {"cve": ["CVE-2026-12345"], "package": {"purl": "pkg:pypi/example-lib"}})
+	d := gate.decision with input as with_vex([secret_with_ids], [statement(["CVE-2026-12345", "generic-api-key"], [{"base": "pkg:pypi/example-lib", "version": null}])])
+	d.verdict == "BLOCK"
+	d.vex_applied == []
+}
+
+test_vex_covers_a_kev_finding_too if {
+	kev_sca := object.union(critical_sca, {"enrichment": {"kev": {"listed": true}, "fix_available": true}})
+	d := gate.decision with input as with_vex([kev_sca], [statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": null}])])
+	d.verdict == "PASS"
+}
+
+test_vex_applies_in_every_context if {
+	s := statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": null}])
+	every ctx in ["pr", "release", "local"] {
+		d := gate.decision with input as object.union(with_vex([critical_sca], [s]), {"context": ctx})
+		d.vex_applied == [critical_sca.id]
+		not "SC-002" in {v.rule | some v in d.violations}
+	}
+}
+
+# Review of #24: OpenVEX statements override earlier ones; the gate does not order them, so any statement of
+# another status about the finding disputes not_affected (fail closed), whatever the order.
+test_a_statement_of_another_status_disputes_not_affected if {
+	na := statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": null}])
+	every status in ["affected", "fixed", "under_investigation"] {
+		other := other_status(status, ["PYSEC-2026-1"], [{"base": "pkg:pypi/example-lib", "version": "1.2.0"}])
+		every statements in [[na, other], [other, na]] {
+			d := gate.decision with input as with_vex([critical_sca], statements)
+			d.verdict == "BLOCK"
+			d.vex_applied == []
+		}
+	}
+}
+
+test_a_statement_about_another_version_does_not_dispute if {
+	na := statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": null}])
+	other := other_status("affected", ["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": "1.2.1"}])
+	d := gate.decision with input as with_vex([critical_sca], [na, other])
+	d.vex_applied == [critical_sca.id]
+}
+
+test_vex_matches_the_whole_package_name if {
+	every base in ["pkg:pypi/example", "pkg:pypi/example-li", "pkg:pypi/example-lib-extra"] {
+		d := gate.decision with input as with_vex([critical_sca], [statement(["CVE-2026-12345"], [{"base": base, "version": null}])])
+		d.vex_applied == []
+	}
+}
+
+test_vex_folds_dots_in_pypi_names if {
+	dotted := object.union(critical_sca, {"package": {"purl": "pkg:pypi/Example.Lib@1.2.0"}})
+	d := gate.decision with input as with_vex([dotted], [statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": null}])])
+	d.vex_applied == [dotted.id]
+}
+
+# Like a waiver, a not_affected statement applies for 90 days after it was made (evaluated_at 2026-11-10T10:00Z).
+vex_made(when) := object.union(
+	statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": null}]),
+	{"made": when, "document_updated": when},
+)
+
+test_a_not_affected_statement_applies_for_90_days if {
+	every when in ["2026-08-12T10:00:00.000000Z", "2026-11-10T10:00:00.000000Z"] {
+		d := gate.decision with input as with_vex([critical_sca], [vex_made(when)])
+		d.vex_applied == [critical_sca.id]
+	}
+}
+
+test_an_older_not_affected_statement_stops_applying if {
+	d := gate.decision with input as with_vex([critical_sca], [vex_made("2026-08-12T09:59:59.000000Z")])
+	d.vex_applied == []
+	d.verdict == "BLOCK"
+}
+
+test_a_vex_date_after_the_evaluation_is_malformed_input if {
+	every field in ["made", "document_updated"] {
+		future := object.union(vex_made("2026-11-01T00:00:00.000000Z"), {field: "2026-11-10T10:00:01.000000Z"})
+		d := gate.decision with input as with_vex([critical_sca], [future])
+		d.verdict == "BLOCK"
+		d.violations[0].rule == "SC-010"
+		contains(d.violations[0].message, "dated after evaluated_at")
+	}
+}
+
+test_an_expired_or_disputing_statement_of_another_status_still_disputes if {
+	na := statement(["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": null}])
+	old := object.union(
+		other_status("under_investigation", ["CVE-2026-12345"], [{"base": "pkg:pypi/example-lib", "version": null}]),
+		{"made": "2025-01-01T00:00:00.000000Z", "document_updated": "2026-11-01T00:00:00.000000Z"},
+	)
+	d := gate.decision with input as with_vex([critical_sca], [na, old])
+	d.vex_applied == []
 }
