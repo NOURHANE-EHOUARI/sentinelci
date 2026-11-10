@@ -336,11 +336,12 @@ def correlate(
     for members, stage, score in zip(groups, stages, similarities, strict=True):
         ids = sorted(alert.id for alert in members)
         title, cause, fix, key = _labels(sorted(members, key=lambda a: a.id), stage)
+        optional = {"similarity": score, "key": key}  # absent, never null, when there is none
         result.append(
-            RootCauseGroup(
-                schema_version="1.0", group_id=group_id(ids), finding_ids=ids, stage=stage,
-                labelled_by="template", similarity=score, key=key, title=title, root_cause=cause,
-                single_fix=fix,
+            RootCauseGroup.model_validate(
+                {"schema_version": "1.0", "group_id": group_id(ids), "finding_ids": ids, "stage": stage,
+                 "labelled_by": "template", "title": title, "root_cause": cause, "single_fix": fix}
+                | {name: value for name, value in optional.items() if value is not None}
             )
         )  # fmt: skip
     return sorted(result, key=lambda group: group.group_id)
@@ -378,12 +379,10 @@ def correlate_run(
         stages.append("structural")
     if ran:
         stages.append("embedding")
-    correlator = Correlator(
-        version=CORRELATOR_VERSION,
-        stages=stages,
-        threshold=threshold if ran else None,
-        embedding_model=embedding_model if ran else None,
-        skipped=skipped,
+    optional = {"threshold": threshold, "embedding_model": embedding_model} if ran else {"skipped": skipped}
+    correlator = Correlator.model_validate(
+        {"version": CORRELATOR_VERSION, "stages": stages}
+        | {name: value for name, value in optional.items() if value is not None}
     )
     return Correlation(
         schema_version="1.0",

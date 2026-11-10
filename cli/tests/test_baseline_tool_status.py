@@ -237,7 +237,7 @@ def test_release_without_tool_status_is_a_recorded_sc010_block(tmp_path: Path, o
             "rule": "SC-010",
             "effect": "BLOCK",
             "finding_ids": [],
-            "message": "Tool status missing: release requires gitleaks",
+            "message": "Tool status missing: release requires gitleaks, trivy",
         }
     ]
 

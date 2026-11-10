@@ -568,3 +568,29 @@ def test_the_stages_are_one_of_the_four_orders_that_can_occur() -> None:
         assert list(RUN_SCHEMA.iter_errors(changed)), stages
         with pytest.raises(ValueError):
             Correlation.model_validate(changed)
+
+
+@pytest.mark.parametrize(
+    ("fixture", "where", "field"),
+    [
+        ("root-cause-group/valid/dedup-single.json", (), "key"),
+        ("root-cause-group/valid/dedup-single.json", (), "similarity"),
+        ("root-cause-group/valid/dedup-single.json", (), "model"),
+        ("correlation/valid/template-run.json", ("correlator",), "threshold"),
+        ("correlation/valid/template-run.json", ("correlator",), "embedding_model"),
+        ("correlation/valid/template-run.json", ("correlator",), "skipped"),
+    ],
+)
+def test_an_optional_field_is_absent_never_null(fixture: str, where: tuple[str, ...], field: str) -> None:
+    """The schemas refuse null for an optional field (only single_fix may be null): so do the models."""
+    document = json.loads((ROOT / "schemas" / "fixtures" / fixture).read_text("utf-8"))
+    node = document
+    for name in where:
+        node = node[name]
+    node[field] = None
+    schema, model = (
+        (RUN_SCHEMA, Correlation) if fixture.startswith("correlation") else (SCHEMA, RootCauseGroup)
+    )
+    assert list(schema.iter_errors(document))
+    with pytest.raises(ValueError, match="instead of null"):
+        model.model_validate(document)
