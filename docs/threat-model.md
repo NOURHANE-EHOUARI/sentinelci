@@ -62,12 +62,12 @@ token or a secret, and a job that holds one runs no repository code.
 | # | Threat (attacker) | Control | Where | Proof | Status |
 |---|---|---|---|---|---|
 | T1 | A pull request runs code with secrets or a write token ("pwn request") (A1) | No `pull_request_target`; the scan job has `contents: read` and no secret; only the report job can write, and only a comment | `.github/workflows/sentinel-scan.yml`, ADR-0008 | `tests/ci/test_workflows.py` (permissions, no `pull_request_target`, no persisted token) | main |
-| T2 | A pull request edits the CLI, the lock, the policies or the waivers that judge it (A1) | Every job checks out the pipeline at the base commit; the change is checked out only as data, never run. The PR comment lists the pipeline files the change touches | ADR-0008, `sentinel-scan.yml` | `test_the_pipeline_change_warning_covers_every_input_read_from_the_base_commit` | main |
+| T2 | A pull request edits the CLI, the lock, the policies, the waivers, the VEX document or `sentinel.yaml` that judge it (A1) | Every job checks out the pipeline at the base commit; the change is checked out only as data, never run. The PR comment lists the pipeline files the change touches | ADR-0008, `sentinel-scan.yml` | `test_the_pipeline_change_warning_covers_every_input_read_from_the_base_commit` | main |
 | T3 | A pull request silences a scanner: `.gitleaks.toml`, `.gitleaksignore`, `gitleaks:allow`, `.trivyignore`, `zizmor.yml`, `# zizmor: ignore`, `.gitattributes` (A1) | Each adapter passes SentinelCI's own configuration, an empty ignore location, offline flags; inline allow comments are not honoured | `cli/src/sentinelci/scanners/{gitleaks,trivy,zizmor}.py` | planted `.gitleaksignore`, `.trivyignore` and `.gitattributes` in `test_gitleaks_scan.py`, `test_trivy_scan.py`; zizmor's in `test_zizmor_scan.py` | main |
 | T4 | A pull request drops a scanner step from the workflow it carries (A1) | The required scanners come from the base policies (`required_tools.rego`); a missing one is SC-010 | `policies/required_tools.rego`, `gate.rego` | `gate_test.rego` (SC-010 cases) | main (Gitleaks, Trivy); zizmor and Opengrep not required yet |
 | T5 | A secret is added, then removed, inside one pull request (A1) | Gitleaks scans every commit of the pull request (`base..head`) as patches | `sentinel-scan.yml` | git-mode tests in `test_gitleaks_scan.py` (text patches forced, octopus merges) | main |
 | T6 | Only what the change introduces should block, but a failed baseline must not hide anything (A1) | Diff-aware gating against the base commit's scan; without a baseline every finding counts | `sentinel-scan.yml`, SPEC §5 | the baseline step of `sentinel-scan.yml`; PR #66 adds a test that it runs every scanner the head runs | main; zizmor in PR #66 |
-| T7 | A contributor waives their own finding (A1) | Waivers are read from the base commit; a waiver needs an owner, a justification and expires within 90 days, or it is SC-005 | `policies/gate.rego`, `.sentinel/waivers.yaml` | `gate_test.rego` (SC-005 cases) | main |
+| T7 | A contributor waives their own finding, declares it `not_affected` in VEX, or lowers its service's exposure in `sentinel.yaml` (A1) | Waivers, the VEX document and `sentinel.yaml` are read from the base commit; a waiver needs an owner, a justification and expires within 90 days, or it is SC-005; a `not_affected` statement needs a justification and expires 90 days after it was made; a statement or document dated after `evaluated_at` blocks (SC-010); a statement of any other status disputes it; secrets are never covered | `policies/gate.rego`, `.sentinel/waivers.yaml`, `.sentinel/vex.json`, `sentinel.yaml` | `gate_test.rego` (SC-005 and VEX cases) | main |
 | T8 | A CI workflow introduces a dangerous pattern (A1) | zizmor audits the workflows of every change; a new high-severity issue is SC-009 | `sentinel scan pipelines`, `sentinel-scan.yml` | GT-PIPELINE-001 to 003 give SC-009 | scanner: main; in the gate: PR #66 |
 
 ### 4.2 Tools and dependencies: trust nothing that was downloaded
@@ -94,7 +94,7 @@ token or a secret, and a job that holds one runs no repository code.
 
 | # | Threat (attacker) | Control | Where | Proof | Status |
 |---|---|---|---|---|---|
-| T19 | A decision is altered or cannot be reproduced (A5) | Each decision records the sha256 of every input; the evidence store keeps them; `sentinel replay` re-runs it, and a nightly job replays recent decisions | `policy/`, `replay-nightly.yml` | replay tests; nightly replay | main |
+| T19 | A decision is altered or cannot be reproduced (A5) | Each decision records the sha256 of every input; the evidence store keeps them; `sentinel replay` re-runs it, and a nightly job replays recent decisions | `policy/`, `replay-nightly.yml` | replay tests; nightly replay | main; the nightly job is stopped while Actions is blocked (§5) |
 | T20 | Recorded evidence is replaced on the platform (A5) | The database refuses any change to a recorded run or its findings, and keeps the uploaded bytes only if they hash to the recorded digest | migrations 0002 to 0004 | `platform/api/tests` | main |
 
 ### 4.5 Platform API
@@ -136,6 +136,8 @@ token or a secret, and a job that holds one runs no repository code.
 | The laptop signer trusts the laptop | A local key is the only signer the private phase allows | Keyless signing in CI when public (ADR-0006) |
 | `verify` in the bot runs the same code as `propose` | A compromised dependency could write a false result, but holds no write token: at worst a wrong comment on a pull request a reviewer still judges | — |
 | Local models may be wrong | Their output is advice, schema-checked, and never decides | — |
+| The platform API's reads need no token: anything on the host, or in the Compose network, can read runs and findings | Every port binds 127.0.0.1, findings never hold a secret's value (only its hash), and nothing but the dashboard reads them yet | A read token (B1), when the dashboard (B7) and the Grafana datasource need one |
+| The nightly replay, like every other workflow, is stopped while GitHub Actions is blocked (the account's spending limit) | Decisions can still be replayed by hand (`sentinel replay --all`), and each pull request carries a local `make check` report | Actions running again |
 
 ## 6. Keeping this document true
 
