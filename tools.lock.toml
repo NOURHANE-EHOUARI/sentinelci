@@ -93,6 +93,9 @@ sha256 = "7be39d3a0428c664ce0183e4aba31ed9accffce9eda7e7f6fa84e9c512285f27"
 
 # Second container-scanning engine (stage 7). Pinned by hash on purpose: in March 2026 the trivy-action
 # tags were force-pushed to malware (CVE-2026-33634); a moved tag cannot change what this lock accepts.
+# A Trivy bump must re-run cli/tests/scanners/test_trivy_exposing.py with SENTINEL_TOOLS_DIR set and put the
+# result in the PR: rule SC-011 matches Trivy rule ids (policies/exposing.rego), and a renamed check would turn
+# it off silently. That file's test without Trivy fails until its VERIFIED_WITH names the new version.
 [tools.trivy]
 version = "0.76.1"
 homepage = "https://github.com/aquasecurity/trivy"
