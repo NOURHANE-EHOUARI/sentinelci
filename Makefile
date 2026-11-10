@@ -1,5 +1,6 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup check lint format typecheck imports policy test zizmor tools tools-verify compose-env up down
+.PHONY: help setup check lint format typecheck imports policy test zizmor tools tools-verify compose-env up down \
+	kind-up kind-policy kind-down
 
 # OPA is a pinned binary, not a Python package: `uv run sentinel tools install opa` (tools.lock.toml).
 OPA ?= $(or $(SENTINEL_OPA),opa)
@@ -56,3 +57,13 @@ up: compose-env ## Start the local platform; COMPOSE_PROFILES=ai,observability a
 
 down: ## Stop the local platform (volumes are kept; `docker compose ... down --volumes` wipes them)
 	$(COMPOSE) down
+
+# The demo cluster (A5b, deploy/kind): needs Docker, kubectl and the pinned kind (`uv run sentinel tools install kind`).
+kind-up: ## Create the demo kind cluster: its registry on 127.0.0.1:5001 and Kyverno (safe to run twice)
+	uv run python deploy/kind/cluster.py up
+
+kind-policy: ## Apply the release admission policy, rendered from deploy/keys/release.pub (KEY=... to change it)
+	uv run python deploy/kind/cluster.py policy $(if $(KEY),--key $(KEY))
+
+kind-down: ## Delete the demo kind cluster and its registry
+	uv run python deploy/kind/cluster.py down

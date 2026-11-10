@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.31 | A5b demo cluster (§7): `make kind-up` creates a kind cluster (`deploy/kind/`) with its registry, published on 127.0.0.1:5001 and named `kind-registry:5000` inside the cluster, and installs Kyverno; kind (tools.lock.toml), the node and registry images (by digest) and Kyverno's install manifest (by sha256, refused if it differs) are pinned. `make kind-policy` applies the release admission policy for the cluster's registry. The `sentinel-kind` workflow (by hand, and on pull requests that change the cluster or the policy) checks on a real cluster that Kyverno admits a release `sentinel attest --push` attested and denies an unsigned image, a BLOCK decision and a Deployment with an unsigned image. |
 | 1.1.29 | Platform API 1.2.0 (B1, §13.3): the platform keeps each run's findings upload byte for byte and serves it at `GET /api/v1/runs/{id}/findings`, so a consumer that must match `findings_sha256` (the correlator's run document, #47; a replay) reads the exact bytes; the JSONB rows keep neither key order nor bytes. The database keeps only bytes that hash to the recorded digest, and the recorded-run trigger makes them immutable. Runs recorded before have none, and the API says so. |
 | 1.1.28 | Platform API 1.1.0 (B1, §13.3): one run per CI run. `POST /api/v1/runs` with the `repo`, `commit`, `context` and `run_id` of a run already recorded (a re-run of `sentinel upload`, #50) is answered 409 with the existing run, which the client resumes instead of recording the findings a second time; a unique index decides between concurrent requests. A run without `run_id` is always new. Migration 0003 stops, changing nothing, on a database that already holds a CI run twice. |
 | 1.1.27 | Diff-aware PR mode (§5, B4): a known vulnerable package (SCA) in a manifest where the base branch did not have it counts as introduced, like a known secret in a new file. SCA fingerprints hold no path, so a second service that starts to use a vulnerable package kept the old id and passed as "not new", although that service has its own exposure and reachability. A moved manifest now counts as new too, which errs toward blocking. Agreed on #52. |
@@ -433,7 +434,10 @@ bump.
   commit; the vulnerability result and SBOM of that decision), `mutateDigest: true`. CEL reads one statement
   per type, so admission is weaker than `sentinel verify` on the full Decision v1 and vuln-result schemas and
   on ambiguity (a second statement of a type). Negative tests with `kyverno apply` against a real registry,
-  then on kind in CI.
+  then on kind: `make kind-up` (`deploy/kind/`) creates the demo cluster with its registry (127.0.0.1:5001 on
+  the host, `kind-registry:5000` in the cluster) and Kyverno, all pinned, and the `sentinel-kind` workflow
+  checks that the admission controller admits a release `sentinel attest --push` attested and denies an
+  unsigned image, a BLOCK decision and a Deployment with an unsigned image.
 
 ## 8. AI layer
 
