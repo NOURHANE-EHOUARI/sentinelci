@@ -32,6 +32,10 @@ Still to come: container image seeds (A9, with the release pipeline), and applic
 injection canaries (B9). Planned for B9's code: shop-api imports `yaml` (with `full_load`, which GT-SCA-001 is
 about) and `requests`, never `lxml`; the web front end imports `lodash` (`template`), never `minimist` or `lodash-es`.
 
+**Not a seed:** `services/shop-api/Dockerfile.release` is the hardened release image (ADR-0011, decision 6),
+built once B9's application and requirements exist. Its build context is an allow-list
+(`Dockerfile.release.dockerignore`), so the seeded configuration never enters the image.
+
 **The gate blocks this target on purpose.** A pull request that adds a seed is blocked (SC-001 for a secret),
 which is how the demo shows the gate working. A release-mode scan of `main` blocks too, as long as the seeds
 are present.
