@@ -66,6 +66,7 @@ from sentinelci.policy.store import EvidenceStore, StoreError
 from sentinelci.policy.tool_status import load_tool_status
 from sentinelci.policy.vex import DEFAULT_VEX_PATH
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
+from sentinelci.remediation.apply import apply_proposal
 from sentinelci.remediation.dockerfile import propose as propose_dockerfile
 from sentinelci.remediation.gate import check_proposal, verify_proposal
 from sentinelci.remediation.kubernetes import propose as propose_kubernetes
@@ -1153,6 +1154,49 @@ def remediate_dockerfile(
     Exit code 0 with a proposal, or with nothing to propose (no file written); 3 when the input is unusable.
     """
     _propose("dockerfile", propose_dockerfile, findings, out, repo_root, attempt)
+
+
+@remediate_app.command("apply")
+def remediate_apply(
+    proposal: Annotated[
+        Path, typer.Option(help="The patch proposal to commit (schemas/patch-proposal.v1.json).")
+    ],
+    findings: Annotated[
+        Path,
+        typer.Option(help="Findings NDJSON of the base commit: the proposal may claim and edit only those."),
+    ],
+    repo_root: Annotated[Path, typer.Option(help="A local clone of the repository.")] = Path("."),
+    base: Annotated[str, typer.Option(help="The commit the proposal was made against.")] = "HEAD",
+    branch: Annotated[
+        str | None, typer.Option(help="New branch name, under sentinel/fix/ (default: from the proposal id).")
+    ] = None,
+) -> None:
+    """Commit a proposal on a new sentinel/fix/ branch of a local clone, and print it as JSON. It never
+    pushes, never changes the working tree, the index or the current branch, and runs no hook, filter or
+    fsmonitor the clone configures (nothing is checked out).
+
+    Exit code 0 when committed; 3, with nothing created, when the proposal id does not match its content, it
+    claims a finding the base scan does not have or edits a file none of its findings is in, or the diff does
+    anything the proposal does not list (another file, a new, deleted, renamed or executable file) or does not
+    apply to the base.
+    """
+    try:
+        applied = apply_proposal(
+            PatchProposal.model_validate_json(proposal.read_bytes()),
+            repo_root,
+            findings=list(_read_findings(findings, "base findings").values()),
+            base=base,
+            branch=branch,
+        )
+    except (OSError, ValidationError, RemediationError) as exc:
+        typer.echo(f"sentinel remediate apply: {exc}\nnothing was committed", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    typer.echo(
+        json.dumps({
+            "branch": applied.branch, "commit": applied.commit, "base": applied.base,
+            "diff_sha256": applied.diff_sha256,
+        })
+    )  # fmt: skip
 
 
 @remediate_app.command("verify")
