@@ -44,7 +44,7 @@ from sentinelci.enrich.transport import (
 )
 from sentinelci.normalize.errors import NormalizationError
 from sentinelci.normalize.gitleaks import load_gitleaks_report, normalize_gitleaks
-from sentinelci.normalize.grype import load_grype_report, normalize_grype
+from sentinelci.normalize.grype import ImageSubject, load_grype_report, normalize_grype, normalize_grype_image
 from sentinelci.normalize.ndjson import dumps_ndjson, write_ndjson
 from sentinelci.policy.bundle import BundleError, PolicyBundle
 from sentinelci.policy.decision import (
@@ -65,7 +65,7 @@ from sentinelci.report.pr_comment import ReportError, load_inputs, render_no_dec
 from sentinelci.risk import RiskModel, RiskModelError, score_finding
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
-from sentinelci.scanners.grype import scan_sca, update_database
+from sentinelci.scanners.grype import ImageScanFailure, scan_image, scan_sca, update_database
 from sentinelci.scanners.installer import VerificationReport, detect_platform, install_tools, verify_tools
 from sentinelci.scanners.lock import LOCK_FILE_NAME, ToolLock, load_lock
 from sentinelci.scanners.runner import DEFAULT_TIMEOUT_S as SCAN_TIMEOUT_DEFAULT_S
@@ -1000,6 +1000,126 @@ def scan_sca_cmd(
         f"grype {scan.grype.version} on the SBOM of syft {scan.sbom.run.version} ({scan.sbom.packages} "
         f"package(s)), database {database.schema_version} built {database.built} "
         f"(checksum {database.checksum or 'not reported'}): {len(findings)} finding(s) written to {out}"
+    )
+
+
+@scan_app.command("image")
+def scan_image_cmd(
+    archive: Annotated[
+        Path,
+        typer.Argument(
+            help="The image's OCI layout archive (`docker buildx build --output type=oci,dest=...`)."
+        ),
+    ],
+    image_digest: Annotated[
+        str,
+        typer.Option(
+            "--image-digest", help="Its manifest digest (sha256:...), from the layout's index.json."
+        ),
+    ],
+    image_ref: Annotated[
+        str,
+        typer.Option(
+            "--image-ref",
+            help="Where it is released, without tag or digest (e.g. kind-registry:5000/demo/api).",
+        ),
+    ],
+    out: Annotated[Path, typer.Option(help="Destination NDJSON file.")],
+    repo: Annotated[str, typer.Option(help="Repository as owner/name.")],
+    commit: Annotated[str, typer.Option(help="Commit SHA the image was built from.")],
+    context: Annotated[RunContext, typer.Option(help="Run context.")],
+    db_dir: Annotated[
+        Path,
+        typer.Option(
+            "--db-dir",
+            help="Grype's vulnerability database directory, prepared before the scan (never fetched).",
+        ),
+    ],
+    ref: Annotated[str | None, typer.Option(help="Git ref the image was built from.")] = None,
+    run_id: Annotated[str | None, typer.Option(help="CI run identifier.")] = None,
+    allow_stale_db: Annotated[
+        bool,
+        typer.Option(
+            "--allow-stale-db",
+            help="Accept a database built over 5 days ago (replays and tests: it misses new advisories).",
+        ),
+    ] = False,
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    tools_dir: Annotated[
+        Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
+    ] = (DEFAULT_TOOLS_DIR),
+    platform: PlatformOption = None,
+    timeout: ScanTimeoutOption = SCAN_TIMEOUT_DEFAULT_S,
+    tool_status_out: Annotated[
+        Path | None,
+        typer.Option(
+            help="Also write a tool status (schemas/tool-status.v1.json) for Syft and Grype, on success and "
+            "on failure, so the gate can record a failed scan as SC-010."
+        ),
+    ] = None,
+) -> None:
+    """Vulnerabilities of a built image: the verified Syft's SBOM of its OCI layout, matched by the verified
+    Grype, offline. CONTAINER findings, each with the image's digest, its reference and the package's layer.
+
+    Exit code 3, with no findings file written, when a tool fails or is tampered with, the archive does not
+    hold the image of --image-digest, the database is missing, invalid or stale, or the report shows a
+    silenced match.
+    """
+    out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
+    if tool_status_out is not None:
+        tool_status_out.unlink(missing_ok=True)  # nor an older status vouching for it
+    host = platform or _host_platform()
+    tool_lock: ToolLock | None = None
+    outcomes: dict[str, dict[str, Any]] = {}
+    try:
+        tool_lock = load_lock(lock)
+        scan = scan_image(
+            archive,
+            image_digest=image_digest,
+            name=image_ref,
+            db_dir=db_dir,
+            lock=tool_lock,
+            tools_dir=tools_dir,
+            platform=platform,
+            allow_stale_db=allow_stale_db,
+            timeout_s=timeout,
+        )
+        outcomes["syft"] = outcome_from_run(scan.sbom.run, lock=tool_lock, platform=host)
+        outcomes["grype"] = outcome_from_run(scan.grype, lock=tool_lock, platform=host)
+        findings = normalize_grype_image(
+            scan.report,
+            run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
+            image=ImageSubject(digest=image_digest, ref=image_ref),
+        )
+    except ImageScanFailure as failure:
+        if tool_status_out is not None and tool_lock is not None:
+            outcomes = {failure.tool: outcome_from_error(failure.tool, failure.error, lock=tool_lock)}
+            if failure.sbom is not None:
+                outcomes["syft"] = outcome_from_run(failure.sbom.run, lock=tool_lock, platform=host)
+            else:
+                outcomes["grype"] = {
+                    "version": tool_lock.tools["grype"].version, "status": "not_run",
+                    "detail": "not started: Syft produced no SBOM of the image",
+                }  # fmt: skip
+            _write_status(tool_status_out, lock, host, outcomes)
+        raise _fail_closed(failure.error) from failure
+    except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
+        if tool_status_out is not None and tool_lock is not None:
+            if "grype" in outcomes:  # the report could not be trusted: Grype's run counts as failed
+                outcomes["grype"] = outcome_from_error("grype", exc, lock=tool_lock)
+            _write_status(tool_status_out, lock, host, outcomes or {
+                "syft": outcome_from_error("syft", exc, lock=tool_lock),
+            })  # fmt: skip
+        raise _fail_closed(exc) from exc
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_ndjson(findings, out)
+    if tool_status_out is not None:  # last: an `ok` status never vouches for a findings file not yet written
+        _write_status(tool_status_out, lock, host, outcomes)
+    database = scan.database
+    typer.echo(
+        f"grype {scan.grype.version} on the SBOM of syft {scan.sbom.run.version} of {image_digest} "
+        f"({scan.sbom.packages} package(s)), database {database.schema_version} built {database.built}: "
+        f"{len(findings)} finding(s) written to {out}"
     )
 
 

@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.41 | A1 image adapter (§5 stage 7, §13.1): `sentinel scan image` scans a built image's OCI layout archive with the pinned Syft and Grype, offline, into CONTAINER findings (`package` and `image`: digest, reference, layer), one per (vulnerability, purl base) with the CONTAINER fingerprint. The report must be about the given manifest digest, and its configuration must hide nothing, as for `scan sca`. A tool status for Syft and Grype (a failed Syft leaves Grype `not_run`), so the gate records a failed image scan as SC-010. |
 | 1.1.29 | Platform API 1.2.0 (B1, §13.3): the platform keeps each run's findings upload byte for byte and serves it at `GET /api/v1/runs/{id}/findings`, so a consumer that must match `findings_sha256` (the correlator's run document, #47; a replay) reads the exact bytes; the JSONB rows keep neither key order nor bytes. The database keeps only bytes that hash to the recorded digest, and the recorded-run trigger makes them immutable. Runs recorded before have none, and the API says so. |
 | 1.1.28 | Platform API 1.1.0 (B1, §13.3): one run per CI run. `POST /api/v1/runs` with the `repo`, `commit`, `context` and `run_id` of a run already recorded (a re-run of `sentinel upload`, #50) is answered 409 with the existing run, which the client resumes instead of recording the findings a second time; a unique index decides between concurrent requests. A run without `run_id` is always new. Migration 0003 stops, changing nothing, on a database that already holds a CI run twice. |
 | 1.1.27 | Diff-aware PR mode (§5, B4): a known vulnerable package (SCA) in a manifest where the base branch did not have it counts as introduced, like a known secret in a new file. SCA fingerprints hold no path, so a second service that starts to use a vulnerable package kept the old id and passed as "not new", although that service has its own exposure and reachability. A moved manifest now counts as new too, which errs toward blocking. Agreed on #52. |
@@ -192,7 +193,11 @@ configuration, offline, against a database the pipeline prepared (`sentinel tool
 Grype and configuration, which pins the update URL, then Grype's own validity check, offline); a database built
 more than five days ago fails the scan (SC-010), and a report whose recorded configuration hides matches (ignore rules beyond Grype's built-in
 kernel-header rules, VEX, exclusions, `only-fixed`, `by-cve`) is refused. Legitimate exceptions go through
-waivers (§6.4).
+waivers (§6.4). Stage 7, the image: `sentinel scan image` runs the same Syft on the image's OCI layout archive
+(what `docker buildx build --output type=oci` writes, no registry), checks that it is the image of the given
+manifest digest, and matches its SBOM with the same Grype and database. Its findings are CONTAINER findings, each
+with the image's digest and reference and the layer the package is in (its first place by path); a report about
+another image is refused. The tool status names Syft and Grype separately: Grype is `not_run` when Syft failed.
 
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
