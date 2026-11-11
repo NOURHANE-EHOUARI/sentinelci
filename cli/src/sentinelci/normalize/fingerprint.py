@@ -5,8 +5,10 @@ findings from existing ones and the remediation loop can tell when a finding is 
 """
 
 import hashlib
+import re
 
 _SEP = "|"
+_EXPRESSION = re.compile(r"\$\{\{\s*(.*?)\s*\}\}", re.DOTALL)
 
 
 def sha256_hex(text: str) -> str:
@@ -50,5 +52,24 @@ def sast_fingerprint(rule_id: str, path: str, snippet: str) -> str:
 
 
 def config_fingerprint(rule_id: str, path: str, resource: str) -> str:
-    """IAC / PIPELINE: sha256(rule id | path | resource or job identifier)."""
+    """IAC, and PIPELINE at job or workflow level: sha256(rule id | path | resource or job identifier)."""
     return sha256_hex(_SEP.join((rule_id, path, resource)))
+
+
+def normalize_expressions(code: str) -> str:
+    """GitHub expressions with the spaces inside their braces dropped: `${{x}}` is `${{ x }}`."""
+    return _EXPRESSION.sub(lambda match: "${{ " + match.group(1) + " }}", code)
+
+
+def pipeline_fingerprint(rule_id: str, path: str, resource: str, code: str | None) -> str:
+    """PIPELINE: sha256(rule id | path | resource | sha256(normalized code)), where the resource is the job
+    (`jobs.<id>`) or the top-level key, and the code is the source text the finding is about (an action
+    reference, the line of a `run:` script that holds the expression, a trigger, a permission), normalized
+    like a SAST snippet with its expressions' inner spaces dropped. A job holds many steps, so the job alone
+    is too coarse: a new expression in a job that already had one must be a new finding. Line moves, added
+    steps and edits to other lines keep it. Without code (a finding about a whole job or file, one per job or
+    file by nature), this is `config_fingerprint`."""
+    if code is None:
+        return config_fingerprint(rule_id, path, resource)
+    normalized = normalize_snippet(normalize_expressions(code))
+    return sha256_hex(_SEP.join((rule_id, path, resource, sha256_hex(normalized))))
