@@ -106,6 +106,15 @@ jobs:
         working-directory: pipeline
         run: uv sync --locked --no-dev --package sentinelci
 
+      # Only the scanners' release archives are kept between runs: each is checked against pipeline/tools.lock.toml's sha256
+      # before use, and the binary is extracted again from it, so a cache entry written elsewhere can only cost a
+      # download (ADR-0015). Never the binaries, never a package manager's cache.
+      - name: Restore the verified release archives
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ${{ runner.temp }}/sentinel-tools/cache
+          key: sentinel-tool-archives-scan-${{ runner.os }}-${{ hashFiles('pipeline/tools.lock.toml') }}
+
       - name: Install the pinned scanners outside the checkouts
         env:
           SENTINEL: ${{ github.workspace }}/pipeline/.venv/bin/sentinel
@@ -287,6 +296,15 @@ jobs:
           version: ${{ env.UV_VERSION }}
           python-version: ${{ env.PYTHON_VERSION }}
           enable-cache: false
+
+      # Only the scanners' release archives are kept between runs: each is checked against pipeline/tools.lock.toml's sha256
+      # before use, and the binary is extracted again from it, so a cache entry written elsewhere can only cost a
+      # download (ADR-0015). Never the binaries, never a package manager's cache.
+      - name: Restore the verified release archives
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ${{ runner.temp }}/sentinel-tools/cache
+          key: sentinel-tool-archives-gate-${{ runner.os }}-${{ hashFiles('pipeline/tools.lock.toml') }}
 
       - name: Install the SentinelCI CLI and OPA
         env:
