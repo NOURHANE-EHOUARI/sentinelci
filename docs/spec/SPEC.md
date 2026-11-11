@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.47 | B7 dashboard core (§10, §11): `platform/web` (React, TypeScript, Vite, TanStack Query, Tailwind, Recharts) reads the platform API only. Overview: open findings by priority and category from `GET /metrics` ("no data yet", never zeros, before a release run of the default branch). Findings: the list with its filters in the URL. Finding detail: the finding, the runs that saw it, and its root-cause group from the run's correlation, labelled advisory (and model-written when it is); a group of one is not shown. The client's types are generated from `schemas/openapi.yaml` and checked up to date; npm installs exactly the lockfile with no package scripts; `make check` and CI run the type-check, tests and build (`make web`, job `dashboard`); Dependabot updates npm after a 7-day cooldown. |
 | 1.1.45 | Platform API 1.4.0 (B1, §8, §13.3): a run's correlations. `POST /api/v1/runs/{id}/correlations` records a Correlation v1 document (checked with the correlator's own model) only for a run whose findings are recorded, only if its `findings_sha256` is the run's and its groups hold each of the run's findings exactly once; every version is kept byte for byte (migration 0005), named by the sha256 of its bytes (the same bytes again: 409), never changed or deleted (a database trigger, which also refuses a document of other findings), and the downgrade stops while one is kept. `GET .../correlations` serves the latest version (or `?sha256=`), `GET .../correlations/versions` lists them. The endpoints are `/correlations`, not the `/groups` planned in §13.3, as agreed on #47. `GET /metrics` counts only the default branch's release runs (`SENTINEL_DEFAULT_REF`, #67 review). |
 | 1.1.44 | Required scanners (B4, §5): zizmor is required in `pr` and `release` (`policies/required_tools.rego`), now that the scan job runs it (A3, #66). A tool status without it is SC-010 (`Scanner missing: zizmor`), so a pull request that deletes the workflow audit step from the workflow it carries no longer loses SC-009 unnoticed. Merge after #66. |
 | 1.1.39 | Threat model (§18, A10): `docs/threat-model.md` lists the assets, five attackers, the trust boundaries, and 29 threats, each with its control, where it lives, the test that proves it and its status (main, an open PR, or planned), then the residual risks accepted in the private phase. §18's signing key row follows ADR-0011 (no signing key on GitHub). |
@@ -631,6 +632,10 @@ repository's latest release run of its default branch whose findings are recorde
 priority (`P0` to `P4`, or `unscored` before scoring) and category. Prometheus scrapes it, and Grafana provisions the read-only
 `SentinelCI overview` dashboard (`deploy/compose/grafana/provisioning/dashboards/`): open findings, gate block rate,
 remediation success, attestation verifications, stage and AI durations.
+
+Implemented (B7a): the dashboard (`platform/web`) has its core pages, Overview (from `sentinel_findings_open`), Findings
+and Finding detail (with the finding's root-cause group, advisory); Track A's pages use the same layout and the
+client generated from `schemas/openapi.yaml`.
 
 ## 11. Technology stack
 
