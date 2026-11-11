@@ -251,6 +251,46 @@ uv run sentinel verify registry.local/demo-shop/shop-api@sha256:<digest> --evide
   a Cosign binary that does not match `tools.lock.toml`). Offline: the evidence directory and the public key
   are all it needs.
 
+## `sentinel scan sca` (dependency vulnerabilities, A1)
+
+```bash
+uv run sentinel tools grype-db --db-dir .sentinel/grype-db --report out/grype-db.json  # before the scan (network)
+uv run sentinel scan sca . --db-dir .sentinel/grype-db --out out/sca.ndjson \
+  --repo NOURHANE-EHOUARI/sentinelci --commit "$(git rev-parse HEAD)" --context local
+uv run sentinel normalize grype grype.json --scan-root demo-shop --out out/sca.ndjson \
+  --repo NOURHANE-EHOUARI/sentinelci --commit "$(git rev-parse HEAD)" --context local
+```
+
+- One Syft run, as for `sentinel sbom`, also writes Syft's own format; the pinned Grype matches that SBOM. Grype
+  never reads the scanned tree, and runs from a private working directory and home with
+  `scanners/configs/grype.yaml` passed explicitly, so a `.grype.yaml` (ignore rules, VEX, `only-fixed`) or a
+  `GRYPE_*` variable cannot hide a vulnerability.
+- Offline: the database is the directory given in `--db-dir` (Grype's cache directory, filled beforehand), checked
+  against its own hash; nothing is downloaded during the scan. A database built more than five days ago fails the
+  scan; `--allow-stale-db` accepts it, for replays and tests only. The summary line names the database (schema,
+  build time and checksum).
+- `sentinel tools grype-db` fills that directory, and is the only step that uses the network. It runs the
+  verified Grype with the same configuration, which pins the update URL (`https://grype.anchore.io/databases`):
+  the latest database, or `--archive`, either a local file (Grype imports a private copy, digested first, with
+  no network) or an `https://` URL that names its digest (`?checksum=sha256:<hex>`, checked by Grype; no
+  credentials in the URL). The download sees the job's proxy and CA variables (`HTTPS_PROXY`, `NO_PROXY`,
+  `SSL_CERT_FILE`, …) and nothing else of its environment. Whatever the update exits with, the result counts only
+  if `grype db status`, run offline afterwards, calls the database valid; otherwise exit code `3` and no
+  `--report`. The report records the Grype binary, the database (schema, build time, checksum) and a local
+  archive's digest.
+- Findings (category SCA): one per (vulnerability id, purl base). `rule_id` is Grype's id of the matched record
+  (a GHSA for a language package), related CVE ids are in `cve`, other ids in `aliases`. Every file the package
+  was found in is a place (`location`, then `other_locations`), relative to the repository root
+  (`--repo-root`, or `--scan-root` for `normalize grype`). Severity is Grype's; Negligible counts as INFO and
+  Unknown as HIGH, with the raw value in `severity_source`. The report's CVSS, EPSS and KEV are not copied:
+  `sentinel enrich` adds them from the dated snapshot.
+- Exit code `3`, with no findings file, when a tool fails or does not match the lock, the database is missing,
+  invalid or stale, the report names another Grype version, or its recorded configuration shows anything that
+  hides matches (ignore rules beyond Grype's built-in kernel-header rules, VEX, exclusions, `only-fixed`,
+  `only-notfixed`, `ignore-wontfix`, a distro override, `by-cve`). An image report is refused by
+  `normalize grype` (CONTAINER findings need the image digest: the image adapter).
+
+
 ## `sentinel sbom` (SBOMs, A4)
 
 ```bash

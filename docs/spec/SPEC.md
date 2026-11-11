@@ -15,6 +15,7 @@
 | 1.1.29 | Platform API 1.2.0 (B1, §13.3): the platform keeps each run's findings upload byte for byte and serves it at `GET /api/v1/runs/{id}/findings`, so a consumer that must match `findings_sha256` (the correlator's run document, #47; a replay) reads the exact bytes; the JSONB rows keep neither key order nor bytes. The database keeps only bytes that hash to the recorded digest, and the recorded-run trigger makes them immutable. Runs recorded before have none, and the API says so. |
 | 1.1.28 | Platform API 1.1.0 (B1, §13.3): one run per CI run. `POST /api/v1/runs` with the `repo`, `commit`, `context` and `run_id` of a run already recorded (a re-run of `sentinel upload`, #50) is answered 409 with the existing run, which the client resumes instead of recording the findings a second time; a unique index decides between concurrent requests. A run without `run_id` is always new. Migration 0003 stops, changing nothing, on a database that already holds a CI run twice. |
 | 1.1.27 | Diff-aware PR mode (§5, B4): a known vulnerable package (SCA) in a manifest where the base branch did not have it counts as introduced, like a known secret in a new file. SCA fingerprints hold no path, so a second service that starts to use a vulnerable package kept the old id and passed as "not new", although that service has its own exposure and reachability. A moved manifest now counts as new too, which errs toward blocking. Agreed on #52. |
+| 1.1.25 | A1 SCA (§5 stage 3, §13.1): `sentinel scan sca` runs the pinned Syft (one run writes CycloneDX, SPDX and syft-json) and the pinned Grype on that SBOM, offline, with SentinelCI's `scanners/configs/grype.yaml` from a private directory, against a prepared database (`--db-dir`; over five days old fails closed unless `--allow-stale-db`). `sentinel tools grype-db` prepares it with the same Grype and configuration (pinned update URL, or `--archive`: a local file digested first, or an https URL naming its sha256), the job's proxy and CA variables only, and fails closed unless `grype db status` then calls it valid. `sentinel normalize grype` turns a source-tree report into SCA findings: rule id and fingerprint vuln id = Grype's matched id, related CVEs in `cve`, other ids in `aliases`; Negligible counts as INFO and Unknown as HIGH; one finding per purl base with every place; no CVSS / EPSS / KEV copied (enrichment is B2's snapshot); a report that shows a silenced match, an invalid database or an image source fails closed. Golden file: B's real Grype 0.121.0 report on demo-shop. |
 | 1.1.24 | B1 acceptance changed after the plan, while GitHub Actions are blocked: "an upload (`sentinel upload`, 1.1.23) or a sync ingests a real run" replaces "a sync ingests a real run". M1 can then be met by uploading a local run; the GitHub sync (§4.1, the platform pulls each CI run's evidence) stays in B1 and lands once CI runs exist. Hand-off B1 → A3, A8: OpenAPI and the ingestion endpoints at the end of S1, the sync later. |
 | 1.1.22 | Checkov dropped (ADR-0012): stage 4 is Trivy (config) and zizmor, A1 has no Checkov adapter, and §11 says so. The demo-shop ground truth keeps only detections by pinned tools; GT-IAC-004, which Trivy 0.76.1 misses, stays a seed with `known_miss` and counts as a miss for IaC recall. |
 | 1.1.21 | A6 apply step (§9): `sentinel remediate apply` commits a patch proposal on a new `sentinel/fix/` branch of a local clone with plumbing commands on a temporary index (never pushes, checks nothing out, so no hook, filter or fsmonitor of the clone runs), after checking that the proposal id matches its content, that its findings are in the base scan (`--findings`) and its files are where they were found, and that the diff edits exactly the listed regular files in place (no file created, deleted, renamed, made executable or symlink retargeted). The commit has a `Sentinel-Diff` trailer and the proposal's dates. |
@@ -200,6 +201,14 @@ harmless options. Merge commits are scanned with `--diff-merges=remerge`, so a s
 (an "evil merge") is found while an honest merge of the base branch blames nobody (octopus merges excepted:
 remerge does not diff them, so they get a second `first-parent` pass, which also reports what the other parents
 already had; the PR baseline drops what the base branch has). Each Gitleaks pass gets the full scanner time
+limit, so git mode can take twice as long. Dir mode opens archives (`.zip`, nested up to 3 levels). Grype never
+reads the scanned repository: it matches the Syft SBOM, from a private working directory with SentinelCI's
+configuration, offline, against a database the pipeline prepared (`sentinel tools grype-db`: the same verified
+Grype and configuration, which pins the update URL, then Grype's own validity check, offline); a database built
+more than five days ago fails the scan (SC-010), and a report whose recorded configuration hides matches (ignore rules beyond Grype's built-in
+kernel-header rules, VEX, exclusions, `only-fixed`, `by-cve`) is refused. Legitimate exceptions go through
+waivers (§6.4).
+
 limit, so git mode can take twice as long. Dir mode opens archives (`.zip`, nested up to 3 levels). Trivy
 (`sentinel scan iac`) never loads the repository's `trivy.yaml` or `.trivyignore` (`--config ""`,
 `--ignorefile ""`), refuses a tree that contains inline `trivy:ignore` / `tfsec:ignore` comments (no flag turns
@@ -259,6 +268,7 @@ match on the skipped text with the same occurrence numbering (§13.1), with a me
 quotes no code. Valid modern syntax Opengrep cannot parse yet (a PEP 695 `def f[T]`, some TypeScript constructs)
 shows up this way until Opengrep catches up: the way out is a reviewed waiver with an expiry, never a scanner
 flag.
+
 
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
@@ -669,11 +679,17 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
 - SCA / CONTAINER: `sha256(category | vuln id | purl base)` where *purl base* = the purl without version,
   qualifiers or subpath (same definition as `purl_base` in `policies/gate.rego`). After a bump the finding disappears; base-image point releases, other
   architectures and Grype/Trivy qualifier differences keep the same fingerprint. Waivers use the same purl base.
+  The *vuln id* is the scanner's id of the record that matched, which is also the finding's `rule_id` (a GHSA for
+  a Grype language match, stable when a CVE is assigned later); the related CVE ids go to `cve` and the other ids
+  to `aliases`, through which enrichment (B2) and correlation (A7) join tools.
+- SAST: `sha256(rule id | path | hash of normalized snippet)` — survives line shifts.
+
 - SAST: `sha256(rule id | path | hash of normalized snippet)` — survives line shifts — plus the occurrence number
   for repeated identical matches in a file: in line order, the first keeps that id and the n-th (n ≥ 2) is
   `sha256(<that id> | n)`, its own finding. A copy of a vulnerable line is then new in a PR, and a waiver covers
   one place. Code Opengrep could not parse (rule `sentinel-sast-not-analysed`) uses the same formula, with the
   skipped lines as the snippet.
+
 - SECRET: `sha256(rule id | sha256(secret value))`.
 - IAC: `sha256(rule id | path | resource)`.
 - PIPELINE: about a whole job or file, `sha256(rule id | path | job id, or "workflow" for the file)`; any other
