@@ -47,9 +47,9 @@ from sentinelci.scanners.runner import DEFAULT_TIMEOUT_S, ToolRun, is_within, ru
 from sentinelci.supplychain.sbom import OFFLINE_ENV, Sbom, generate_sbom
 
 
-class ImageScanFailure(Exception):
-    """Which tool of an image scan failed (`syft`, or `grype` once the SBOM exists), and why: the tool status
-    names each tool's own outcome."""
+class SbomScanFailure(Exception):
+    """Which tool of a Syft-then-Grype scan failed (`syft`, or `grype` once the SBOM exists), and why: the
+    tool status names each tool's own outcome, and Grype never runs when Syft failed."""
 
     def __init__(self, tool: str, error: Exception, sbom: Sbom | None = None) -> None:
         super().__init__(str(error))
@@ -317,32 +317,41 @@ def scan_sca(
     timeout_s: int = DEFAULT_TIMEOUT_S,
 ) -> ScaScan:
     """SBOM of `target` with the verified Syft, then the verified Grype on it. `name` names the SBOM's subject
-    (the repository); `db_dir` is Grype's prepared database directory."""
-    scan_root = scan_root_of(target, repo_root)
-    sbom = generate_sbom(
-        target,
-        kind="dir",
-        name=name,
-        lock=lock,
-        tools_dir=tools_dir,
-        platform=platform,
-        timeout_s=timeout_s,
-        syft_json=True,
-    )
-    if sbom.syft_json is None:  # generate_sbom checked it; kept for the type checker
-        raise ScannerError("syft wrote no syft-json SBOM")
-    with tempfile.TemporaryDirectory(prefix="sentinel-sca-") as private:
-        path = Path(private) / "sbom.syft.json"
-        path.write_bytes(sbom.syft_json)
-        report, database, run = match_sbom(
-            path,
-            db_dir=db_dir,
+    (the repository); `db_dir` is Grype's prepared database directory.
+
+    A failure is an SbomScanFailure naming the tool that failed: a target that cannot be scanned counts as
+    Syft's, and Grype never runs when Syft failed."""
+    try:
+        scan_root = scan_root_of(target, repo_root)
+        sbom = generate_sbom(
+            target,
+            kind="dir",
+            name=name,
             lock=lock,
             tools_dir=tools_dir,
             platform=platform,
-            allow_stale_db=allow_stale_db,
             timeout_s=timeout_s,
+            syft_json=True,
         )
+        if sbom.syft_json is None:  # generate_sbom checked it; kept for the type checker
+            raise ScannerError("syft wrote no syft-json SBOM")
+    except (ToolIntegrityError, ScannerError) as exc:
+        raise SbomScanFailure("syft", exc) from exc
+    try:
+        with tempfile.TemporaryDirectory(prefix="sentinel-sca-") as private:
+            path = Path(private) / "sbom.syft.json"
+            path.write_bytes(sbom.syft_json)
+            report, database, run = match_sbom(
+                path,
+                db_dir=db_dir,
+                lock=lock,
+                tools_dir=tools_dir,
+                platform=platform,
+                allow_stale_db=allow_stale_db,
+                timeout_s=timeout_s,
+            )
+    except (ToolIntegrityError, ScannerError) as exc:
+        raise SbomScanFailure("grype", exc, sbom) from exc
     return ScaScan(report=report, database=database, sbom=sbom, grype=run, scan_root=scan_root)
 
 
@@ -362,7 +371,7 @@ def scan_image(
     `docker buildx build --output type=oci` writes), matched by the verified Grype, offline. `image_digest` is
     its manifest digest: Syft must find that image in the archive, and the report must be about it.
 
-    A failure is an ImageScanFailure naming the tool that failed: Grype never runs when Syft failed."""
+    A failure is an SbomScanFailure naming the tool that failed: Grype never runs when Syft failed."""
     try:
         sbom = generate_sbom(
             archive,
@@ -378,7 +387,7 @@ def scan_image(
         if sbom.syft_json is None:  # generate_sbom checked it; kept for the type checker
             raise ScannerError("syft wrote no syft-json SBOM")
     except (ToolIntegrityError, ScannerError) as exc:
-        raise ImageScanFailure("syft", exc) from exc
+        raise SbomScanFailure("syft", exc) from exc
     try:
         with tempfile.TemporaryDirectory(prefix="sentinel-image-") as private:
             path = Path(private) / "sbom.syft.json"
@@ -393,5 +402,5 @@ def scan_image(
                 timeout_s=timeout_s,
             )
     except (ToolIntegrityError, ScannerError) as exc:
-        raise ImageScanFailure("grype", exc, sbom) from exc
+        raise SbomScanFailure("grype", exc, sbom) from exc
     return ImageScan(report=report, database=database, sbom=sbom, grype=run)

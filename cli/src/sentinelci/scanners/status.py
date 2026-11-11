@@ -22,13 +22,27 @@ SCHEMA_VERSION = 1
 MAX_DETAIL = 500
 
 
+def outcome_ok(
+    tool: str, version: str, binary_sha256: str, *, lock: ToolLock, platform: str | None
+) -> dict[str, Any]:
+    """`ok`: the binary was verified against the lock right before it ran, and it completed. The artifact is
+    the release archive of a `[tools]` entry on this platform, or the pinned wheel that carries the binary of
+    a `[python_tools]` entry (zizmor)."""
+    outcome: dict[str, Any] = {"version": version, "binary_sha256": binary_sha256, "status": "ok"}
+    if tool in lock.tools:
+        for key, artifact in lock.tools[tool].artifacts.items():
+            if key == platform:
+                outcome["artifact_sha256"] = artifact.sha256
+    elif tool in lock.python_tools:
+        wheels = sorted(w.sha256 for w in lock.python_tools[tool].wheels if w.binary_sha256 == binary_sha256)
+        if wheels:
+            outcome["artifact_sha256"] = wheels[0]
+    return outcome
+
+
 def outcome_from_run(run: ToolRun, *, lock: ToolLock, platform: str | None) -> dict[str, Any]:
     """`ok`: the binary was verified against the lock right before it ran, and it completed."""
-    outcome: dict[str, Any] = {"version": run.version, "binary_sha256": run.binary_sha256, "status": "ok"}
-    for key, artifact in lock.tools[run.tool].artifacts.items():
-        if key == platform:
-            outcome["artifact_sha256"] = artifact.sha256
-    return outcome
+    return outcome_ok(run.tool, run.version, run.binary_sha256, lock=lock, platform=platform)
 
 
 def outcome_from_error(tool: str, error: Exception, *, lock: ToolLock) -> dict[str, Any]:
@@ -41,9 +55,15 @@ def outcome_from_error(tool: str, error: Exception, *, lock: ToolLock) -> dict[s
         status = "failed"
     else:
         raise TypeError(f"not a scanner failure: {type(error).__name__}")
-    pinned = lock.tools.get(tool)
+    pinned = lock.tools.get(tool) or lock.python_tools.get(tool)
     detail = " ".join(str(error).split())[:MAX_DETAIL] or type(error).__name__
     return {"version": pinned.version if pinned else "unknown", "status": status, "detail": detail}
+
+
+def outcome_not_run(tool: str, detail: str, *, lock: ToolLock) -> dict[str, Any]:
+    """`not_run`: expected but never started, because a tool before it failed (Grype after Syft)."""
+    pinned = lock.tools.get(tool) or lock.python_tools.get(tool)
+    return {"version": pinned.version if pinned else "unknown", "status": "not_run", "detail": detail}
 
 
 def tool_status_document(

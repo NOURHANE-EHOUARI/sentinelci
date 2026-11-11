@@ -10,8 +10,10 @@
 
 | Version | Change |
 |---|---|
+| 1.1.43 | A3 (§5): the gate runs SAST and SCA. `sentinel-scan.yml` installs Opengrep, Syft and Grype from the lock, prepares Grype's database once (`sentinel tools grype-db --timeout`, evidence in `grype-db.json`), then runs `sentinel scan sast` and `sentinel scan sca` on the head commit and on the PR baseline, combined with the other scanners. Both commands take `--timeout` and `--tool-status-out`: Opengrep's run is recorded like the others'; the SCA status names Syft and Grype apart (`SbomScanFailure` says which one failed; Grype is `not_run` after a failed Syft; a report that cannot be trusted is Grype's failure). `scan sca --report` records the database the scan read and the SBOM's sha256 (`sca-report.json`), and the `match` block is pinned in `configs/grype.yaml` and required in the report (#52 review). The scan job's limit goes to 85 minutes, the sum of its runs at 300 s each. Whether the gate requires these tools is `policies/required_tools.rego` (B4). |
 | 1.1.41 | A1 image adapter (§5 stage 7, §13.1): `sentinel scan image` scans a built image's OCI layout archive with the pinned Syft and Grype, offline, into CONTAINER findings (`package` and `image`: digest, reference, layer), one per (vulnerability, purl base) with the CONTAINER fingerprint. The report must be about the given manifest digest, and its configuration must hide nothing, as for `scan sca`. A tool status for Syft and Grype (a failed Syft leaves Grype `not_run`), so the gate records a failed image scan as SC-010. |
 | 1.1.39 | Threat model (§18, A10): `docs/threat-model.md` lists the assets, five attackers, the trust boundaries, and 29 threats, each with its control, where it lives, the test that proves it and its status (main, an open PR, or planned), then the residual risks accepted in the private phase. §18's signing key row follows ADR-0011 (no signing key on GitHub). |
+| 1.1.37 | A3 CI workflow audit in the gate (§5): `sentinel-scan.yml` runs `sentinel scan pipelines` (zizmor) on the head commit in both modes and on the base commit for the pr baseline, so SC-009 now blocks a high-severity CI workflow issue a change introduces (demo-shop: GT-PIPELINE-001 to 003). `scan pipelines` writes a tool status like the other scanners (`--tool-status-out`, `--timeout`): `ok` with the verified binary's sha256 and, as its artifact, the pinned wheel that carries it; a crash, a timeout or a binary no pinned wheel carries is `failed`, `timeout` or `integrity_mismatch`, and the gate blocks it (SC-010). The scan job's limit is 45 minutes, for the extra runs. zizmor is not in `policies/required_tools.rego` yet (Track B): until it is, a workflow that drops the audit is not caught by the gate. |
 | 1.1.34 | A7 stage 3 and evaluation (§8, §17): `correlate.labels.label_groups` lets a model write the labels of groups of two findings or more (never a secret's), from findings sent as escaped JSON data without ids, snippets or evidence and with secrets redacted; one repair retry, else the template stays; an answer with a secret is refused; a template fix is never replaced; the group records the model and the prompt and input sha256. `correlate.evaluation`: ablation, the ARI-vs-threshold sweep and the calibration. |
 | 1.1.30 | Platform API migrations (B1, §13.3): going below 0004 stops, changing nothing, while any run keeps its uploaded findings bytes, which are the only copy `findings_sha256` was taken of; before, the downgrade dropped them without a word. A database without kept bytes still goes down. Raised on #57. |
 | 1.1.29 | Platform API 1.2.0 (B1, §13.3): the platform keeps each run's findings upload byte for byte and serves it at `GET /api/v1/runs/{id}/findings`, so a consumer that must match `findings_sha256` (the correlator's run document, #47; a replay) reads the exact bytes; the JSONB rows keep neither key order nor bytes. The database keeps only bytes that hash to the recorded digest, and the recorded-run trigger makes them immutable. Runs recorded before have none, and the API says so. |
@@ -240,7 +242,9 @@ load (`--strict-collection`), or the scan fails (SC-010); any other YAML file wi
 audited too, and one that zizmor cannot load as a GitHub workflow (another CI's file) is skipped and named in the
 job log, never counted as audited. Fingerprints (§13.1) use the job (`jobs.<id>`) and, for a finding inside a step,
 the code it is about, never the step's position, so adding a step does not make a job's findings new, while a new
-expression in a job is a new finding.
+expression in a job is a new finding. `sentinel-scan.yml` runs it on the scan path of the head commit in both modes, and of the base
+commit for the pr baseline (only an issue the change introduces blocks), with a tool status like the other
+scanners (a failure is SC-010).
 
 Grype (`sentinel scan sca`, findings of category SCA) never reads the scanned repository: it matches the Syft
 SBOM, from a private working directory with SentinelCI's configuration, offline, against a database the pipeline
@@ -300,6 +304,15 @@ failure, and the scan job keeps going, so a failed, timed-out or tampered scanne
 with its reason. A missing tool status is SC-010 too. Each scanner run has a time limit (`--timeout`, 300 s in
 `sentinel-scan.yml`), and the scan job's own limit outlives the sum of its runs, so a slow scanner ends as a
 recorded `timeout`, not as a killed job.
+**Scanners of the gate:** Gitleaks (secrets), Opengrep (SAST, SentinelCI's rules only), Syft then Grype (SCA),
+Trivy (IaC) and zizmor (CI workflows), each on the head commit and on the PR baseline, each with its tool status:
+the SCA status names Syft and Grype apart, and Grype is `not_run` when Syft failed. Grype's database is the only
+download of a scan: `sentinel tools grype-db` prepares it once, before any scan, and its evidence (schema, build
+time, checksum) is kept with the scan outputs; the scans themselves are offline, and a database that could not be
+prepared makes them fail (SC-010). The SCA scan also writes what it read (`sca-report.json`: the Syft and Grype
+binaries, the database Grype matched against and the SBOM's sha256), kept with the evidence: the same tree gives
+other findings with another database. Grype's CPE matching (`match` block) is pinned in its configuration and
+required in its report.
 **Scoring:** the gate job scores the findings with the base commit's risk model (`sentinel score`, §6.2) before
 `sentinel evaluate`; the decision records, and the PR comment shows, the scored findings. A scoring failure means no
 decision (exit 3).
