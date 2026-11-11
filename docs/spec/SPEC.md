@@ -33,6 +33,7 @@
 | 1.1.18 | A4 registry mode (§7, ADR-0010 decision 4): `sentinel attest --push` also signs the image and attaches the four attestations to it in its registry (Cosign 3 bundles, by digest); `sentinel verify` without `--evidence` reads them back and requires the image's own `cosign sign` statement, since Cosign 3 accepts any key-signed statement about the digest as a signature. A digest has one release per registry: `attest --push` refuses a different one before signing, and a re-run signs the same statements (the provenance names the run, not its attempt). `--registry-http` is for a loopback or single-label local registry only. crane is pinned in `tools.lock.toml` (local test registry, copies by digest). |
 | 1.1.17 | A6b remediation (§9): `sentinel remediate dockerfile`: the deterministic Dockerfile fixer (`USER 10001:10001` added to the final stage after its last RUN and USER, never rewriting a USER line; COPY instead of ADD only when every source is a directory or a plain file of the repository, neither a tar nor compressed, judged by content; `apt-get install --no-install-recommends`; each checked against the pinned Trivy), sharing the per-file loop with the Kubernetes fixer. An edit leaves alone an instruction that carries a finding it does not resolve (its fingerprint would change), a proposal claims only the findings an edit resolved, and CRLF files are left alone. The USER change can change what the image does, and the rationale says so. |
 | 1.1.16 | A6a remediation (§9): `sentinel remediate kubernetes` proposes hardening for the Trivy findings the deterministic Kubernetes fixer resolves (16 rule ids, each checked against the pinned Trivy; manifests edited round-trip, so the diff shows only the hardening; a non-root UID/GID, a read-only root file system and dropped capabilities can change how a workload runs, and the rationale says so), as a `PatchProposal`; `sentinel remediate verify` applies the verification gate and writes a `VerificationResult`. The gate refuses (exit 3) a proposal whose id does not match its content, that claims findings the base scan lacks or edits anything but where they are, and a decision not made in pr context on the patched findings with the tool status (which must show every target's scanner ok); a target re-reported under a new fingerprint (same tool, rule and file) is not gone, and a base finding that rises to MEDIUM or higher is new. Read models for both contracts; the §9 states and their transitions. New dependency: ruamel.yaml. |
+| 1.1.15 | A1 SAST (§5): `sentinel scan sast` runs the pinned Opengrep (no checksum file upstream: pinned by hash after checking each asset's keyless signature, recorded in `tools.lock.toml` with its signer identity) with SentinelCI's own rules only (`configs/opengrep/`, each pinned by cases it must flag and leave alone), offline, with `nosemgrep` comments, `.semgrepignore`, `.gitignore`, the size and per-file time limits and repository rule files never honoured, and links leaving the tree refused; a file Opengrep cannot analyse for more than half of its lines, and any other error even reported as a warning, fails closed; findings are category SAST with the §13.1 SAST fingerprint, plus the occurrence number for repeated identical matches in a file (each copy is its own finding, so a copy is new in a PR and a waiver covers one place); each smaller gap Opengrep could not parse is a SAST HIGH finding of its own (`sentinel-sast-not-analysed`, fingerprinted on the skipped text, its message naming the lines and quoting no code), so padding cannot hide unparsed code, and valid syntax Opengrep cannot parse yet is waived with an expiry. |
 | 1.1.14 | A1 CI workflow analysis (§5): `sentinel scan pipelines` runs the zizmor of the CLI's environment (a runtime dependency pinned in `uv.lock`), checked against the binary hashes pinned in `tools.lock.toml` (`[python_tools.zizmor]`), offline, with the repository's configuration, ignore comments and `.gitignore` never honoured. Workflows, actions and Dependabot must load; other files with a `jobs:` key are skipped and reported when zizmor cannot load them. PIPELINE fingerprint (§13.1) changed: a finding below a job or a top-level key also hashes the code it is about (the expression's line, a trigger's value, a Dependabot entry's ecosystem), so a new expression, trigger or entry is a new finding (IAC unchanged). |
 | 1.1.13 | A4 SBOMs (§7): `sentinel sbom` writes CycloneDX and SPDX JSON with the pinned Syft, offline and never configured by the scanned repository (private working directory and home, SentinelCI's `supplychain/configs/syft.yaml` passed explicitly, no network lookup, no file catalog); images come from the OCI layout the build wrote, and both SBOMs must name the image's manifest digest; an output inside the target is refused before anything is deleted. |
 | 1.1.12 | A4 release attestations (§7, ADR-0010): `sentinel attest` signs the release decision, CycloneDX SBOM, vulnerability scan (`schemas/vuln-result.v1.json`) and SLSA v1 provenance of an image digest with the pinned Cosign and a key pair (no transparency log), only for a non-BLOCK release decision about that image that recorded these findings and this SBOM; `sentinel verify` checks the four Sigstore bundles offline and prints a trust report (exit 0 trusted, 1 not, 3 could not run). |
@@ -255,6 +256,32 @@ Grype's own validity check, offline); a database built more than five days ago f
 report whose recorded configuration hides matches (ignore rules beyond Grype's built-in kernel-header rules, VEX,
 exclusions, `only-fixed`, `only-notfixed`, `ignore-wontfix`, a distro override, `by-cve`) is refused. Legitimate
 exceptions go through waivers (§6.4).
+
+Opengrep (`sentinel scan sast`, findings of category SAST) publishes no checksum file: each release asset is signed
+keyless by its release workflow. It is pinned by hash in `tools.lock.toml` after checking each asset's signature
+against its certificate, the certificate against Sigstore's Fulcio CA at signing time, and its identity
+(`signer_identity`, the GitHub Actions issuer); a reviewer re-checks with the transparency log. It runs SentinelCI's
+own rules only (`configs/opengrep/*.yaml`, each pinned by cases it must flag and cases it must leave alone; fixed
+messages, so no code reaches a finding), from a private working directory and home, offline. The scanned repository
+cannot silence it: `--disable-nosem` (a match under a `# nosemgrep` comment is reported, flagged, and its message
+says the comment is not honoured), `--x-ignore-semgrepignore-files`, `--no-git-ignore`, `--max-target-bytes=0` (no
+file is skipped for its size) and `--timeout=0` (no rule is dropped for a slow file; the run keeps the scanner time
+limit); repository rule files are never loaded, and a link that leaves the scan target, or loops, is refused.
+Opengrep chooses files by extension: `.py`, `.pyi`, `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts` and `.tsx`, plus an
+executable file whose `#!` line names `python` or `node`; anything else (a script without an extension that is not
+executable, `.mts`, `.cts`, `.pyw`, notebooks) is not scanned, and the guarantees above cover only these files.
+`sentinel tools install`/`verify` check only the pinned sha256; the signature fields of the lock are not read. Any
+error Opengrep reports fails closed, even a warning (too many matches in a file, out of memory: Opengrep then drops
+the file's results), except a file it could parse only in part: that fails closed too when more than half of the
+file's lines were not analysed (all of them when it could not parse the file at all), since one line of syntax
+Opengrep does not know can hide a whole file. Each smaller gap (overlapping or adjacent spans merged) is a finding
+of its own, so blank lines or a long docstring around unparsable code cannot hide it: rule
+`sentinel-sast-not-analysed`, SAST HIGH (unscored, so P0: it blocks until fixed or waived), fingerprinted like a
+match on the skipped text with the same occurrence numbering (§13.1), with a message that names the lines and
+quotes no code. Valid modern syntax Opengrep cannot parse yet (a PEP 695 `def f[T]`, some TypeScript constructs)
+shows up this way until Opengrep catches up: the way out is a reviewed waiver with an expiry, never a scanner
+flag.
+
 
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
@@ -702,6 +729,13 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
   a Grype language match, stable when a CVE is assigned later); the related CVE ids go to `cve` and the other ids
   to `aliases`, through which enrichment (B2) and correlation (A7) join tools.
 - SAST: `sha256(rule id | path | hash of normalized snippet)` — survives line shifts.
+
+- SAST: `sha256(rule id | path | hash of normalized snippet)` — survives line shifts — plus the occurrence number
+  for repeated identical matches in a file: in line order, the first keeps that id and the n-th (n ≥ 2) is
+  `sha256(<that id> | n)`, its own finding. A copy of a vulnerable line is then new in a PR, and a waiver covers
+  one place. Code Opengrep could not parse (rule `sentinel-sast-not-analysed`) uses the same formula, with the
+  skipped lines as the snippet.
+
 - SECRET: `sha256(rule id | sha256(secret value))`.
 - IAC: `sha256(rule id | path | resource)`.
 - PIPELINE: about a whole job or file, `sha256(rule id | path | job id, or "workflow" for the file)`; any other
@@ -887,7 +921,7 @@ schema-constrained outputs and injection isolation (0 verdict changes across [X]
 | 3 | Contracts: finding, decision, patch proposal, verification result + fixtures + tests | done |
 | 4 | Spec v1.1 + ADRs in `docs/` | done |
 | 5 | Repository settings: require SHA-pinned actions, read-only default workflow token, Dependabot alerts (branch protection deferred to the public phase, convention + local guard meanwhile) | to do (owner) |
-| 6 | Choose and pin tool versions in `tools.lock.toml` | done (A1a; Opengrep pending) |
+| 6 | Choose and pin tool versions in `tools.lock.toml` | done (A1a; Opengrep by signature, A1) |
 | 7 | Compose skeleton (postgres+pgvector, redis, seaweedfs, ollama, api, prometheus, grafana; worker with B1, web with B7) | B |
 | 8 | `demo-shop/` skeleton + ground-truth format; first seeds | A9 first seeds done (draft format v1); B9 to do |
 | 9 | GitHub Project board: one issue per task id | both |
