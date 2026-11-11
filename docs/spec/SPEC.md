@@ -518,8 +518,11 @@ AI runs after the decision is stored, writes only advisory tables, and every out
   secret redacted. The answer must validate (one line each, the contract's lengths), with one repair retry,
   else the group keeps its template labels; an answer that quotes a secret is refused; a template's fix is
   never replaced. A labelled group records the provider, the model and the sha256 of the prompt and of its
-  input. A fix is proposed only when one change resolves every
-  member. A run's groups travel in a correlation document (`schemas/correlation.v1.json`) with the sha256 of
+  input. A template fix is proposed only when one change resolves every member; a model's fix only fills a
+  group that had none, and is advice that no stage verifies. The group's template title and shared key go in a
+  `<group>` data block, escaped like the findings, and the prompt names both blocks as data. Redaction covers
+  known token prefixes, `Bearer`/`Basic` values, a URL's password and any assignment whose name holds password,
+  secret, token, key or credential (single or double quotes, prefixed names such as `DB_PASSWORD`). A run's groups travel in a correlation document (`schemas/correlation.v1.json`) with the sha256 of
   the findings they came from (computed on the bytes B1 recorded, `GET /api/v1/runs/{id}/findings`), the stages
   that ran, the threshold and the embedding model; if the embedder fails, stages 1 and 2a are kept and the
   document records the embedding stage as `skipped`, with the failure, so an outage never reads as an
