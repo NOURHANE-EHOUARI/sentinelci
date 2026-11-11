@@ -37,11 +37,19 @@ VERIFYING → VERIFIED | REJECTED | FAILED, "never merges", "verification jobs g
    - the bundle holds exactly that branch, at the commit `apply` reported;
    - that commit has exactly one parent, the scanned commit;
    - its `Sentinel-Proposal` trailer is the proposal's id;
-   - it edits in place exactly the files the proposal lists, and changes no file mode.
+   - it edits in place exactly the files the proposal lists, and changes no file mode;
+   - the proposal is one the bot could have made: its id is a UUID and its branch is `sentinel/fix/` plus the
+     id's first 12 hex digits; its strategy is `deterministic:kubernetes` (files `*.yaml`, `*.yml`) or
+     `deterministic:dockerfile` (the fixer's `DOCKERFILE_NAMES` rule), anything else refused until B6 says
+     what a model's patch may touch; every file is inside the scanned directory (`inputs.path`, checked again
+     here with the same rule as in `propose`), and none is under `.github/` or `.sentinel/` or named
+     `sentinel.yaml`; the attempt is 1 to 3 and every finding id is a sha256.
 
-   Each refusal fails the run and names the check. The other proposals are still published. A tampered
-   propose job can therefore make at most a pull request against one listed file, and that pull request is
-   then judged like any other.
+   What the pull request shows comes only from checked values; the rationale is printed as text in a fenced
+   block, capped at 2,000 characters, so no mention, link, image or closing keyword renders. Each refusal, and
+   each failed push or pull request, fails the run and names the proposal; the other proposals are still
+   published. A tampered propose job can therefore make at most a pull request that edits, in place, files of
+   the scanned directory that its strategy can fix, and that pull request is then judged like any other.
 3. **Idempotent.** A proposal's branch is named after its content (#48). If the branch already exists, nothing
    is pushed or opened again.
 4. **The pull request is the job record** (PR_OPEN). The bot never merges and never approves. The repository

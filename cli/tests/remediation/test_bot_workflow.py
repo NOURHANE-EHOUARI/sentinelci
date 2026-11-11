@@ -85,6 +85,10 @@ class Bot:
         (self.clone / SEED_PATH).parent.mkdir(parents=True)
         (self.clone / SEED_PATH).write_text(SEED.read_text())
         (self.clone / "README.md").write_text("demo\n")
+        # Files a Kubernetes proposal must never edit: not a manifest, SentinelCI's own, outside the path.
+        for other in ("demo-shop/NOTES.txt", "demo-shop/sentinel.yaml", "deploy/kind/cluster.yaml"):
+            (self.clone / other).parent.mkdir(parents=True, exist_ok=True)
+            (self.clone / other).write_text("kind: Config\n")
         subprocess.run(["git", "init", "-q", "-b", "main", str(self.clone)], check=True)
         git(self.clone, "add", ".")
         git(self.clone, "commit", "-qm", "seed")
@@ -144,7 +148,7 @@ class Bot:
             "PATH": self.path, "HOME": str(self.tmp), "GH_TOKEN": FAKE_TOKEN, "REPO": REPO,
             "REMOTE": f"file://{self.origin}", "BASE_SHA": self.base, "BASE_BRANCH": "main",
             "RUN_URL": "https://github.com/o/r/actions/runs/1", "PROPOSALS": str(self.artifact),
-            "WORK": str(self.tmp / "work"), "GIT_CONFIG_NOSYSTEM": "1",
+            "WORK": str(self.tmp / "work"), "GIT_CONFIG_NOSYSTEM": "1", "SCAN_PATH": "demo-shop",
         }  # fmt: skip
         shutil.rmtree(self.tmp / "work", ignore_errors=True)
         return subprocess.run(
@@ -210,13 +214,32 @@ def tampered(bot: Bot, how: str) -> None:
     elif how == "two-refs":
         git(bot.clone, "branch", "-f", "sentinel/fix/extra", commit)
         bot.write("kubernetes", document, applied, [branch, "sentinel/fix/extra"])
-    elif how == "another-proposal":
+    elif how == "another-proposal":  # a consistent id and branch, but not the commit's trailer
+        git(bot.clone, "branch", "-f", "sentinel/fix/000000000000", commit)
         bot.write(
             "kubernetes",
             document | {"proposal_id": "00000000-0000-4000-8000-000000000000"},
-            applied,
-            [branch],
+            applied | {"branch": "sentinel/fix/000000000000"},
+            ["sentinel/fix/000000000000"],
         )
+    elif how == "branch-of-another-id":
+        bot.write("kubernetes", document | {"proposal_id": "00000000-0000-4000-8000-000000000000"}, applied,
+                  [branch])  # fmt: skip
+    elif how == "another-strategy":
+        bot.write("kubernetes", document | {"strategy": "llm:code"}, applied, [branch])
+    elif how == "malformed-finding-id":
+        bot.write("kubernetes", document | {"finding_ids": ["`@someone`"]}, applied, [branch])
+    elif how.startswith("listed-"):
+        listed = {"listed-readme": "README.md", "listed-not-a-manifest": "demo-shop/NOTES.txt",
+                  "listed-sentinel-yaml": "demo-shop/sentinel.yaml",
+                  "listed-outside-the-path": "deploy/kind/cluster.yaml"}[how]  # fmt: skip
+        work = bot.tmp / "work-tree"
+        git(bot.clone, "worktree", "add", "-q", str(work), branch)
+        (work / listed).write_text("changed by a compromised propose job\n")
+        git(work, "commit", "-qa", "--amend", "--no-edit")
+        new = git(work, "rev-parse", "HEAD")
+        files = sorted([*document["files"], listed])
+        bot.write("kubernetes", document | {"files": files}, applied | {"commit": new}, [branch])
     elif how in ("another-file", "two-commits", "executable"):
         work = bot.tmp / "work-tree"
         git(bot.clone, "worktree", "add", "-q", str(work), branch)
@@ -246,6 +269,13 @@ def tampered(bot: Bot, how: str) -> None:
         ("another-file", "exactly the files the proposal lists"),
         ("two-commits", "exactly one parent"),
         ("executable", "changes a file mode"),
+        ("branch-of-another-id", "the branch is not named after the proposal's id"),
+        ("another-strategy", "the kubernetes and dockerfile fixers only"),
+        ("malformed-finding-id", "attempt or finding ids are malformed"),
+        ("listed-readme", "deterministic:kubernetes cannot edit README.md"),
+        ("listed-not-a-manifest", "deterministic:kubernetes cannot edit demo-shop/NOTES.txt"),
+        ("listed-sentinel-yaml", "deterministic:kubernetes cannot edit demo-shop/sentinel.yaml"),
+        ("listed-outside-the-path", "deterministic:kubernetes cannot edit deploy/kind/cluster.yaml"),
     ],
 )
 def test_a_proposal_changed_after_the_fact_is_refused_and_nothing_is_published(
@@ -265,3 +295,28 @@ def test_one_refused_proposal_does_not_stop_the_others(bot: Bot) -> None:
     done = bot.publish()
     assert done.returncode == 1, "the run fails: one proposal was refused"
     assert applied["branch"] in bot.remote_branches() and len(bot.gh()) == 1, "the good one is still opened"
+
+
+def test_the_fixers_text_is_shown_as_text(bot: Bot) -> None:
+    """The rationale is free text from the propose job: no mention, closing keyword, link or image renders."""
+    proposal, applied = bot.propose()
+    document = proposal.model_dump(mode="json")
+    document["rationale"] = "Closes #1 @someone [x](https://example.invalid/p.png) ```\n# Approved"
+    bot.write("kubernetes", document, applied, [applied["branch"]])
+    done = bot.publish()
+    assert done.returncode == 0, done.stdout + done.stderr
+    (call,) = bot.gh()
+    fenced = call["body"].split("```text\n", 1)[1].split("\n```\n", 1)
+    assert fenced[0] == "Closes #1 @someone [x](https://example.invalid/p.png) '''\n# Approved"
+    assert "@someone" not in fenced[1] and "@someone" not in call["body"].split("```text", 1)[0]
+
+
+def test_a_failed_push_is_named_and_the_others_still_go(bot: Bot) -> None:
+    proposal, applied = bot.propose()
+    hook = bot.origin / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(hook.stat().st_mode | stat.S_IXUSR)
+    bot.write("aaa", proposal.model_dump(mode="json"), applied, [applied["branch"]])
+    done = bot.publish()
+    assert done.returncode == 1 and not bot.gh()
+    assert done.stdout.count("the push of") == 2, "both proposals were tried, and each failure is named"

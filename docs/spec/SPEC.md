@@ -11,7 +11,7 @@
 | Version | Change |
 |---|---|
 | 1.1.39 | Threat model (§18, A10): `docs/threat-model.md` lists the assets, five attackers, the trust boundaries, and 29 threats, each with its control, where it lives, the test that proves it and its status (main, an open PR, or planned), then the residual risks accepted in the private phase. §18's signing key row follows ADR-0011 (no signing key on GitHub). |
-| 1.1.35 | A6 remediation bot (§9, ADR-0013): `sentinel-remediate.yml` proposes in a read-only job and publishes in a job that runs no repository code; a branch is pushed and its pull request opened only if its bundle holds exactly one commit, on the scanned commit, with the proposal's id and exactly its files edited in place; never twice, never merged. |
+| 1.1.35 | A6 remediation bot (§9, ADR-0013): `sentinel-remediate.yml` proposes in a read-only job and publishes in a job that runs no repository code; a branch is pushed and its pull request opened only if its bundle holds exactly one commit, on the scanned commit, with the proposal's id and exactly its files edited in place, and only if the proposal is one the bot could have made (a UUID id and its branch, a deterministic strategy and only the files it can fix inside the scanned directory, never under `.github/` or `.sentinel/` or a `sentinel.yaml`); the pull request shows only checked values; never twice, never merged. |
 | 1.1.30 | Platform API migrations (B1, §13.3): going below 0004 stops, changing nothing, while any run keeps its uploaded findings bytes, which are the only copy `findings_sha256` was taken of; before, the downgrade dropped them without a word. A database without kept bytes still goes down. Raised on #57. |
 | 1.1.29 | Platform API 1.2.0 (B1, §13.3): the platform keeps each run's findings upload byte for byte and serves it at `GET /api/v1/runs/{id}/findings`, so a consumer that must match `findings_sha256` (the correlator's run document, #47; a replay) reads the exact bytes; the JSONB rows keep neither key order nor bytes. The database keeps only bytes that hash to the recorded digest, and the recorded-run trigger makes them immutable. Runs recorded before have none, and the API says so. |
 | 1.1.28 | Platform API 1.1.0 (B1, §13.3): one run per CI run. `POST /api/v1/runs` with the `repo`, `commit`, `context` and `run_id` of a run already recorded (a re-run of `sentinel upload`, #50) is answered 409 with the existing run, which the client resumes instead of recording the findings a second time; a unique index decides between concurrent requests. A run without `run_id` is always new. Migration 0003 stops, changing nothing, on a database that already holds a CI run twice. |
@@ -582,7 +582,11 @@ read-only `propose` job scans the commit, runs the fixers and `apply`, and hands
 A `publish` job, the only one with a write token, runs no repository code (the runner's git, jq and gh only):
 it pushes a branch and opens its pull request only if the bundle holds exactly that `sentinel/fix/` branch, one
 commit on the scanned commit, carrying the proposal's id and editing in place exactly the files the proposal
-lists; an existing branch is not opened twice. The verification run is dispatched with the A3 wiring (the
+lists, and only if the proposal is one the bot could have made (a UUID id and its branch; a deterministic
+strategy and only the files it can fix, inside the scanned directory, never under `.github/` or `.sentinel/` or
+a `sentinel.yaml`; a sha256 per finding). The pull request shows only checked values, the rationale as fenced
+text. A tampered propose job can therefore make at most a pull request that edits, in place, files of the
+scanned directory that its strategy can fix. An existing branch is not opened twice. The verification run is dispatched with the A3 wiring (the
 workflow token's pull requests start no workflow by themselves).
 
 ## 10. Dashboard and observability

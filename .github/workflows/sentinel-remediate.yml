@@ -132,18 +132,26 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PROPOSALS: ${{ runner.temp }}/remediation
           WORK: ${{ runner.temp }}/publish
+          SCAN_PATH: ${{ inputs.path }}
         run: |
           set -euo pipefail
           shopt -s nullglob
           fail() { echo "::error::$1: $2"; failed=1; }
           failed=0
+          # The scanned directory is the dispatcher's input, checked again here: a proposal edits files in it only.
+          if [[ ! "$SCAN_PATH" =~ ^[A-Za-z0-9._/-]+$ || "$SCAN_PATH" == *..* || "$SCAN_PATH" == /* ]]; then
+            echo "::error::path must be a relative directory of letters, digits and ._/- (no ..)"; exit 1
+          fi
+          scope="${SCAN_PATH%/}/"
+          [ "$scope" = "./" ] && scope=""
           mkdir -p "$WORK"
           repo="$WORK/remote.git"
           git init --quiet --bare "$repo"
           # The token goes in a header for this repository's URL only, read by git from the environment.
           export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$REMOTE.extraHeader"
-          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
-          export GIT_CONFIG_VALUE_0
+          basic="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$basic"
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
           git -C "$repo" fetch --quiet --depth=1 "$REMOTE" "$BASE_SHA"
           for applied in "$PROPOSALS"/proposals/*.applied.json; do
             name="$(basename "$applied" .applied.json)"
@@ -155,6 +163,24 @@ jobs:
             if [[ ! "$branch" =~ ^sentinel/fix/[a-z0-9][a-z0-9._-]{0,63}$ || ! "$commit" =~ ^[0-9a-f]{40}$ ]]; then
               fail "$name" "not a sentinel/fix/ branch and commit"; continue
             fi
+            # Everything the pull request shows comes from these checked values, never from free text.
+            strategy="$(jq -r '.strategy' "$proposal")"
+            attempt="$(jq -r '.attempt' "$proposal")"
+            short="${id//-/}"
+            if [[ ! "$id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] \
+              || [ "$branch" != "sentinel/fix/${short:0:12}" ]; then
+              fail "$name" "the branch is not named after the proposal's id"; continue
+            fi
+            if [[ ! "$attempt" =~ ^[1-3]$ ]] || ! jq -e '.finding_ids | type == "array" and length > 0
+                and all(.[]; type == "string" and test("^[a-f0-9]{64}$"))' "$proposal" > /dev/null; then
+              fail "$name" "the proposal's attempt or finding ids are malformed"; continue
+            fi
+            case "$strategy" in
+              deterministic:kubernetes) names='\.ya?ml$' ;;
+              deterministic:dockerfile)
+                names='(^|/)(dockerfile|containerfile)(\.[^/]+)?$|\.(dockerfile|containerfile)$' ;;
+              *) fail "$name" "the bot publishes the kubernetes and dockerfile fixers only"; continue ;;
+            esac
             if [ "$(jq -r '.base' "$applied")" != "$BASE_SHA" ]; then
               fail "$name" "proposed against another commit than $BASE_SHA"; continue
             fi
@@ -177,22 +203,43 @@ jobs:
             if [ -n "$(git -C "$repo" diff --summary "$BASE_SHA" "$commit")" ]; then
               fail "$name" "the commit changes a file mode"; continue
             fi
-            if git -C "$repo" ls-remote --exit-code --heads "$REMOTE" "refs/heads/$branch" > /dev/null; then
-              echo "$name: $branch exists already (the same proposal): nothing to open"; continue
+            # Only files the strategy can fix, in the scanned directory, and nothing SentinelCI reads as its own.
+            outside=""
+            while IFS= read -r file; do
+              lower="${file,,}"
+              if [[ "$file" != "$scope"* || "$lower" =~ (^|/)(\.github|\.sentinel)/ || "$lower" =~ (^|/)sentinel\.ya?ml$ \
+                    || ! "$lower" =~ $names ]]; then
+                outside="$file"; break
+              fi
+            done < <(jq -r '.files[]' "$proposal")
+            if [ -n "$outside" ]; then
+              fail "$name" "$strategy cannot edit $outside"; continue
             fi
-            git -C "$repo" push --quiet "$REMOTE" "refs/heads/$branch:refs/heads/$branch"
-            strategy="$(jq -r '.strategy' "$proposal")"
+            exists=0
+            git -C "$repo" ls-remote --exit-code --heads "$REMOTE" "refs/heads/$branch" > /dev/null || exists=$?
+            if [ "$exists" -eq 0 ]; then
+              echo "$name: $branch exists already (the same proposal): nothing to open"; continue
+            elif [ "$exists" -ne 2 ]; then
+              fail "$name" "cannot tell whether $branch exists"; continue
+            fi
+            if ! git -C "$repo" push --quiet "$REMOTE" "refs/heads/$branch:refs/heads/$branch"; then
+              fail "$name" "the push of $branch failed"; continue
+            fi
             count="$(jq -r '.finding_ids | length' "$proposal")"
+            # The rationale is the fixer's text, shown as text: in a fenced block, no mention, link or image renders.
             jq -r --arg run "$RUN_URL" --arg base "$BASE_SHA" '
               "Proposed by the SentinelCI remediation bot ([run](" + $run + ")) against `" + $base + "`.\n\n"
               + "**Strategy:** `" + .strategy + "`, attempt " + (.attempt | tostring) + ", proposal `" + .proposal_id + "`\n\n"
-              + "**Why:** " + .rationale + "\n\n"
+              + "**Why** (the fixer'"'"'s text, as it wrote it):\n\n```text\n"
+              + (.rationale | tostring | gsub("`"; "'"'"'") | .[0:2000]) + "\n```\n\n"
               + "**Findings it resolves:**\n" + ([.finding_ids[] | "- `" + . + "`"] | join("\n")) + "\n\n"
               + "**Files:** " + ([.files[] | "`" + . + "`"] | join(", ")) + "\n\n"
               + "This pull request is judged like any change: scanned, then `sentinel remediate verify` says"
               + " VERIFIED, REJECTED or FAILED. The bot never merges it."' "$proposal" > "$WORK/$name.md"
-            gh pr create --repo "$REPO" --base "$BASE_BRANCH" --head "$branch" \
+            if ! gh pr create --repo "$REPO" --base "$BASE_BRANCH" --head "$branch" \
               --title "fix(remediation): ${strategy#deterministic:} hardening for $count finding(s)" \
-              --body-file "$WORK/$name.md"
+              --body-file "$WORK/$name.md"; then
+              fail "$name" "$branch is pushed, but its pull request could not be opened"; continue
+            fi
           done
           exit "$failed"
