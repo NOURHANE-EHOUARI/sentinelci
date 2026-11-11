@@ -1,0 +1,449 @@
+"""`make remediate-code`: the LLM code fixer, run on the laptop, verified like the bot's patches (ADR-0014).
+
+For each SAST finding of origin/main (or the one named with --finding), B6's `propose_code_fix` asks the
+pinned local model (B5's OllamaProvider, digest checked before any prompt) for a patch. Each proposal goes
+through the same steps as the bot's `verify` job (ADR-0013), with this checkout's CLI, policies and waivers,
+which are origin/main's:
+
+1. `sentinel remediate apply` commits it on its own `sentinel/fix/...` branch of a bare copy of the
+   repository (plumbing only: nothing is checked out, no hook or filter runs);
+2. the patched commit is scanned like a pull request: Gitleaks on its commits, Opengrep and Trivy on its tree;
+3. `sentinel remediate check --test-image` builds it and runs its service's tests in a sandboxed container;
+4. the gate is evaluated on the patched commit in pr context, the scanned commit as baseline;
+5. `sentinel remediate verify` applies the verification gate: VERIFIED, REJECTED or FAILED.
+
+A REJECTED attempt is proposed again with its diff and what rejected it (attempts 2 and 3, B6 redacts and
+clips both); FAILED, or a fixer that sends nothing or has no usable answer, ends the finding. Every step's
+evidence is kept under out/remediate-code/<commit>/. Nothing leaves the laptop unless asked:
+- `--publish` pushes each VERIFIED branch to origin and opens its pull request with the person's own `gh`
+  login, as they would by hand. The bot never merges and never approves: a person reviews it.
+- `--api-url` records every attempt on the platform (`sentinel upload-remediation`, token from
+  SENTINEL_API_TOKEN only).
+
+The patched code never runs outside a container (CLAUDE.md): the scanners read it, and only `remediate check`
+runs its tests, in the sandbox.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Protocol
+
+ROOT = Path(__file__).resolve().parents[2]
+REPO = "NOURHANE-EHOUARI/sentinelci"
+MAIN = "refs/heads/main"
+SCAN_PATH = "demo-shop"
+MAX_ATTEMPTS = 3
+STEP_TIMEOUT_S = 3600
+OUT = Path("out") / "remediate-code"
+_COMMIT = re.compile(r"[a-f0-9]{40}")
+_FINDING = re.compile(r"[a-f0-9]{64}")
+_BRANCH = re.compile(r"sentinel/fix/[a-z0-9][a-z0-9._-]{0,63}")
+_ORIGIN = re.compile(
+    rf"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/){re.escape(REPO)}(?:\.git)?/?"
+)
+EXIT_DONE, EXIT_REFUSED = 0, 2
+
+
+class RemediationError(Exception):
+    """A step that cannot be done honestly: nothing is verified, nothing is published."""
+
+
+class Runner(Protocol):
+    def __call__(
+        self,
+        args: Sequence[str],
+        *,
+        cwd: Path = ...,
+        env: Mapping[str, str] | None = ...,
+        check: bool = ...,
+        capture: bool = ...,
+    ) -> subprocess.CompletedProcess[str]: ...
+
+
+def run_command(
+    args: Sequence[str],
+    *,
+    cwd: Path = ROOT,
+    env: Mapping[str, str] | None = None,
+    check: bool = True,
+    capture: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    """Run a command; a failure with `check` is a RemediationError naming the command, never its
+    environment."""
+    try:
+        done = subprocess.run(  # noqa: S603 (fixed commands; arguments from the checkout, the lock and the CLI)
+            list(args), cwd=cwd, env=dict(env) if env is not None else None, capture_output=capture,
+            text=True,
+            timeout=STEP_TIMEOUT_S, check=False,
+        )  # fmt: skip
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RemediationError(f"{args[0]} could not run: {type(exc).__name__}") from exc
+    if check and done.returncode != 0:
+        last = ((done.stderr or "").strip().splitlines() or ["see the output above"])[-1]
+        raise RemediationError(f"{' '.join(args[:3])} failed ({done.returncode}): {last}")
+    return done
+
+
+def sentinel(*args: str) -> list[str]:
+    """The CLI of this checkout: origin/main's, once the preconditions hold."""
+    return [sys.executable, "-m", "sentinelci.cli", *args]
+
+
+def preconditions(run: Runner, *, fetch: bool) -> str:
+    """The commit to fix: HEAD, which must be origin's main, with a clean working tree."""
+    origin = run(["git", "config", "--get", "remote.origin.url"], check=False)
+    if origin.returncode != 0 or _ORIGIN.fullmatch(origin.stdout.strip()) is None:
+        raise RemediationError(f"origin is not github.com/{REPO}: fix only the reviewed repository")
+    dirty = run(["git", "status", "--porcelain=v1", "--untracked-files=all"]).stdout.splitlines()
+    if dirty:
+        raise RemediationError("the working tree is not clean: run this from main as it is on GitHub")
+    if fetch:
+        run(["git", "fetch", "--quiet", "--no-tags", "origin", f"+{MAIN}:refs/remotes/origin/main"])
+    head = run(["git", "rev-parse", "--verify", "HEAD^{commit}"]).stdout.strip()
+    main = run(
+        ["git", "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"], check=False
+    ).stdout.strip()
+    if not _COMMIT.fullmatch(head) or head != main:
+        raise RemediationError(f"HEAD is {head}, origin/main is {main or 'unknown'}: check out main first")
+    return head
+
+
+def fence(text: str) -> str:
+    """`text` in a code block no line of it can close: shown as text, never rendered."""
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    ticks = "`" * max(3, longest + 1)
+    return f"{ticks}text\n{text}\n{ticks}"
+
+
+def tool_versions(*documents: Path) -> list[str]:
+    versions: dict[str, str] = {}
+    for document in documents:
+        if document.is_file():
+            tools = json.loads(document.read_text(encoding="utf-8")).get("tools") or {}
+            versions |= {name: str(e.get("version")) for name, e in tools.items() if e.get("version")}
+    return [f"--tool-version={name}={version}" for name, version in sorted(versions.items())]
+
+
+@dataclass(frozen=True)
+class Settings:
+    test_image: str
+    tools_dir: Path
+    lock: Path = ROOT / "tools.lock.toml"
+    timeout_s: int = 600
+    publish: bool = False
+    api_url: str | None = None
+    finding: str | None = None
+
+
+@dataclass
+class Attempt:
+    number: int
+    status: str  # "proposed", "unavailable", "not sent", or the verification outcome
+    reason: str = ""
+    proposal_id: str | None = None
+    branch: str | None = None
+    commit: str | None = None
+    pull_request: str | None = None
+
+    def record(self) -> dict[str, Any]:
+        return {key: value for key, value in self.__dict__.items() if value not in (None, "")}
+
+
+# What B6 and B5 give (`sentinel_ai.patch.propose_code_fix`, `OllamaProvider`), injected so that tests use
+# stand-ins and the script runs without the model server until it is needed.
+Propose = Callable[..., Any]
+
+
+@dataclass
+class RemediateCode:
+    settings: Settings
+    propose: Propose
+    provider: Any
+    model: str
+    model_version: str | None
+    run: Runner = run_command
+    fetch: bool = True
+    feedback_type: Callable[..., Any] | None = None  # B6's Feedback, imported when a retry needs it
+    now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC).replace(microsecond=0))
+    out: Path = ROOT / OUT
+    root: Path = ROOT  # the checkout: origin/main, whose CLI, policies and waivers judge
+
+    # ------------------------------------------------------------ the loop
+
+    def __call__(self) -> dict[str, list[dict[str, Any]]]:
+        base = preconditions(self.run, fetch=self.fetch)
+        self.work = self.out / base[:12]
+        self._fresh(self.work)
+        self.base = base
+        self.repo = self.work / "repo.git"
+        self.run(["git", "init", "--quiet", "--bare", str(self.repo)])
+        source = ["fetch", "--quiet", "--no-tags", str(self.root), "+HEAD:refs/sentinel/base"]
+        self.run(["git", "-C", str(self.repo), *source])
+        if self.run(["git", "-C", str(self.repo), "rev-parse", "refs/sentinel/base"]).stdout.strip() != base:
+            raise RemediationError("the bare copy is not the checked-out commit")
+        self.base_tree = self._export(base, self.work / "base", whole=True)
+        self.opa_manifest = self.work / "opa-manifest.json"
+        self.run(sentinel("tools", "verify", "opa", "--lock", str(self.settings.lock), "--dest",
+                          str(self.settings.tools_dir), "--report", str(self.opa_manifest)))  # fmt: skip
+        self.before = self.work / "before.ndjson"
+        self._scan(self.base_tree, base, self.work / "base-scan", self.before, git_range=None)
+        findings = self._findings(self.before)
+        targets = self._targets(findings)
+        summary: dict[str, list[dict[str, Any]]] = {}
+        for target in targets:
+            summary[target.id] = [attempt.record() for attempt in self._remediate(target, findings)]
+        (self.work / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+        return summary
+
+    def _remediate(self, target: Any, findings: list[Any]) -> list[Attempt]:
+        attempts: list[Attempt] = []
+        feedback = None
+        for number in range(1, MAX_ATTEMPTS + 1):
+            outcome = self.propose(
+                target, findings, self.base_tree, self.provider, model=self.model,
+                model_version=self.model_version, attempt=number, feedback=feedback, created_at=self.now(),
+            )  # fmt: skip
+            if outcome.status != "proposed":
+                attempts.append(Attempt(number, outcome.status, outcome.reason))
+                break
+            work = self.work / target.id[:12] / f"attempt-{number}"
+            attempt = self._verify(target, outcome.proposal, number, work)
+            attempts.append(attempt)
+            if attempt.status != "REJECTED" or number == MAX_ATTEMPTS:
+                break
+            feedback = self._feedback(outcome.proposal, attempt, work)
+        return attempts
+
+    def _verify(self, target: Any, proposal: Any, number: int, work: Path) -> Attempt:
+        """One attempt through the bot's verification steps; its evidence in `work`."""
+        work.mkdir(parents=True)
+        path = work / "proposal.json"
+        path.write_text(proposal.model_dump_json(indent=2, exclude_none=True) + "\n", encoding="utf-8")
+        attempt = Attempt(number, "FAILED", proposal_id=proposal.proposal_id)
+        try:
+            applied = json.loads(self.run(sentinel(
+                "remediate", "apply", "--proposal", str(path), "--findings", str(self.before),
+                "--repo-root", str(self.repo), "--base", self.base,
+            )).stdout)  # fmt: skip
+            attempt.branch, attempt.commit = applied["branch"], applied["commit"]
+            if not _BRANCH.fullmatch(attempt.branch) or not _COMMIT.fullmatch(attempt.commit):
+                raise RemediationError("the applied branch or commit is not one apply makes")
+            patched = self._export(attempt.commit, work / "patched", whole=False)
+            after = work / "after.ndjson"
+            status = self._scan(
+                patched, attempt.commit, work / "scan", after, git_range=f"{self.base}..{attempt.commit}"
+            )
+            checked = self.run(sentinel(
+                "remediate", "check", "--proposal", str(path), "--base-root", str(self.base_tree),
+                "--patched-root", str(patched), "--test-image", self.settings.test_image,
+            ), check=False)  # fmt: skip
+            if checked.returncode not in (0, 1):
+                raise RemediationError("its build and tests could not be checked")
+            (work / "check.json").write_text(checked.stdout, encoding="utf-8")
+            check = json.loads(checked.stdout)
+            scored = work / "scored.ndjson"
+            self.run(sentinel("score", "--findings", str(after), "--policy-dir", str(self.root / "policies"),
+                              "--out", str(scored)))  # fmt: skip
+            decision = work / "decision.json"
+            evaluated = self.run(sentinel(
+                "evaluate", "--findings", str(scored), "--repo", REPO, "--commit", attempt.commit,
+                "--context", "pr", "--ref", f"refs/heads/{attempt.branch}", "--policy-dir", "policies",
+                "--opa", str(self.settings.tools_dir / "bin" / "opa"),
+                *tool_versions(self.opa_manifest, status),
+                "--tool-status", str(status), "--baseline", str(self.before), "--output", str(decision),
+            ), check=False)  # fmt: skip
+            # Run from this checkout (origin/main), so with its waivers, as the bot's verify job does.
+            if evaluated.returncode not in (0, 1):
+                raise RemediationError("no decision on the patched commit")
+            result = work / "result.json"
+            verified = self.run(sentinel(
+                "remediate", "verify", "--proposal", str(path), "--before", str(self.before),
+                "--after", str(scored), "--decision", str(decision), "--tool-status", str(status),
+                "--build-ok" if check["build_ok"] else "--build-failed",
+                "--tests-ok" if check["tests_ok"] else "--tests-failed", "--out", str(result),
+            ), check=False)  # fmt: skip
+            if verified.returncode not in (0, 1):
+                raise RemediationError("the verification gate refused its inputs")
+            attempt.status = json.loads(result.read_text(encoding="utf-8"))["outcome"]
+            attempt.reason = verified.stdout.strip()
+        except (RemediationError, KeyError, ValueError) as exc:
+            attempt.reason = str(exc)
+            return attempt
+        if self.settings.api_url:
+            self._upload(path, result, attempt)
+        if attempt.status == "VERIFIED" and self.settings.publish:
+            try:
+                attempt.pull_request = self._publish(target, proposal, attempt, work)
+            except RemediationError as exc:
+                attempt.reason += f" (not published: {exc})"
+        return attempt
+
+    def _feedback(self, proposal: Any, attempt: Attempt, work: Path) -> Any:
+        """What rejected the attempt, for the next one: the check's problems and test log, and the gate's
+        reasons. B6 redacts and clips it before the model sees it."""
+        make = self.feedback_type
+        if make is None:
+            from sentinel_ai.patch import Feedback
+
+            make = Feedback
+        check = json.loads((work / "check.json").read_text(encoding="utf-8"))
+        log = "\n".join([attempt.reason, *check.get("problems", []), check.get("log", "")])
+        return make(previous_diff=proposal.diff, ci_log=log)
+
+    # ------------------------------------------------------------ the steps
+
+    def _fresh(self, path: Path) -> None:
+        shutil.rmtree(path, ignore_errors=True)
+        path.mkdir(parents=True)
+
+    def _export(self, commit: str, destination: Path, *, whole: bool) -> Path:
+        """The commit's tree (or its scan path), from the bare copy, which has no worktree: the commit's own
+        .gitattributes cannot drop or rewrite a file (--worktree-attributes)."""
+        archive = destination.with_suffix(".tar")
+        scope = [] if whole else ["--", SCAN_PATH]
+        self.run(["git", "-C", str(self.repo), "archive", "--worktree-attributes", "--format=tar",
+                  f"--output={archive}", commit, *scope])  # fmt: skip
+        destination.mkdir(parents=True)
+        try:
+            with tarfile.open(archive) as tar:
+                tar.extractall(destination, filter="data")
+        except (OSError, tarfile.TarError) as exc:
+            raise RemediationError(f"{archive.name} could not be unpacked: {exc}") from exc
+        archive.unlink()
+        return destination
+
+    def _scan(self, tree: Path, commit: str, work: Path, out: Path, *, git_range: str | None) -> Path:
+        """Gitleaks (on the tree, or on the commits of `git_range`), Opengrep and Trivy, combined into `out`;
+        returns the combined tool status. A scan that fails is not a pass: the attempt is FAILED."""
+        work.mkdir(parents=True, exist_ok=True)
+        common = ["--repo", REPO, "--commit", commit, "--context", "pr", "--run-id", "local",
+                  "--timeout", str(self.settings.timeout_s), "--lock", str(self.settings.lock),
+                  "--tools-dir", str(self.settings.tools_dir)]  # fmt: skip
+        target = str(tree / SCAN_PATH)
+        if git_range is None:
+            secrets = ["scan", "secrets", target, "--mode", "dir", "--repo-root", str(tree)]
+        else:
+            secrets = ["scan", "secrets", str(self.repo), "--mode", "git", "--log-opts",
+                       f"{git_range} -- {SCAN_PATH}", "--repo-root", str(self.repo)]  # fmt: skip
+        scans = {
+            "secrets": secrets,
+            "sast": ["scan", "sast", target, "--repo-root", str(tree)],
+            "iac": ["scan", "iac", target, "--repo-root", str(tree)],
+        }
+        combine = ["scan", "combine", "--out", str(out), "--tool-status-out", str(work / "status.json")]
+        for name, args in scans.items():
+            self.run(sentinel(*args, *common, "--out", str(work / f"{name}.ndjson"), "--tool-status-out",
+                              str(work / f"{name}-status.json")))  # fmt: skip
+            combine += [
+                "--findings",
+                str(work / f"{name}.ndjson"),
+                "--tool-status",
+                str(work / f"{name}-status.json"),
+            ]
+        self.run(sentinel(*combine))
+        return work / "status.json"
+
+    def _findings(self, path: Path) -> list[Any]:
+        from sentinelci.contracts.finding import Finding
+
+        return [
+            Finding.model_validate_json(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+
+    def _targets(self, findings: list[Any]) -> list[Any]:
+        sast = [f for f in findings if f.category == "SAST" and f.location and f.location.start_line]
+        if self.settings.finding is None:
+            return sast
+        named = [f for f in sast if f.id == self.settings.finding]
+        if not named:
+            raise RemediationError(
+                f"{self.settings.finding} is not a SAST finding of {self.base[:12]} with a line"
+            )
+        return named
+
+    def _upload(self, proposal: Path, result: Path, attempt: Attempt) -> None:
+        done = self.run(sentinel(
+            "upload-remediation", "--proposal", str(proposal), "--result", str(result), "--repo", REPO,
+            "--api-url", str(self.settings.api_url),
+        ), check=False)  # fmt: skip
+        if done.returncode != 0:
+            attempt.reason += " (not recorded on the platform)"
+
+    def _publish(self, target: Any, proposal: Any, attempt: Attempt, work: Path) -> str:
+        """Push the verified branch and open its pull request, with the person's own git and gh."""
+        url = self.run(["git", "config", "--get", "remote.origin.url"]).stdout.strip()
+        if _ORIGIN.fullmatch(url) is None:
+            raise RemediationError("origin is not the reviewed repository")
+        branch = attempt.branch or ""
+        ref = f"refs/heads/{branch}"
+        self.run(["git", "-C", str(self.repo), "push", "--quiet", url, f"{attempt.commit}:{ref}"])
+        decision = json.loads((work / "decision.json").read_text(encoding="utf-8"))
+        place = target.location
+        body = "\n\n".join([
+            f"**SentinelCI remediation (llm:code, attempt {attempt.number}): VERIFIED by the tests and the "
+            "scanners, not by a person.** Review it before merging; the bot never merges.",
+            f"**Finding:** `{target.rule_id}` in `{place.path}` line {place.start_line} (`{target.id}`)",
+            f"**Proposal:** `{proposal.proposal_id}`, model `{proposal.model.name}`",
+            "**The model's rationale:**\n" + fence(proposal.rationale),
+            "**The patch:**\n" + fence(proposal.diff),
+            f"**Gate on the patched commit:** {decision.get('verdict')}",
+        ])  # fmt: skip
+        (work / "pull-request.md").write_text(body + "\n", encoding="utf-8")
+        title = f"fix(security): {target.rule_id} in {place.path} (llm:code, verified)"
+        opened = self.run(["gh", "pr", "create", "--repo", REPO, "--base", "main", "--head", branch,
+                           "--title", title[:200], "--body-file", str(work / "pull-request.md")])  # fmt: skip
+        return opened.stdout.strip().splitlines()[-1] if opened.stdout.strip() else branch
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0] if __doc__ else None)
+    parser.add_argument("--test-image", required=True, help="Image of the service's tests, pinned by digest.")
+    parser.add_argument("--tools-dir", type=Path, default=ROOT / ".sentinel" / "tools")
+    parser.add_argument("--finding", help="Only this SAST finding (its id).")
+    parser.add_argument("--publish", action="store_true", help="Push each VERIFIED branch and open its PR.")
+    parser.add_argument("--api-url", help="Record every attempt on this platform (SENTINEL_API_TOKEN).")
+    parser.add_argument("--no-fetch", action="store_true", help="Do not fetch origin first.")
+    args = parser.parse_args(argv)
+    if args.finding is not None and not _FINDING.fullmatch(args.finding):
+        print("--finding is a finding id: 64 hexadecimal characters", file=sys.stderr)
+        return EXIT_REFUSED
+    from sentinel_ai.patch import propose_code_fix
+    from sentinel_ai.providers.ollama import OllamaProvider
+
+    provider = OllamaProvider.from_env()
+    model = provider.generation
+    settings = Settings(
+        test_image=args.test_image, tools_dir=args.tools_dir, publish=args.publish, api_url=args.api_url,
+        finding=args.finding,
+    )  # fmt: skip
+    loop = RemediateCode(
+        settings, propose_code_fix, provider, model.name, model.digest, fetch=not args.no_fetch
+    )
+    try:
+        summary = loop()
+    except RemediationError as exc:
+        print(f"remediate-code: {exc}\nnothing was verified or published", file=sys.stderr)
+        return EXIT_REFUSED
+    for finding, attempts in summary.items():
+        last = attempts[-1]
+        print(f"{finding[:12]}: {last['status']} after {len(attempts)} attempt(s)"
+              + (f" -> {last['pull_request']}" if "pull_request" in last else ""))  # fmt: skip
+    print(f"evidence: {loop.work.relative_to(ROOT) if loop.work.is_relative_to(ROOT) else loop.work}")
+    return EXIT_DONE
+
+
+if __name__ == "__main__":
+    sys.exit(main())

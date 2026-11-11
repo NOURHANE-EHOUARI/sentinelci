@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.82 | A6 LLM code fixes (§9, ADR-0014): `sentinel remediate check` builds an `llm:code` proposal (Python that parses, `ast.parse`) and runs its service's tests with pytest in a sandboxed container from `--test-image` (pinned by digest; no network, read-only, no capability, nobody, limits and a time limit), the base commit's `tests/` mounted over the patched service's; a patch to the tests or a service without tests is never verified, and a container that could not run verifies nothing (exit 3). `make remediate-code` runs B6's fixer with the pinned local model on origin/main's SAST findings and verifies each proposal like the bot's `verify` job, with retries carrying the diff and what rejected it; `PUBLISH=1` pushes VERIFIED branches and opens their pull requests with the person's `gh`, `API_URL=` records every attempt. |
 | 1.1.80 | A6 verification (§9, ADR-0013 decision 6): `sentinel remediate check` takes `--findings`, the scanned commit's IaC findings, and re-runs the deterministic fixer on them and the base tree, now the whole commit (an ADD source may be at the repository root): a proposal that is not the fixer's own output, field for field but `created_at`, fails the tests: it catches any edit the fixer would not make, whatever its shape, on top of 1.1.52's line rule. The verify job exports every tree with `git archive --worktree-attributes` from its bare repository, so the commit's `.gitattributes` (export-ignore, export-subst) cannot change what is scanned and checked. |
 | 1.1.52 | A6 check, #65 review nits (§9): `sentinel remediate check` accepts ADD → COPY only where the Dockerfile fixer makes that edit, judged on the base tree with the fixer's own rule (`add_only_copies`: COPY's flags only, every source a plain local file or directory, never a URL, an archive, a link, a glob or a variable), and only on an ADD's first line (pinned by a test). The fixers, their diffs and `check` count lines as git and the scanners do, on line feeds only (`str.splitlines` also splits on a form feed, U+0085 or U+2028, which gave other line numbers and diffs `git apply` refused), and a diff's last line without a line feed carries git's marker. |
 | 1.1.39 | Threat model (§18, A10): `docs/threat-model.md` lists the assets, five attackers, the trust boundaries, and 29 threats, each with its control, where it lives, the test that proves it and its status (main, an open PR, or planned), then the residual risks accepted in the private phase. §18's signing key row follows ADR-0011 (no signing key on GitHub). |
@@ -624,8 +625,14 @@ deterministic fixer on the scanned commit's whole tree and IaC findings: the pro
 for field but `created_at` (a deterministic fixer gives the same proposal on the same input), which catches any
 edit the fixer would not make, whatever its shape. `verify` exports every tree with `git archive
 --worktree-attributes` from a bare repository, so the scanned commit's `.gitattributes` cannot drop or rewrite what
-is scanned and checked. A strategy with no build or tests defined there (the LLM code fixer, B6) is never verified
-until it has them.
+is scanned and checked. For `llm:code` (ADR-0014), the build is that every edited file is Python and still parses,
+and the tests are the service's own (the nearest `tests/` above the edited file), from the base commit, run against
+the patched code with pytest in a throwaway container from an image pinned by digest: no network, read-only, no
+capability, as nobody, with memory, process and time limits. A patch to the tests, or a service without tests, is
+never verified. The LLM code fixer runs on the laptop (`make remediate-code`, ADR-0014): each proposal goes through
+the same steps as the bot's `verify` job with origin/main's CLI, policies and waivers; a REJECTED attempt is
+proposed again with its diff and what rejected it (attempts 2 and 3); `PUBLISH=1` pushes a VERIFIED branch and
+opens its pull request with the person's own `gh`, which a person reviews.
 
 ## 10. Dashboard and observability
 

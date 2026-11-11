@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup check lint format typecheck imports policy test zizmor tools tools-verify compose-env up down
+.PHONY: help setup check lint format typecheck imports policy test zizmor tools tools-verify compose-env up down remediate-code
 
 # OPA is a pinned binary, not a Python package: `uv run sentinel tools install opa` (tools.lock.toml).
 OPA ?= $(or $(SENTINEL_OPA),opa)
@@ -56,3 +56,7 @@ up: compose-env ## Start the local platform; COMPOSE_PROFILES=ai,observability a
 
 down: ## Stop the local platform (volumes are kept; `docker compose ... down --volumes` wipes them)
 	$(COMPOSE) down
+
+remediate-code: ## LLM fixes of main's SAST findings, verified (ADR-0014): TEST_IMAGE=<pinned> [FINDING=] [PUBLISH=1] [API_URL=]
+	uv run python deploy/remediate/remediate_code.py --test-image "$(TEST_IMAGE)" \
+		$(if $(FINDING),--finding "$(FINDING)") $(if $(PUBLISH),--publish) $(if $(API_URL),--api-url "$(API_URL)")
