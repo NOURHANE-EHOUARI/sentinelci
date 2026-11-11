@@ -193,6 +193,10 @@ def test_grypes_database_is_the_only_download_prepared_once_before_every_depende
     prepare = steps[preparing[0]]
     assert database in prepare and '--report "$RUNNER_TEMP/out/grype-db.json"' in prepare
     assert "|| status=$?" in prepare and "set -e" not in prepare, "a failed download must not stop the job"
+    head = steps[scanning[0]]
+    assert '--report "$RUNNER_TEMP/out/sca-report.json"' in head, (
+        "the database the scan read, kept as evidence"
+    )
     for index in scanning:
         for call in steps[index].split('"$SENTINEL" scan sca')[1:]:
             assert database in call.split("&&")[0], "every dependency scan reads the prepared database"

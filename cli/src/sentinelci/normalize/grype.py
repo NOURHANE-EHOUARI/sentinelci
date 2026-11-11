@@ -84,6 +84,26 @@ BUILTIN_IGNORE_RULES = (
     _builtin_rule("linux-libc-dev", "deb", "linux"),
     _builtin_rule("linux-kbuild-.*", "deb", "linux.*"),
 )
+# Which ecosystems are also matched by CPE, as `scanners/configs/grype.yaml` pins them (Grype 0.121.0's
+# defaults). A report made with CPE matching turned off for an ecosystem misses what only a CPE finds.
+PINNED_MATCH: dict[str, dict[str, object]] = {
+    "java": {"using-cpes": False},
+    "jvm": {"using-cpes": True},
+    "dotnet": {"using-cpes": False},
+    "golang": {
+        "using-cpes": False,
+        "always-use-cpe-for-stdlib": False,
+        "allow-main-module-pseudo-version-comparison": False,
+    },
+    "javascript": {"using-cpes": False},
+    "python": {"using-cpes": False},
+    "ruby": {"using-cpes": False},
+    "rust": {"using-cpes": False},
+    "hex": {"using-cpes": False},
+    "stock": {"using-cpes": True},
+    "dpkg": {"using-cpes": False, "missing-epoch-strategy": "zero", "use-cpes-for-eol": False},
+    "rpm": {"using-cpes": False, "missing-epoch-strategy": "auto", "use-cpes-for-eol": False},
+}
 # Settings that hide matches, with the only value a SentinelCI report may show.
 _NOT_SILENCED: dict[str, object] = {
     "only-fixed": False,
@@ -94,6 +114,7 @@ _NOT_SILENCED: dict[str, object] = {
     "vex-documents": [],
     "vex-add": [],
     "distro": "",
+    "match": PINNED_MATCH,
 }
 
 

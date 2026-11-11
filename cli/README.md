@@ -294,6 +294,13 @@ uv run sentinel normalize grype grype.json --scan-root demo-shop --out out/sca.n
   report cannot be trusted, Syft stays `ok` and Grype carries the failure. `--timeout` limits each run of both
   tools, and `sentinel tools grype-db` takes the same `--timeout`. In `sentinel-scan.yml`, the database is
   prepared once before the scans, which run on the head commit and on the PR baseline.
+- **Report** (`--report`, only on success): what this scan read, the Syft and Grype binaries, the database Grype
+  matched against (schema, build time, checksum, as Grype's report names it) and the sha256 of the SBOM it
+  matched. A decision can only be explained with its database: two databases give different findings on the same
+  tree. `sentinel-scan.yml` keeps it with the scan evidence (`sca-report.json`).
+- **CPE matching is pinned too.** `scanners/configs/grype.yaml` sets the `match` block (which ecosystems Grype
+  also matches by CPE, Grype 0.121.0's defaults), and a report whose recorded block differs is refused: turning
+  CPE matching off for an ecosystem drops what only a CPE finds.
 
 
 ## `sentinel sbom` (SBOMs, A4)

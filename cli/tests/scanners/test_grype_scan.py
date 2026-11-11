@@ -17,12 +17,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from sentinelci.cli import app
 from sentinelci.contracts.finding import Run
 from sentinelci.normalize.errors import NormalizationError
-from sentinelci.normalize.grype import load_grype_report, normalize_grype
+from sentinelci.normalize.grype import PINNED_MATCH, database_of_status, load_grype_report, normalize_grype
 from sentinelci.scanners import runner
 from sentinelci.scanners.errors import ScannerError
 from sentinelci.scanners.grype import SbomScanFailure, grype_env, match_sbom, scan_sca
@@ -450,6 +451,40 @@ def test_cli_records_a_timeout(
     assert document["tools"]["grype"]["status"] == "not_run"
 
 
+def test_cli_reports_the_database_the_scan_read_and_the_sbom_it_matched(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
+) -> None:
+    _, dest, fakes = install_fakes(tmp_path, releases, write_lock, report=_report())
+    report = tmp_path / "evidence" / "sca-report.json"
+    result, _, _ = _sca_status(tmp_path, dest, "--report", str(report))
+    assert result.exit_code == 0, result.output
+    binaries = {
+        tool: hashlib.sha256((dest / "bin" / tool).read_bytes()).hexdigest() for tool in ("syft", "grype")
+    }
+    database = database_of_status(GOLDEN_REPORT["descriptor"]["db"]["status"])  # what the report says it read
+    assert json.loads(report.read_text()) == {
+        "schema_version": 1,
+        "syft": {"version": "1.0.0", "binary_sha256": binaries["syft"]},
+        "grype": {"version": "1.0.0", "binary_sha256": binaries["grype"]},
+        "database": {
+            "schema_version": database.schema_version,
+            "built": database.built,
+            "checksum": database.checksum,
+        },
+        "sbom_sha256": hashlib.sha256((fakes.record / "grype.sbom").read_bytes()).hexdigest(),
+    }
+
+
+def test_cli_leaves_no_report_when_the_scan_fails(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
+) -> None:
+    _, dest, _ = install_fakes(tmp_path, releases, write_lock, report=_report(**{"by-cve": True}))
+    report = tmp_path / "sca-report.json"
+    report.write_text("an older scan's report")
+    result, _, _ = _sca_status(tmp_path, dest, "--report", str(report))
+    assert result.exit_code == 3 and not report.exists()
+
+
 def test_cli_writes_no_status_without_a_lock(tmp_path: Path) -> None:
     # Nothing to vouch for: no status at all, which the gate reports as SC-010 "Tool status missing".
     dest = tmp_path / "tools"
@@ -501,6 +536,7 @@ def test_real_grype_loads_sentinelcis_configuration_over_a_local_one(tmp_path: P
     (tmp_path / ".grype.yaml").write_text(
         "only-fixed: true\nby-cve: true\nexclude: ['./x']\n"
         "db:\n  update-url: https://attacker.example/databases\n  max-allowed-built-age: 8760h\n"
+        "match:\n  stock: {using-cpes: false}\n  jvm: {using-cpes: false}\n"
     )
     with as_file(files("sentinelci.scanners.configs").joinpath("grype.yaml")) as config:
         run = run_verified_tool(
@@ -522,6 +558,7 @@ def test_real_grype_loads_sentinelcis_configuration_over_a_local_one(tmp_path: P
         "  max-allowed-built-age: 120h0m0s",
     ):
         assert line in loaded, line
+    assert yaml.safe_load(run.stdout)["match"] == PINNED_MATCH, "the pinned block, which the report must show"
 
 
 @with_database

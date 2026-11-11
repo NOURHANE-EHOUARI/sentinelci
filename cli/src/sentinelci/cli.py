@@ -1263,6 +1263,14 @@ def scan_sca_cmd(
             "on failure, so the gate can record a failed scan as SC-010."
         ),
     ] = None,
+    report: Annotated[
+        Path | None,
+        typer.Option(
+            "--report",
+            help="Also write what this scan read (JSON): the Syft and Grype binaries, the database Grype "
+            "matched against and the sha256 of the SBOM it matched. Only on success.",
+        ),
+    ] = None,
 ) -> None:
     """Vulnerable dependencies: the verified Syft's SBOM of the tree, matched by the verified Grype, offline.
 
@@ -1272,6 +1280,8 @@ def scan_sca_cmd(
     Syft failed, and a report that cannot be trusted is Grype's failure.
     """
     _clear(out, tool_status_out)
+    if report is not None:
+        report.unlink(missing_ok=True)  # an older report must never describe this scan
     root = repo_root or target
     host = platform or _host_platform()
     tool_lock: ToolLock | None = None
@@ -1309,9 +1319,25 @@ def scan_sca_cmd(
         raise _fail_closed(exc) from exc
     out.parent.mkdir(parents=True, exist_ok=True)
     write_ndjson(findings, out)
+    database = scan.database
+    if report is not None:  # the database the scan read, not the one a `tools grype-db` run prepared
+        evidence = {
+            "schema_version": 1,
+            "syft": {"version": scan.sbom.run.version, "binary_sha256": scan.sbom.run.binary_sha256},
+            "grype": {"version": scan.grype.version, "binary_sha256": scan.grype.binary_sha256},
+            "database": {
+                "schema_version": database.schema_version,
+                "built": database.built,
+                "checksum": database.checksum,
+            },
+            "sbom_sha256": hashlib.sha256(scan.sbom.syft_json or b"").hexdigest(),
+        }
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(
+            json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n"
+        )
     if tool_status_out is not None:  # last: an `ok` status never vouches for a findings file not yet written
         _write_status(tool_status_out, lock, host, outcomes)
-    database = scan.database
     typer.echo(
         f"grype {scan.grype.version} on the SBOM of syft {scan.sbom.run.version} ({scan.sbom.packages} "
         f"package(s)), database {database.schema_version} built {database.built} "

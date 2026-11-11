@@ -242,13 +242,14 @@ jobs:
           SCAN_PATH: ${{ inputs.path }}
         # The whole tree at the head commit, in both modes; the baseline keeps the base branch's vulnerable
         # dependencies from blocking. The tool status names Syft and Grype apart (Grype `not_run` after a failed
-        # Syft). Failures are recorded like the other scans'.
+        # Syft), and the report, kept with the scan evidence, names the database this scan read and the SBOM it
+        # matched. Failures are recorded like the other scans'.
         run: |
           set -uo pipefail
           status=0
           "$SENTINEL" scan sca "target/$SCAN_PATH" --repo-root target --db-dir "$RUNNER_TEMP/grype-db" \
             --out "$RUNNER_TEMP/scan/sca.ndjson" --tool-status-out "$RUNNER_TEMP/scan/sca-status.json" \
-            --timeout "$SCANNER_TIMEOUT_S" \
+            --report "$RUNNER_TEMP/out/sca-report.json" --timeout "$SCANNER_TIMEOUT_S" \
             --repo "$REPO" --commit "$HEAD_SHA" --context "$CONTEXT" --ref "$REF" --run-id "$RUN_ID" \
             --lock pipeline/tools.lock.toml --tools-dir "$RUNNER_TEMP/sentinel-tools" || status=$?
           if [ "$status" -ne 0 ]; then
