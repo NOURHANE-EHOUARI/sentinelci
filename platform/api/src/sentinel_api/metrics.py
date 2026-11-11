@@ -9,15 +9,18 @@
   them tested.
 
 Exposed now:
+- `sentinel_gate_decisions_total{verdict,context}` (counter): the gate decisions recorded (API 1.6.0), by
+  verdict (`PASS`, `WARN`, `BLOCK`) and the run's context (`pr`, `release`, `local`). Once one is recorded,
+  every pair is present, at 0 when there is none; with none, the metric is absent.
 - `sentinel_findings_open{priority,category}` (gauge): the findings of each repository's latest release run
   of its default branch (`SENTINEL_DEFAULT_REF`, default `refs/heads/main`) whose findings are recorded, by
   priority (`P0` to `P4` from `risk`, or `unscored`) and category, summed over the repositories. Once such a
   run exists, every pair is present, at 0 when there is none, so a series never vanishes; with none, the
   metric is absent.
 
-Absent until their data is stored: `sentinel_gate_decisions_total` (decisions, B1),
-`sentinel_remediation_attempts_total` (remediation jobs, A6), `sentinel_attestation_verifications_total`,
-`sentinel_pipeline_stage_duration_seconds` and `sentinel_ai_request_duration_seconds`.
+Absent until their data is stored: `sentinel_remediation_attempts_total` (remediation jobs, A6),
+`sentinel_attestation_verifications_total`, `sentinel_pipeline_stage_duration_seconds` and
+`sentinel_ai_request_duration_seconds`.
 """
 
 from __future__ import annotations
@@ -33,13 +36,16 @@ from sqlalchemy import case, func, literal, select, text
 from sqlalchemy.orm import Session
 
 from sentinel_api.api import SessionDep, _errors
-from sentinel_api.models import Run, RunFinding
+from sentinel_api.models import Run, RunDecision, RunFinding
+from sentinelci.contracts.decision import DecisionContext, Verdict
 from sentinelci.contracts.finding import Category
 
 CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 PRIORITIES = ("P0", "P1", "P2", "P3", "P4")
 UNSCORED = "unscored"
 CATEGORIES: tuple[str, ...] = get_args(Category)
+VERDICTS: tuple[str, ...] = get_args(Verdict)
+CONTEXTS: tuple[str, ...] = get_args(DecisionContext)
 # SPEC §10: the only names this endpoint may expose, each with its labels (a test keeps them in step).
 SPEC_METRICS: dict[str, tuple[str, ...]] = {
     "sentinel_gate_decisions_total": ("verdict", "context"),
@@ -131,8 +137,30 @@ def findings_open(session: Session, default_ref: str) -> Family | None:
     )
 
 
+def gate_decisions(session: Session, default_ref: str) -> Family | None:
+    """Recorded gate decisions by verdict and the run's context (every repository and ref)."""
+    rows = session.execute(
+        select(RunDecision.verdict, Run.context, func.count())
+        .join(Run, Run.id == RunDecision.run_id)
+        .group_by(RunDecision.verdict, Run.context)
+    ).all()
+    if not rows:
+        return None  # no decision recorded: nothing is known, so nothing is said
+    counts = {(verdict, context): count for verdict, context, count in rows}
+    return Family(
+        name="sentinel_gate_decisions_total",
+        kind="counter",
+        help="Gate decisions recorded, by verdict and context.",
+        samples=[
+            ({"verdict": verdict, "context": context}, counts.get((verdict, context), 0))
+            for verdict in VERDICTS
+            for context in CONTEXTS
+        ],
+    )
+
+
 # Each metric the platform can compute; one returns None while its data is not stored.
-METRICS: tuple[Callable[[Session, str], Family | None], ...] = (findings_open,)
+METRICS: tuple[Callable[[Session, str], Family | None], ...] = (gate_decisions, findings_open)
 
 
 @router.get(

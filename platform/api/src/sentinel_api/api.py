@@ -20,6 +20,7 @@ from starlette.concurrency import run_in_threadpool
 
 from sentinel_api.auth import require_writer
 from sentinel_api.models import Run, RunFinding
+from sentinelci.contracts.decision import Verdict
 from sentinelci.contracts.finding import Category, RunContext, Severity
 from sentinelci.policy.decision import load_findings
 from sentinelci.policy.errors import EvaluationError
@@ -75,6 +76,7 @@ class RunOut(BaseModel):
     finding_count: int
     findings_sha256: str | None
     findings_uploaded_at: datetime | None
+    verdict: Verdict | None = None  # the gate's, once its decision is recorded (API 1.6.0)
 
 
 class RunExists(BaseModel):
@@ -140,6 +142,7 @@ def _run_out(run: Run) -> RunOut:
         id=run.id, repo=run.repo, commit=run.commit, context=run.context,  # type: ignore[arg-type]
         ref=run.ref, run_id=run.ci_run_id, created_at=run.created_at, finding_count=run.finding_count,
         findings_sha256=run.findings_sha256, findings_uploaded_at=run.findings_uploaded_at,
+        verdict=run.decision.verdict if run.decision is not None else None,  # type: ignore[arg-type]
     )  # fmt: skip
 
 
