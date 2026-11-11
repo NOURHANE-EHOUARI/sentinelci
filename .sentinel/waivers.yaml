@@ -1,0 +1,26 @@
+# Waivers of SentinelCI's own release gate (the self-gate, A10): read from the commit that is gated, like the
+# workflow's (ADR-0008). Each one names a finding by its fingerprint, why it is not a risk, who answers for it,
+# and when it expires. demo-shop is not gated here (it is the intentionally vulnerable target): these are
+# findings of SentinelCI's own tree.
+version: 1
+waivers:
+  - id: self-2026-001
+    finding_id: 42e6e54a4bdf5da5135117c45f95537705fa91ffd930d306ca1142e68393e25b
+    owner: "@NOURHANE-EHOUARI"
+    justification: >-
+      cli/tests/normalize/fixtures/gitleaks/expected.ndjson, line 1: the normalizer's golden output for a fake
+      demo secret. Gitleaks reads its fingerprint and redacted fields as a generic API key; no credential is in it.
+    expires_at: "2027-01-31T00:00:00Z"
+  - id: self-2026-002
+    finding_id: 684486840251697300ea952944eece7302824ffb709943d8ae7d0faa926985b9
+    owner: "@NOURHANE-EHOUARI"
+    justification: >-
+      cli/tests/normalize/fixtures/gitleaks/expected.ndjson, line 2: the same golden output, its second finding.
+    expires_at: "2027-01-31T00:00:00Z"
+  - id: self-2026-003
+    finding_id: 119eccb5e840d436f4f3a73904ab624aae5c0b56dc403d3a3c4ceace625aa6d6
+    owner: "@NOURHANE-EHOUARI"
+    justification: >-
+      schemas/fixtures/finding/invalid/other-locations-duplicate.json, line 23: an invalid Finding fixture whose
+      fingerprint-shaped values Gitleaks reads as a generic API key; no credential is in it.
+    expires_at: "2027-01-31T00:00:00Z"
