@@ -12,9 +12,11 @@ base and of the patched commit (exported with `git archive`, never checked out):
   - A manifest, read as data, is the same once the settings the Kubernetes fixer sets are removed from both
     sides: the pod's and every container's `securityContext`, and the pod's host namespaces.
   - A Dockerfile is the same, line for line, once the `USER 10001:10001` lines the patch added are skipped,
-    except that an ADD may have become COPY and an `apt-get install` may have gained
-    `--no-install-recommends`. An added USER line is an instruction of its own in the final stage, with no RUN
-    after it: every RUN still runs as the user it ran as.
+    except that an ADD may have become COPY (on the ADD's first line, and only where the fixer makes that
+    edit: COPY's flags only, and every source a plain local file or directory of the base tree, never a URL,
+    an archive or a link) and an `apt-get install` may have gained `--no-install-recommends`. An added USER
+    line is an instruction of its own in the final stage, with no RUN after it: every RUN still runs as the
+    user it ran as.
 
   Whether the new settings are right is the scanners' part: a weaker one is a new finding, which the gate
   counts.
@@ -35,8 +37,9 @@ from typing import Any
 import yaml
 
 from sentinelci.contracts.remediation import PatchProposal
-from sentinelci.remediation.dockerfile import NON_ROOT_USER, Instruction, parse_instructions
+from sentinelci.remediation.dockerfile import NON_ROOT_USER, Instruction, add_only_copies, parse_instructions
 from sentinelci.remediation.kubernetes import POD_SPEC_PATHS
+from sentinelci.remediation.proposal import FixContext
 from sentinelci.scanners.runner import is_within
 
 KUBERNETES = "deterministic:kubernetes"
@@ -134,7 +137,9 @@ def _without_security_settings(document: Any) -> Any:
     return copy
 
 
-def _check_manifest(path: str, before_text: str, after_text: str) -> tuple[list[str], list[str]]:
+def _check_manifest(
+    path: str, before_text: str, after_text: str, _base_root: Path
+) -> tuple[list[str], list[str]]:
     try:
         before = _documents(before_text)
     except (yaml.YAMLError, RecursionError) as exc:
@@ -190,9 +195,11 @@ def _allowed_line_edit(old: str, new: str, *, add_start: bool, in_run: bool) -> 
     )
 
 
-def _dockerfile_tests(path: str, before: list[str], after: list[str]) -> list[str]:
+def _dockerfile_tests(path: str, before: list[str], after: list[str], base_root: Path) -> list[str]:
     old = parse_instructions(before)
-    add_starts = {i.start for i in old if i.keyword == "ADD"}
+    # An ADD may become COPY only where the fixer would make it COPY: judged on the base tree, as it was.
+    context = FixContext(path=path, repo_root=base_root, others=())
+    add_starts = {i.start for i in old if i.keyword == "ADD" and add_only_copies(before, i, context)}
     run_lines = {line for i in old if i.keyword == "RUN" for line in range(i.start, i.end)}
     added_users: list[int] = []
     i = j = 0
@@ -222,16 +229,18 @@ def _dockerfile_tests(path: str, before: list[str], after: list[str]) -> list[st
     return []
 
 
-def _check_dockerfile(path: str, before_text: str, after_text: str) -> tuple[list[str], list[str]]:
+def _check_dockerfile(
+    path: str, before_text: str, after_text: str, base_root: Path
+) -> tuple[list[str], list[str]]:
     before, after = before_text.splitlines(keepends=True), after_text.splitlines(keepends=True)
     build = _dockerfile_build(path, before, after)
-    return build, ([] if build else _dockerfile_tests(path, before, after))
+    return build, ([] if build else _dockerfile_tests(path, before, after, base_root))
 
 
 # ---------------------------------------------------------------- the check
 
 
-CHECKS: dict[str, Callable[[str, str, str], tuple[list[str], list[str]]]] = {
+CHECKS: dict[str, Callable[[str, str, str, Path], tuple[list[str], list[str]]]] = {
     KUBERNETES: _check_manifest,
     DOCKERFILE: _check_dockerfile,
 }
@@ -255,7 +264,7 @@ def check_iac(proposal: PatchProposal, base_root: Path, patched_root: Path) -> C
         except UnicodeDecodeError:
             failed, failed_tests = [f"{path}: not UTF-8 any more"], list[str]()
         else:
-            failed, failed_tests = check(path, before, after)
+            failed, failed_tests = check(path, before, after, base_root)
         build += failed
         tests += [f"{path}: not run, the build failed"] if failed else failed_tests
     return Checked(

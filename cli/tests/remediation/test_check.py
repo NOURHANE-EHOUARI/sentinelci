@@ -4,10 +4,12 @@ Each fixer's real proposal builds and passes. Each way a patch could go wrong, b
 fails the build or the tests, and what cannot be checked honestly is refused (exit 3).
 """
 
+import gzip
 import json
 import os
 import shutil
 import subprocess
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -165,6 +167,70 @@ def test_a_flag_the_base_had_cannot_be_removed(tmp_path: Path) -> None:
     assert checked.problems == [
         f"tests: {DOCKERFILE_PATH}: line 3 is not a change the Dockerfile fixer makes"
     ]
+
+
+def test_add_becomes_copy_only_on_the_first_line_of_an_add(tmp_path: Path) -> None:
+    """#65 review, nit 1: a continuation line that reads `add ...` is not an ADD, whatever its case."""
+    proposal, base, patched = dockerfile(tmp_path)
+    edit(
+        base,
+        DOCKERFILE_PATH,
+        "    apt-get install -y curl\n",
+        "    apt-get install -y curl \\\n    add curl\n",
+    )
+    edit(patched, DOCKERFILE_PATH, "    apt-get install --no-install-recommends -y curl\n",
+         "    apt-get install --no-install-recommends -y curl \\\n    COPY curl\n")  # fmt: skip
+    checked = check_iac(proposal, base, patched)
+    assert (checked.build_ok, checked.tests_ok) == (True, False)
+    assert checked.problems == [
+        f"tests: {DOCKERFILE_PATH}: line 8 is not a change the Dockerfile fixer makes"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source", "prepare"),
+    [
+        ("https://example.com/app.py", None),
+        ("app.tar", "tar"),
+        ("app.tgz", "gzip"),
+        ("linked.py", "link"),
+        ("missing.py", None),
+        ("$APP", None),
+        ("app*.py", None),
+        ("--checksum=sha256:00 app.py", None),
+    ],
+    ids=["url", "tar", "compressed", "link", "missing", "variable", "glob", "add-only-flag"],
+)
+def test_add_becomes_copy_only_where_the_fixer_would_make_it_copy(
+    tmp_path: Path, source: str, prepare: str | None
+) -> None:
+    """#65 review, nit 2: ADD fetches a URL and unpacks an archive, so COPY there is another build. The check
+    asks what the fixer asks, of the base tree."""
+    proposal, base, patched = dockerfile(tmp_path)
+    svc = base / "svc"
+    if prepare == "tar":
+        with tarfile.open(svc / "app.tar", "w") as archive:
+            archive.add(svc / "app.py", arcname="app.py")
+    elif prepare == "gzip":
+        (svc / "app.tgz").write_bytes(gzip.compress(b"print('x')\n"))
+    elif prepare == "link":
+        (svc / "linked.py").symlink_to("app.py")
+    edit(base, DOCKERFILE_PATH, "ADD app.py /app/", f"ADD {source} /app/")
+    edit(patched, DOCKERFILE_PATH, "COPY app.py /app/", f"COPY {source} /app/")
+    checked = check_iac(proposal, base, patched)
+    assert (checked.build_ok, checked.tests_ok) == (True, False)
+    assert checked.problems == [
+        f"tests: {DOCKERFILE_PATH}: line 5 is not a change the Dockerfile fixer makes"
+    ]
+
+
+def test_add_of_a_plain_directory_may_become_copy(tmp_path: Path) -> None:
+    proposal, base, patched = dockerfile(tmp_path)
+    (base / "svc" / "static").mkdir()
+    edit(base, DOCKERFILE_PATH, "ADD app.py /app/", "ADD --chown=10001 app.py static/ /app/")
+    edit(patched, DOCKERFILE_PATH, "COPY app.py /app/", "COPY --chown=10001 app.py static/ /app/")
+    checked = check_iac(proposal, base, patched)
+    assert (checked.build_ok, checked.tests_ok, checked.problems) == (True, True, [])
 
 
 # ---------------------------------------------------------------- what cannot be checked honestly

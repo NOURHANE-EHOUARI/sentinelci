@@ -157,14 +157,20 @@ def _plain_local_source(source: str, context: FixContext | None) -> bool:
     return found
 
 
+def add_only_copies(lines: list[str], ins: Instruction, context: FixContext | None) -> bool:
+    """This ADD does nothing COPY would not: only flags COPY takes too, and every source a plain local file or
+    directory wherever the build context puts it (`_plain_local_source`). The fixer turns only such an ADD
+    into COPY, and `sentinel remediate check` accepts only that edit."""
+    text = " ".join(line.strip().rstrip("\\") for line in lines[ins.start : ins.end])
+    words = text.split()[1:]
+    flags_ok = all(not w.startswith("--") or w.startswith(_COPY_FLAGS) for w in words)
+    sources = [w.strip('[]",') for w in words if not w.startswith("--")][:-1]
+    return bool(sources) and flags_ok and all(_plain_local_source(source, context) for source in sources)
+
+
 def _copy_not_add(edit: _Edit, instructions: list[Instruction]) -> None:
     for ins in (ins for ins in instructions if ins.keyword == "ADD"):
-        text = " ".join(line.strip().rstrip("\\") for line in edit.lines[ins.start : ins.end])
-        words = text.split()[1:]
-        flags_ok = all(not w.startswith("--") or w.startswith(_COPY_FLAGS) for w in words)
-        sources = [w.strip('[]",') for w in words if not w.startswith("--")][:-1]
-        plain = sources and all(_plain_local_source(source, edit.context) for source in sources)
-        if not (flags_ok and plain and edit.free(ins)):
+        if not (add_only_copies(edit.lines, ins, edit.context) and edit.free(ins)):
             edit.leave("DS-0005", ins)  # ADD does more here, or editing it would rename another finding
             continue
         line = edit.lines[ins.start]
