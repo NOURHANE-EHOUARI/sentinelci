@@ -8,14 +8,17 @@ goes and what is trusted:
   credentials, query or fragment; another host is refused unless the caller says so (`allow_remote=True`). No
   proxy is ever used (`HTTP_PROXY` and the like are ignored) and a redirect is refused, so a request never
   leaves for another place than the one named.
-- **Pinned models.** Each model is named with its Ollama digest (ADR-0009, `PINNED`). Before the first request
+- **Pinned models.** Each model is named with its Ollama digest (ADR-0009, `PINNED`). Before every request
   the server's own digest of the model is checked (`/api/tags`); a model that is missing or has another digest
   is a `ProviderError`, like any integrity failure, and nothing is sent.
-- **Bounded.** Every request has a time limit, and an answer larger than `MAX_RESPONSE_BYTES` is refused.
+- **Bounded.** Every request has a time limit on the whole request, checked while the answer is read (a
+  server that sends slowly cannot hold it), and an answer larger than `MAX_RESPONSE_BYTES` is refused.
+  Embeddings go in batches of `EMBEDDING_BATCH` texts, so a large run stays under both.
 - **Validated.** `complete` asks Ollama for JSON matching the schema (`format`), deterministic (temperature 0,
   a fixed seed), and validates the answer against the Pydantic model itself: a malformed answer raises
   `pydantic.ValidationError`, which callers answer with their one repair retry (SPEC section 8). `embed`
-  returns one finite vector per text, all of one size, or raises.
+  returns one finite vector per text, all of one size, or raises. A 400 whose body is about `think` turns
+  that field off for the provider; any other 400 is an error.
 - **No echo.** A `ProviderError` says what failed, never what was sent or what the server answered.
 
 Owner: Track B (B5).
@@ -46,6 +49,9 @@ GENERATION_TIMEOUT_S = 900.0  # an explanation takes about 2 minutes on a laptop
 EMBEDDING_TIMEOUT_S = 120.0
 METADATA_TIMEOUT_S = 30.0
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+READ_CHUNK = 64 * 1024  # the body is read in chunks, the time limit checked after each
+EMBEDDING_BATCH = 64  # texts per /api/embed request: about 0.8 MB of answer for 1024 dimensions
+MAX_ERROR_BYTES = 4096  # of an error body, read only to tell a refused `think` from another 400
 
 
 @dataclass(frozen=True)
@@ -76,6 +82,10 @@ PINNED: Mapping[str, PinnedModel] = {model.name: model for model in (GENERATION,
 class ProviderError(Exception):
     """The model could not answer: the server is unreachable, refused, timed out, answered something that is
     not Ollama's API, or serves a model that is not the pinned one. Never holds the prompt or the answer."""
+
+
+class _ThinkRefused(ProviderError):
+    """A 400 whose body is about `think`: the model has no thinking mode."""
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -139,7 +149,6 @@ class OllamaProvider:
         self.generation = generation
         self.embedding = embedding
         self.generation_timeout_s = generation_timeout_s
-        self._verified: set[str] = set()
         self._think_supported = True
 
     @classmethod
@@ -158,21 +167,37 @@ class OllamaProvider:
             method="GET" if payload is None else "POST",
         )  # fmt: skip
         deadline = time.monotonic() + timeout
+        late = ProviderError(f"the model server did not answer {path} within its time limit ({timeout:g} s)")
         try:
             with _opener().open(request, timeout=timeout) as response:
-                body = response.read(MAX_RESPONSE_BYTES + 1)
+                # Read in chunks and check the time limit after each one: a server that sends slowly, byte
+                # by byte, cannot hold the request past it (each read is bounded by `timeout` on its own).
+                chunks: list[bytes] = []
+                size = 0
+                while True:
+                    if time.monotonic() > deadline:
+                        raise late
+                    chunk = response.read1(READ_CHUNK)  # what has arrived, not a full chunk
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size > MAX_RESPONSE_BYTES:
+                        raise ProviderError(
+                            f"the model server's answer to {path} is larger than {MAX_RESPONSE_BYTES} bytes"
+                        )
+                body = b"".join(chunks)
         except ProviderError:
             raise
         except urllib.error.HTTPError as exc:
-            raise ProviderError(f"the model server refused {path}: HTTP {exc.code}") from None
+            refused = f"the model server refused {path}: HTTP {exc.code}"
+            if exc.code == 400 and b"think" in (exc.read(MAX_ERROR_BYTES) or b""):
+                raise _ThinkRefused(refused) from None  # the body is read, never repeated
+            raise ProviderError(refused) from None
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise ProviderError(f"the model server did not answer {path}: {type(exc).__name__}") from None
         if time.monotonic() > deadline:
-            raise ProviderError(f"the model server answered {path} after its time limit")
-        if len(body) > MAX_RESPONSE_BYTES:
-            raise ProviderError(
-                f"the model server's answer to {path} is larger than {MAX_RESPONSE_BYTES} bytes"
-            )
+            raise late
         try:
             answer = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
@@ -182,9 +207,9 @@ class OllamaProvider:
         return answer
 
     def verify(self, model: PinnedModel) -> None:
-        """ProviderError unless the server serves `model` with its pinned digest (checked once)."""
-        if model.name in self._verified:
-            return
+        """ProviderError unless the server serves `model` with its pinned digest. Checked before every
+        request, so a later `ollama pull` that moves the tag is caught in a long-lived worker too (a local
+        round trip, next to minutes of generation)."""
         tags = self._request("/api/tags", None, METADATA_TIMEOUT_S).get("models")
         if not isinstance(tags, list):
             raise ProviderError("the model server's model list is not Ollama's")
@@ -197,7 +222,6 @@ class OllamaProvider:
                 f"{model.name} has digest {digest[:19]}..., not the pinned {model.digest[:19]}... "
                 "(ADR-0009): refused as an integrity failure"
             )
-        self._verified.add(model.name)
 
     # ---------------------------------------------------------------- LLMProvider
 
@@ -216,9 +240,10 @@ class OllamaProvider:
             payload.pop("think")
         try:
             answer = self._request("/api/chat", payload, self.generation_timeout_s)
-        except ProviderError as exc:
-            # A model without a thinking mode refuses the field with 400: asked again once without it.
-            if "HTTP 400" not in str(exc) or not self._think_supported:
+        except _ThinkRefused:
+            # A model without a thinking mode refuses the field with a 400 that says so: asked again once
+            # without it, and never sent again. Any other 400 is an error.
+            if not self._think_supported:
                 raise
             self._think_supported = False
             payload.pop("think")
@@ -230,16 +255,21 @@ class OllamaProvider:
         return schema.model_validate_json(content)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """One finite vector per text, all of one size, or ProviderError."""
+        """One finite vector per text, all of one size, or ProviderError. The texts go in batches of
+        EMBEDDING_BATCH, so a large run's answers stay under MAX_RESPONSE_BYTES and its time limit."""
         if not texts:
             return []
         self.verify(self.embedding)
-        answer = self._request(
-            "/api/embed", {"model": self.embedding.name, "input": list(texts)}, EMBEDDING_TIMEOUT_S
-        )
-        vectors = answer.get("embeddings")
-        if not isinstance(vectors, list) or len(vectors) != len(texts):
-            raise ProviderError("the model server did not return one embedding per text")
+        vectors: list[Any] = []
+        for start in range(0, len(texts), EMBEDDING_BATCH):
+            batch = list(texts[start : start + EMBEDDING_BATCH])
+            answer = self._request(
+                "/api/embed", {"model": self.embedding.name, "input": batch}, EMBEDDING_TIMEOUT_S
+            )
+            got = answer.get("embeddings")
+            if not isinstance(got, list) or len(got) != len(batch):
+                raise ProviderError("the model server did not return one embedding per text")
+            vectors += got
         sizes = {len(vector) if isinstance(vector, list) else -1 for vector in vectors}
         if len(sizes) != 1 or sizes == {0} or sizes == {-1}:
             raise ProviderError("the embeddings are not vectors of one size")

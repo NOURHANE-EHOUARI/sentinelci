@@ -88,8 +88,10 @@ docker compose -f deploy/compose/compose.yaml exec ollama ollama pull qwen3-embe
 ```
 
 `sentinel_ai.providers.OllamaProvider` (`SENTINEL_OLLAMA_URL`, default `http://127.0.0.1:11434`) checks each
-model's digest against ADR-0009 before its first request: a missing model, or one with another digest, is refused
-and nothing is sent. It talks only to the loopback or the Compose service `ollama`, never through a proxy. The
+model's digest against ADR-0009 before every request: a missing model, or one with another digest, is refused
+and nothing is sent. It talks only to the loopback or the Compose service `ollama`, never through a proxy. The name `ollama`
+is meant for the Compose network only: elsewhere, a DNS search domain could resolve it to another machine, so
+use `127.0.0.1` outside Compose. The
 opt-in test runs it against your server (minutes on a CPU):
 
 ```bash

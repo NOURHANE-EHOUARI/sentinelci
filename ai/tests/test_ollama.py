@@ -4,6 +4,7 @@ it trusts, and where it refuses to go. An opt-in test runs it against a real ser
 import json
 import os
 import threading
+import time
 from collections.abc import Callable, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -14,6 +15,7 @@ from pydantic import BaseModel, ValidationError
 from sentinel_ai.providers import LLMProvider
 from sentinel_ai.providers.ollama import (
     EMBEDDING,
+    EMBEDDING_BATCH,
     GENERATION,
     MAX_RESPONSE_BYTES,
     NUM_CTX,
@@ -42,6 +44,7 @@ class FakeOllama:
     def __init__(self) -> None:
         self.requests: list[tuple[str, str, Any]] = []
         self.routes: dict[str, Reply | Callable[[Any], Reply]] = {"/api/tags": (200, TAGS)}
+        self.drip: dict[str, float] = {}  # path -> seconds between two bytes of its body
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -59,7 +62,17 @@ class FakeOllama:
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
-                self.wfile.write(data)
+                delay = fake.drip.get(self.path)
+                try:
+                    if delay is None:
+                        self.wfile.write(data)
+                    else:  # one byte at a time, slowly: each read is quick, the whole answer is not
+                        for byte in data:
+                            self.wfile.write(bytes([byte]))
+                            self.wfile.flush()
+                            time.sleep(delay)
+                except OSError:  # the client gave up
+                    pass
 
             do_GET = do_POST = _answer
 
@@ -110,12 +123,38 @@ def test_complete_asks_for_json_of_the_schema_deterministically_and_validates_it
     }  # fmt: skip
 
 
-def test_the_digest_is_checked_once(fake: FakeOllama) -> None:
+def test_the_digest_is_checked_before_every_request(fake: FakeOllama) -> None:
+    """A long-lived worker sees a tag moved by a later `ollama pull`: the next request is refused."""
     fake.routes["/api/chat"] = chat_reply('{"title": "t", "confidence": 1}')
     provider = OllamaProvider(fake.url)
     provider.complete("s", "u", Label)
     provider.complete("s", "u", Label)
-    assert fake.paths() == ["/api/tags", "/api/chat", "/api/chat"]
+    assert fake.paths() == ["/api/tags", "/api/chat", "/api/tags", "/api/chat"]
+    fake.routes["/api/tags"] = (200, {"models": [{"name": GENERATION.name, "digest": "0" * 64}]})
+    with pytest.raises(ProviderError, match="not the pinned"):
+        provider.complete("s", "u", Label)
+    assert fake.paths()[-1] == "/api/tags", "no prompt after the tag moved"
+
+
+def test_a_400_that_is_not_about_thinking_is_an_error_and_not_retried(fake: FakeOllama) -> None:
+    fake.routes["/api/chat"] = (400, {"error": "invalid format schema"})
+    provider = OllamaProvider(fake.url)
+    with pytest.raises(ProviderError, match="HTTP 400") as raised:
+        provider.complete("s", "u", Label)
+    assert "schema" not in str(raised.value), "the body is never repeated"
+    assert fake.paths().count("/api/chat") == 1
+    fake.routes["/api/chat"] = chat_reply('{"title": "t", "confidence": 1}')
+    provider.complete("s", "u", Label)
+    assert fake.requests[-1][2]["think"] is False, "thinking stays off as asked: the field is still sent"
+
+
+def test_a_server_that_sends_slowly_is_cut_off_at_the_time_limit(fake: FakeOllama) -> None:
+    fake.routes["/api/chat"] = chat_reply('{"title": "' + "t" * 200 + '", "confidence": 1}')
+    fake.drip["/api/chat"] = 0.02  # about 6 s for the whole answer, each byte well within the limit
+    started = time.monotonic()
+    with pytest.raises(ProviderError, match="within its time limit"):
+        OllamaProvider(fake.url, generation_timeout_s=0.5).complete("s", "u", Label)
+    assert time.monotonic() - started < 2.0
 
 
 def test_an_answer_that_does_not_fit_the_schema_is_a_validation_error_for_the_repair_retry(
@@ -214,6 +253,24 @@ def test_another_model_can_be_pinned() -> None:
 
 
 # ---------------------------------------------------------------- embed
+
+
+def test_embeddings_go_in_batches_with_one_size_across_them(fake: FakeOllama) -> None:
+    """A large run stays under the answer cap: 150 texts are 3 requests of at most EMBEDDING_BATCH."""
+    fake.routes["/api/embed"] = lambda body: (200, {"embeddings": [[float(t), 1.0] for t in body["input"]]})
+    texts = [str(n) for n in range(150)]
+    assert OllamaProvider(fake.url).embed(texts) == [[float(n), 1.0] for n in range(150)]
+    sizes = [len(body["input"]) for _, path, body in fake.requests if path == "/api/embed"]
+    assert sizes == [EMBEDDING_BATCH, EMBEDDING_BATCH, 150 - 2 * EMBEDDING_BATCH]
+    assert fake.paths().count("/api/tags") == 1, "checked once per call, not per batch"
+
+    def other_size_later(body: Any) -> Reply:
+        width = 2 if body["input"][0] == "0" else 3
+        return 200, {"embeddings": [[1.0] * width for _ in body["input"]]}
+
+    fake.routes["/api/embed"] = other_size_later
+    with pytest.raises(ProviderError, match="one size"):
+        OllamaProvider(fake.url).embed(texts)
 
 
 def test_embed_returns_one_finite_vector_per_text(fake: FakeOllama) -> None:
