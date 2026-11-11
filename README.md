@@ -41,7 +41,8 @@ Around that deterministic core:
 - **AI analyst, advisory only** (local models through Ollama, pinned by digest). It explains a finding with
   references taken only from the finding's own CWE, CVE and GHSA ids, gives triage hints, and groups findings
   by root cause. The decision path cannot import it (`lint-imports`), and its outputs are schema-validated.
-  Prompt-injection canaries in the demo target check that the verdict never changes.
+  Prompt-injection canaries planted in the demo target measure whether a model obeys instructions hidden in
+  the text it reads; whatever it answers, the verdict was already made.
 - **Verified remediation.** A bot proposes deterministic fixes for Kubernetes manifests and Dockerfiles and
   opens one pull request per proposal. A separate read-only job rebuilds each patched commit, scans it, runs the
   gate and re-runs the fixer to check that the patch is its own output. Only then is it VERIFIED. LLM code fixes
