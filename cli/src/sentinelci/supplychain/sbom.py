@@ -54,6 +54,8 @@ class Sbom:
     serial_number: str
     packages: int
     run: ToolRun
+    # Syft's own format, from the same run, when asked for: Grype's input for SCA (scanners/grype.py).
+    syft_json: bytes | None = None
 
 
 def _count_packages(components: list[object]) -> int:
@@ -103,6 +105,18 @@ def _check_spdx(data: bytes) -> list[object]:
     ]
 
 
+def _check_syft_json(data: bytes) -> None:
+    try:
+        document = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ScannerError(f"syft wrote an unreadable syft-json SBOM: {exc}") from exc
+    descriptor = document.get("descriptor") if isinstance(document, dict) else None
+    if not isinstance(descriptor, dict) or descriptor.get("name") != "syft":
+        raise ScannerError("syft's syft-json output is not a Syft document")
+    if not isinstance(document.get("artifacts"), list):
+        raise ScannerError("syft's syft-json SBOM `artifacts` is not a list")
+
+
 def generate_sbom(
     target: Path,
     *,
@@ -113,9 +127,11 @@ def generate_sbom(
     image_digest: str | None = None,
     platform: str | None = None,
     timeout_s: int = DEFAULT_TIMEOUT_S,
+    syft_json: bool = False,
 ) -> Sbom:
     """Run Syft on `target` (a source tree, or the OCI layout of an image the build wrote) and return both
-    SBOMs. An image needs `image_digest`, its manifest digest: both SBOMs must name it."""
+    SBOMs. An image needs `image_digest`, its manifest digest: both SBOMs must name it. With `syft_json`, the
+    same run also writes Syft's own format (the input Grype matches best)."""
     if kind not in SOURCE_KINDS:
         raise ScannerError(f"unknown SBOM source kind {kind!r} (one of {', '.join(SOURCE_KINDS)})")
     if (kind in IMAGE_KINDS) != (image_digest is not None):
@@ -135,7 +151,7 @@ def generate_sbom(
         work = Path(private)
         cwd = work / "cwd"  # empty: Syft finds no .syft.yaml here
         cwd.mkdir()
-        cyclonedx, spdx = work / "sbom.cdx.json", work / "sbom.spdx.json"
+        cyclonedx, spdx, native = work / "sbom.cdx.json", work / "sbom.spdx.json", work / "sbom.syft.json"
         with as_file(files("sentinelci.supplychain.configs").joinpath("syft.yaml")) as config:
             # No -q: Syft's error is the reason recorded for SC-010, and a run without a TTY is quiet.
             args = [
@@ -145,6 +161,8 @@ def generate_sbom(
                 "-o", f"cyclonedx-json={cyclonedx}",
                 "-o", f"spdx-json={spdx}",
             ]  # fmt: skip
+            if syft_json:
+                args += ["-o", f"syft-json={native}"]
             if kind == "dir":
                 args += ["--base-path", str(source)]  # no link is followed above the tree
             run = run_verified_tool(
@@ -157,14 +175,24 @@ def generate_sbom(
                 timeout_s=timeout_s,
                 extra_env=OFFLINE_ENV,
             )
-        if not cyclonedx.is_file() or not spdx.is_file():
+        if not cyclonedx.is_file() or not spdx.is_file() or (syft_json and not native.is_file()):
             raise ScannerError("syft wrote no SBOM")
         cyclonedx_data, spdx_data = cyclonedx.read_bytes(), spdx.read_bytes()
+        native_data = native.read_bytes() if syft_json else None
     serial, packages, subject = _check_cyclonedx(cyclonedx_data)
     described = _check_spdx(spdx_data)
+    if native_data is not None:
+        _check_syft_json(native_data)
     if image_digest is not None and (subject != image_digest or described != [image_digest]):
         raise ScannerError(
             f"syft describes the image as {subject!r} (CycloneDX) and {described!r} (SPDX), not "
             f"{image_digest}: the file is not an OCI layout of the image that was built"
         )
-    return Sbom(cyclonedx=cyclonedx_data, spdx=spdx_data, serial_number=serial, packages=packages, run=run)
+    return Sbom(
+        cyclonedx=cyclonedx_data,
+        spdx=spdx_data,
+        serial_number=serial,
+        packages=packages,
+        run=run,
+        syft_json=native_data,
+    )
