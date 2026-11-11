@@ -138,6 +138,10 @@ class Bot:
         (self.clone / SEED_PATH).parent.mkdir(parents=True)
         (self.clone / SEED_PATH).write_text(SEED.read_text())
         (self.clone / "README.md").write_text("demo\n")
+        # Files a Kubernetes proposal must never edit: not a manifest, SentinelCI's own, outside the path.
+        for other in ("demo-shop/NOTES.txt", "demo-shop/sentinel.yaml", "deploy/kind/cluster.yaml"):
+            (self.clone / other).parent.mkdir(parents=True, exist_ok=True)
+            (self.clone / other).write_text("kind: Config\n")
         subprocess.run(["git", "init", "-q", "-b", "main", str(self.clone)], check=True)
         git(self.clone, "add", ".")
         git(self.clone, "commit", "-qm", "seed")
@@ -293,16 +297,35 @@ def tampered(bot: Bot, how: str) -> None:
     elif how == "two-refs":
         git(bot.clone, "branch", "-f", "sentinel/fix/extra", commit)
         bot.write("kubernetes", document, applied, [branch, "sentinel/fix/extra"])
-    elif how == "another-proposal":
+    elif how == "another-proposal":  # a consistent id and branch, but not the commit's trailer
+        git(bot.clone, "branch", "-f", "sentinel/fix/000000000000", commit)
         bot.write(
             "kubernetes",
             document | {"proposal_id": "00000000-0000-4000-8000-000000000000"},
-            applied,
-            [branch],
+            applied | {"branch": "sentinel/fix/000000000000"},
+            ["sentinel/fix/000000000000"],
         )
     elif how == "odd-name":
         (bot.artifact / "proposals" / "kubernetes.applied.json").unlink()
         bot.write("Kubernetes\n::warning::x", document, applied, [branch])
+    elif how == "branch-of-another-id":
+        bot.write("kubernetes", document | {"proposal_id": "00000000-0000-4000-8000-000000000000"}, applied,
+                  [branch])  # fmt: skip
+    elif how == "another-strategy":
+        bot.write("kubernetes", document | {"strategy": "llm:code"}, applied, [branch])
+    elif how == "malformed-finding-id":
+        bot.write("kubernetes", document | {"finding_ids": ["`@someone`"]}, applied, [branch])
+    elif how.startswith("listed-"):
+        listed = {"listed-readme": "README.md", "listed-not-a-manifest": "demo-shop/NOTES.txt",
+                  "listed-sentinel-yaml": "demo-shop/sentinel.yaml",
+                  "listed-outside-the-path": "deploy/kind/cluster.yaml"}[how]  # fmt: skip
+        work = bot.tmp / "work-tree"
+        git(bot.clone, "worktree", "add", "-q", str(work), branch)
+        (work / listed).write_text("changed by a compromised propose job\n")
+        git(work, "commit", "-qa", "--amend", "--no-edit")
+        new = git(work, "rev-parse", "HEAD")
+        files = sorted([*document["files"], listed])
+        bot.write("kubernetes", document | {"files": files}, applied | {"commit": new}, [branch])
     elif how in ("another-file", "outside-the-path", "two-commits", "executable"):
         work = bot.tmp / "work-tree"
         git(bot.clone, "worktree", "add", "-q", str(work), branch)
@@ -332,10 +355,17 @@ def tampered(bot: Bot, how: str) -> None:
         ("two-refs", "the bundle must hold exactly"),
         ("another-proposal", "the commit is not proposal"),
         ("another-file", "exactly the files the proposal lists"),
-        ("outside-the-path", "the proposal lists a file outside demo-shop"),
+        ("outside-the-path", "deterministic:kubernetes cannot edit README.md"),
         ("two-commits", "exactly one parent"),
         ("executable", "changes a file mode"),
         ("odd-name", "proposal: a proposal's file name must be lower-case letters, digits and -"),
+        ("branch-of-another-id", "the branch is not named after the proposal's id"),
+        ("another-strategy", "the kubernetes and dockerfile fixers only"),
+        ("malformed-finding-id", "attempt or finding ids are malformed"),
+        ("listed-readme", "deterministic:kubernetes cannot edit README.md"),
+        ("listed-not-a-manifest", "deterministic:kubernetes cannot edit demo-shop/NOTES.txt"),
+        ("listed-sentinel-yaml", "deterministic:kubernetes cannot edit demo-shop/sentinel.yaml"),
+        ("listed-outside-the-path", "deterministic:kubernetes cannot edit deploy/kind/cluster.yaml"),
     ],
 )
 def test_a_proposal_changed_after_the_fact_is_refused_and_nothing_is_published(
@@ -373,6 +403,15 @@ def test_the_failing_step_fails_the_job_when_a_proposal_is_refused() -> None:
     assert publish["outputs"] == {"opened": "${{ steps.publish.outputs.opened }}"}
     last = publish["steps"][-1]
     assert last["if"] == "steps.publish.outputs.refused != '0'" and "exit 1" in last["run"]
+
+
+def test_a_run_with_nothing_to_propose_still_hands_over_an_artifact() -> None:
+    """`publish` downloads the artifact by name: with nothing proposed, an empty upload would make it fail."""
+    propose = workflow()["jobs"]["propose"]["steps"]
+    (script,) = [step["run"] for step in propose if "remediate apply" in step.get("run", "")]
+    assert script.rstrip().endswith('> "$out/summary.txt"'), "written after the loop, whatever it proposed"
+    (upload,) = [step for step in propose if str(step.get("uses", "")).startswith("actions/upload-artifact@")]
+    assert upload["with"]["if-no-files-found"] == "error"
 
 
 # ---------------------------------------------------------------- the report script, run
@@ -507,3 +546,28 @@ def test_one_run_proposes_publishes_verifies_and_reports(bot: Bot) -> None:
     done = verify([opened[0] | {"commit": other}], "verify-other")
     assert done.returncode == 1 and "is not the proposal applied to" in done.stdout, done.stdout + done.stderr
     assert not (bot.tmp / "verify-other" / "results" / "kubernetes.json").exists()
+
+
+def test_the_fixers_text_is_shown_as_text(bot: Bot) -> None:
+    """The rationale is free text from the propose job: no mention, closing keyword, link or image renders."""
+    proposal, applied = bot.propose()
+    document = proposal.model_dump(mode="json")
+    document["rationale"] = "Closes #1 @someone [x](https://example.invalid/p.png) ```\n# Approved"
+    bot.write("kubernetes", document, applied, [applied["branch"]])
+    done = bot.publish()
+    assert done.returncode == 0, done.stdout + done.stderr
+    (call,) = bot.gh()
+    fenced = call["body"].split("```text\n", 1)[1].split("\n```\n", 1)
+    assert fenced[0] == "Closes #1 @someone [x](https://example.invalid/p.png) '''\n# Approved"
+    assert "@someone" not in fenced[1] and "@someone" not in call["body"].split("```text", 1)[0]
+
+
+def test_a_failed_push_is_named_and_the_others_still_go(bot: Bot) -> None:
+    proposal, applied = bot.propose()
+    hook = bot.origin / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(hook.stat().st_mode | stat.S_IXUSR)
+    bot.write("aaa", proposal.model_dump(mode="json"), applied, [applied["branch"]])
+    done = bot.publish()
+    assert done.returncode == 0 and not bot.gh() and bot.outputs() == {"opened": "[]", "refused": "2"}
+    assert done.stdout.count("the push of") == 2, "both proposals were tried, and each failure is named"

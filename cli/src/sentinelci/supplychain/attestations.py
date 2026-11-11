@@ -54,6 +54,11 @@ class Image:
     def digest(self) -> str:
         return f"sha256:{self.digest_hex}"
 
+    @property
+    def reference(self) -> str:
+        """`<name>@sha256:<hex>`: what Cosign signs and reads in the registry, always by digest."""
+        return f"{self.name}@{self.digest}"
+
 
 def parse_image(reference: str) -> Image:
     """`<name>@sha256:<64 hex>`: a digest, never a tag alone (SPEC section 7: sign digests, never tags)."""
@@ -226,7 +231,9 @@ class WorkflowRun:
 
     @property
     def invocation_id(self) -> str:
-        return f"{GITHUB}/{self.repository}/actions/runs/{self.run_id}/attempts/{self.run_attempt}"
+        """The run, without its attempt: GitHub's only retry ("Re-run jobs") increments the attempt, and a
+        re-run must sign the same statements, or registry mode sees two releases (ambiguous, #44 review)."""
+        return f"{GITHUB}/{self.repository}/actions/runs/{self.run_id}"
 
 
 def workflow_run(env: Mapping[str, str]) -> WorkflowRun:

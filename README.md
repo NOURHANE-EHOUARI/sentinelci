@@ -49,7 +49,7 @@ policies/            OPA/Rego release-gate policies and risk model
 deploy/              compose, kind, Helm, Kyverno, Argo CD, Grafana
 eval/                evaluation harness and benchmark reports
 demo-shop/           INTENTIONALLY VULNERABLE demo target used for the benchmark — never deploy it
-docs/                specification, ADRs
+docs/                specification, ADRs, threat model
 ```
 
 ## Getting started
