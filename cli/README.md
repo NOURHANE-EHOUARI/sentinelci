@@ -221,9 +221,10 @@ waivers:
 
 ## `sentinel attest` and `sentinel verify` (release attestations, A4)
 
-ADR-0010. The attest job of the release workflow signs four in-toto statements about the image digest
-(release decision, CycloneDX SBOM, vulnerability scan, SLSA v1 provenance) with the pinned Cosign and a key pair,
-and writes them as Sigstore bundles under `<out>/attestations/`:
+ADR-0010. `sentinel attest` signs four in-toto statements about the image digest (release decision, CycloneDX
+SBOM, vulnerability scan, SLSA v1 provenance) with the pinned Cosign and a key pair, and writes them as Sigstore
+bundles under `<out>/attestations/`. In the private phase it runs only on the release laptop, inside
+`make release` (ADR-0011, `deploy/release/README.md`):
 
 ```bash
 uv run sentinel attest registry.local/demo-shop/shop-api@sha256:<digest> \
@@ -235,6 +236,13 @@ uv run sentinel attest registry.local/demo-shop/shop-api@sha256:<digest> \
   findings or an SBOM other than the ones the decision recorded (`inputs.findings_digest`, `inputs.sbom_digest`),
   an SBOM without a CycloneDX `serialNumber`, and a run outside GitHub Actions or on another repository or commit
   than the decision's. All four bundles are written, or none.
+- `--builder` says who built the image, and so what the provenance names: `github-actions` (the default: the
+  workflow run, from its GitHub Actions variables) or `local-release`, the laptop release (`make release`).
+  A `local-release` provenance names the release script at main as its builder
+  (`https://github.com/NOURHANE-EHOUARI/sentinelci/deploy/release/release.py@refs/heads/main`), the
+  decision's repository and commit as its source, and nothing about the machine; it is refused in GitHub
+  Actions, which holds no release key. `sentinel verify --builder-id` and `sentinel admission-policy
+  --builder-id` take that id for such a release.
 - `--key` is a key file or `env://VAR`; only that variable and `COSIGN_PASSWORD` reach Cosign. Private mode
   (ADR-0006): no transparency-log upload.
 

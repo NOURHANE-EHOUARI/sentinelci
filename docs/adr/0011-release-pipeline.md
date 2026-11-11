@@ -9,6 +9,9 @@
 - Supersedes: ADR-0006 decision 1 (the signing key as a repository secret, referenced by the attest job); makes
   ADR-0006 decision 4 (a private GHCR package for CI images) optional. The SPEC lines that still put the key in
   CI (sections 4.3, 5 job isolation and the section 18 risk row) are updated with A4c.
+- Amended: 2026-11-11 (A4c, the laptop release): the sequence is `deploy/release/release.py` (Python, like
+  `deploy/kind/*.py`, so each refusal is tested), the provenance names it as the builder, and the key password
+  is asked by the script (decisions 1 and 4; see "Implementation").
 
 ## Context
 
@@ -36,13 +39,15 @@ registry (ADR-0006, decision 4). Facts checked with the pinned tools on 2026-11-
 
 ## Decision
 
-1. **One release sequence, two runners.** `deploy/release/release.sh` runs the sequence below, from the
+1. **One release sequence, two runners.** `deploy/release/release.py` runs the sequence below, from the
    committed CLI, lock and policies.
    - `make release` runs it all on a laptop. During the private phase it is the only signer.
    - `.github/workflows/sentinel-release.yml` (`workflow_dispatch`, and pushes to `main` touching the release
      image, with path filters) runs decisions 2 and 3 with no secret, and stops before signing.
 
-   The laptop release and the CI release are the same commands from the same commit.
+   The laptop release and the CI release are the same commands from the same commit. The CI runner is not
+   written yet: Actions cannot run during the private phase's billing block, and it would only decide, never
+   sign (decision 7).
 2. **Build without a registry and without credentials:**
    `docker buildx build --output type=oci,dest=image.oci.tar --provenance=false --sbom=false`.
    - BuildKit's own attestations are off: SentinelCI's four statements are the evidence.
@@ -67,11 +72,12 @@ registry (ADR-0006, decision 4). Facts checked with the pinned tools on 2026-11-
    `make release` ends by printing the digest and the trust report (16/16 in registry mode). The ephemeral
    registry needs no registry credential; the private GHCR package of ADR-0006, decision 4, becomes optional.
 
-   The laptop signer runs repository code too (`release.sh`, the Makefile and the CLI of the checkout, in the
-   shell where the key password is typed), so `release.sh` applies the laptop analog of ADR-0008: it refuses
-   unless the working tree is clean and `HEAD` is `origin/main`. Cosign prompts for the key password on the
+   The laptop signer runs repository code too (`release.py`, the Makefile and the CLI of the checkout, in the
+   session where the key password is typed), so `release.py` applies the laptop analog of ADR-0008: it
+   refuses unless the working tree is clean and `HEAD` is `origin/main`. The key password is asked on the
    terminal; it is never stored in `.env` or exported to the environment, where any process of the session
-   could read it.
+   could read it (amended 2026-11-11: `release.py` asks for it, without echo, and gives it only to the two
+   processes that use the key, see "Implementation").
 5. **Deploy and attack from the bundle (A5b):**
    - `make demo-release` loads the bundle into the kind registry (`cosign load`, digest unchanged) and verifies
      it there. It then commits the new digest to the demo's GitOps repository and waits for
@@ -106,6 +112,39 @@ registry (ADR-0006, decision 4). Facts checked with the pinned tools on 2026-11-
      key that matches its cluster.
    - Signing in CI comes with the public phase and keyless signing (ADR-0006), where the identity is the
      workflow at `refs/heads/main` rather than a stored key.
+
+## Implementation (A4c, 2026-11-11)
+
+`make release` is `deploy/release/release.py`; `make release-block` builds the demo's BLOCK image with
+`requirements.block.txt` and succeeds only when the gate blocks it; `make release-key` makes the key pair.
+
+- **Preconditions.** `origin` must be `github.com/NOURHANE-EHOUARI/sentinelci`, the working tree clean (untracked
+  files included, ignored ones not), and `HEAD` the `main` fetched from it now (`--no-fetch` compares with the
+  last fetch). `COSIGN_PASSWORD` set in the environment is refused.
+- **The key, before the long steps.** The password is asked once (`getpass`), then `cosign public-key` must open
+  the key with it and derive exactly `deploy/keys/release.pub`: a wrong password or another key stops the
+  release before the build. The password then reaches only `cosign public-key` and `sentinel attest`, which
+  passes it only to Cosign; no other process (git, Docker, the scanners, crane) gets it. A BLOCK image
+  (`--expect-block`) is never asked one.
+- **The build context is the commit's.** `git archive HEAD` of `Dockerfile.release`, its `.dockerignore` and the
+  files that allow-list admits. Only the allow-list form is understood (`*`, then `!path` or `!dir/` lines);
+  anything else, a link in the context, or a requirements file outside it is refused. The working tree is never
+  read, so an ignored or untracked file cannot reach the image or escape the scans.
+- **What is scanned.** Secrets, SAST, IaC and CI workflows on that context (the same commands and tool statuses as
+  `sentinel-scan.yml`), and the image itself (`sentinel scan image`, CONTAINER findings). The requirements files
+  are not scanned as source: the image scan reads what was installed from the selected one (hash-pinned,
+  `--no-deps`), while the context also holds the other one, which the build does not install. A failed scan
+  leaves an empty findings file and its status, so the gate blocks (SC-010).
+- **Provenance.** `sentinel attest --builder local-release` writes SLSA provenance whose builder is
+  `https://github.com/NOURHANE-EHOUARI/sentinelci/deploy/release/release.py@refs/heads/main`, with build type
+  `.../specs/local-release/v1`, the repository and commit as the source, and nothing about the machine (no host,
+  user or path). `sentinel verify` and the admission policy are given that builder id; `sentinel attest`
+  refuses `local-release` inside GitHub Actions.
+- **Outputs.** Each run works in `out/release/work`. A release that passes writes `out/release/bundle` (the
+  `cosign save` layout `make demo-release` reads) and `out/release/evidence` (decision, findings, SBOMs, tool
+  status, the four Sigstore bundles, the evidence store and the trust reports); a BLOCK writes
+  `out/release/block-image` (the OCI layout `make demo-attack` deploys) and `out/release/block-evidence`. Each
+  replaces the previous one only once the run succeeded. Grype's database is kept in `out/grype-db`.
 
 ## Consequences
 

@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.50 | A4c laptop release (§4.3, §5, §7, ADR-0011): `make release` (`deploy/release/release.py`) builds shop-api's release image from the commit's build context (a clean checkout of `origin/main`), decides on it in the release context (source scans of that context, the image's own scan, `sentinel evaluate --image-digest --sbom`), and only for a non-BLOCK decision signs it with the laptop's key in a throwaway registry, verifies it there and from the evidence, and saves the bundle; `make release-block` keeps the demo's BLOCK image, unsigned; `make release-key` makes the key pair. The provenance builder of such a release is the script at main (`sentinel attest --builder local-release`), which `sentinel verify` and the admission policy require. The signing key is no longer a CI secret. |
 | 1.1.43 | A3 (§5): the gate runs SAST and SCA. `sentinel-scan.yml` installs Opengrep, Syft and Grype from the lock, prepares Grype's database once (`sentinel tools grype-db --timeout`, evidence in `grype-db.json`), then runs `sentinel scan sast` and `sentinel scan sca` on the head commit and on the PR baseline, combined with the other scanners. Both commands take `--timeout` and `--tool-status-out`: Opengrep's run is recorded like the others'; the SCA status names Syft and Grype apart (`SbomScanFailure` says which one failed; Grype is `not_run` after a failed Syft; a report that cannot be trusted is Grype's failure). `scan sca --report` records the database the scan read and the SBOM's sha256 (`sca-report.json`), and the `match` block is pinned in `configs/grype.yaml` and required in the report (#52 review). The scan job's limit goes to 85 minutes, the sum of its runs at 300 s each. Whether the gate requires these tools is `policies/required_tools.rego` (B4). |
 | 1.1.41 | A1 image adapter (§5 stage 7, §13.1): `sentinel scan image` scans a built image's OCI layout archive with the pinned Syft and Grype, offline, into CONTAINER findings (`package` and `image`: digest, reference, layer), one per (vulnerability, purl base) with the CONTAINER fingerprint. The report must be about the given manifest digest, and its configuration must hide nothing, as for `scan sca`. A tool status for Syft and Grype (a failed Syft leaves Grype `not_run`), so the gate records a failed image scan as SC-010. |
 | 1.1.39 | Threat model (§18, A10): `docs/threat-model.md` lists the assets, five attackers, the trust boundaries, and 29 threats, each with its control, where it lives, the test that proves it and its status (main, an open PR, or planned), then the residual risks accepted in the private phase. §18's signing key row follows ADR-0011 (no signing key on GitHub). |
@@ -148,7 +149,9 @@ Local CLI runs can **push** to the same ingestion API. No self-hosted runners (a
 
 - Keyless certificates embed the repository identity and are logged in the public Rekor log → key pairs until public.
 - GitHub artifact attestations require a public repository on non-Enterprise plans → Cosign attestations meanwhile.
-- The signing key is a repository secret referenced **only** by the attest job; rotate it when going public.
+- The signing key never reaches GitHub (ADR-0011): it lives, password-protected, on the laptop that runs
+  `make release`, the only signer while private; CI holds no signing secret. Keyless signing in CI replaces it
+  when the repository goes public.
 - We stay on GitHub Free: server-side branch protection is not available for this private repository, so `main`
   is protected **by convention** (every change through a PR, reviewed by the other member, merged only with
   a green CI, or a local `make check` report on the PR head while Actions cannot run) plus a local pre-commit guard that refuses commits on `main`. Technical protection is enabled when
@@ -288,7 +291,8 @@ flag.
 
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
-(no repo code; signing key / OIDC only here) · `report` (`pull-requests: write`). In PR mode every job checks out
+(GitHub mode only, OIDC only here; in private mode signing is `make release` on the laptop, ADR-0011) · `report`
+(`pull-requests: write`). In PR mode every job checks out
 the pipeline (CLI, `tools.lock.toml`, policies, waivers) at the **base** commit and the change only as data to
 scan; tools live in `$RUNNER_TEMP` (ADR-0008).
 
@@ -539,11 +543,14 @@ bump.
   no file catalog; images read from the OCI layout the build wrote (a directory or a tar of one), never pulled,
   and both SBOMs must name the image's manifest digest (`--image-digest`); `--base-path` stops links above the
   tree; a CycloneDX document without `serialNumber` or an SPDX document that is not one fails closed).
-- **Signing:** Cosign v3 (Sigstore bundle format). Private mode: key pair, no transparency-log upload. GitHub mode:
-  keyless, identity = release workflow path + ref. Always sign digests, never tags.
+- **Signing:** Cosign v3 (Sigstore bundle format). Private mode: key pair, no transparency-log upload, on the
+  release laptop only (`make release`, ADR-0011: from a clean checkout of `origin/main`, the build context taken
+  from the commit, signed only after a non-BLOCK release decision on the built digest, in a throwaway local
+  registry, then saved as a bundle). GitHub mode: keyless, identity = release workflow path + ref. Always sign
+  digests, never tags.
 - **Attestations:** SLSA provenance, CycloneDX SBOM, vulnerability scan, release decision (ADR-0010: one
-  in-toto statement each about the image digest, signed by the attest job only for a decision that is not BLOCK;
-  `sentinel attest` checks that the decision is about this image and recorded these findings and this SBOM, and
+  in-toto statement each about the image digest, signed by `sentinel attest` only for a decision that is not
+  BLOCK; it checks that the decision is about this image and recorded these findings and this SBOM, and
   the vulnerability result, `schemas/vuln-result.v1.json`, names the decision, the findings and the SBOM's
   CycloneDX `serialNumber`, so the four are bound together).
 - **`sentinel verify <image@digest>`:** checks signature, provenance, SBOM, decision; prints a trust report; must
@@ -557,8 +564,9 @@ bump.
   `sentinel admission-policy`): match our images (a prefix of the lower-cased reference), attestor = our
   public key (private mode; a keyless identity comes with keyless `sentinel verify` in GitHub mode), require
   the image signature and the four attestations bound as `sentinel verify` binds them (a non-BLOCK Decision v1
-  verdict about this digest, from our repository; provenance from the release workflow and the decision's
-  commit; the vulnerability result and SBOM of that decision), `mutateDigest: true`. CEL reads one statement
+  verdict about this digest, from our repository; provenance from the release builder, in private mode the
+  release script at main, `deploy/release/release.py@refs/heads/main`, and from the decision's commit; the
+  vulnerability result and SBOM of that decision), `mutateDigest: true`. CEL reads one statement
   per type, so admission is weaker than `sentinel verify` on the full Decision v1 and vuln-result schemas and
   on ambiguity (a second statement of a type). Negative tests with `kyverno apply` against a real registry,
   then on kind in CI.
