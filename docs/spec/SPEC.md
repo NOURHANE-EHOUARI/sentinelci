@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.63 | A8 MTTR and alert reduction (§10): `GET /metrics` adds `sentinel_findings_fixed{priority}` and `sentinel_findings_fix_seconds{priority}` (fixes on each repository's default branch, from its release runs with a recorded decision and no SC-010) and `sentinel_correlated_findings{category}` and `sentinel_root_cause_groups{category}` (each repository's latest correlation). Grafana: MTTR by priority and alert reduction by category. |
 | 1.1.55 | A8 Supply chain page (§7, §10): the 20 latest releases, each with what `sentinel verify` found in the registry (the image's signature, then the decision, SBOM, vulnerability-scan and provenance attestations, each column passing only when all its checks pass), and how many releases the gate let through carry all of them. §10's policy compliance counts running images; the platform does not see the cluster, so the page counts releases, and Kyverno decides what runs. All four Track A pages are in (Releases & evidence, Supply chain, Remediation, Root-cause groups). |
 | 1.1.54 | A8 Remediation (§9, §10, §13.2, §13.3, Platform API 1.8.0): `schemas/remediation-attempt.v1.json` (a patch proposal, its verification result and the repository; the result the proposal's, not verified before it); `sentinel upload-remediation` sends it to `POST /api/v1/remediations`, which checks it like the CLI (the verification gate of §9.2 included) and keeps it once per proposal, byte for byte (migration 0008, immutable, the gate held by a check constraint too); `GET /api/v1/remediations[?repo=&strategy=&outcome=]` lists them, `GET /api/v1/remediations/{proposal_id}` serves one. `/metrics` adds `sentinel_remediation_attempts_total{strategy,outcome}`; the dashboard adds the Remediation pages (success per strategy, the gate's conditions, the diff as text). Nothing here merges or approves: a verified fix is a pull request a person reviews. |
 | 1.1.53 | A8 Root-cause groups page (§8, §10): `/runs/{id}/groups` shows a run's latest correlation, its groups of more than one finding with their members, the alert reduction (1 − groups ÷ findings) and the correlator, advisory and marked when a model wrote a label; Finding detail links its group to it. Read from the existing API (run, correlation, findings). |
@@ -604,7 +605,16 @@ Remediation, Root-cause groups (A).
 
 Prometheus names: `sentinel_gate_decisions_total{verdict,context}`, `sentinel_findings_open{priority,category}`,
 `sentinel_pipeline_stage_duration_seconds{stage}`, `sentinel_remediation_attempts_total{strategy,outcome}`,
-`sentinel_ai_request_duration_seconds{task,model}`, `sentinel_attestation_verifications_total{result}`.
+`sentinel_ai_request_duration_seconds{task,model}`, `sentinel_attestation_verifications_total{result}`,
+`sentinel_findings_fixed{priority}`, `sentinel_findings_fix_seconds{priority}` (MTTR is their ratio),
+`sentinel_correlated_findings{category}`, `sentinel_root_cause_groups{category}` (alert reduction is
+`1 - groups / findings`).
+
+MTTR is measured on each repository's release runs of its default branch whose findings and decision are
+recorded: a finding is fixed when a run reports it and the next such run does not, and its time to fix runs from
+the first run of that streak to the run that no longer reports it. A run whose decision holds SC-010 is skipped:
+a failed scanner is no evidence that a finding is gone. Alert reduction counts the findings of each repository's
+latest correlated release run against the groups of its latest correlation version (A7), by category.
 
 Implemented (A8a): the platform API's `GET /metrics` (`platform/api/src/sentinel_api/metrics.py`) serves only
 these names, with only these labels, in the Prometheus text format. Values are counted by PostgreSQL in a read-only

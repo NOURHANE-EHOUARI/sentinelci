@@ -24,7 +24,7 @@ def spec_metrics() -> dict[str, set[str]]:
     section = (ROOT / "docs" / "spec" / "SPEC.md").read_text(encoding="utf-8").split("## 10.", 1)[1]
     section = section.split("\n## ", 1)[0]
     listed = dict(re.findall(r"`(sentinel_[a-z_]+)\{([a-z_,]+)\}`", section))
-    assert len(listed) == 6, listed
+    assert len(listed) == 10, listed  # SPEC section 10 names ten metrics
     return {name: set(labels.split(",")) for name, labels in listed.items()}
 
 

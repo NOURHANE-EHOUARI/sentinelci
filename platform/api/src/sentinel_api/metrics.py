@@ -27,6 +27,19 @@ Exposed now:
   recorded, every pair is present, at 0 when there is none; an attempt is never deleted, so the counts only
   grow. Absent until one is recorded. Remediation success (SPEC §10) is VERIFIED ÷ all, per strategy.
 
+- `sentinel_findings_fixed{priority}` and `sentinel_findings_fix_seconds{priority}` (gauges): MTTR (SPEC §10)
+  is their ratio. Over each repository's release runs of its default branch whose findings and decision are
+  recorded, a finding is fixed when a run reports it and the next such run does not; its time to fix runs from
+  the first run of that streak to the run that no longer reports it (the runs' recording times). A run whose
+  decision holds SC-010 is not evidence that anything is gone (a scanner failed), so it is skipped. Priority
+  is the finding's in the last run that reported it. Every priority is present once such a run exists, at 0
+  when none was fixed; absent before.
+- `sentinel_correlated_findings{category}` and `sentinel_root_cause_groups{category}` (gauges): alert
+  reduction (SPEC §10) is `1 - groups / findings`. For each repository's latest release run of its default
+  branch that has a correlation (A7), its findings and the groups of its latest correlation version, by
+  category (a group's findings share one), summed over the repositories. Absent until a correlation is
+  recorded.
+
 Absent until their data is stored: `sentinel_pipeline_stage_duration_seconds` and
 `sentinel_ai_request_duration_seconds`.
 """
@@ -65,6 +78,10 @@ SPEC_METRICS: dict[str, tuple[str, ...]] = {
     "sentinel_remediation_attempts_total": ("strategy", "outcome"),
     "sentinel_ai_request_duration_seconds": ("task", "model"),
     "sentinel_attestation_verifications_total": ("result",),
+    "sentinel_findings_fixed": ("priority",),
+    "sentinel_findings_fix_seconds": ("priority",),
+    "sentinel_correlated_findings": ("category",),
+    "sentinel_root_cause_groups": ("category",),
 }
 SPEC_NAMES = frozenset(SPEC_METRICS)
 
@@ -211,12 +228,152 @@ def remediation_attempts(session: Session, _default_ref: str) -> Family | None:
     )
 
 
+# MTTR. The evidence runs are each repository's release runs of the default branch whose findings and decision
+# are recorded and whose decision holds no SC-010 (a failed scanner is no evidence that a finding is gone),
+# numbered in recording order. A streak of evidence runs reporting a finding (gaps and islands) is a fix when
+# the next evidence run does not report it. The first row counts the evidence runs: none means nothing is
+# known.
+_FIXES = """
+WITH evidence AS (
+  SELECT r.id, r.repo, r.findings_uploaded_at AS at,
+         row_number() OVER (PARTITION BY r.repo ORDER BY r.findings_uploaded_at, r.id) AS n
+  FROM runs r JOIN decisions d ON d.run_id = r.id
+  WHERE r.context = 'release' AND r.ref = :ref AND r.findings_sha256 IS NOT NULL
+    AND NOT jsonb_path_exists(
+      convert_from(d.document, 'UTF8')::jsonb, '$.violations[*] ? (@.rule == "SC-010")'
+    )
+),
+seen AS (
+  SELECT e.repo, f.finding_id, e.n, e.at, f.document -> 'risk' ->> 'priority' AS priority,
+         e.n - row_number() OVER (PARTITION BY e.repo, f.finding_id ORDER BY e.n) AS streak
+  FROM evidence e JOIN findings f ON f.run_id = e.id
+),
+streaks AS (
+  SELECT repo, min(at) AS first_seen, max(n) AS last_n, (array_agg(priority ORDER BY n DESC))[1] AS priority
+  FROM seen GROUP BY repo, finding_id, streak
+)
+SELECT '#evidence_runs' AS bucket, count(*) AS fixed, 0.0 AS seconds FROM evidence
+UNION ALL
+SELECT CASE WHEN s.priority IN ('P0', 'P1', 'P2', 'P3', 'P4') THEN s.priority ELSE 'unscored' END,
+       count(*), sum(extract(epoch FROM gone.at - s.first_seen))
+FROM streaks s JOIN evidence gone ON gone.repo = s.repo AND gone.n = s.last_n + 1
+GROUP BY 1
+"""
+
+
+def _fixes(session: Session, default_ref: str) -> dict[str, tuple[int, float]] | None:
+    """priority -> (findings fixed, seconds to fix them), or None before any evidence run."""
+    rows = {bucket: (int(fixed), float(seconds)) for bucket, fixed, seconds in session.execute(
+        text(_FIXES), {"ref": default_ref}
+    )}  # fmt: skip
+    if not rows.pop("#evidence_runs")[0]:
+        return None
+    return rows
+
+
+def findings_fixed(session: Session, default_ref: str) -> Family | None:
+    """How many findings were fixed on the default branch, by priority (MTTR's denominator)."""
+    fixes = _fixes(session, default_ref)
+    if fixes is None:
+        return None
+    return Family(
+        name="sentinel_findings_fixed",
+        kind="gauge",
+        help="Findings fixed on each repository's default branch, by priority.",
+        samples=[({"priority": level}, fixes.get(level, (0, 0.0))[0]) for level in (*PRIORITIES, UNSCORED)],
+    )
+
+
+def findings_fix_seconds(session: Session, default_ref: str) -> Family | None:
+    """The time those fixes took, in seconds, by priority (MTTR's numerator)."""
+    fixes = _fixes(session, default_ref)
+    if fixes is None:
+        return None
+    return Family(
+        name="sentinel_findings_fix_seconds",
+        kind="gauge",
+        help="Seconds from first report to fix of the findings fixed on the default branch, by priority.",
+        samples=[({"priority": level}, fixes.get(level, (0, 0.0))[1]) for level in (*PRIORITIES, UNSCORED)],
+    )
+
+
+# Alert reduction. Each repository's latest release run of the default branch that has a correlation, and its
+# latest correlation version; a group's category is its first finding's (the correlator never groups two
+# categories). The first row counts those runs: none means nothing is known.
+_CORRELATED = """
+WITH ranked AS (
+  SELECT r.id, row_number() OVER (PARTITION BY r.repo ORDER BY r.findings_uploaded_at DESC, r.id DESC) AS rank
+  FROM runs r
+  WHERE r.context = 'release' AND r.ref = :ref AND r.findings_sha256 IS NOT NULL
+    AND EXISTS (SELECT 1 FROM correlations c WHERE c.run_id = r.id)
+),
+correlated AS (
+  SELECT ranked.id AS run_id, latest.document
+  FROM ranked
+  JOIN LATERAL (
+    SELECT c.document FROM correlations c WHERE c.run_id = ranked.id ORDER BY c.seq DESC LIMIT 1
+  ) latest ON true
+  WHERE ranked.rank = 1
+)
+SELECT '#runs' AS category, 'runs' AS kind, count(*) AS n FROM correlated
+UNION ALL
+SELECT f.category, 'findings', count(*) FROM correlated JOIN findings f ON f.run_id = correlated.run_id
+GROUP BY f.category
+UNION ALL
+SELECT f.category, 'groups', count(*)
+FROM correlated
+CROSS JOIN LATERAL jsonb_array_elements(convert_from(correlated.document, 'UTF8')::jsonb -> 'groups') g
+JOIN findings f ON f.run_id = correlated.run_id AND f.finding_id = g -> 'finding_ids' ->> 0
+GROUP BY f.category
+"""
+
+
+def _correlated(session: Session, default_ref: str, kind: str) -> dict[str, int] | None:
+    """category -> findings or groups, or None before any correlation of a release run."""
+    rows = {(category, what): int(n) for category, what, n in session.execute(
+        text(_CORRELATED), {"ref": default_ref}
+    )}  # fmt: skip
+    if not rows[("#runs", "runs")]:
+        return None
+    return {category: n for (category, what), n in rows.items() if what == kind}
+
+
+def correlated_findings(session: Session, default_ref: str) -> Family | None:
+    """The findings of each repository's latest correlated release run, by category."""
+    counts = _correlated(session, default_ref, "findings")
+    if counts is None:
+        return None
+    return Family(
+        name="sentinel_correlated_findings",
+        kind="gauge",
+        help="Findings of each repository's latest correlated release run, by category.",
+        samples=[({"category": category}, counts.get(category, 0)) for category in CATEGORIES],
+    )
+
+
+def root_cause_groups(session: Session, default_ref: str) -> Family | None:
+    """The root-cause groups the correlator made of them, by category."""
+    counts = _correlated(session, default_ref, "groups")
+    if counts is None:
+        return None
+    return Family(
+        name="sentinel_root_cause_groups",
+        kind="gauge",
+        help="Root-cause groups of each repository's latest correlated release run, by category.",
+        samples=[({"category": category}, counts.get(category, 0)) for category in CATEGORIES],
+    )
+
+
 # Each metric the platform can compute; one returns None while its data is not stored.
 METRICS: tuple[Callable[[Session, str], Family | None], ...] = (
     gate_decisions,
     findings_open,
     attestation_verifications,
     remediation_attempts,
+    findings_fixed,
+    findings_fix_seconds,
+    correlated_findings,
+    root_cause_groups,
 )
 
 
