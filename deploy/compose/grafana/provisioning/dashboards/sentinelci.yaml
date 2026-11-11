@@ -1,0 +1,12 @@
+# Provisioned dashboards: Grafana is configured as code, never by hand (SPEC section 10, task A8).
+apiVersion: 1
+
+providers:
+  - name: sentinelci
+    folder: SentinelCI
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

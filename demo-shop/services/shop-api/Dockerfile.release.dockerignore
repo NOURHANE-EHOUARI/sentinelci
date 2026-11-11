@@ -1,0 +1,6 @@
+# Build context of Dockerfile.release (BuildKit reads <Dockerfile>.dockerignore): an allow-list. The seeded
+# files next to it (config/ with its fake secrets, the seeded requirements.txt and Dockerfile) never enter it.
+*
+!app/
+!requirements.release.txt
+!requirements.block.txt
