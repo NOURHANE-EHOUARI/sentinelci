@@ -152,7 +152,7 @@ Runs the OPA policies in `policies/` and writes a Decision record (`schemas/deci
   statement or document dated after `--evaluated-at` blocks (SC-010). Products are package purls (`pkg:oci` is
   refused: an image matches no finding). An invalid document, a duplicate JSON key, or one over 4 MiB exits 3.
 - Required scanners (`policies/required_tools.rego`, part of the policy bundle, so read from the base branch):
-  gitleaks and trivy in `pr` and `release`, none in `local`. A required tool left out of the tool status, or no tool
+  gitleaks, trivy and zizmor in `pr` and `release`, none in `local`. A required tool left out of the tool status, or no tool
   status at all in a context that requires tools, is an SC-010 BLOCK (`Scanner missing` /
   `Tool status missing`): a workflow that drops a scanner cannot turn its silence into a pass.
 - The decision is `schema_version` 1.2 (with `baseline_digest` / `tool_status_digest`) when either option is
@@ -251,6 +251,45 @@ uv run sentinel verify registry.local/demo-shop/shop-api@sha256:<digest> --evide
   a Cosign binary that does not match `tools.lock.toml`). Offline: the evidence directory and the public key
   are all it needs.
 
+## `sentinel scan sca` (dependency vulnerabilities, A1)
+
+```bash
+uv run sentinel tools grype-db --db-dir .sentinel/grype-db --report out/grype-db.json  # before the scan (network)
+uv run sentinel scan sca . --db-dir .sentinel/grype-db --out out/sca.ndjson \
+  --repo NOURHANE-EHOUARI/sentinelci --commit "$(git rev-parse HEAD)" --context local
+uv run sentinel normalize grype grype.json --scan-root demo-shop --out out/sca.ndjson \
+  --repo NOURHANE-EHOUARI/sentinelci --commit "$(git rev-parse HEAD)" --context local
+```
+
+- One Syft run, as for `sentinel sbom`, also writes Syft's own format; the pinned Grype matches that SBOM. Grype
+  never reads the scanned tree, and runs from a private working directory and home with
+  `scanners/configs/grype.yaml` passed explicitly, so a `.grype.yaml` (ignore rules, VEX, `only-fixed`) or a
+  `GRYPE_*` variable cannot hide a vulnerability.
+- Offline: the database is the directory given in `--db-dir` (Grype's cache directory, filled beforehand), checked
+  against its own hash; nothing is downloaded during the scan. A database built more than five days ago fails the
+  scan; `--allow-stale-db` accepts it, for replays and tests only. The summary line names the database (schema,
+  build time and checksum).
+- `sentinel tools grype-db` fills that directory, and is the only step that uses the network. It runs the
+  verified Grype with the same configuration, which pins the update URL (`https://grype.anchore.io/databases`):
+  the latest database, or `--archive`, either a local file (Grype imports a private copy, digested first, with
+  no network) or an `https://` URL that names its digest (`?checksum=sha256:<hex>`, checked by Grype; no
+  credentials in the URL). The download sees the job's proxy and CA variables (`HTTPS_PROXY`, `NO_PROXY`,
+  `SSL_CERT_FILE`, …) and nothing else of its environment. Whatever the update exits with, the result counts only
+  if `grype db status`, run offline afterwards, calls the database valid; otherwise exit code `3` and no
+  `--report`. The report records the Grype binary, the database (schema, build time, checksum) and a local
+  archive's digest.
+- Findings (category SCA): one per (vulnerability id, purl base). `rule_id` is Grype's id of the matched record
+  (a GHSA for a language package), related CVE ids are in `cve`, other ids in `aliases`. Every file the package
+  was found in is a place (`location`, then `other_locations`), relative to the repository root
+  (`--repo-root`, or `--scan-root` for `normalize grype`). Severity is Grype's; Negligible counts as INFO and
+  Unknown as HIGH, with the raw value in `severity_source`. The report's CVSS, EPSS and KEV are not copied:
+  `sentinel enrich` adds them from the dated snapshot.
+- Exit code `3`, with no findings file, when a tool fails or does not match the lock, the database is missing,
+  invalid or stale, the report names another Grype version, or its recorded configuration shows anything that
+  hides matches (ignore rules beyond Grype's built-in kernel-header rules, VEX, exclusions, `only-fixed`,
+  `only-notfixed`, `ignore-wontfix`, a distro override, `by-cve`). An image report is refused by
+  `normalize grype` (CONTAINER findings need the image digest: the image adapter).
+
 **Registry mode.** With `--push`, `sentinel attest` also signs the image itself (`cosign sign`) and attaches
 the four statements to it in its registry (`cosign attest`), always by digest. That copy is what Kyverno reads
 at admission (A5). `sentinel verify` without `--evidence` reads it back:
@@ -292,6 +331,7 @@ uv run sentinel verify <registry>/demo-shop/shop-api@sha256:<digest> --key cosig
 - An unavailable registry: when the connection is refused, `verify` reports every check failed (exit `1`).
   When the registry accepts the connection and never answers, Cosign's 120 s timeout ends the run (exit `3`).
   Both refuse the image.
+
 
 ## `sentinel sbom` (SBOMs, A4)
 
@@ -387,8 +427,15 @@ SENTINEL_API_TOKEN=... uv run sentinel upload --findings "$RUNNER_TEMP/decision/
 
 ```bash
 uv run sentinel scan pipelines demo-shop --repo-root . --out out/pipelines.ndjson \
-  --repo NOURHANE-EHOUARI/sentinelci --commit "$GITHUB_SHA" --context pr
+  --repo NOURHANE-EHOUARI/sentinelci --commit "$GITHUB_SHA" --context pr \
+  --tool-status-out out/pipelines-status.json --timeout 300
 ```
+
+- **Tool status** (`--tool-status-out`, written on success and on failure, like the other scanners): `ok` with the
+  verified binary's sha256 and, as its `artifact_sha256`, the pinned wheel that carries that binary (also when
+  there was nothing to audit: the binary was still checked). A crash or an unreadable report is `failed`, a run
+  past `--timeout` (300 s by default) is `timeout`, a binary no pinned wheel carries is `integrity_mismatch`:
+  the gate blocks each one (SC-010). `sentinel-scan.yml` runs it on the head and, in pr mode, the base commit.
 
 - zizmor, a runtime dependency of the CLI (`uv.lock`). Right before it runs, the binary of the CLI's own
   environment (never one from `PATH`) must be one that a wheel pinned in `tools.lock.toml` carries
@@ -543,3 +590,37 @@ uv run sentinel admission-policy --key cosign.pub --repo NOURHANE-EHOUARI/sentin
 - **Tests.** `kyverno apply` (pinned in `tools.lock.toml`) evaluates the policy as the admission controller
   does, against a real registry. Every case `sentinel verify` refuses there, admission refuses too (the tests
   compare the two verdicts, not the reasons).
+
+## `sentinel scan sast` (SAST, A1)
+
+```bash
+uv run sentinel scan sast demo-shop --repo-root . --out out/sast.ndjson \
+  --repo NOURHANE-EHOUARI/sentinelci --commit "$GITHUB_SHA" --context pr
+```
+
+- The pinned Opengrep, verified against `tools.lock.toml` right before it runs. Opengrep publishes no checksum
+  file, so its pin was taken after checking each asset's keyless signature (the lock records the certificate,
+  the signature and the signer identity, for reviewers). `sentinel tools install`/`verify` check only the
+  pinned sha256; the signature fields are not read.
+- SentinelCI's own rules only (`scanners/configs/opengrep/`: Python, JavaScript and TypeScript), each pinned by
+  code it must flag and code it must leave alone (`test_opengrep_rules.py`). The scanned repository cannot add,
+  change or silence a rule: `# nosemgrep` comments, `.semgrepignore`, `.gitignore`, `.semgrep.yml`, the 1 MB size
+  limit and the per-file time-out have no effect. A link that leaves the target, or loops, exits `3`.
+- Files scanned: `.py`, `.pyi`, `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts` and `.tsx`, plus an executable file whose
+  `#!` line names `python` or `node`. Nothing else is (Opengrep chooses files by extension): a script without
+  an extension that is not executable, `.mts`, `.cts`, `.pyw`, notebooks or code inside other files are not
+  scanned. "Cannot be silenced" covers these files only.
+- Findings are category SAST, fingerprinted by rule, path and the normalized matched code (a moved line keeps
+  its id). The same code several times in a file is one finding per place, numbered in line order: the first
+  keeps the id, the n-th gets `sha256(id | n)`, so a copy of a vulnerable line is new in a pull request and a
+  waiver covers only the copy whose id it names. No code is kept: the messages are the rules' fixed text.
+- Exit code `3` (SC-010), and no findings file, when Opengrep fails, reports an error (even as a warning: too
+  many matches in a file, out of memory, ...), names a rule that is not SentinelCI's, or does not match the
+  lock. A file Opengrep could parse only in part exits `3` when more than half of its lines were not analysed
+  (all of them for a file it could not parse at all).
+- Each smaller gap is a finding: rule `sentinel-sast-not-analysed`, SAST HIGH, one per contiguous range of
+  skipped lines, fingerprinted on the skipped text like a match (a gap that moves keeps its id, a new one is
+  new, and the same text twice in a file is two findings). Its message names the lines and quotes no code
+  (`Opengrep did not analyse lines 12-19 of app.py (PartialParsing). ...`). Valid modern syntax Opengrep cannot
+  parse yet (a PEP 695 `def f[T]`, some TypeScript) shows up this way until Opengrep catches up: waive it with
+  a reviewed expiry, never with a scanner flag. The job log still names each file and counts its lines.

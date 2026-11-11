@@ -6,6 +6,7 @@ import pytest
 
 from sentinelci.normalize.fingerprint import (
     config_fingerprint,
+    occurrence_fingerprint,
     package_fingerprint,
     purl_base,
     sast_fingerprint,
@@ -74,6 +75,16 @@ def test_sast_fingerprint_survives_whitespace_and_line_shifts() -> None:
     b = sast_fingerprint("rule.sqli", "app/db.py", "    cur.execute(f'...{name}')   \n")
     assert a == b
     assert a != sast_fingerprint("rule.sqli", "app/other.py", "cur.execute(f'...{name}')")
+
+
+def test_repeated_identical_sast_matches_are_numbered_from_the_second() -> None:
+    first = sast_fingerprint("rule.sqli", "app/db.py", "cur.execute(f'...{name}')")
+    assert occurrence_fingerprint(first, 1) == first
+    assert occurrence_fingerprint(first, 2) == _sha(f"{first}|2")
+    assert occurrence_fingerprint(first, 10) == _sha(f"{first}|10")
+    for occurrence in (0, -1):
+        with pytest.raises(ValueError, match="numbered from 1"):
+            occurrence_fingerprint(first, occurrence)
 
 
 def test_config_fingerprint_formula() -> None:
