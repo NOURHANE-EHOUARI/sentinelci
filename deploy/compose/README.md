@@ -54,8 +54,8 @@ again, for example after a lost answer) is answered 409 with the existing run in
 findings only if `findings_sha256` is null. In GitHub Actions the run id is `<run id>/<run attempt>`, so a re-run
 of the job is a new run. A run without `run_id` (a local run) is always new. `GET /api/v1/runs/<run id>/findings` gives the upload back
 byte for byte (its sha256 is `findings_sha256`), for the correlator or a replay. Bodies are capped before
-authentication: 64 KiB for JSON, `SENTINEL_API_MAX_UPLOAD_BYTES` (32 MiB by default) for a findings upload or a
-correlation. To rotate the token, delete both `SENTINEL_API_TOKEN` lines from `.env` and run `make compose-env`.
+authentication: 64 KiB for JSON, `SENTINEL_API_MAX_UPLOAD_BYTES` (32 MiB by default) for a findings upload, a
+correlation or a decision. To rotate the token, delete both `SENTINEL_API_TOKEN` lines from `.env` and run `make compose-env`.
 
 A run's correlations (the correlator's root-cause groups, advisory: the gate never reads them) are posted after
 its findings, as one Correlation v1 document:
@@ -69,8 +69,24 @@ curl -s http://127.0.0.1:8000/api/v1/runs/<run id>/correlations/versions   # eve
 
 The API records it only if its `findings_sha256` is the run's and its groups hold each of the run's findings
 exactly once. A version is named by the sha256 of its bytes (the same bytes again: 409 with that version), and is
-never changed or deleted. `GET /metrics` counts the release runs of the default branch only: set
-`SENTINEL_DEFAULT_REF` (default `refs/heads/main`) if yours is another.
+never changed or deleted.
+
+A run's gate decision (the Decision v1 document `sentinel evaluate` wrote) is posted after its findings too:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/v1/runs/<run id>/decision -H "Authorization: Bearer $SENTINEL_API_TOKEN" \
+  -H 'Content-Type: application/json' --data-binary @out/decision.v1.json
+curl -s http://127.0.0.1:8000/api/v1/runs/<run id>/decision   # byte for byte, its sha256 as the ETag
+```
+
+The API records it only if it was made on the findings the run recorded (`inputs.findings_digest` is `sha256:`
+and the run's `findings_sha256`: upload the scored findings the gate evaluated), is about the run (repo, commit,
+context, and the ref when it names one) and names only the run's findings. A run has one decision, never changed
+or deleted: the same bytes again get 409 with it, another decision is refused with 409. The platform records the
+verdict; it never decides.
+
+`GET /metrics` counts the release runs of the default branch only: set `SENTINEL_DEFAULT_REF` (default
+`refs/heads/main`) if yours is another.
 
 ## Observability (A8)
 

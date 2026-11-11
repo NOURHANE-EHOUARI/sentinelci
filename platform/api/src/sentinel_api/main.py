@@ -12,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from sentinel_api.api import router
 from sentinel_api.config import Settings, sqlalchemy_url
 from sentinel_api.correlations import router as correlations_router
+from sentinel_api.decisions import router as decisions_router
 from sentinel_api.limits import BodyLimit
 from sentinel_api.metrics import router as metrics_router
 from sentinel_api.releases import router as releases_router
@@ -19,7 +20,7 @@ from sentinel_api.remediations import router as remediations_router
 from sentinelci import __version__ as engine_version
 
 # The version of the API contract (schemas/openapi.yaml), not of the engine: it changes only with the API.
-API_VERSION = "1.6.0"
+API_VERSION = "1.8.0"
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -47,6 +48,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(router)
     app.include_router(correlations_router)
+    app.include_router(decisions_router)
     app.include_router(releases_router)
     app.include_router(remediations_router)
     app.include_router(metrics_router)

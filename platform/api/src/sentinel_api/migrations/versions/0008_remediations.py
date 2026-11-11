@@ -9,11 +9,11 @@ The database is the backstop for what the API checks:
 - VERIFIED only when every condition of the verification gate holds (`remediations_verified_gate`, SPEC 9.2);
 - an attempt never changes and is never deleted (trigger `remediations_are_kept`).
 
-Going back below 0007 would drop the only copy of those documents, so the downgrade stops, changing nothing,
+Going back below 0008 would drop the only copy of those documents, so the downgrade stops, changing nothing,
 while any attempt is kept.
 
-Revision ID: 0007
-Revises: 0006
+Revision ID: 0008
+Revises: 0007
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0007"
-down_revision = "0006"
+revision = "0008"
+down_revision = "0007"
 branch_labels = None
 depends_on = None
 
@@ -89,7 +89,7 @@ def downgrade() -> None:
     if kept:
         raise RuntimeError(
             f"{kept} remediation attempt(s) are kept (table remediations), the only copy of what the loop "
-            "reported, so going below 0007 would lose them. Stay at 0007 or later, or export them first (GET "
+            "reported, so going below 0008 would lose them. Stay at 0008 or later, or export them first (GET "
             "/api/v1/remediations/{proposal_id}) and go down on a new, empty database; a kept attempt cannot "
             "be deleted (trigger remediations_are_kept). Nothing was changed."
         )

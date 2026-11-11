@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from sentinel_api.models import Base
 
 ROOT = Path(__file__).resolve().parents[3]
 OPENAPI = ROOT / "schemas" / "openapi.yaml"
-HEAD = "0007"  # the latest migration: a downgrade that stops leaves the database there
+HEAD = "0008"  # the latest migration: a downgrade that stops leaves the database there
 
 
 def test_the_migrations_build_exactly_the_models(database_url: str) -> None:
@@ -123,13 +124,48 @@ def test_going_below_0005_stops_while_a_correlation_is_kept(postgres_server: str
             (run[0], document, document),
         )
     with pytest.raises(RuntimeError, match=r"1 correlation version\(s\) are kept"):
-        downgrade(url, "0004")
+        downgrade(url, "0004")  # 0008, 0007 and 0006 go down (nothing is kept there), 0005 stops
     with psycopg.connect(url) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
         assert conn.execute("SELECT count(*) FROM correlations").fetchone() == (1,)
 
 
-def test_going_below_0006_stops_while_a_release_is_kept(postgres_server: str) -> None:
+def test_going_below_0006_stops_while_a_decision_is_kept(postgres_server: str) -> None:
+    """Dropping `decisions` would lose the only copy of what the gate decided: the downgrade stops, changing
+    nothing, while any decision is kept."""
+    name = f"t_{uuid.uuid4().hex}"
+    with psycopg.connect(f"{postgres_server}/sentinel", autocommit=True) as conn:
+        conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+    url = f"{postgres_server}/{name}"
+    upgrade(url)
+    decision_id = str(uuid.uuid4())
+    document = json.dumps(
+        {
+            "decision_id": decision_id,
+            "verdict": "PASS",
+            "subject": {"repo": "o/r", "commit": "a" * 40, "context": "pr"},
+            "inputs": {"findings_digest": "sha256:" + "b" * 64},
+        }
+    ).encode()
+    with psycopg.connect(url, autocommit=True) as conn:
+        run = conn.execute(
+            "INSERT INTO runs (id, repo, commit, context, findings_sha256, findings_uploaded_at) "
+            "VALUES (gen_random_uuid(), 'o/r', repeat('a', 40), 'pr', repeat('b', 64), now()) RETURNING id"
+        ).fetchone()
+        assert run is not None
+        conn.execute(
+            "INSERT INTO decisions (run_id, sha256, decision_id, verdict, evaluated_at, engine_version, "
+            "document) VALUES (%s, encode(sha256(%s), 'hex'), %s, 'PASS', now(), '0.1.0', %s)",
+            (run[0], document, decision_id, document),
+        )
+    with pytest.raises(RuntimeError, match=r"1 decision\(s\) are kept"):
+        downgrade(url, "0005")  # 0008 and 0007 go down (nothing is kept there), 0006 stops
+    with psycopg.connect(url) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
+        assert conn.execute("SELECT count(*) FROM decisions").fetchone() == (1,)
+
+
+def test_going_below_0007_stops_while_a_release_is_kept(postgres_server: str) -> None:
     """Dropping `releases` would lose the only copy of the evidence `make release` posted: the downgrade
     stops, changing nothing, while any release is kept."""
     name = f"t_{uuid.uuid4().hex}"
@@ -146,13 +182,13 @@ def test_going_below_0006_stops_while_a_release_is_kept(postgres_server: str) ->
             (document, document),
         )
     with pytest.raises(RuntimeError, match=r"1 release\(s\) are kept"):
-        downgrade(url, "0005")
+        downgrade(url, "0006")  # 0008 goes down (no attempt is kept), 0007 stops
     with psycopg.connect(url) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
         assert conn.execute("SELECT count(*) FROM releases").fetchone() == (1,)
 
 
-def test_going_below_0007_stops_while_a_remediation_attempt_is_kept(postgres_server: str) -> None:
+def test_going_below_0008_stops_while_a_remediation_attempt_is_kept(postgres_server: str) -> None:
     """Dropping `remediations` would lose the only copy of what the loop reported: the downgrade stops,
     changing nothing, while any attempt is kept."""
     name = f"t_{uuid.uuid4().hex}"
@@ -165,13 +201,12 @@ def test_going_below_0007_stops_while_a_remediation_attempt_is_kept(postgres_ser
         conn.execute(
             "INSERT INTO remediations (proposal_id, repo, strategy, attempt, finding_count, outcome, "
             "verdict, build_ok, tests_ok, target_resolved, new_finding_count, proposed_at, verified_at, "
-            "sha256, "
-            "document) VALUES (gen_random_uuid(), 'o/r', 'llm:code', 1, 1, 'FAILED', 'PASS', false, "
-            "false, false, 0, now(), now(), encode(sha256(%s), 'hex'), %s)",
+            "sha256, document) VALUES (gen_random_uuid(), 'o/r', 'llm:code', 1, 1, 'FAILED', 'PASS', "
+            "false, false, false, 0, now(), now(), encode(sha256(%s), 'hex'), %s)",
             (document, document),
         )
     with pytest.raises(RuntimeError, match=r"1 remediation attempt\(s\) are kept"):
-        downgrade(url, "0006")
+        downgrade(url, "0007")
     with psycopg.connect(url) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
         assert conn.execute("SELECT count(*) FROM remediations").fetchone() == (1,)
