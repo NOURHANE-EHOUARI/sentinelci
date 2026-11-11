@@ -19,7 +19,9 @@ flowchart LR
 
 ## Prerequisites
 
-- Docker, `kubectl` and git, from the machine.
+- Docker, `kubectl` and git, from the machine. `kubectl` must be within one minor version of the cluster's
+  Kubernetes (v1.36 to v1.38 for the v1.37.0 node image), the skew Kubernetes supports. `make kind-up` checks
+  Docker and kubectl before it creates anything, and stops with what to install.
 - kind and Cosign, pinned by sha256 in `tools.lock.toml`: `uv run sentinel tools install kind cosign` (or
   `make tools`). Each is verified again before it runs.
 

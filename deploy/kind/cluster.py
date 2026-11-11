@@ -13,7 +13,9 @@ the GitOps repository is kept (it is on the laptop, in .sentinel/gitops).
 Everything `up` runs or applies is pinned: kind by sha256 in tools.lock.toml (installed and checked with
 `sentinel tools`, and verified again before it runs), the node image by digest in kind-config.yaml, the
 registry image by digest and the Kyverno and Argo CD install manifests by sha256 in cluster.toml. A manifest
-whose sha256 differs is refused before anything is applied. Docker, git and kubectl come from the machine.
+whose sha256 differs is refused before anything is applied. Docker, git and kubectl come from the machine:
+`up` checks that the Docker daemon answers and that kubectl is within one minor version of the node image's
+Kubernetes before it creates anything.
 
 The registry is published on the host's loopback only (127.0.0.1:5001). Inside the cluster's network it is
 `kind-registry:5000`, plain HTTP, and that is the name the admission policy matches: containerd on the nodes
@@ -28,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import subprocess
@@ -56,6 +59,7 @@ REPO = "NOURHANE-EHOUARI/sentinelci"
 BUILDER_ID = f"https://github.com/{REPO}/.github/workflows/sentinel-release.yml@refs/heads/main"
 _PINNED_IMAGE = re.compile(r"^[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[a-f0-9]{64}$")
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
+_NODE_IMAGE = re.compile(r"image:\s*kindest/node:v(\d+)\.(\d+)\.(\d+)@sha256:[a-f0-9]{64}\s")
 # A release asset, or a file of the repository at a release tag: either way the version is in the path.
 _MANIFEST_URL = re.compile(
     r"^https://(github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/releases/download"
@@ -212,9 +216,55 @@ def _hosts_toml(pins: Pins) -> str:
     return f'[host."http://{pins.registry_in_cluster}"]\n  capabilities = ["pull", "resolve"]\n'
 
 
+def node_version(config: Path = KIND_CONFIG) -> tuple[int, int, int]:
+    """The Kubernetes version of the pinned node image (`kindest/node:vX.Y.Z@sha256:...`)."""
+    found = _NODE_IMAGE.search(config.read_text(encoding="utf-8"))
+    if found is None:
+        raise ClusterError(f"{config}: no node image pinned as kindest/node:vX.Y.Z@sha256:<digest>")
+    major, minor, patch = (int(part) for part in found.groups())
+    return major, minor, patch
+
+
+def check_kubectl(node: tuple[int, int, int], run: Run = run_command) -> None:
+    """kubectl comes from the machine: it must be there, and within one minor version of the cluster's
+    Kubernetes (the version skew Kubernetes supports for kubectl), before anything is created or applied."""
+    major, minor, patch = node
+    wanted = (
+        f"kubectl v{major}.{minor - 1} to v{major}.{minor + 1} "
+        f"(the cluster runs Kubernetes v{major}.{minor}.{patch}, {KIND_CONFIG.name})"
+    )
+    try:
+        done = run(["kubectl", "version", "--client", "--output=json"], check=False)
+    except ClusterError as exc:  # not installed, or not runnable
+        raise ClusterError(f"kubectl is not installed: install {wanted}") from exc
+    try:
+        client = json.loads(done.stdout)["clientVersion"]
+        digits = re.match(r"\d+", str(client["minor"]))  # some builds say "37+"
+        if digits is None:
+            raise ValueError(client["minor"])
+        found = (int(client["major"]), int(digits[0]))
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ClusterError(f"`kubectl version --client` gave no version: use {wanted}") from exc
+    if found[0] != major or abs(found[1] - minor) > 1:
+        raise ClusterError(f"kubectl is v{found[0]}.{found[1]}, outside the supported skew: use {wanted}")
+
+
+def check_docker(run: Run = run_command) -> None:
+    """The Docker daemon must answer before the registry or the cluster is created."""
+    done = run(["docker", "version", "--format", "{{.Server.Version}}"], check=False)
+    if done.returncode != 0 or not done.stdout.strip():
+        last = (done.stderr.strip().splitlines() or ["no output"])[-1]
+        raise ClusterError(f"the Docker daemon does not answer (`docker version`: {last}): start Docker")
+
+
 def up(pins: Pins, kind: str, cache: Path, run: Run = run_command, *, gitops: Path = GITOPS_DIR) -> None:
     """Registry, GitOps repository, cluster, registry configuration on the nodes, Kyverno, Argo CD, the git
-    server and the demo-shop namespace. What already exists is kept."""
+    server and the demo-shop namespace. What already exists is kept.
+
+    Docker and kubectl are checked first, so a machine without them gets one clear error and no half-made
+    cluster."""
+    check_docker(run)
+    check_kubectl(node_version(), run)
     state = run(["docker", "inspect", "-f", "{{.State.Running}}", pins.registry_container], check=False)
     if state.returncode != 0:
         run([
@@ -295,6 +345,7 @@ def policy(
     """Render the release admission policy for the cluster's registry and apply it."""
     from sentinelci.supplychain.admission import render_policy
 
+    check_kubectl(node_version(), run)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(
         render_policy(
