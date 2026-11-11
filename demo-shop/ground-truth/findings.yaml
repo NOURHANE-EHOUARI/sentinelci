@@ -173,6 +173,8 @@ seeds:
     cve: CVE-2020-14343
     kev: false
     imported: true  # app/main.py loads YAML with FullLoader (GT-SAST-003)
+    # The BLOCK image's requirements pin it too (ADR-0011): Grype reports one finding with both places.
+    also_in: [services/shop-api/requirements.block.txt]
     expected:
       gate: SC-002
       detections:
