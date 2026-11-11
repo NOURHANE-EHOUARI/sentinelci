@@ -85,8 +85,10 @@ registry (ADR-0006, decision 4). Facts checked with the pinned tools on 2026-11-
      BLOCK image of decision 6, which `attest` refused to sign.
 
    With these, the M2/M3 demo is three commands, offline after the first `sentinel tools grype-db` (#52).
-6. **The release image.** A hardened Dockerfile goes next to the seed:
-   - Python 3.12-slim pinned by digest;
+6. **The release image.** A hardened Dockerfile goes next to the seed (`services/shop-api/Dockerfile.release`,
+   its build context an allow-list in `Dockerfile.release.dockerignore`):
+   - Python 3.12-slim pinned by digest, updated by hand (Dependabot would bump the seeded Dockerfile in the
+     same directory too);
    - UID 10001, port 8080;
    - writes only to `/tmp` (an `emptyDir` in the manifests), so `readOnlyRootFilesystem` and `drop: [ALL]`
      hold;

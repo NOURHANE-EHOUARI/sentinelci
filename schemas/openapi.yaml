@@ -2,7 +2,7 @@
 openapi: 3.1.0
 info:
   title: SentinelCI API
-  version: 1.2.0
+  version: 1.4.0
 paths:
   /healthz:
     get:
@@ -424,8 +424,261 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runs/{run_id}/correlations:
+    post:
+      tags:
+      - correlations
+      summary: Record Correlation
+      description: 'Record a correlation of the run''s findings (advisory: the gate
+        never reads it), kept byte for byte.'
+      operationId: record_correlation_api_v1_runs__run_id__correlations_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Run Id
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorrelationOut'
+        '401':
+          description: 'No valid ingestion token (`Authorization: Bearer <token>`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '404':
+          description: No such run, or no correlation (version) recorded for it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '413':
+          description: The document is larger than the upload limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '415':
+          description: The correlation is not `application/json`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '503':
+          description: No database is configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '409':
+          description: These exact bytes are recorded already (`correlation`), or
+            the run's findings are not recorded yet (`detail` only).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorrelationExists'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      requestBody:
+        required: true
+        description: One Correlation v1 document (schemas/correlation.v1.json) of
+          the run's findings.
+        content:
+          application/json:
+            schema:
+              type: object
+    get:
+      tags:
+      - correlations
+      summary: Get Correlation
+      description: The run's latest correlation, or the version `sha256`, exactly
+        as it was posted.
+      operationId: get_correlation_api_v1_runs__run_id__correlations_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Run Id
+      - name: sha256
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^[a-f0-9]{64}$
+          - type: 'null'
+          description: A version; the latest without it.
+          title: Sha256
+        description: A version; the latest without it.
+      responses:
+        '200':
+          description: 'The version byte for byte: its sha256 is the version''s name,
+            the ETag.'
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          description: No such run, or no correlation (version) recorded for it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '413':
+          description: The document is larger than the upload limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '503':
+          description: No database is configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runs/{run_id}/correlations/versions:
+    get:
+      tags:
+      - correlations
+      summary: List Correlations
+      description: Every version recorded for the run, newest first (without their
+        documents).
+      operationId: list_correlations_api_v1_runs__run_id__correlations_versions_get
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CorrelationVersions'
+        '404':
+          description: No such run, or no correlation (version) recorded for it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '413':
+          description: The document is larger than the upload limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '503':
+          description: No database is configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /metrics:
+    get:
+      tags:
+      - ops
+      summary: Metrics
+      description: 'Prometheus metrics (SPEC section 10): read-only aggregates, bounded
+        labels, absent until stored.'
+      operationId: metrics_metrics_get
+      responses:
+        '200':
+          description: Prometheus text.
+          content:
+            text/plain; version=0.0.4; charset=utf-8:
+              schema:
+                type: string
+        '503':
+          description: No database is configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
 components:
   schemas:
+    CorrelationExists:
+      properties:
+        detail:
+          type: string
+          title: Detail
+        correlation:
+          $ref: '#/components/schemas/CorrelationOut'
+      type: object
+      required:
+      - detail
+      - correlation
+      title: CorrelationExists
+      description: '409: these exact bytes are this run''s correlation already (`correlation`).'
+    CorrelationOut:
+      properties:
+        run_id:
+          type: string
+          format: uuid
+          title: Run Id
+        sha256:
+          type: string
+          title: Sha256
+        correlator_version:
+          type: string
+          title: Correlator Version
+        group_count:
+          type: integer
+          title: Group Count
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - run_id
+      - sha256
+      - correlator_version
+      - group_count
+      - created_at
+      title: CorrelationOut
+    CorrelationVersions:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/CorrelationOut'
+          type: array
+          title: Items
+      type: object
+      required:
+      - items
+      title: CorrelationVersions
     ErrorOut:
       properties:
         detail:
