@@ -20,7 +20,7 @@ there is no default password anywhere.
 | postgres | `127.0.0.1:5432`, user and database `sentinel` | default | PostgreSQL 18 + pgvector |
 | redis | `127.0.0.1:6379` (password) | default | Celery broker (B1) |
 | seaweedfs | http://127.0.0.1:8333 (S3, signed requests only) | default | evidence store, ADR-0007 |
-| ollama | http://127.0.0.1:11434 | `ai` | local LLM (B5); no model pulled yet |
+| ollama | http://127.0.0.1:11434 | `ai` | local LLM (B5); pull the pinned models (below) |
 | prometheus | http://127.0.0.1:9090 | `observability` | metrics (A8) |
 | grafana | http://127.0.0.1:3000, user `admin` | `observability` | dashboards as code (A8) |
 
@@ -76,6 +76,25 @@ docker compose -f deploy/compose/compose.yaml down --volumes     # wipe all loca
 ```
 
 S3 with the AWS CLI: `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` from `.env`, `--endpoint-url http://127.0.0.1:8333`.
+
+## Local models (B5, ADR-0009)
+
+The `ai` profile starts Ollama with no model. Pull the two pinned models once (about 8 GB, kept in the
+`ollama-models` volume):
+
+```bash
+docker compose -f deploy/compose/compose.yaml exec ollama ollama pull gemma4:12b-it-qat
+docker compose -f deploy/compose/compose.yaml exec ollama ollama pull qwen3-embedding:0.6b
+```
+
+`sentinel_ai.providers.OllamaProvider` (`SENTINEL_OLLAMA_URL`, default `http://127.0.0.1:11434`) checks each
+model's digest against ADR-0009 before its first request: a missing model, or one with another digest, is refused
+and nothing is sent. It talks only to the loopback or the Compose service `ollama`, never through a proxy. The
+opt-in test runs it against your server (minutes on a CPU):
+
+```bash
+SENTINEL_OLLAMA_URL=http://127.0.0.1:11434 uv run pytest ai/tests/test_ollama.py -k real
+```
 
 ## Troubleshooting
 

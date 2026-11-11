@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.59 | B5a (§8, ADR-0009): `sentinel_ai.providers.OllamaProvider`, the default model backend, on the standard library only. Local only (the loopback or the Compose service `ollama`; another host only when asked), no proxy, no redirect. The pinned digests of ADR-0009 are checked before a model's first request (a missing model or another digest is refused, nothing sent). `complete` asks for JSON of the schema, deterministic (temperature 0, fixed seed), and validates the answer (a `ValidationError` for the repair retry); `embed` returns one finite vector per text, all of one size. Time limits, an 8 MiB answer cap, and errors that never echo the prompt or the answer. `deploy/compose/README.md` says how to pull the pinned models. |
 | 1.1.48 | B8 detection report (§17): `make eval` scans demo-shop with SentinelCI's own scanners (`sentinel scan secrets|iac|pipelines|sast|sca`) and scores the findings against the ground truth with its matching rules: recall per category (a `known_miss` counts as a miss), false positives on the clean controls, unlisted findings listed, the benchmark's size against §17, and the canaries (measured with B5). A category whose tool did not run is not measured, never 0. The report (`out/eval/detection.json` and `.md`) is the same for the same inputs, byte for byte, and names each input by its digest. |
 | 1.1.46 | B9 demo seeds, application code (§17, ADR-0011 decision 6): shop-api is a FastAPI service (`demo-shop/services/shop-api/app/`, `python -m app` on port 8080, writing only to `/tmp`) with six SAST seeds (GT-SAST-001 to 006, Opengrep 6/6 with SentinelCI's rules) and a safely written control (GT-CLEAN-005). Two prompt-injection canaries (GT-CANARY-001, 002) get their own `canaries` list in the ground truth (id, location, the seed they sit near, a unique token): an AI output that repeats a token obeyed it. GT-SCA-001 and 002 are now `imported: true`. `requirements.release.txt` pins the release image's dependencies by the hashes of their wheels (none built from source, no seeded version), and `requirements.block.txt` is the same with the seeded pyyaml 5.3.1 pinned by its sdist's hash. |
 | 1.1.39 | Threat model (§18, A10): `docs/threat-model.md` lists the assets, five attackers, the trust boundaries, and 29 threats, each with its control, where it lives, the test that proves it and its status (main, an open PR, or planned), then the residual risks accepted in the private phase. §18's signing key row follows ADR-0011 (no signing key on GitHub). |
@@ -532,6 +533,13 @@ AI runs after the decision is stored, writes only advisory tables, and every out
 - **Provider interface** `sentinel_ai.providers.LLMProvider` (`complete(system, user, schema)`, `embed(texts)`).
   Default: local models via Ollama, `gemma4:12b-it-qat` for generation and `qwen3-embedding:0.6b` for
   embeddings, pinned by digest (ADR-0009, measured in `eval/model-selection/`). No multi-provider gateway dependency.
+  Implemented (B5a): `sentinel_ai.providers.OllamaProvider`, on the standard library only. It talks to the
+  loopback or the Compose service `ollama` (another host only when asked, `allow_remote`), never through a proxy,
+  and refuses redirects. Before a model's first request it checks the server's digest of it against ADR-0009: a
+  missing model or another digest is refused and nothing is sent. `complete` asks for JSON of the schema
+  (`format`), at temperature 0 with a fixed seed, and validates the answer itself (a `ValidationError` is for the
+  caller's repair retry); `embed` returns one finite vector per text, all of one size. Every request has a time
+  limit and an 8 MiB answer cap, and a `ProviderError` never holds the prompt or the answer.
 - **Grounding:** offline CWE catalogue, OSV advisory text, code window; references must come from the context.
 - **Guardrails:** import contract; untrusted text in delimited data blocks; schema validation with one repair
   retry, else "unavailable"; secret redaction before any prompt; model/prompt/input hash logged; injection
