@@ -11,16 +11,22 @@
 | Version | Change |
 |---|---|
 | 1.1.43 | A3 (§5): the gate runs SAST and SCA. `sentinel-scan.yml` installs Opengrep, Syft and Grype from the lock, prepares Grype's database once (`sentinel tools grype-db --timeout`, evidence in `grype-db.json`), then runs `sentinel scan sast` and `sentinel scan sca` on the head commit and on the PR baseline, combined with the other scanners. Both commands take `--timeout` and `--tool-status-out`: Opengrep's run is recorded like the others'; the SCA status names Syft and Grype apart (`SbomScanFailure` says which one failed; Grype is `not_run` after a failed Syft; a report that cannot be trusted is Grype's failure). `scan sca --report` records the database the scan read and the SBOM's sha256 (`sca-report.json`), and the `match` block is pinned in `configs/grype.yaml` and required in the report (#52 review). The scan job's limit goes to 85 minutes, the sum of its runs at 300 s each. Whether the gate requires these tools is `policies/required_tools.rego` (B4). |
+| 1.1.39 | Threat model (§18, A10): `docs/threat-model.md` lists the assets, five attackers, the trust boundaries, and 29 threats, each with its control, where it lives, the test that proves it and its status (main, an open PR, or planned), then the residual risks accepted in the private phase. §18's signing key row follows ADR-0011 (no signing key on GitHub). |
 | 1.1.37 | A3 CI workflow audit in the gate (§5): `sentinel-scan.yml` runs `sentinel scan pipelines` (zizmor) on the head commit in both modes and on the base commit for the pr baseline, so SC-009 now blocks a high-severity CI workflow issue a change introduces (demo-shop: GT-PIPELINE-001 to 003). `scan pipelines` writes a tool status like the other scanners (`--tool-status-out`, `--timeout`): `ok` with the verified binary's sha256 and, as its artifact, the pinned wheel that carries it; a crash, a timeout or a binary no pinned wheel carries is `failed`, `timeout` or `integrity_mismatch`, and the gate blocks it (SC-010). The scan job's limit is 45 minutes, for the extra runs. zizmor is not in `policies/required_tools.rego` yet (Track B): until it is, a workflow that drops the audit is not caught by the gate. |
+| 1.1.34 | A7 stage 3 and evaluation (§8, §17): `correlate.labels.label_groups` lets a model write the labels of groups of two findings or more (never a secret's), from findings sent as escaped JSON data without ids, snippets or evidence and with secrets redacted; one repair retry, else the template stays; an answer with a secret is refused; a template fix is never replaced; the group records the model and the prompt and input sha256. `correlate.evaluation`: ablation, the ARI-vs-threshold sweep and the calibration. |
 | 1.1.30 | Platform API migrations (B1, §13.3): going below 0004 stops, changing nothing, while any run keeps its uploaded findings bytes, which are the only copy `findings_sha256` was taken of; before, the downgrade dropped them without a word. A database without kept bytes still goes down. Raised on #57. |
 | 1.1.29 | Platform API 1.2.0 (B1, §13.3): the platform keeps each run's findings upload byte for byte and serves it at `GET /api/v1/runs/{id}/findings`, so a consumer that must match `findings_sha256` (the correlator's run document, #47; a replay) reads the exact bytes; the JSONB rows keep neither key order nor bytes. The database keeps only bytes that hash to the recorded digest, and the recorded-run trigger makes them immutable. Runs recorded before have none, and the API says so. |
 | 1.1.28 | Platform API 1.1.0 (B1, §13.3): one run per CI run. `POST /api/v1/runs` with the `repo`, `commit`, `context` and `run_id` of a run already recorded (a re-run of `sentinel upload`, #50) is answered 409 with the existing run, which the client resumes instead of recording the findings a second time; a unique index decides between concurrent requests. A run without `run_id` is always new. Migration 0003 stops, changing nothing, on a database that already holds a CI run twice. |
 | 1.1.27 | Diff-aware PR mode (§5, B4): a known vulnerable package (SCA) in a manifest where the base branch did not have it counts as introduced, like a known secret in a new file. SCA fingerprints hold no path, so a second service that starts to use a vulnerable package kept the old id and passed as "not new", although that service has its own exposure and reachability. A moved manifest now counts as new too, which errs toward blocking. Agreed on #52. |
+| 1.1.26 | A1 (§5, §17): `sentinel scan iac` also loads SentinelCI's own Trivy checks (`scanners/configs/trivy-checks`, `--config-check`, namespace `sentinelci`), and a check that does not compile stops the scan (`--rego-error-limit 0`; Trivy would otherwise drop it and exit 0). The first one, SENTINEL-AWS-0001 (HIGH), reports an IAM policy statement that allows every action on every resource: an action pattern made only of wildcards (`*`, `*:*`, `**`, `*:?*`), on `*` or with `NotResource` (every resource but those). It covers declared policies, policy documents, and inline policies of declared roles, users and groups, in Terraform or CloudFormation YAML. Trivy's embedded checks miss it (ADR-0012), so GT-IAC-004 is detected by the pinned Trivy again. Not seen, because Trivy does not adapt them: a policy attached by ARN (AWS-managed `AdministratorAccess`), a policy of an undeclared role, user or group, a Terraform `file()` or `templatefile()` policy, a CloudFormation `AWS::IAM::ManagedPolicy`, and any policy of a CloudFormation JSON template (pinned by a test). Not this check: `Allow` with `NotAction` on every resource. |
 | 1.1.25 | A1 SCA (§5 stage 3, §13.1): `sentinel scan sca` runs the pinned Syft (one run writes CycloneDX, SPDX and syft-json) and the pinned Grype on that SBOM, offline, with SentinelCI's `scanners/configs/grype.yaml` from a private directory, against a prepared database (`--db-dir`; over five days old fails closed unless `--allow-stale-db`). `sentinel tools grype-db` prepares it with the same Grype and configuration (pinned update URL, or `--archive`: a local file digested first, or an https URL naming its sha256), the job's proxy and CA variables only, and fails closed unless `grype db status` then calls it valid. `sentinel normalize grype` turns a source-tree report into SCA findings: rule id and fingerprint vuln id = Grype's matched id, related CVEs in `cve`, other ids in `aliases`; Negligible counts as INFO and Unknown as HIGH; one finding per purl base with every place; no CVSS / EPSS / KEV copied (enrichment is B2's snapshot); a report that shows a silenced match, an invalid database or an image source fails closed. Golden file: B's real Grype 0.121.0 report on demo-shop. |
 | 1.1.24 | B1 acceptance changed after the plan, while GitHub Actions are blocked: "an upload (`sentinel upload`, 1.1.23) or a sync ingests a real run" replaces "a sync ingests a real run". M1 can then be met by uploading a local run; the GitHub sync (§4.1, the platform pulls each CI run's evidence) stays in B1 and lands once CI runs exist. Hand-off B1 → A3, A8: OpenAPI and the ingestion endpoints at the end of S1, the sync later. |
+| 1.1.23 | `sentinel upload` (stage 11, M1): one run's findings to the B1 ingestion API, after the verdict, with exit code 4 on failure (never the gate's codes). The token comes only from `SENTINEL_API_TOKEN` (visible ASCII) and is never printed; the URL is https or the loopback, with no redirect, and plain http never goes through a proxy; each request has a 120 s deadline; any failure, a malformed answer included, is exit 4 with no traceback. Findings are checked locally as the API checks them; the platform's `findings_sha256` and `finding_count` must match; `--resume` finishes a run that stopped after its creation, and any failure once the run exists names it. A CI run (`--run-id`) needs no `--resume`: the platform answers it again with 409 and the run it has (API 1.1.0, #56), which the client checks is this run (repo, commit, context, ref, run id) and finishes or confirms. In GitHub Actions the run id is `<run id>/<run attempt>`, so a re-run of the job is a new run; a local run is recorded anew. A platform answer that quotes the token is printed with `<SENTINEL_API_TOKEN>` in its place. |
 | 1.1.22 | Checkov dropped (ADR-0012): stage 4 is Trivy (config) and zizmor, A1 has no Checkov adapter, and §11 says so. The demo-shop ground truth keeps only detections by pinned tools; GT-IAC-004, which Trivy 0.76.1 misses, stays a seed with `known_miss` and counts as a miss for IaC recall. |
 | 1.1.21 | A6 apply step (§9): `sentinel remediate apply` commits a patch proposal on a new `sentinel/fix/` branch of a local clone with plumbing commands on a temporary index (never pushes, checks nothing out, so no hook, filter or fsmonitor of the clone runs), after checking that the proposal id matches its content, that its findings are in the base scan (`--findings`) and its files are where they were found, and that the diff edits exactly the listed regular files in place (no file created, deleted, renamed, made executable or symlink retargeted). The commit has a `Sentinel-Diff` trailer and the proposal's dates. |
 | 1.1.20 | A7 correlation (§8, §13.2, §17): `schemas/root-cause-group.v1.json` (RootCauseGroup v1, advisory: `stage` is what formed a group, dedup, structural or embedding, `labelled_by` who wrote its labels, template or llm with its `model`, and an embedding group's `similarity`) and `schemas/correlation.v1.json` (one run's groups with the sha256 of the findings they came from, the stages that ran in their order, the threshold and the embedding model, and a stage that failed as `skipped`; the schema refuses a group formed by a stage that did not run, and the models refuse whatever the schemas refuse, without coercion); stages 1 (dedup) and 2a (structural fix keys, within one category) of `sentinel_ai.correlate`, stage 2b (embedding clustering, never secrets) with an injected embedder that falls back to stages 1 and 2a when it fails (an exception, a non-finite, empty or zero vector), the findings split on `\n` only as the gate and B1 split them, and the ARI and alert-reduction metrics. The threshold is calibrated off demo-shop (§17). |
+| 1.1.19 | A5 admission policy (§7): `sentinel admission-policy` renders the Kyverno 1.19 `ImageValidatingPolicy` (`policies.kyverno.io/v1`) from the parameters of `sentinel verify`, and requires the same things: the image's `cosign sign` statement (as an attestation, since `verifyImageSignatures` accepts any key-signed statement) and the four attestations, bound as `sentinel verify` binds them. Kyverno CLI pinned in `tools.lock.toml`; every bad case the tests cover is refused by both verifiers (`kyverno apply` against a real registry). The decision must be a non-BLOCK Decision v1 verdict (versions rendered from the contract); images match as a prefix of the lower-cased reference; `pods/ephemeralcontainers` is covered; the key file must hold exactly one public key. Admission is weaker than `sentinel verify` on the full schemas and on ambiguity (named in the README). |
+| 1.1.18 | A4 registry mode (§7, ADR-0010 decision 4): `sentinel attest --push` also signs the image and attaches the four attestations to it in its registry (Cosign 3 bundles, by digest); `sentinel verify` without `--evidence` reads them back and requires the image's own `cosign sign` statement, since Cosign 3 accepts any key-signed statement about the digest as a signature. A digest has one release per registry: `attest --push` refuses a different one before signing, and a re-run signs the same statements (the provenance names the run, not its attempt). `--registry-http` is for a loopback or single-label local registry only. crane is pinned in `tools.lock.toml` (local test registry, copies by digest). |
 | 1.1.17 | A6b remediation (§9): `sentinel remediate dockerfile`: the deterministic Dockerfile fixer (`USER 10001:10001` added to the final stage after its last RUN and USER, never rewriting a USER line; COPY instead of ADD only when every source is a directory or a plain file of the repository, neither a tar nor compressed, judged by content; `apt-get install --no-install-recommends`; each checked against the pinned Trivy), sharing the per-file loop with the Kubernetes fixer. An edit leaves alone an instruction that carries a finding it does not resolve (its fingerprint would change), a proposal claims only the findings an edit resolved, and CRLF files are left alone. The USER change can change what the image does, and the rationale says so. |
 | 1.1.16 | A6a remediation (§9): `sentinel remediate kubernetes` proposes hardening for the Trivy findings the deterministic Kubernetes fixer resolves (16 rule ids, each checked against the pinned Trivy; manifests edited round-trip, so the diff shows only the hardening; a non-root UID/GID, a read-only root file system and dropped capabilities can change how a workload runs, and the rationale says so), as a `PatchProposal`; `sentinel remediate verify` applies the verification gate and writes a `VerificationResult`. The gate refuses (exit 3) a proposal whose id does not match its content, that claims findings the base scan lacks or edits anything but where they are, and a decision not made in pr context on the patched findings with the tool status (which must show every target's scanner ok); a target re-reported under a new fingerprint (same tool, rule and file) is not gone, and a base finding that rises to MEDIUM or higher is new. Read models for both contracts; the §9 states and their transitions. New dependency: ruamel.yaml. |
 | 1.1.15 | A1 SAST (§5): `sentinel scan sast` runs the pinned Opengrep (no checksum file upstream: pinned by hash after checking each asset's keyless signature, recorded in `tools.lock.toml` with its signer identity) with SentinelCI's own rules only (`configs/opengrep/`, each pinned by cases it must flag and leave alone), offline, with `nosemgrep` comments, `.semgrepignore`, `.gitignore`, the size and per-file time limits and repository rule files never honoured, and links leaving the tree refused; a file Opengrep cannot analyse for more than half of its lines, and any other error even reported as a warning, fails closed; findings are category SAST with the §13.1 SAST fingerprint, plus the occurrence number for repeated identical matches in a file (each copy is its own finding, so a copy is new in a PR and a waiver covers one place); each smaller gap Opengrep could not parse is a SAST HIGH finding of its own (`sentinel-sast-not-analysed`, fingerprinted on the skipped text, its message naming the lines and quoting no code), so padding cannot hide unparsed code, and valid syntax Opengrep cannot parse yet is waived with an expiry. |
@@ -187,7 +193,7 @@ Local CLI runs can **push** to the same ingestion API. No self-hosted runners (a
 | 8 | Normalize + enrich | `sentinel normalize` / `enrich` | findings.v1.ndjson + snapshot | — |
 | 9 | Decision | `sentinel evaluate` (risk + OPA) | decision.v1.json | job fails on BLOCK |
 | 10 | Sign + attest | Cosign (sign, attest SBOM / vuln / decision / provenance) | registry | only if ≠ BLOCK |
-| 11 | Report | PR comment, evidence artifact | comment, artifact | — |
+| 11 | Report | PR comment, evidence artifact; `sentinel upload` to the platform (token from the environment, own exit code) | comment, artifact, platform run | — |
 | 12 | Deploy | GitOps digest bump → Argo CD → Kyverno | pods | admission deny |
 
 **Scanner hardening (A1).** Every scanner run (1) re-verifies the binary against `tools.lock.toml` right
@@ -202,18 +208,12 @@ harmless options. Merge commits are scanned with `--diff-merges=remerge`, so a s
 (an "evil merge") is found while an honest merge of the base branch blames nobody (octopus merges excepted:
 remerge does not diff them, so they get a second `first-parent` pass, which also reports what the other parents
 already had; the PR baseline drops what the base branch has). Each Gitleaks pass gets the full scanner time
-limit, so git mode can take twice as long. Dir mode opens archives (`.zip`, nested up to 3 levels). Grype never
-reads the scanned repository: it matches the Syft SBOM, from a private working directory with SentinelCI's
-configuration, offline, against a database the pipeline prepared (`sentinel tools grype-db`: the same verified
-Grype and configuration, which pins the update URL, then Grype's own validity check, offline); a database built
-more than five days ago fails the scan (SC-010), and a report whose recorded configuration hides matches (ignore rules beyond Grype's built-in
-kernel-header rules, VEX, exclusions, `only-fixed`, `by-cve`) is refused. Legitimate exceptions go through
-waivers (§6.4).
-
 limit, so git mode can take twice as long. Dir mode opens archives (`.zip`, nested up to 3 levels). Trivy
 (`sentinel scan iac`) never loads the repository's `trivy.yaml` or `.trivyignore` (`--config ""`,
 `--ignorefile ""`), refuses a tree that contains inline `trivy:ignore` / `tfsec:ignore` comments (no flag turns
-them off), uses the checks embedded in the pinned binary with SentinelCI's own check data, and runs offline: proxy
+them off), uses the checks embedded in the pinned binary with SentinelCI's own check data, plus SentinelCI's own
+checks for gaps in Trivy's (`scanners/configs/trivy-checks`, namespace `sentinelci`, ids `SENTINEL-*`; the
+repository can add none, and one that does not compile stops the scan), and runs offline: proxy
 variables point at a closed local port and `GIT_ALLOW_PROTOCOL=none`, so remote Terraform modules named by the
 scanned code are never fetched and not evaluated (the CLI lists the sources of their `module` blocks in the job log,
 following local modules). Trivy also loads local modules outside the scan path (`source = "../mod"`), transitively,
@@ -244,6 +244,14 @@ the code it is about, never the step's position, so adding a step does not make 
 expression in a job is a new finding. `sentinel-scan.yml` runs it on the scan path of the head commit in both modes, and of the base
 commit for the pr baseline (only an issue the change introduces blocks), with a tool status like the other
 scanners (a failure is SC-010).
+
+Grype (`sentinel scan sca`, findings of category SCA) never reads the scanned repository: it matches the Syft
+SBOM, from a private working directory with SentinelCI's configuration, offline, against a database the pipeline
+prepared (`sentinel tools grype-db`: the same verified Grype and configuration, which pins the update URL, then
+Grype's own validity check, offline); a database built more than five days ago fails the scan (SC-010), and a
+report whose recorded configuration hides matches (ignore rules beyond Grype's built-in kernel-header rules, VEX,
+exclusions, `only-fixed`, `only-notfixed`, `ignore-wontfix`, a distro override, `by-cve`) is refused. Legitimate
+exceptions go through waivers (§6.4).
 
 Opengrep (`sentinel scan sast`, findings of category SAST) publishes no checksum file: each release asset is signed
 keyless by its release workflow. It is pinned by hash in `tools.lock.toml` after checking each asset's signature
@@ -536,11 +544,17 @@ bump.
   attestation must be signed by `--key` and about this digest; the decision must be a release decision about
   this image from `--repo`; the provenance must come from `--builder-id` and the decision's commit; the
   vulnerability result and the SBOM must be the decision's. Exit 0 trusted, 1 not trusted, 3 could not run.
-  Offline from the evidence directory's Sigstore bundles (`--evidence`); registry mode with the release
-  workflow (A4b).
-- **Kyverno ImageValidatingPolicy** (apiVersion depends on the Kyverno release): match our images, attestor =
-  our public key (private mode) or keyless identity (GitHub mode), require the decision attestation with
-  verdict ≠ BLOCK and an SBOM attestation, `mutateDigest: true`. Negative tests on kind in CI.
+  Offline from the evidence directory's Sigstore bundles (`--evidence`), or from the registry (the image's
+  `cosign sign` statement and the four attestations `sentinel attest --push` attached, A4d).
+- **Kyverno ImageValidatingPolicy** (`policies.kyverno.io/v1`, Kyverno 1.19, rendered by
+  `sentinel admission-policy`): match our images (a prefix of the lower-cased reference), attestor = our
+  public key (private mode; a keyless identity comes with keyless `sentinel verify` in GitHub mode), require
+  the image signature and the four attestations bound as `sentinel verify` binds them (a non-BLOCK Decision v1
+  verdict about this digest, from our repository; provenance from the release workflow and the decision's
+  commit; the vulnerability result and SBOM of that decision), `mutateDigest: true`. CEL reads one statement
+  per type, so admission is weaker than `sentinel verify` on the full Decision v1 and vuln-result schemas and
+  on ambiguity (a second statement of a type). Negative tests with `kyverno apply` against a real registry,
+  then on kind in CI.
 
 ## 8. AI layer
 
@@ -564,8 +578,17 @@ AI runs after the decision is stored, writes only advisory tables, and every out
   package, the same advisory under any of its ids, the same rule in the same file; deterministic) → stage 2b
   embeddings (pgvector) + average-linkage clustering within a category, never for secrets (each is rotated on
   its own) → stage 3 LLM labels and single fix for the groups it is given (it labels, it never forms groups);
-  each stage measured separately (ARI, alert reduction). A fix is proposed only when one change resolves every
-  member. A run's groups travel in a correlation document (`schemas/correlation.v1.json`) with the sha256 of
+  each stage measured separately (ARI, alert reduction). Stage 3 (`correlate.labels`) is given the groups of
+  two findings or more, never one with a secret; each finding goes as one JSON line in a `<findings>` data
+  block, with `<` and `>` escaped, without its id, snippet or evidence, and with anything that looks like a
+  secret redacted. The answer must validate (one line each, the contract's lengths), with one repair retry,
+  else the group keeps its template labels; an answer that quotes a secret is refused; a template's fix is
+  never replaced. A labelled group records the provider, the model and the sha256 of the prompt and of its
+  input. A template fix is proposed only when one change resolves every member; a model's fix only fills a
+  group that had none, and is advice that no stage verifies. The group's template title and shared key go in a
+  `<group>` data block, escaped like the findings, and the prompt names both blocks as data. Redaction covers
+  known token prefixes, `Bearer`/`Basic` values, a URL's password and any assignment whose name holds password,
+  secret, token, key or credential (single or double quotes, prefixed names such as `DB_PASSWORD`). A run's groups travel in a correlation document (`schemas/correlation.v1.json`) with the sha256 of
   the findings they came from (computed on the bytes B1 recorded, `GET /api/v1/runs/{id}/findings`), the stages
   that ran, the threshold and the embedding model; if the embedder fails, stages 1 and 2a are kept and the
   document records the embedding stage as `skipped`, with the failure, so an outage never reads as an
@@ -840,7 +863,9 @@ in a container, or a split of seeds fixed before any score is looked at), then c
 before the demo-shop run. On demo-shop, the ARI-vs-threshold curve, with stage 2b on and off, is reported as
 sensitivity only. Alert reduction counts raw tool reports (`out/raw/`, so stage 1 merges the tools) against
 groups; a findings file already has one finding per fingerprint, so stage 1 alone reduces nothing there.
-Findings with no ground-truth seed are left out of the ARI and listed.
+Findings with no ground-truth seed are left out of the ARI and listed. `sentinel_ai.correlate.evaluation`
+computes them: `ablation` (each configuration of stages), `sweep` (the curve), `calibrate` (the best ARI, a
+tie going to the highest threshold, which merges least); the embedder is called once per text for a sweep.
 
 **Demo (5 min):** context (2026 incident) → BLOCK on a PR → understand (score factors, AI advisory) → fix (bot PR,
 VERIFIED) → release (signed, `sentinel verify`, Argo CD, Kyverno admits) → attack (bad image denied) →
@@ -853,7 +878,7 @@ manipulate the AI (verdict unchanged) → prove (`sentinel replay`, Grafana).
 | Laptop resources | Compose profiles; small quantized model on the stronger machine |
 | Direct push to `main` (no server-side protection while private) | Team convention, local pre-commit guard, CI on every push to `main` |
 | Actions minutes (private) | Path filters, caches, nightly full scans |
-| Signing key in CI (private phase) | Only the attest job references it; rotate and switch to keyless when public |
+| Signing key (private phase) | Never on GitHub: a laptop signer with a password-protected key, run only from a clean tree at `origin/main` (ADR-0011); keyless signing in CI when public |
 | External APIs down | Snapshots and offline fixtures |
 | Scanner noise | Diff-aware gating, risk scoring, correlation, waivers |
 | Integration drift | Contracts + fixtures in CI; weekly sync |
@@ -861,6 +886,9 @@ manipulate the AI (verdict unchanged) → prove (`sentinel replay`, Grafana).
 | Vulnerable demo code misused | Local only, fake secrets, loud labelling |
 | Our own supply chain | SHA pins, tools verify, Dependabot cooldown, zizmor, review of dependencies |
 | AI hallucinations | Grounding, schemas, advisory only, deterministic verification, evaluation |
+
+The threats to SentinelCI itself (who attacks, which control answers, where it is tested, what remains) are
+in `docs/threat-model.md`.
 
 ## 19. CV and interview kit
 

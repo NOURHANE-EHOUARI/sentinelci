@@ -1,10 +1,11 @@
 # Ground truth of the demo-shop benchmark (SPEC section 17).
 # Format: see README.md in this directory. Draft v1 proposed by A9; B9 owns the final schema.
 # Paths are relative to demo-shop/. Detections were verified with the pinned tools:
-# Gitleaks 8.30.1, Trivy 0.76.1 (embedded checks, SentinelCI configuration) and zizmor 1.31.1. Checkov is not
-# used (ADR-0012); a seed no pinned tool detects says why in `known_miss`. SCA detections are Grype 0.121.0's
-# on the pinned Syft 1.55.0's SBOM, verified with the Grype database built 2026-11-01T06:20:12Z (schema
-# v6.1.10); they need such a database to be checked again (see README.md, Checks).
+# Gitleaks 8.30.1, Trivy 0.76.1 (embedded checks plus SentinelCI's own, SentinelCI configuration) and
+# zizmor 1.31.1. Checkov is not used (ADR-0012); a seed no pinned tool detects says why in `known_miss`.
+# SCA detections are Grype 0.121.0's on the pinned Syft 1.55.0's SBOM, verified with the Grype database
+# built 2026-11-01T06:20:12Z (schema v6.1.10); they need such a database to be checked again (see
+# README.md, Checks).
 version: 1
 
 seeds:
@@ -99,13 +100,11 @@ seeds:
     category: IAC
     title: IAM policy allowing every action on every resource
     location: {path: infra/terraform/iam.tf, line: 8}
-    known_miss: >-
-      Trivy 0.76.1 does not flag a fully wildcarded IAM policy in any form tried (jsonencode, a JSON heredoc,
-      an aws_iam_policy_document with actions ["*"], an inline role policy, CloudFormation AWS::IAM::Policy
-      and ManagedPolicy): its AWS-0057 is deprecated and has no rule left, so --include-deprecated-checks does
-      not help. It counts as a miss for IaC recall (ADR-0012).
+    # Trivy 0.76.1's embedded checks do not flag this policy (jsonencode or aws_iam_policy_document); SentinelCI's
+    # own Trivy check SENTINEL-AWS-0001 (cli/src/sentinelci/scanners/configs/trivy-checks) does.
     expected:
-      detections: []
+      detections:
+        - {tool: trivy, rule: SENTINEL-AWS-0001}
 
   - id: GT-IAC-005
     owner: A9

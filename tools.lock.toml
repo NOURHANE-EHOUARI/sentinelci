@@ -6,8 +6,8 @@
 #
 # Hashes were copied from each project's published checksum file for that exact release (linked below) on
 # 2026-10-28. To upgrade a tool: open a PR that changes the version, URLs and hashes together, and link the
-# upstream checksum file in the PR description so the reviewer can check every value. A Trivy upgrade also
-# re-checks GT-IAC-004 (demo-shop ground truth): its known_miss names Trivy's version.
+# upstream checksum file in the PR description so the reviewer can check every value. A Trivy upgrade must
+# keep SentinelCI's own check SENTINEL-AWS-0001 compiling and detecting GT-IAC-004 (demo-shop ground truth).
 #
 # Opengrep publishes no checksum file: each asset is signed keyless (Sigstore) by its release workflow. Its
 # hashes were taken from the assets after verifying each signature (see the opengrep entry).
@@ -208,6 +208,58 @@ url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_o
 certificate_url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_osx_arm64.cert"
 signature_url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_osx_arm64.sig"
 sha256 = "a17c1881bb40e3214266a7a291cf4f2ae3bc56c1715628b5712d2ec816bc3e2d"
+
+
+# OCI registry client and a local registry for the registry-mode tests (`crane registry serve`, `crane append`)
+# and for copying release images by digest (A4, A5). Release assets of google/go-containerregistry.
+[tools.crane]
+version = "0.22.1"
+homepage = "https://github.com/google/go-containerregistry"
+checksums_url = "https://github.com/google/go-containerregistry/releases/download/v0.22.1/checksums.txt"
+binary = "crane"
+archive = "tar.gz"
+
+[tools.crane.artifacts.linux-amd64]
+url = "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz"
+sha256 = "0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0"
+
+[tools.crane.artifacts.linux-arm64]
+url = "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_arm64.tar.gz"
+sha256 = "898c0cff975f898a33e8c4580bdafb0e7c02c7faa33374e946762f97c4ab7110"
+
+[tools.crane.artifacts.darwin-amd64]
+url = "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Darwin_x86_64.tar.gz"
+sha256 = "6fedd06a648c11335f0e8b9547e4783002c30e9336047fec292942cd518bb799"
+
+[tools.crane.artifacts.darwin-arm64]
+url = "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Darwin_arm64.tar.gz"
+sha256 = "2231fc8df8806d20d680ff1225db44e095a55dd6ac1ae8eced4faf4b278b78fb"
+
+
+# Admission policy engine, as a CLI (A5): `kyverno apply` evaluates the release-evidence ImageValidatingPolicy
+# against Pods and reads signatures and attestations from the registry, like the admission controller does.
+[tools.kyverno]
+version = "1.19.2"
+homepage = "https://github.com/kyverno/kyverno"
+checksums_url = "https://github.com/kyverno/kyverno/releases/download/v1.19.2/checksums.txt"
+binary = "kyverno"
+archive = "tar.gz"
+
+[tools.kyverno.artifacts.linux-amd64]
+url = "https://github.com/kyverno/kyverno/releases/download/v1.19.2/kyverno-cli_v1.19.2_linux_x86_64.tar.gz"
+sha256 = "357eaf1df8bc24ddd5a73979fadeaae6a032e8710f11af264229756e4956bf4a"
+
+[tools.kyverno.artifacts.linux-arm64]
+url = "https://github.com/kyverno/kyverno/releases/download/v1.19.2/kyverno-cli_v1.19.2_linux_arm64.tar.gz"
+sha256 = "250f2a02f143d5c6425e686b13c130d3a3ba7372dba6a7210d599d1b0dd12e92"
+
+[tools.kyverno.artifacts.darwin-amd64]
+url = "https://github.com/kyverno/kyverno/releases/download/v1.19.2/kyverno-cli_v1.19.2_darwin_x86_64.tar.gz"
+sha256 = "b645654ab8e65bd4aa64de9228e274b388bab19b3404a4e9af70174b3d5ad230"
+
+[tools.kyverno.artifacts.darwin-arm64]
+url = "https://github.com/kyverno/kyverno/releases/download/v1.19.2/kyverno-cli_v1.19.2_darwin_arm64.tar.gz"
+sha256 = "7915c03c613c22363a100adb3da8d06f2e2626d9d21a98b97f921795ffdc536f"
 
 
 # Python tools (SPEC §5): installed by `uv sync --locked` from PyPI, where the project publishes no checksum file
