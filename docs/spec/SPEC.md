@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.80 | A6 verification (§9, ADR-0013 decision 6): `sentinel remediate check` takes `--findings`, the scanned commit's IaC findings, and re-runs the deterministic fixer on them and the base tree, now the whole commit (an ADD source may be at the repository root): a proposal that is not the fixer's own output, field for field but `created_at`, fails the tests: it catches any edit the fixer would not make, whatever its shape, on top of 1.1.52's line rule. The verify job exports every tree with `git archive --worktree-attributes` from its bare repository, so the commit's `.gitattributes` (export-ignore, export-subst) cannot change what is scanned and checked. |
 | 1.1.52 | A6 check, #65 review nits (§9): `sentinel remediate check` accepts ADD → COPY only where the Dockerfile fixer makes that edit, judged on the base tree with the fixer's own rule (`add_only_copies`: COPY's flags only, every source a plain local file or directory, never a URL, an archive, a link, a glob or a variable), and only on an ADD's first line (pinned by a test). |
 | 1.1.39 | Threat model (§18, A10): `docs/threat-model.md` lists the assets, five attackers, the trust boundaries, and 29 threats, each with its control, where it lives, the test that proves it and its status (main, an open PR, or planned), then the residual risks accepted in the private phase. §18's signing key row follows ADR-0011 (no signing key on GitHub). |
 | 1.1.36 | A6 verification run (§9, ADR-0013 decision 5): the bot verifies the pull requests it opened in the same run. `verify` (read-only, no secret, the scanned commit's pipeline) rebuilds each pull request's commit from its proposal and the scanned commit and requires it to be the same commit; scans both commits with the scanners the pr gate requires (Gitleaks on the commits, Trivy on the tree); builds and tests the patch with `sentinel remediate check`; evaluates the gate on the patched commit in pr context with the scanned commit as baseline; then runs `sentinel remediate verify`. `report` (no repository code) re-checks each result against the gate's invariant, comments it and sets the `sentinelci/remediation` commit status; a pull request without a trustworthy result is reported FAILED and the run fails. `sentinel remediate check`: for IaC, build = every edited file still parses into the same resources (a manifest's documents, a Dockerfile's stages), tests = the patch changes only what its strategy may change; exit 3 for a strategy with no build or tests defined (LLM code fixes, B6). `publish` also refuses a proposal that lists a file outside the scanned path or whose file name is not a plain name, and reports a branch it could not push or a pull request it could not open instead of stopping. |
@@ -618,8 +619,13 @@ reported FAILED. For the IaC strategies, `sentinel remediate check` defines the 
 parses into the same resources: a manifest's documents, a Dockerfile's stages) and the tests (the patch changes only
 what its strategy may change: a manifest's pod and container security settings; a Dockerfile's added `USER
 10001:10001` after the final stage's last RUN, ADD → COPY only where the fixer makes it (COPY's flags, plain local
-sources of the base tree: never a URL, an archive or a link), `--no-install-recommends`). A strategy with no build or
-tests defined there (the LLM code fixer, B6) is never verified until it has them.
+sources of the base tree: never a URL, an archive or a link), `--no-install-recommends`). The tests also re-run the
+deterministic fixer on the scanned commit's whole tree and IaC findings: the proposal must be its output, field
+for field but `created_at` (a deterministic fixer gives the same proposal on the same input), which catches any
+edit the fixer would not make, whatever its shape. `verify` exports every tree with `git archive
+--worktree-attributes` from a bare repository, so the scanned commit's `.gitattributes` cannot drop or rewrite what
+is scanned and checked. A strategy with no build or tests defined there (the LLM code fixer, B6) is never verified
+until it has them.
 
 ## 10. Dashboard and observability
 
