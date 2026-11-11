@@ -288,7 +288,7 @@ uv run sentinel normalize grype grype.json --scan-root demo-shop --out out/sca.n
   invalid or stale, the report names another Grype version, or its recorded configuration shows anything that
   hides matches (ignore rules beyond Grype's built-in kernel-header rules, VEX, exclusions, `only-fixed`,
   `only-notfixed`, `ignore-wontfix`, a distro override, `by-cve`). An image report is refused by
-  `normalize grype` (CONTAINER findings need the image digest: the image adapter).
+  `normalize grype`: its findings are CONTAINER findings, from `sentinel scan image`.
 
 **Registry mode.** With `--push`, `sentinel attest` also signs the image itself (`cosign sign`) and attaches
 the four statements to it in its registry (`cosign attest`), always by digest. That copy is what Kyverno reads
@@ -332,6 +332,27 @@ uv run sentinel verify <registry>/demo-shop/shop-api@sha256:<digest> --key cosig
   When the registry accepts the connection and never answers, Cosign's 120 s timeout ends the run (exit `3`).
   Both refuse the image.
 
+
+## `sentinel scan image` (container vulnerabilities, A1)
+
+```bash
+docker buildx build --output type=oci,dest=out/image.oci.tar --provenance=false --sbom=false \
+  -f demo-shop/services/shop-api/Dockerfile.release demo-shop/services/shop-api
+uv run sentinel scan image out/image.oci.tar --image-digest "sha256:<manifest digest from index.json>" \
+  --image-ref kind-registry:5000/demo-shop/shop-api --db-dir .sentinel/grype-db --out out/container.ndjson \
+  --tool-status-out out/container-status.json \
+  --repo NOURHANE-EHOUARI/sentinelci --commit "$(git rev-parse HEAD)" --context release
+```
+
+- The same Syft run as `sentinel sbom` on the image's OCI layout archive, which must hold the image of
+  `--image-digest` (both SBOMs name it), then the same Grype, database and checks as `scan sca`: offline, from a
+  private directory, SentinelCI's configuration, nothing that hides a match.
+- Findings (category CONTAINER): one per (vulnerability id, purl base), with `package` and `image` (the digest,
+  `--image-ref`, and the layer of the package's first place in the image, by path). Paths inside the image are
+  not repository paths, so there is no `location`. The report must be about `--image-digest`.
+- `--tool-status-out` names `syft` and `grype`: a Syft failure leaves Grype `not_run`; a Grype failure, or a
+  report that cannot be trusted, keeps Syft `ok` and records Grype's failure. Exit code `3` and no findings file
+  in every failure.
 
 ## `sentinel sbom` (SBOMs, A4)
 

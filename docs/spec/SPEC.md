@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.41 | A1 image adapter (§5 stage 7, §13.1): `sentinel scan image` scans a built image's OCI layout archive with the pinned Syft and Grype, offline, into CONTAINER findings (`package` and `image`: digest, reference, layer), one per (vulnerability, purl base) with the CONTAINER fingerprint. The report must be about the given manifest digest, and its configuration must hide nothing, as for `scan sca`. A tool status for Syft and Grype (a failed Syft leaves Grype `not_run`), so the gate records a failed image scan as SC-010. |
 | 1.1.39 | Threat model (§18, A10): `docs/threat-model.md` lists the assets, five attackers, the trust boundaries, and 29 threats, each with its control, where it lives, the test that proves it and its status (main, an open PR, or planned), then the residual risks accepted in the private phase. §18's signing key row follows ADR-0011 (no signing key on GitHub). |
 | 1.1.34 | A7 stage 3 and evaluation (§8, §17): `correlate.labels.label_groups` lets a model write the labels of groups of two findings or more (never a secret's), from findings sent as escaped JSON data without ids, snippets or evidence and with secrets redacted; one repair retry, else the template stays; an answer with a secret is refused; a template fix is never replaced; the group records the model and the prompt and input sha256. `correlate.evaluation`: ablation, the ARI-vs-threshold sweep and the calibration. |
 | 1.1.30 | Platform API migrations (B1, §13.3): going below 0004 stops, changing nothing, while any run keeps its uploaded findings bytes, which are the only copy `findings_sha256` was taken of; before, the downgrade dropped them without a word. A database without kept bytes still goes down. Raised on #57. |
@@ -248,6 +249,12 @@ Grype's own validity check, offline); a database built more than five days ago f
 report whose recorded configuration hides matches (ignore rules beyond Grype's built-in kernel-header rules, VEX,
 exclusions, `only-fixed`, `only-notfixed`, `ignore-wontfix`, a distro override, `by-cve`) is refused. Legitimate
 exceptions go through waivers (§6.4).
+
+Stage 7, the image: `sentinel scan image` runs the same Syft on the image's OCI layout archive
+(what `docker buildx build --output type=oci` writes, no registry), checks that it is the image of the given
+manifest digest, and matches its SBOM with the same Grype and database. Its findings are CONTAINER findings, each
+with the image's digest and reference and the layer the package is in (its first place by path); a report about
+another image is refused. The tool status names Syft and Grype separately: Grype is `not_run` when Syft failed.
 
 Opengrep (`sentinel scan sast`, findings of category SAST) publishes no checksum file: each release asset is signed
 keyless by its release workflow. It is pinned by hash in `tools.lock.toml` after checking each asset's signature
