@@ -17,7 +17,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 # Small JSON bodies: a run is a few short strings.
 MAX_JSON_BYTES = 64 * 1024
-_FINDINGS_UPLOAD = re.compile(r"^/api/v1/runs/[^/]+/findings$")
+# Uploads that can be large: a run's findings, and a correlation of them (one group per finding at most).
+_FINDINGS_UPLOAD = re.compile(r"^/api/v1/runs/[^/]+/(?:findings|correlations)$")
 
 
 class _TooLarge(HTTPException):
