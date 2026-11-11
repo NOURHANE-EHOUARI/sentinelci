@@ -142,11 +142,14 @@ def test_the_scan_job_outlives_every_scanner_run() -> None:
     minutes = int(re.search(r"^    timeout-minutes: (\d+)$", job, re.MULTILINE)[1])  # type: ignore[index]
     worst = SETUP_MARGIN_S
     for step in _steps(job):
-        if "scan secrets" in step or "scan iac" in step:
+        if "scan secrets" in step or "scan iac" in step or "scan pipelines" in step:
             assert '--timeout "$SCANNER_TIMEOUT_S"' in step, f"step without a scanner time limit: {step[:60]}"
+        for call in step.split('"$SENTINEL" scan pipelines')[1:]:  # zizmor takes no shared argument list
+            assert '--timeout "$SCANNER_TIMEOUT_S"' in call.split("&&")[0], "zizmor without a time limit"
         if "scan secrets" in step:
             worst += per_run * (2 if "--mode git" in step else 1)  # git mode: remerge pass + octopus pass
         worst += step.count("scan iac") * (per_run + TRIVY_BACKSTOP_S)
+        worst += step.count("scan pipelines") * per_run
     assert worst <= minutes * 60, f"the scan job needs {worst} s, its timeout-minutes allow {minutes * 60} s"
 
 
@@ -169,3 +172,21 @@ def test_the_gate_scores_with_the_base_model_then_evaluates_the_scored_findings(
     assert '--findings "$in/sentinel-decision/findings.ndjson"' in text, (
         "the report shows the scored findings"
     )
+
+
+def test_the_pr_gate_and_its_baseline_run_the_same_scanners() -> None:
+    """Only what the change introduces can block: every scanner of the head also scans the base (A3)."""
+    text = SCAN_WORKFLOW.read_text(encoding="utf-8")
+    steps = _steps(_job(text, "scan", "gate"))
+    (baseline,) = [step for step in steps if step.startswith("Scan the base commit as a baseline")]
+    head = [step for step in steps if not step.startswith("Scan the base commit")]
+    for kind in ("secrets", "iac", "pipelines"):
+        assert any(f'"$SENTINEL" scan {kind}' in step for step in head), kind
+        assert f'"$SENTINEL" scan {kind}' in baseline, f"{kind}: not in the baseline"
+        assert f"baseline-{kind}.ndjson" in baseline.split("scan combine", 1)[1], f"{kind}: not combined"
+    (combine,) = [step for step in steps if step.startswith("Combine the scanner outputs")]
+    for kind in ("secrets", "iac", "pipelines"):
+        assert f'--findings "$RUNNER_TEMP/scan/{kind}.ndjson"' in combine
+        assert f'--tool-status "$RUNNER_TEMP/scan/{kind}-status.json"' in combine, (
+            "a failure must reach the gate"
+        )
