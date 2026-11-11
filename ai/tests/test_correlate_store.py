@@ -50,6 +50,7 @@ class Fake:
     requests: list[tuple[str, str]] = field(default_factory=list)
     serve_other_findings: bool = False
     answer_sha256: str | None = None  # a platform that names another version than the bytes' own
+    refuse_409: str | None = None  # a 409 that names no version: B1's answer for a run without findings
     echo_token: bool = False
 
     def record(self, data: bytes | None = DATA) -> str:
@@ -101,6 +102,8 @@ def handler(fake: Fake) -> type[BaseHTTPRequestHandler]:
                     return self._answer(422, {"detail": [{"msg": errors[0]}]})
                 if run["findings_sha256"] is None or document["findings_sha256"] != run["findings_sha256"]:
                     return self._answer(422, {"detail": "the correlation is not about this run's findings"})
+                if fake.refuse_409:
+                    return self._answer(409, {"detail": fake.refuse_409})
                 version = hashlib.sha256(body).hexdigest()
                 kept = fake.versions.setdefault(run["id"], [])
                 if any(sha == version for sha, _ in kept):
@@ -217,6 +220,15 @@ def test_a_refusal_is_reported_with_the_platforms_words(fake: Fake, url: str) ->
     fake.runs[run_id]["findings_sha256"] = hashlib.sha256(b"x").hexdigest()
     with pytest.raises(StoreError, match='HTTP 422, the platform says "the correlation is not about'):
         store(platform(url), run_id, correlation, findings=DATA)
+
+
+def test_a_409_that_names_no_version_is_a_refusal_in_the_platforms_words(fake: Fake, url: str) -> None:
+    run_id = fake.record()
+    fake.refuse_409 = "no findings recorded for this run yet: a correlation follows the upload"
+    with pytest.raises(
+        StoreError, match="HTTP 409, the platform says 'no findings recorded for this run yet"
+    ):
+        correlate_and_store(platform(url), run_id)
 
 
 @pytest.mark.parametrize("run_id", ["latest", "../runs", "1" * 36])

@@ -84,6 +84,8 @@ def store(platform: Platform, run_id: str, correlation: Correlation, *, findings
         raise StoreError(f"{exc} (the same command again stores it, or finds it stored)") from exc
     answered = body.get("sha256") if isinstance(body, dict) else None
     existing = body.get("correlation") if status == 409 and isinstance(body, dict) else None
+    if status == 409 and not isinstance(existing, dict):  # a refusal (no findings recorded), not a version
+        raise StoreError(f"storing the correlation failed: {answer_summary(status, body)}")
     if status == 409 and isinstance(existing, dict):
         answered = existing.get("sha256")
     if status in (201, 409) and answered == version:
