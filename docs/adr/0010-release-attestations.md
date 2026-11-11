@@ -60,7 +60,37 @@ signed predicate is not byte-identical to the file it came from.
 4. **Two copies of the same statements.** The `attest` job attaches them to the image (`cosign attest`, read by
    Kyverno and by `sentinel verify` in registry mode) and also writes each one as a Sigstore bundle in the
    evidence artifact (`attestations/<kind>.sigstore.json`), which `sentinel verify --evidence <dir>` checks
-   offline. This ADR delivers the evidence mode; the registry mode and the workflow follow in A4b/A4c.
+   offline. The evidence mode came first (A4); the registry mode followed (A4d, `sentinel attest --push`,
+   `sentinel verify` without `--evidence`), and the workflow follows in A4c. In registry mode:
+   - the image itself is signed too (`cosign sign`), and `sentinel verify` requires that signature (SC-004).
+     Cosign 3 stores each signature and each attestation as a Sigstore bundle, an OCI referrer of the image (or,
+     on a registry without the referrers API, an entry of the `sha256-<hex>` tag index). The image signature is
+     a DSSE statement of type `https://sigstore.dev/cosign/sign/v1`, and `cosign verify` accepts any statement
+     the key signed about the digest as a signature: an attestation alone passes it. Kyverno's
+     `verifyImageSignatures` behaves the same (A5). So `sentinel verify` looks for a statement of that type;
+   - attestations are read with `cosign verify-attestation --type`, then re-checked on what Cosign printed
+     (statement type, one subject, this digest). Identical statements count once: a re-run of the attest job
+     attaches the same statements, since the predicates read neither the clock nor the run attempt (decision
+     6). Two different statements of one type make that attestation ambiguous: it fails;
+   - a digest has **one release per registry**. `sentinel attest --push` refuses, before signing anything,
+     when the registry already holds a different statement of one of the four types signed by the same key
+     about this digest. Cosign 3.1 skips a bundle it cannot fetch and then answers "no matching attestations",
+     as for an empty registry, so the check also reads the `sha256-<hex>` tag index with the pinned crane and
+     refuses when it lists more bundles of a type than Cosign verified with the key (one unreadable, or signed
+     by another key); a registry whose index cannot be read refuses too. Limit: crane cannot list the OCI
+     referrers API, so on a registry that has it, only Cosign's answer counts. The registries of the private
+     phase (kind's `registry:2`, crane's test registry) have no referrers API. The way out is to remove the
+     old release first (on a registry without the referrers API, `crane delete <repository>:sha256-<hex>`).
+     Kyverno reads one statement per type and cannot see a second one (A5): someone holding the key who
+     attaches a second release with Cosign directly would make admission admit an image that `sentinel verify`
+     refuses as ambiguous. That difference is accepted and named here;
+   - trust is per digest, and the repository name is informational: a copy that includes the `sha256-<hex>`
+     index (`crane copy`, `cosign save` / `cosign load`) is the same release;
+   - a verification that ran and failed (Cosign exit codes 1 and 10 to 13), or a registry that refuses the
+     connection, is "not trusted" (exit 1). A registry that accepts the connection and never answers ends in
+     Cosign's 120 s timeout, "could not run" (exit 3). Both refuse the image. Plain HTTP only with
+     `--registry-http`, and only for a local registry: a loopback host, or a single-label host with a port
+     (kind's `kind-registry:5000`). Registry credentials reach Cosign only through `DOCKER_CONFIG`.
 
 5. **Keys.** Private mode (now): a key pair, `--key` names the private key file or `env://VAR`; only that
    variable and `COSIGN_PASSWORD` reach the Cosign process (the runner's minimal environment drops the rest);
@@ -72,7 +102,9 @@ signed predicate is not byte-identical to the file it came from.
    `--key`.
 
 6. **Determinism.** The vulnerability predicate's `scanStartedOn` and `scanFinishedOn` are the decision's
-   `evaluated_at`; nothing in a predicate reads the clock.
+   `evaluated_at`; nothing in a predicate reads the clock. The provenance `invocationId` and the vulnerability
+   predicate's `invocation.uri` name the run (`.../actions/runs/<id>`), not its attempt: GitHub's only retry
+   increments the attempt, and a re-run must sign the same statements.
 
 ## Consequences
 
