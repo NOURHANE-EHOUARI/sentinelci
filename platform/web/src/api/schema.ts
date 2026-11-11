@@ -30,7 +30,9 @@ export interface paths {
         };
         /**
          * List Runs
-         * @description Recorded runs, newest first (the run id breaks ties, so a page never repeats or skips a run).
+         * @description Recorded runs, newest first (the run id breaks ties). For a fixed set of runs, walking the pages never
+         *     repeats or skips one; while runs are being recorded, a new run at the top shifts later pages by one, and a
+         *     run's `created_at` is the start of its transaction, so a run committed later can sort as older.
          *
          *     `ref` is matched exactly (`refs/heads/main`), like `repo`. A run whose findings are not uploaded yet is
          *     listed too: its `findings_sha256` is null.
@@ -1147,7 +1149,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CorrelationExists"];
+                    "application/json": components["schemas"]["CorrelationExists"] | components["schemas"]["ErrorOut"];
                 };
             };
             /** @description The document is larger than the upload limit. */
@@ -1353,7 +1355,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DecisionExists"];
+                    "application/json": components["schemas"]["DecisionExists"] | components["schemas"]["ErrorOut"];
                 };
             };
             /** @description The document is larger than the upload limit. */

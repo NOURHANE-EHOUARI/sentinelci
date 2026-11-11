@@ -121,7 +121,9 @@ class Correlation(Base):
 class RunDecision(Base):
     """A run's gate decision (Decision v1, B4), kept byte for byte: one per run, made on exactly the findings
     the run recorded and about the run's subject (repo, commit, context, ref). Named by the sha256 of its
-    bytes; `decision_id`, `verdict` and `evaluated_at` are copies of the document's, to list and count."""
+    bytes. `decision_id` and `verdict` are copies of the document's that the database checks against it
+    (trigger `decisions_are_kept`), since they are listed and counted; `evaluated_at` and `engine_version` are
+    copied by the API only, for display: the document stays the reference for both."""
 
     __tablename__ = "decisions"
     __table_args__ = (

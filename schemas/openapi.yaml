@@ -87,8 +87,14 @@ paths:
       tags:
       - runs
       summary: List Runs
-      description: 'Recorded runs, newest first (the run id breaks ties, so a page
-        never repeats or skips a run).
+      description: 'Recorded runs, newest first (the run id breaks ties). For a fixed
+        set of runs, walking the pages never
+
+        repeats or skips one; while runs are being recorded, a new run at the top
+        shifts later pages by one, and a
+
+        run''s `created_at` is the start of its transaction, so a run committed later
+        can sort as older.
 
 
         `ref` is matched exactly (`refs/heads/main`), like `repo`. A run whose findings
@@ -576,7 +582,11 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CorrelationExists'
+                anyOf:
+                - $ref: '#/components/schemas/CorrelationExists'
+                - $ref: '#/components/schemas/ErrorOut'
+                title: Response 409 Record Correlation Api V1 Runs  Run Id  Correlations
+                  Post
         '422':
           description: Validation Error
           content:
@@ -758,7 +768,11 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DecisionExists'
+                anyOf:
+                - $ref: '#/components/schemas/DecisionExists'
+                - $ref: '#/components/schemas/ErrorOut'
+                title: Response 409 Record Decision Api V1 Runs  Run Id  Decision
+                  Post
         '422':
           description: Validation Error
           content:
