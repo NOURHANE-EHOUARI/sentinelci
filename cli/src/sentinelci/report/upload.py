@@ -20,6 +20,14 @@ stopped after the run was created; a run whose findings are already recorded cou
 platform recorded these same bytes. A CI run (`--run-id`) needs no `--resume`: the platform answers the same
 CI run again with 409 and the run it has (API 1.1.0), which is resumed the same way. In GitHub Actions the run
 id is `<run id>/<run attempt>`, so a re-run of the job is a new run, as it is a new scan and a new decision.
+
+`--decision` (API 1.6.0) sends the run's gate decision last, once its findings are recorded: the Decision v1
+record `sentinel evaluate` wrote, byte for byte. The platform keeps one decision per run and only the one made
+on exactly the findings it recorded, so it is checked locally first, before anything is sent: a valid Decision
+v1, made on these findings (`inputs.findings_digest` is the sha256 of the `--findings` bytes, so they must be
+the scored findings the gate evaluated, not the scan's), about this run (repo, commit, context, and the ref
+when the decision names one), naming only findings of the file. A 409 with the same bytes' sha256 means the
+decision is recorded already (a re-run of the step, or `--resume`); another decision for the run is refused.
 """
 
 import hashlib
@@ -31,15 +39,19 @@ import threading
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, NoReturn
 from urllib.parse import urlsplit
 
+from pydantic import ValidationError
+
+from sentinelci.contracts.decision import Decision
 from sentinelci.policy.decision import load_findings
 from sentinelci.policy.errors import EvaluationError
 
 TOKEN_VARIABLE = "SENTINEL_API_TOKEN"  # noqa: S105 (the variable's name, not a token)
 NDJSON = "application/x-ndjson"
+JSON = "application/json"
 TIMEOUT_S = 60.0  # each socket operation
 DEADLINE_S = 120.0  # each request, from connecting to the last byte of the answer
 MAX_RESPONSE_BYTES = 1024 * 1024
@@ -71,6 +83,10 @@ class Uploaded:
     finding_count: int
     findings_sha256: str
     already_recorded: bool = False
+    # With --decision: the sha256 of its bytes, its verdict, and whether the platform had it already.
+    decision_sha256: str | None = None
+    verdict: str | None = None
+    decision_already_recorded: bool = False
 
 
 def check_api_url(url: str) -> str:
@@ -133,6 +149,55 @@ def check_findings(data: bytes, run: RunInfo) -> int:
                 f"finding {index} belongs to another run than --repo/--commit/--context/--ref/--run-id"
             )
     return len(findings)
+
+
+def _unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    keys = [key for key, _ in pairs]
+    if len(set(keys)) != len(keys):
+        raise ValueError("a key is repeated")
+    return dict(pairs)
+
+
+def _no_constant(name: str) -> NoReturn:
+    raise ValueError(f"{name} is not JSON")
+
+
+def check_decision(data: bytes, findings: bytes, run: RunInfo) -> Decision:
+    """The decision, or UploadError if the platform would refuse it as this run's (nothing is sent): a
+    Decision v1 document made on exactly `findings`, about `run`, naming only findings of the file."""
+    try:
+        # One meaning for every reader, as the platform requires: UTF-8, no repeated key, no NaN or Infinity.
+        json.loads(data.decode("utf-8"), object_pairs_hook=_unique_keys, parse_constant=_no_constant)
+        decision = Decision.model_validate_json(data)
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        where = ".".join(str(part) for part in first["loc"]) or "document"
+        raise UploadError(f"--decision is not a Decision v1 document: {where}: {first['msg']}") from exc
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise UploadError(f"--decision is not one UTF-8 JSON document with unique keys: {exc}") from exc
+    if decision.inputs.findings_digest != f"sha256:{hashlib.sha256(findings).hexdigest()}":
+        raise UploadError(
+            "--decision was made on other findings than --findings (inputs.findings_digest is not their "
+            "sha256): upload the scored findings the gate evaluated, the file `sentinel evaluate --findings` "
+            "read, not the scan's"
+        )
+    subject = decision.subject
+    for name, said, given in (
+        ("repo", subject.repo, run.repo),
+        ("commit", subject.commit, run.commit),
+        ("context", subject.context, run.context),
+    ):
+        if said != given:
+            raise UploadError(f"--decision is about another run: its {name} is not --{name}")
+    if subject.ref is not None and subject.ref != run.ref:
+        raise UploadError("--decision is about another run: it names a ref that is not --ref")
+    named = {i for violation in decision.violations for i in violation.finding_ids} | set(
+        decision.vex_applied or ()
+    )
+    unknown = named - {finding["id"] for finding in load_findings(findings)}
+    if unknown:
+        raise UploadError(f"--decision names {len(unknown)} finding id(s) that are not in --findings")
+    return decision
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -225,6 +290,9 @@ class Platform:
     def upload(self, run_id: str, data: bytes) -> tuple[int, Any]:
         return self._request("POST", f"/api/v1/runs/{run_id}/findings", data, NDJSON)
 
+    def post_decision(self, run_id: str, data: bytes) -> tuple[int, Any]:
+        return self._request("POST", f"/api/v1/runs/{run_id}/decision", data, JSON)
+
 
 def _json(raw: bytes) -> Any:
     if len(raw) > MAX_RESPONSE_BYTES:
@@ -247,9 +315,23 @@ def _why(status: int, body: Any) -> str:
     return f"HTTP {status}" + (f", the platform says {said!r}" if said else "")
 
 
-def upload(data: bytes, run: RunInfo, platform: Platform, *, resume: str | None = None) -> Uploaded:
-    """Record `data` (Finding v1 NDJSON of `run`) on the platform; UploadError when it was not recorded."""
+def upload(
+    data: bytes, run: RunInfo, platform: Platform, *, resume: str | None = None, decision: bytes | None = None
+) -> Uploaded:
+    """Record `data` (Finding v1 NDJSON of `run`) on the platform, then `decision` (the gate's Decision v1
+    made on `data`) when given; UploadError when either was not recorded. Both are checked before anything is
+    sent."""
     count = check_findings(data, run)
+    record = check_decision(decision, data, run) if decision is not None else None
+    uploaded = _upload_findings(data, count, run, platform, resume)
+    if decision is None or record is None:
+        return uploaded
+    return _record_decision(uploaded, decision, record, platform)
+
+
+def _upload_findings(
+    data: bytes, count: int, run: RunInfo, platform: Platform, resume: str | None
+) -> Uploaded:
     digest = hashlib.sha256(data).hexdigest()
     recorded: dict[str, Any] | None
     if resume is not None:
@@ -280,6 +362,33 @@ def upload(data: bytes, run: RunInfo, platform: Platform, *, resume: str | None 
     if body.get("findings_sha256") != digest or body.get("finding_count") != count:
         raise UploadError(f"run {run_id}: the platform recorded other bytes than the ones sent")
     return Uploaded(run_id=run_id, finding_count=count, findings_sha256=digest)
+
+
+def _record_decision(uploaded: Uploaded, data: bytes, record: Decision, platform: Platform) -> Uploaded:
+    """POST the decision to the run whose findings are recorded: recorded now (201), or recorded already with
+    these bytes (409 naming this run and their sha256). Anything else is UploadError naming the run."""
+    run_id, digest = uploaded.run_id, hashlib.sha256(data).hexdigest()
+    try:
+        status, body = platform.post_decision(run_id, data)
+    except UploadError as exc:
+        _name_the_run(run_id, exc)
+    done = replace(uploaded, decision_sha256=digest, verdict=record.verdict)
+    if status == 201 and isinstance(body, dict):
+        if body.get("sha256") != digest or str(body.get("run_id")) != run_id:
+            raise UploadError(f"run {run_id}: the platform recorded another decision than the one sent")
+        return done
+    recorded = body.get("decision") if status == 409 and isinstance(body, dict) else None
+    if isinstance(recorded, dict):
+        if str(recorded.get("run_id")) != run_id:
+            raise UploadError(f"run {run_id}: decision {record.decision_id} is recorded for another run")
+        if recorded.get("sha256") != digest:
+            raise UploadError(
+                f"run {run_id} already holds another decision: a run has one decision (a new decision, after "
+                "a new waiver for example, is a new run)"
+            )
+        return replace(done, decision_already_recorded=True)
+    hint = "" if status in (413, 422) else f" (--resume {run_id} finishes it)"
+    raise UploadError(f"recording the decision of run {run_id} failed: {_why(status, body)}{hint}")
 
 
 def _same_run(run_id: str, recorded: Mapping[str, Any], run: RunInfo) -> None:

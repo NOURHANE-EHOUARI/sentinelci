@@ -362,6 +362,25 @@ SENTINEL_API_TOKEN=... uv run sentinel upload --findings out/findings.ndjson --a
   id is free text: in GitHub Actions it is `<run id>/<run attempt>` (the scan's `--run-id` too, since the
   findings carry it), so a re-run of the job is a new run, as it is a new scan and a new decision. A run with no
   `--run-id` (a local run) is recorded anew each time.
+- **The decision (`--decision`, API 1.6.0)** is sent last, once the findings are recorded: the Decision v1
+  record `sentinel evaluate` wrote, byte for byte (`POST /api/v1/runs/{id}/decision`). The platform keeps one
+  decision per run, and only the one made on exactly the findings it recorded. So `--findings` must then be
+  the **scored findings the gate evaluated** (in `sentinel-scan.yml`, `$RUNNER_TEMP/decision/findings.ndjson`,
+  what `sentinel score` wrote and `sentinel evaluate --findings` read), not the scan's. The decision is checked
+  before anything is sent: a valid Decision v1 (one JSON object, no repeated key, no NaN), made on these
+  findings (`inputs.findings_digest` is the sha256 of the `--findings` bytes), about this run (repo, commit,
+  context, and the ref when the decision names one), naming only findings of the file. Otherwise exit `4` and
+  no run is created. A 409 that names this run and the sha256 of the bytes sent means the decision is recorded
+  already: the same step again, or `--resume`, exits `0` with `"decision_already_recorded": true`. Another
+  decision for the run is refused (a new decision, after a new waiver for example, is a new run), and so is a
+  `decision_id` another run recorded. The output adds `decision_sha256` and `verdict`.
+
+```bash
+SENTINEL_API_TOKEN=... uv run sentinel upload --findings "$RUNNER_TEMP/decision/findings.ndjson" \
+  --decision "$RUNNER_TEMP/decision/decision.v1.json" --api-url https://sentinel.example \
+  --repo "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" --context pr --ref "$GITHUB_REF" \
+  --run-id "$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT"
+```
 
 
 ## `sentinel scan pipelines` (CI workflows, A1)
