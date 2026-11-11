@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.65 | B5b (§8, §13.2): explanations and triage hints. Two contracts, `explanation.v1.json` and `triage-hint.v1.json` (advisory: never read by the gate; a hint is never a waiver), each naming its model and the sha256 of its prompt and input. `sentinel_ai.explain` and `sentinel_ai.triage` send the finding (no id, snippet, evidence or run) and the code around it, redacted, in escaped data blocks; never a secret's finding. An explanation cites only the finding's own CWE, CVE and advisory ids and their canonical pages; a triage hint may read the justifications of past waivers of the same rule. One repair retry, an answer that quotes a secret refused, then "unavailable". The shared guardrails are in `sentinel_ai.guardrails`. |
 | 1.1.58 | B6 (§9): the LLM code fixer, `sentinel_ai.patch.propose_code_fix`, turns one SAST finding into an `llm:code` PatchProposal. The model answers with line edits of the lines it was shown, never a diff: the diff is computed from the file on disk, so it edits only the flagged file, and it must pass A6's `check_proposal` and `git apply --check`. A file with a secret is never sent, a line that looks like a secret is sent redacted and cannot be edited, the finding and code travel as escaped data blocks, and an answer that leaves the lines sent, misses the flagged lines, overlaps, adds a scanner suppression or a secret, changes nothing or breaks a Python file's syntax is refused (one repair retry). Retries (attempts 2 and 3) carry the previous diff and the redacted end of the CI log. `sentinel-ai` now depends on `sentinelci` (workspace) for the Finding and PatchProposal contracts and A6's checks. |
 | 1.1.39 | Threat model (§18, A10): `docs/threat-model.md` lists the assets, five attackers, the trust boundaries, and 29 threats, each with its control, where it lives, the test that proves it and its status (main, an open PR, or planned), then the residual risks accepted in the private phase. §18's signing key row follows ADR-0011 (no signing key on GitHub). |
 | 1.1.34 | A7 stage 3 and evaluation (§8, §17): `correlate.labels.label_groups` lets a model write the labels of groups of two findings or more (never a secret's), from findings sent as escaped JSON data without ids, snippets or evidence and with secrets redacted; one repair retry, else the template stays; an answer with a secret is refused; a template fix is never replaced; the group records the model and the prompt and input sha256. `correlate.evaluation`: ablation, the ARI-vs-threshold sweep and the calibration. |
@@ -535,6 +536,17 @@ AI runs after the decision is stored, writes only advisory tables, and every out
 - **Guardrails:** import contract; untrusted text in delimited data blocks; schema validation with one repair
   retry, else "unavailable"; secret redaction before any prompt; model/prompt/input hash logged; injection
   canaries prove verdict invariance.
+  Implemented (B5b): `sentinel_ai.explain.explain_finding` (Explanation v1) and `sentinel_ai.triage.triage_finding`
+  (TriageHint v1), on the guardrails of `sentinel_ai.guardrails`. The finding goes without its id, snippet,
+  evidence or run, every text clipped and redacted; with a checkout, the 15 lines around it go too (redacted, a
+  regular UTF-8 file inside the repository only); a secret's finding is never sent. Each block is JSON lines with
+  `<` and `>` escaped, and each prompt names its blocks as data (triage's also says that a comment calling the
+  code safe is not evidence). An explanation may cite only the finding's CWE, CVE and advisory ids and their
+  canonical pages (MITRE CWE, NVD, GitHub advisories, OSV), listed to the model in a `<references>` block. A triage
+  hint may read, as precedent, the justifications of past waivers of the same rule (never their owner or id).
+  Schema validation with one repair retry, an answer that quotes a secret refused, then "unavailable"; each output
+  names its provider, model (and digest when pinned) and the sha256 of its prompt and input. Grounding from an
+  offline CWE catalogue and OSV advisory text, the API endpoint and the worker come next.
 - **Correlation (A7):** stage 1 fingerprint dedup → stage 2a structural fix keys within one category (the same
   package, the same advisory under any of its ids, the same rule in the same file; deterministic) → stage 2b
   embeddings (pgvector) + average-linkage clustering within a category, never for secrets (each is rotated on
@@ -728,6 +740,8 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
 | `tool-status.v1.json` | A3 → B4 | per tool: version, hashes, status (`ok` … `not_run`), detail; any non-`ok` status → SC-010; required in `pr`/`release`, and must list every required scanner |
 | `patch-proposal.v1.json` | B6 / A6 fixers → A6 | finding ids, strategy, diff, files, rationale, model (required for `llm:code`) |
 | `verification-result.v1.json` | A6 → B1, B8 | gate outcome; VERIFIED only if every condition holds |
+| `explanation.v1.json` | B5 (`sentinel_ai.explain`) → B1, B7, B8 | finding id, summary, impact, exploit scenario, fix guidance, references (only the finding's own CWE, CVE and advisory ids and their canonical pages), confidence, model with prompt and input hashes. Advisory: never read by the gate |
+| `triage-hint.v1.json` | B5 (`sentinel_ai.triage`) → B1, B7, B8 | finding id, likely false positive, rationale, confidence, model with prompt and input hashes. Advisory: never a waiver, never read by the gate |
 | `root-cause-group.v1.json` | A7 correlator → B1, B7, B8 | finding ids (sorted, one group each), stage that formed it, title, root cause, single fix or null; `model` for stage `llm` only. Advisory: never read by the gate |
 | evidence bundle layout | A4 → B1 | `manifest.json` (sha256 of each file, signed) + decision, findings, snapshot, SBOMs, raw outputs; `attestations/<kind>.sigstore.json` (ADR-0010) |
 | `vuln-result.v1.json` | A4 attest → `sentinel verify`, Kyverno (A5), B1 | `scanner.result` of the vulnerability attestation: decision id, findings digest, SBOM digest and `serialNumber`, totals by severity and category, tool versions |
