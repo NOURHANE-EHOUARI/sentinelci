@@ -13,6 +13,7 @@ Owner: Track B (B5).
 
 import hashlib
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -110,10 +111,11 @@ def allowed_references(finding: Finding) -> list[str]:
     return sorted(allowed)
 
 
-def prompt(finding: Finding, repo_root: Path | None) -> str:
-    """The user message: the finding, its code when there is a checkout, and the references it may cite."""
+def prompt(finding: Finding, findings: Sequence[Finding], repo_root: Path | None) -> str:
+    """The user message: the finding, its code when there is a checkout (and no secret in that file), and the
+    references it may cite."""
     parts = [block("finding", described(finding))]
-    window = code_window(finding, repo_root)
+    window = code_window(finding, repo_root, findings)
     if window:
         parts.append(block("code", window))
     parts.append(block("references", [{"reference": ref} for ref in allowed_references(finding)]))
@@ -122,17 +124,19 @@ def prompt(finding: Finding, repo_root: Path | None) -> str:
 
 def explain_finding(
     finding: Finding,
+    findings: Sequence[Finding],
     provider: LLMProvider,
     *,
     model: ModelInfo,
     created_at: datetime,
     repo_root: Path | None = None,
 ) -> Outcome:
-    """An Explanation v1 of `finding` written by `model` through `provider`, or why there is none. With
-    `repo_root` (a checkout of the scanned commit, read and never written), the code around it is sent too."""
+    """An Explanation v1 of `finding`, one of the scan's `findings`, written by `model` through `provider`, or
+    why there is none. With `repo_root` (a checkout of the scanned commit, read and never written), the code
+    around it is sent too, unless a secret was found in that file."""
     if finding.category == "SECRET":
         return Outcome("not sent", "a secret's finding is never sent: rotate the secret")
-    user = prompt(finding, repo_root)
+    user = prompt(finding, findings, repo_root)
     allowed = set(allowed_references(finding))
 
     def check(answer: ExplanationAnswer) -> ExplanationAnswer:

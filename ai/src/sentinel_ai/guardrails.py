@@ -15,7 +15,7 @@ Owner: Track B (B5).
 
 import hashlib
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -86,19 +86,29 @@ def described(finding: Finding) -> dict[str, Any]:
         if value in (None, [], ""):
             continue
         if isinstance(value, str):
-            sent[key] = redact(clip(value))
+            sent[key] = clip(redact(value))  # redact first: a clipped token no longer matches
         elif isinstance(value, list):
-            sent[key] = [redact(clip(item)) for item in value]
+            sent[key] = [clip(redact(item)) for item in value]
         else:
             sent[key] = value
     return sent
 
 
-def code_window(finding: Finding, repo_root: Path | None) -> list[dict[str, Any]] | None:
+def code_window(
+    finding: Finding, repo_root: Path | None, findings: Sequence[Finding]
+) -> list[dict[str, Any]] | None:
     """The lines around the finding, redacted, as `{"n", "text"}` (`flagged` on its own lines); None when
-    there is no code to show (no checkout, no line, not a regular UTF-8 file inside the repository)."""
+    there is no code to show: no checkout, no line, not a regular UTF-8 file inside the repository, or a file
+    in which one of the scan's `findings` is a secret. `redact` knows a dozen patterns and Gitleaks over a
+    hundred rules, so no code is ever sent from a file where a secret was found (as in B6)."""
     location = finding.location
     if repo_root is None or location is None or location.start_line is None:
+        return None
+    if any(
+        other.category == "SECRET"
+        and any(p is not None and p.path == location.path for p in places_of(other))
+        for other in findings
+    ):
         return None
     file = repo_root / location.path
     # The resolved path must be the named one: no symbolic link anywhere on the path, even one inside the
@@ -120,11 +130,15 @@ def code_window(finding: Finding, repo_root: Path | None) -> list[dict[str, Any]
         return None
     window = []
     for number in range(max(1, start - WINDOW), min(len(lines), end + WINDOW) + 1):
-        entry: dict[str, Any] = {"n": number, "text": redact(lines[number - 1][:MAX_LINE])}
+        entry: dict[str, Any] = {"n": number, "text": redact(lines[number - 1])[:MAX_LINE]}
         if start <= number <= end:
             entry["flagged"] = True
         window.append(entry)
     return window
+
+
+def places_of(finding: Finding) -> list[Any]:
+    return [finding.location, *(finding.other_locations or [])]
 
 
 def model_record(provider: LLMProvider, model: ModelInfo, prompt_sha256: str, user: str) -> dict[str, Any]:

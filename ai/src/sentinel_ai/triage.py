@@ -76,13 +76,18 @@ class Outcome:
     input_sha256: str | None = None
 
 
-def prompt(finding: Finding, repo_root: Path | None, past_waivers: Sequence[PastWaiver] = ()) -> str:
+def prompt(
+    finding: Finding,
+    findings: Sequence[Finding],
+    repo_root: Path | None,
+    past_waivers: Sequence[PastWaiver] = (),
+) -> str:
     parts = [block("finding", described(finding))]
-    window = code_window(finding, repo_root)
+    window = code_window(finding, repo_root, findings)
     if window:
         parts.append(block("code", window))
     precedent = [
-        {"justification": redact(clip(waiver.justification))}
+        {"justification": clip(redact(waiver.justification))}
         for waiver in past_waivers
         if waiver.rule == finding.rule_id
     ][:MAX_PAST_WAIVERS]
@@ -93,6 +98,7 @@ def prompt(finding: Finding, repo_root: Path | None, past_waivers: Sequence[Past
 
 def triage_finding(
     finding: Finding,
+    findings: Sequence[Finding],
     provider: LLMProvider,
     *,
     model: ModelInfo,
@@ -100,10 +106,11 @@ def triage_finding(
     repo_root: Path | None = None,
     past_waivers: Sequence[PastWaiver] = (),
 ) -> Outcome:
-    """A TriageHint v1 of `finding` from `model` through `provider`, or why there is none."""
+    """A TriageHint v1 of `finding`, one of the scan's `findings`, from `model` through `provider`, or why
+    there is none. No code is sent from a file in which a secret was found."""
     if finding.category == "SECRET":
         return Outcome("not sent", "a secret's finding is never sent: rotate the secret")
-    user = prompt(finding, repo_root, past_waivers)
+    user = prompt(finding, findings, repo_root, past_waivers)
     answer, reason = ask(provider, SYSTEM_PROMPT, user, TriageAnswer, lambda answer: answer)
     record = model_record(provider, model, PROMPT_SHA256, user)
     if answer is None:
