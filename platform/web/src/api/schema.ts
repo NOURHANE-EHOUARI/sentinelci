@@ -28,7 +28,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * List Runs
+         * @description Recorded runs, newest first (the run id breaks ties, so a page never repeats or skips a run).
+         *
+         *     `ref` is matched exactly (`refs/heads/main`), like `repo`. A run whose findings are not uploaded yet is
+         *     listed too: its `findings_sha256` is null.
+         */
+        get: operations["list_runs_api_v1_runs_get"];
         put?: never;
         /**
          * Create Run
@@ -170,6 +177,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/runs/{run_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Decision
+         * @description The run's gate decision, exactly as it was posted.
+         */
+        get: operations["get_decision_api_v1_runs__run_id__decision_get"];
+        put?: never;
+        /**
+         * Record Decision
+         * @description Record the run's gate decision (one per run), kept byte for byte. The platform never decides.
+         */
+        post: operations["record_decision_api_v1_runs__run_id__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/releases": {
         parameters: {
             query?: never;
@@ -270,6 +301,47 @@ export interface components {
         CorrelationVersions: {
             /** Items */
             items: components["schemas"]["CorrelationOut"][];
+        };
+        /**
+         * DecisionExists
+         * @description 409: this run's decision (`decision`) is recorded already, or the `decision_id` is another run's.
+         */
+        DecisionExists: {
+            /** Detail */
+            detail: string;
+            decision: components["schemas"]["DecisionOut"];
+        };
+        /** DecisionOut */
+        DecisionOut: {
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Sha256 */
+            sha256: string;
+            /**
+             * Decision Id
+             * Format: uuid
+             */
+            decision_id: string;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "PASS" | "WARN" | "BLOCK";
+            /**
+             * Evaluated At
+             * Format: date-time
+             */
+            evaluated_at: string;
+            /** Engine Version */
+            engine_version: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
         };
         /**
          * ErrorOut
@@ -453,6 +525,19 @@ export interface components {
             findings_sha256: string | null;
             /** Findings Uploaded At */
             findings_uploaded_at: string | null;
+            /** Verdict */
+            verdict?: ("PASS" | "WARN" | "BLOCK") | null;
+        };
+        /** RunPage */
+        RunPage: {
+            /** Items */
+            items: components["schemas"]["RunOut"][];
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
         };
         /** UploadResult */
         UploadResult: {
@@ -506,6 +591,59 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+        };
+    };
+    list_runs_api_v1_runs_get: {
+        parameters: {
+            query?: {
+                repo?: string | null;
+                context?: ("pr" | "release" | "local") | null;
+                ref?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunPage"];
+                };
+            };
+            /** @description The request body is larger than the limit (64 KiB, or the upload limit for findings). */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description No database is configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
                 };
             };
         };
@@ -1081,6 +1219,154 @@ export interface operations {
             };
             /** @description The document is larger than the upload limit. */
             413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description No database is configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_decision_api_v1_runs__run_id__decision_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The decision byte for byte: its sha256 is the ETag. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description No such run, or no decision recorded for it. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description The document is larger than the upload limit. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description No database is configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    record_decision_api_v1_runs__run_id__decision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        /** @description The Decision v1 document (schemas/decision.v1.json) the gate made on the run's findings, as `sentinel evaluate` wrote it. */
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecisionOut"];
+                };
+            };
+            /** @description No valid ingestion token (`Authorization: Bearer <token>`). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description No such run, or no decision recorded for it. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description The run's decision is recorded already, these bytes or others (`decision`); the `decision_id` is another run's (`decision`: that run's); or the run's findings are not recorded yet (`detail` only). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecisionExists"];
+                };
+            };
+            /** @description The document is larger than the upload limit. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description The decision is not `application/json`. */
+            415: {
                 headers: {
                     [name: string]: unknown;
                 };

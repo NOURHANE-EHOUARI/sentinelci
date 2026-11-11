@@ -9,11 +9,11 @@ The database is the backstop for what the API checks:
 - a BLOCK release is never recorded as trusted (`releases_block_never_trusted`);
 - a release never changes and is never deleted (trigger `releases_are_kept`).
 
-Going back below 0006 would drop the only copy of those documents, so the downgrade stops, changing nothing,
-while any release is kept (like 0005 with the correlations).
+Going back below 0007 would drop the only copy of those documents, so the downgrade stops, changing nothing,
+while any release is kept (like 0005 with the correlations and 0006 with the decisions).
 
-Revision ID: 0006
-Revises: 0005
+Revision ID: 0007
+Revises: 0006
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0006"
-down_revision = "0005"
+revision = "0007"
+down_revision = "0006"
 branch_labels = None
 depends_on = None
 
@@ -74,7 +74,7 @@ def downgrade() -> None:
     if kept:
         raise RuntimeError(
             f"{kept} release(s) are kept (table releases), the only copy of their evidence on the platform, "
-            "so going below 0006 would lose them. Stay at 0006 or later, or export them first (GET "
+            "so going below 0007 would lose them. Stay at 0007 or later, or export them first (GET "
             "/api/v1/releases/{digest}/evidence) and go down on a new, empty database; a kept release cannot "
             "be deleted (trigger releases_are_kept). Nothing was changed."
         )
