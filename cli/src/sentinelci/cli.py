@@ -1347,10 +1347,19 @@ def attest_command(
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
     ] = DEFAULT_TOOLS_DIR,
     platform: PlatformOption = None,
+    builder: Annotated[
+        str,
+        typer.Option(
+            help="Who built the image: `github-actions` (a workflow run, from its GitHub Actions variables) "
+            "or `local-release` (deploy/release/release.py on the release laptop, ADR-0011; refused in "
+            "GitHub Actions)."
+        ),
+    ] = "github-actions",
 ) -> None:
     """Sign the four release attestations of an image: decision, SBOM, vulnerability scan, provenance.
 
-    Runs in the release workflow's attest job (the GitHub Actions variables give the provenance). Exit code 3,
+    Runs where the release key is: `make release` on the laptop (`--builder local-release`, ADR-0011), or a
+    workflow's attest job (the GitHub Actions variables give the provenance). Exit code 3,
     with nothing signed, when the inputs don't belong together: a BLOCK or non-release decision, a decision
     about another image, findings or an SBOM the decision did not record, or a run on another repository or
     commit. With --push, the registry must not already hold a different release of this digest signed by the
@@ -1369,6 +1378,7 @@ def attest_command(
             findings_data=findings.read_bytes(),
             sbom_data=sbom.read_bytes(),
             env=os.environ,
+            builder=builder,
         )
         signer = Signer(key, load_lock(lock), tools_dir, platform)
         if push:  # checked before anything is signed
@@ -1408,8 +1418,9 @@ def verify_command(
     builder_id: Annotated[
         str,
         typer.Option(
-            help="The workflow that must have built it, as SLSA builder id, e.g. "
-            "https://github.com/<owner>/<repo>/.github/workflows/<file>@refs/heads/main."
+            help="Who must have built it, as SLSA builder id: a workflow, "
+            "https://github.com/<owner>/<repo>/.github/workflows/<file>@refs/heads/main, or the laptop's "
+            "release script, https://github.com/<owner>/<repo>/deploy/release/release.py@refs/heads/main."
         ),
     ],
     evidence: Annotated[
@@ -1523,7 +1534,11 @@ def admission_policy_command(
     ],
     repo: Annotated[str, typer.Option(help="The repository releases must come from, owner/name.")],
     builder_id: Annotated[
-        str, typer.Option(help="The release workflow, as SLSA builder id (the one `sentinel verify` uses).")
+        str,
+        typer.Option(
+            help="Who builds the releases, as SLSA builder id (the one `sentinel verify` uses): a workflow, "
+            "or the laptop's release script (deploy/release/release.py@refs/heads/main)."
+        ),
     ],
     image_glob: Annotated[
         str, typer.Option(help="Images the policy applies to, e.g. kind-registry:5000/demo-shop/*.")
