@@ -6,8 +6,9 @@
   directory, through the verified runner, with SentinelCI's own scanner configuration.
 
 The `detections` listed in the ground truth are the ones verified with the pinned tools, so these tests keep
-the ground truth honest when a tool or a seed changes. Checkov detections are documented but checked only once
-its adapter is pinned (task A1).
+the ground truth honest when a tool or a seed changes. A seed no pinned tool detects lists none and says
+why in `known_miss` (ADR-0012); the Trivy test checks that it is still missed, so a tool upgrade that
+starts detecting it shows up.
 """
 
 import json
@@ -76,7 +77,13 @@ def test_ground_truth_is_well_formed() -> None:
     for seed in SEEDS:
         prefix = seed["id"].split("-")[1]
         assert prefix == seed["category"], f"{seed['id']} is filed under {seed['category']}"
-        assert seed["expected"]["detections"], seed["id"]
+        if seed["expected"]["detections"]:
+            assert "known_miss" not in seed, f"{seed['id']} is detected: drop known_miss"
+        else:
+            assert str(seed.get("known_miss", "")).strip(), f"{seed['id']}: no detection, and no known_miss"
+            # Only the Trivy test checks that a known miss is still missed: other categories get the same
+            # check with their first known miss.
+            assert seed["category"] == "IAC", f"{seed['id']}: known_miss is checked for IAC seeds only"
         for detection in seed["expected"]["detections"]:
             assert set(detection) == {"tool", "rule"} and all(detection.values()), seed["id"]
     for control in CONTROLS:
@@ -153,3 +160,9 @@ def test_trivy_finds_every_iac_seed_and_nothing_in_controls() -> None:
     }
     assert _expected("trivy") <= found
     assert not {path for path, _ in found} & _controls("trivy")
+    for seed in (s for s in SEEDS if "known_miss" in s and s["category"] == "IAC"):
+        rules = sorted(rule for path, rule in found if path == seed["location"]["path"])
+        assert not rules, (
+            f"{seed['id']} is a known miss, but Trivy now reports {rules} in its file. If a rule flags "
+            "the seed, list it in expected.detections and drop known_miss; never edit the seed to hide it"
+        )

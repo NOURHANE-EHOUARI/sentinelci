@@ -22,7 +22,7 @@ from sentinelci.supplychain.attestations import (
     contract_errors,
     load_decision,
 )
-from sentinelci.supplychain.cosign import Verified, Verifier
+from sentinelci.supplychain.cosign import Registry, Verified, Verifier
 
 ATTESTATIONS_DIR = "attestations"
 LABELS = {
@@ -125,6 +125,7 @@ VULN_CHECKS = (
     "vulnerability scan: the decision's SBOM",
 )
 SBOM_CHECK = "SBOM: the one the vulnerability scan names"
+IMAGE_SIGNATURE_CHECK = "signature: the image itself"
 
 
 def _unavailable(names: tuple[str, ...], reason: str) -> list[Check]:
@@ -218,3 +219,27 @@ def verify_evidence(
         for kind, predicate_type in KINDS.items()
     }
     return TrustReport(image, trust_checks(image, verified, repo=repo, builder_id=builder_id))
+
+
+def verify_registry(
+    image: Image,
+    verifier: Verifier,
+    registry: Registry,
+    environ: Mapping[str, str],
+    *,
+    repo: str,
+    builder_id: str,
+) -> TrustReport:
+    """Verify the image's own signature and its four attestations in its registry (what `sentinel attest
+    --push` attached, and what Kyverno reads at admission), then the same checks as the evidence mode."""
+    signature = verifier.verify_signature(image, registry, environ)
+    verified = {
+        kind: verifier.verify_in_registry(image, predicate_type, registry, environ)
+        for kind, predicate_type in KINDS.items()
+    }
+    signed = Check(
+        IMAGE_SIGNATURE_CHECK,
+        signature.problem is None,
+        signature.problem or f"signed by the key ({signature.predicate} signature(s))",
+    )
+    return TrustReport(image, (signed, *trust_checks(image, verified, repo=repo, builder_id=builder_id)))
