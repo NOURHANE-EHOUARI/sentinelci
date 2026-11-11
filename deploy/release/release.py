@@ -3,6 +3,7 @@
     uv run python deploy/release/release.py [--key ~/.sentinelci/release.key]
     uv run python deploy/release/release.py --requirements requirements.block.txt --expect-block
     uv run python deploy/release/release.py key [--key ~/.sentinelci/release.key]
+    uv run python deploy/release/release.py self-gate
 
 During the private phase the laptop is the only signer (ADR-0011, decision 7): the release key never reaches
 GitHub. In order, and nothing past a failed step runs:
@@ -35,6 +36,13 @@ Exit 0: released, the bundle is trusted. 1: the gate blocked the image, nothing 
 could not be made (a precondition, a failed step, or a signed release `sentinel verify` did not trust: no
 bundle). With --expect-block (`make release-block`, the demo's BLOCK image), 0 means the gate blocked it, and
 1 that it did not: nothing is signed either way.
+
+`self-gate` (`make self-gate`, A10, SPEC principle P4) runs the same release gate on SentinelCI itself: the
+same preconditions, the commit's own files without demo-shop (exported from the commit and checked blob by
+blob, so no export attribute can hide or rewrite one), the five scanners of the gate (secrets, SAST, IaC, CI
+workflows, and Grype on the SBOM of the lockfiles), the commit's own `.sentinel/waivers.yaml`, then
+`sentinel evaluate --context release`. The decision and its evidence go to `out/self-gate/evidence`;
+nothing is signed. Exit 0: PASS or WARN; 1: BLOCK; 3: no decision.
 
 `key` (`make release-key`) makes the release key pair with the pinned Cosign: the private key, password
 protected, in ~/.sentinelci (never in the repository), and its public key at deploy/keys/release.pub, to be
@@ -78,6 +86,11 @@ PUBLIC_KEY = Path("deploy") / "keys" / "release.pub"  # in the repository
 DEFAULT_KEY = Path.home() / ".sentinelci" / "release.key"
 WORK_MARKER = ".sentinel-release-work"
 SCANS = ("secrets", "sast", "iac", "pipelines", "container")
+# The self-gate (A10): SentinelCI's own tree, scanned by its own pipeline. demo-shop is left out: it is the
+# intentionally vulnerable target, gated by its own workflow (demo-shop.yml), never released as SentinelCI.
+SELF_SCANS = ("secrets", "sast", "iac", "pipelines", "sca")
+NOT_SELF = ("demo-shop",)
+WAIVERS = Path(".sentinel") / "waivers.yaml"  # read from the commit's tree, like the workflow's (ADR-0008)
 # With --expect-block, 0 is "blocked as expected" and 1 "not blocked": nothing is signed in either case.
 EXIT_RELEASED, EXIT_BLOCKED, EXIT_FAILED = 0, 1, 3
 COSIGN_IMAGE = "dev.cosignproject.cosign/image"
@@ -521,16 +534,9 @@ class Decided:
         return self.verdict == "BLOCK"
 
 
-def decide(commit: str, target: Path, digest: str, paths: Paths, settings: Settings, run: Runner) -> Decided:
-    """ADR-0011, decision 3: the SBOM, the scans, the score, then the release gate on this digest."""
-    run(
-        sentinel(
-            "sbom", str(paths.archive), "--name", IMAGE_NAME, "--source", "oci-archive",
-            "--image-digest", digest, "--cyclonedx", str(paths.sbom),
-            "--spdx", str(paths.evidence / "sbom.spdx.json"), *settings.tool_args(),
-        ),
-        capture=False,
-    )  # fmt: skip
+def prepare_grype_db(paths: Paths, settings: Settings, run: Runner) -> None:
+    """Grype's database, offline afterwards. When it cannot be prepared, the scans that need it fail and the
+    gate blocks (SC-010): nothing is skipped."""
     database = run(
         sentinel(
             "tools", "grype-db", "--db-dir", str(settings.grype_db),
@@ -541,15 +547,47 @@ def decide(commit: str, target: Path, digest: str, paths: Paths, settings: Setti
         capture=False,
     )  # fmt: skip
     if database.returncode != 0:
-        print(f"release: Grype's database could not be prepared ({database.returncode}): the image scan "
-              "fails, and the gate blocks (SC-010)", file=sys.stderr)  # fmt: skip
-    for name, command in scan_commands(commit, target, paths.source, digest, paths, settings).items():
+        print(f"release: Grype's database could not be prepared ({database.returncode}): the scans that "
+              "need it fail, and the gate blocks (SC-010)", file=sys.stderr)  # fmt: skip
+
+
+def run_scans(commands: Mapping[str, list[str]], paths: Paths, run: Runner) -> None:
+    for name, command in commands.items():
         if run(command, check=False, capture=False).returncode != 0:
             print(f"release: the {name} scan failed: recorded for the gate (SC-010)", file=sys.stderr)
             (paths.scans / f"{name}.ndjson").write_text("", encoding="utf-8")  # its status says why
+
+
+def decide(commit: str, target: Path, digest: str, paths: Paths, settings: Settings, run: Runner) -> Decided:
+    """ADR-0011, decision 3: the SBOM, the scans, the score, then the release gate on this digest."""
+    run(
+        sentinel(
+            "sbom", str(paths.archive), "--name", IMAGE_NAME, "--source", "oci-archive",
+            "--image-digest", digest, "--cyclonedx", str(paths.sbom),
+            "--spdx", str(paths.evidence / "sbom.spdx.json"), *settings.tool_args(),
+        ),
+        capture=False,
+    )  # fmt: skip
+    prepare_grype_db(paths, settings, run)
+    run_scans(scan_commands(commit, target, paths.source, digest, paths, settings), paths, run)
+    return gate(commit, SCANS, paths, settings, run, image_digest=digest)
+
+
+def gate(
+    commit: str,
+    scans: Sequence[str],
+    paths: Paths,
+    settings: Settings,
+    run: Runner,
+    *,
+    image_digest: str | None = None,
+    waivers: Path | None = None,
+) -> Decided:
+    """The release gate on the scans' findings: combined, scored, then `sentinel evaluate` in the release
+    context, about the image when there is one."""
     combined = paths.work / "combined.ndjson"
     combine = sentinel("scan", "combine", "--out", str(combined), "--tool-status-out", str(paths.tool_status))
-    for name in SCANS:
+    for name in scans:
         combine += ["--findings", str(paths.scans / f"{name}.ndjson")]
         combine += ["--tool-status", str(paths.scans / f"{name}-status.json")]
     run(combine)
@@ -559,10 +597,12 @@ def decide(commit: str, target: Path, digest: str, paths: Paths, settings: Setti
     run(sentinel("score", "--findings", str(combined), "--policy-dir", str(settings.policies),
                  "--out", str(paths.findings)))  # fmt: skip
     status = ["--tool-status", str(paths.tool_status)] if paths.tool_status.is_file() else []
+    image = ["--image-digest", image_digest, "--sbom", str(paths.sbom)] if image_digest else []
+    waived = ["--waivers", str(waivers)] if waivers is not None else []
     evaluated = run(
         sentinel(
             "evaluate", "--findings", str(paths.findings), "--repo", REPO, "--commit", commit,
-            "--context", "release", "--ref", MAIN, "--image-digest", digest, "--sbom", str(paths.sbom),
+            "--context", "release", "--ref", MAIN, *image, *waived,
             "--policy-dir", str(settings.policies), "--opa", str(settings.tools_dir / "bin" / "opa"),
             *tool_versions(paths.tool_status, opa_manifest), *status,
             "--store", str(paths.evidence / "store"), "--output", str(paths.decision),
@@ -578,10 +618,12 @@ def decide(commit: str, target: Path, digest: str, paths: Paths, settings: Setti
         raise ReleaseError(
             f"the decision says {verdict}, but sentinel evaluate exited {evaluated.returncode}"
         )
-    if (decision.get("subject") or {}).get("image_digest") != digest:
-        raise ReleaseError(f"the decision is not about {digest}")
+    subject = decision.get("subject") or {}
+    about = subject.get("image_digest") == image_digest if image_digest else subject.get("commit") == commit
+    if not about or (image_digest is None and "image_digest" in subject):
+        raise ReleaseError(f"the decision is not about {image_digest or commit}")
     rules = sorted({f"{v.get('rule')} ({v.get('effect')})" for v in decision.get("violations") or []})
-    return Decided(verdict, digest, tuple(rules))
+    return Decided(verdict, image_digest or "", tuple(rules))
 
 
 # ---------------------------------------------------------------- 5. signing
@@ -762,6 +804,116 @@ class Release:
         return EXIT_RELEASED
 
 
+# ---------------------------------------------------------------- the self-gate (A10)
+
+
+def git_blob_id(data: bytes) -> str:
+    """The id git gives these bytes as a blob (SHA-1, object format of this repository)."""
+    return hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest()
+
+
+def export_tree(
+    commit: str, destination: Path, run: Runner, *, exclude: Sequence[str] = NOT_SELF
+) -> list[str]:
+    """The files of `commit` under `destination`, without the `exclude` directories: from `git archive`, never
+    the working tree, then checked file by file against the commit's blobs. An export attribute (a
+    `.gitattributes` with export-ignore or export-subst) could otherwise hide or rewrite what is scanned, and
+    a link or a submodule could point outside what the commit holds: either is refused."""
+    listing = run(["git", "ls-tree", "-r", "-z", "--full-tree", commit]).stdout
+    blobs: dict[str, str] = {}
+    for record in filter(None, listing.split("\0")):
+        meta, _, path = record.partition("\t")
+        mode, kind, blob = meta.split()
+        if any(path == top or path.startswith(f"{top}/") for top in exclude):
+            continue
+        if kind != "blob" or mode == "120000":
+            raise ReleaseError(
+                f"{path} is a {'link' if mode == '120000' else kind}: the self-gate scans files only"
+            )
+        blobs[path] = blob
+    archive = destination.parent / "self.tar"
+    run(["git", "archive", "--format=tar", f"--output={archive}", commit, "--", *sorted(blobs)])
+    extract(archive, destination)
+    archive.unlink()
+    found = {
+        path.relative_to(destination).as_posix()
+        for path in destination.rglob("*")
+        if path.is_file() or path.is_symlink()
+    }
+    if found != set(blobs):
+        differ = sorted(found ^ set(blobs))
+        raise ReleaseError(f"git archive did not give exactly the commit's files: {', '.join(differ[:5])}")
+    for path, blob in sorted(blobs.items()):
+        if git_blob_id((destination / path).read_bytes()) != blob:
+            raise ReleaseError(f"{path} is not the commit's blob {blob} (an export attribute?)")
+    return sorted(blobs)
+
+
+def self_scan_commands(commit: str, paths: Paths, settings: Settings) -> dict[str, list[str]]:
+    """Each scan of SentinelCI's own tree: the gate's five scanners, Grype on its lockfiles' SBOM included."""
+    tree = [str(paths.source), "--repo-root", str(paths.source)]
+    run = ["--repo", REPO, "--commit", commit, "--context", "release", "--ref", MAIN]
+    timeout = ["--timeout", str(settings.timeout_s)]
+
+    def outputs(name: str) -> list[str]:
+        scans = paths.scans
+        return [
+            "--out",
+            str(scans / f"{name}.ndjson"),
+            "--tool-status-out",
+            str(scans / f"{name}-status.json"),
+        ]
+
+    tools = settings.tool_args()
+    return {
+        "secrets": sentinel(
+            "scan", "secrets", *tree, *run, *timeout, "--mode", "dir", *outputs("secrets"), *tools
+        ),
+        "sast": sentinel("scan", "sast", *tree, *run, *timeout, *outputs("sast"), *tools),
+        "iac": sentinel("scan", "iac", *tree, *run, *timeout, *outputs("iac"), *tools),
+        "pipelines": sentinel(
+            "scan", "pipelines", *tree, *run, *timeout, *outputs("pipelines"),
+            *settings.tool_args(with_tools_dir=False),
+        ),
+        "sca": sentinel(
+            "scan", "sca", *tree, *run, *timeout, "--db-dir", str(settings.grype_db), *outputs("sca"), *tools
+        ),
+    }  # fmt: skip
+
+
+@dataclass
+class SelfGate:
+    """SPEC principle P4, practice what we preach: SentinelCI's release gate on SentinelCI itself, at `main`.
+    The same preconditions as a release (a clean checkout of origin's main), the commit's own files without
+    demo-shop, the gate's five scanners, its own waivers (`.sentinel/waivers.yaml` of the commit), and a
+    decision kept with its evidence. Nothing is signed here."""
+
+    out: Path
+    settings: Settings
+    fetch: bool = True
+    run: Runner | None = None
+    environ: Mapping[str, str] = field(default_factory=lambda: dict(os.environ))
+
+    def __call__(self) -> int:
+        run = self.run if self.run is not None else functools.partial(run_command, cwd=self.settings.root)
+        paths = Paths(self.out)
+        commit = preconditions(run, fetch=self.fetch, environ=self.environ)
+        fresh_work(paths)
+        files = export_tree(commit, paths.source, run)
+        print(f"self-gate: {REPO} at {commit} (main): {len(files)} files, without {', '.join(NOT_SELF)}/")
+        prepare_grype_db(paths, self.settings, run)
+        run_scans(self_scan_commands(commit, paths, self.settings), paths, run)
+        waivers = paths.source / WAIVERS
+        decided = gate(
+            commit, SELF_SCANS, paths, self.settings, run, waivers=waivers if waivers.is_file() else None
+        )
+        replace_dir(paths.evidence, self.out / "evidence")
+        rules = ", ".join(decided.rules) or "no rule"
+        print(f"self-gate: the gate says {decided.verdict} for {commit}: {rules}; evidence in "
+              f"{self.out / 'evidence'}")  # fmt: skip
+        return EXIT_BLOCKED if decided.blocked else EXIT_RELEASED
+
+
 # ---------------------------------------------------------------- the key pair
 
 
@@ -800,14 +952,14 @@ def make_key(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    parser.add_argument("command", nargs="?", choices=["release", "key"], default="release")
+    parser.add_argument("command", nargs="?", choices=["release", "key", "self-gate"], default="release")
     parser.add_argument("--key", type=Path, default=DEFAULT_KEY, help="the release private key (Cosign)")
     parser.add_argument("--requirements", default=DEFAULT_REQUIREMENTS,
                         help=f"the requirements file the image installs, in {SERVICE_DIR}")  # fmt: skip
     parser.add_argument(
         "--expect-block", action="store_true", help="the demo's BLOCK image: the gate must block"
     )
-    parser.add_argument("--out", type=Path, default=ROOT / "out" / "release")
+    parser.add_argument("--out", type=Path, help="default: out/release, out/self-gate for self-gate")
     parser.add_argument("--grype-db", type=Path, default=ROOT / "out" / "grype-db",
                         help="Grype's database, kept between releases (out/ is git-ignored)")  # fmt: skip
     parser.add_argument(
@@ -833,8 +985,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 cosign=lambda: verified_tool("cosign", settings.tools_dir, settings.lock),
             )  # fmt: skip
             return EXIT_RELEASED
+        if args.command == "self-gate":
+            out = (args.out or ROOT / "out" / "self-gate").resolve()
+            return SelfGate(out=out, settings=settings, fetch=not args.no_fetch)()
         return Release(
-            key=args.key.expanduser().resolve(), out=args.out.resolve(), settings=settings,
+            key=args.key.expanduser().resolve(), out=(args.out or ROOT / "out" / "release").resolve(),
+            settings=settings,
             requirements=args.requirements, expect_block=args.expect_block, fetch=not args.no_fetch,
         )()  # fmt: skip
     except (ReleaseError, subprocess.SubprocessError, OSError, ValueError) as exc:
