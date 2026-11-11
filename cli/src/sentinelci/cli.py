@@ -81,6 +81,7 @@ from sentinelci.report.pr_comment import (
     render_no_decision,
     render_pr_comment,
 )
+from sentinelci.report.upload import TOKEN_VARIABLE, RunInfo, UploadError, platform_from, upload
 from sentinelci.risk import RiskModel, RiskModelError, score_finding
 from sentinelci.scanners.combine import CombineError, combine_findings, combine_tool_statuses
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
@@ -97,10 +98,17 @@ from sentinelci.scanners.status import (
 )
 from sentinelci.scanners.trivy import remote_modules, scan_iac_with_run
 from sentinelci.scanners.zizmor import scan_pipelines_with_run
+from sentinelci.supplychain.admission import render_policy
 from sentinelci.supplychain.attestations import KINDS, AttestationError, parse_image, release_predicates
-from sentinelci.supplychain.cosign import Signer, Verifier, check_public_key
+from sentinelci.supplychain.cosign import (
+    Signer,
+    Verifier,
+    check_public_key,
+    refuse_another_release,
+    registry_for,
+)
 from sentinelci.supplychain.sbom import SOURCE_KINDS, SourceKind, generate_sbom
-from sentinelci.supplychain.verify import ATTESTATIONS_DIR, verify_evidence
+from sentinelci.supplychain.verify import ATTESTATIONS_DIR, verify_evidence, verify_registry
 
 EXIT_UNTRUSTED_INPUT = 3
 DEFAULT_TOOLS_DIR = Path(".sentinel/tools")
@@ -565,6 +573,68 @@ def _load_record(path: Path, decision_id: str | None = None) -> dict[str, Any]:
 def _replay_record(recorded: dict[str, Any], evidence: EvidenceStore, runner: OpaRunner) -> ReplayResult:
     with tempfile.TemporaryDirectory(prefix="sentinel-replay-") as work:
         return replay(recorded, store=evidence, opa=runner, work_dir=Path(work))
+
+
+EXIT_UPLOAD_FAILED = 4  # never 1 or 3: an upload is a report, its failure says nothing about the verdict
+
+
+@app.command("upload")
+def upload_command(
+    findings: Annotated[Path, typer.Option(help="The findings NDJSON of one run (as the scan wrote it).")],
+    api_url: Annotated[
+        str, typer.Option(help="The platform, https:// (or http://localhost for a local platform).")
+    ],
+    repo: Annotated[str, typer.Option(help="Repository as owner/name.")],
+    commit: Annotated[str, typer.Option(help="Commit SHA that was scanned.")],
+    context: Annotated[RunContext, typer.Option(help="Run context.")],
+    ref: Annotated[str | None, typer.Option(help="Git ref that was scanned.")] = None,
+    run_id: Annotated[
+        str | None,
+        typer.Option(help="CI run identifier, as the findings carry it (GitHub: <run id>/<run attempt>)."),
+    ] = None,
+    resume: Annotated[
+        str | None, typer.Option(help="Finish the upload of a run the platform already created (its id).")
+    ] = None,
+) -> None:
+    """Send one run's findings to the SentinelCI platform (B1 ingestion API), after the decision.
+
+    The token comes only from the SENTINEL_API_TOKEN environment variable. Exit code 0 when the platform
+    recorded exactly these findings (with --resume, also when it already had them), 4 when it did not, for
+    whatever reason: an upload never changes the verdict, which was decided before. With --run-id, the same
+    command again resumes the platform's run of that CI run; without it, a re-run records a new run.
+    """
+    run = RunInfo(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id)
+    try:
+        platform = platform_from(api_url)
+        uploaded = upload(findings.read_bytes(), run, platform, resume=resume)
+    except (OSError, UploadError) as exc:
+        # The platform's own words are quoted in some messages: one that echoes the request (a gateway quoting
+        # the Authorization header) must not make the CLI print the token.
+        said, token = str(exc), os.environ.get(TOKEN_VARIABLE, "").strip()
+        said = said.replace(token, f"<{TOKEN_VARIABLE}>") if token else said
+        typer.echo(
+            f"sentinel upload: {said}\nthe findings were not uploaded (the verdict is unchanged)", err=True
+        )
+        raise typer.Exit(EXIT_UPLOAD_FAILED) from exc
+    except Exception as exc:
+        # Last resort: an upload never ends with 1 or a traceback. Only the type is printed: an unexpected
+        # error's text could hold anything, the token included.
+        typer.echo(
+            f"sentinel upload: unexpected {type(exc).__name__}\nthe findings were not uploaded "
+            "(the verdict is unchanged)",
+            err=True,
+        )
+        raise typer.Exit(EXIT_UPLOAD_FAILED) from None
+    typer.echo(
+        json.dumps(
+            {
+                "run_id": uploaded.run_id,
+                "finding_count": uploaded.finding_count,
+                "findings_sha256": uploaded.findings_sha256,
+                "already_recorded": uploaded.already_recorded,
+            }
+        )
+    )
 
 
 @app.command("replay")
@@ -1099,6 +1169,14 @@ def report_pr_comment(
 # ---------------------------------------------------------------- supply chain (A4, ADR-0010)
 
 EXIT_UNTRUSTED = 1
+RegistryHttpOption = Annotated[
+    bool,
+    typer.Option(
+        "--registry-http",
+        help="Reach the image's registry over plain HTTP: a local registry only (a loopback host, or a "
+        "single-label host with a port such as kind-registry:5000); refused for any other host.",
+    ),
+]
 
 
 @app.command("attest")
@@ -1109,6 +1187,15 @@ def attest_command(
     sbom: Annotated[Path, typer.Option(help="The CycloneDX JSON SBOM the decision recorded.")],
     key: Annotated[str, typer.Option(help="Cosign private key: a file, or env://VAR.")],
     out: Annotated[Path, typer.Option(help="Evidence directory: the bundles go to <out>/attestations/.")],
+    push: Annotated[
+        bool,
+        typer.Option(
+            "--push",
+            help="Also sign the image and attach the four attestations to it in its registry (cosign sign "
+            "and cosign attest), where Kyverno and `sentinel verify` without --evidence read them.",
+        ),
+    ] = False,
+    registry_http: RegistryHttpOption = False,
     lock: LockOption = Path(LOCK_FILE_NAME),
     tools_dir: Annotated[
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
@@ -1120,11 +1207,14 @@ def attest_command(
     Runs in the release workflow's attest job (the GitHub Actions variables give the provenance). Exit code 3,
     with nothing signed, when the inputs don't belong together: a BLOCK or non-release decision, a decision
     about another image, findings or an SBOM the decision did not record, or a run on another repository or
-    commit.
+    commit. With --push, the registry must not already hold a different release of this digest signed by the
+    same key (a digest has one release per registry; a re-run of the same release is fine): exit code 3, with
+    nothing signed. A registry failure while pushing is exit code 3 too: no bundle is kept, and the registry
+    may hold part of the set, which neither `sentinel verify` nor Kyverno trusts.
     """
     directory = out / ATTESTATIONS_DIR
     bundles = [directory / f"{kind}.sigstore.json" for kind in KINDS]
-    signed = False
+    signed = pushing = False
     try:
         target = parse_image(image)
         predicates = release_predicates(
@@ -1135,18 +1225,33 @@ def attest_command(
             env=os.environ,
         )
         signer = Signer(key, load_lock(lock), tools_dir, platform)
+        if push:  # checked before anything is signed
+            registry = registry_for(target, allow_http=registry_http)
+            statements = {kind: (KINDS[kind], predicates[kind]) for kind in KINDS}
+            refuse_another_release(signer, target, statements, registry, os.environ)
         directory.mkdir(parents=True, exist_ok=True)
         for (kind, predicate_type), bundle in zip(KINDS.items(), bundles, strict=True):
             signer.attest(target, predicate_type, predicates[kind], bundle, os.environ)
+        if push:
+            pushing = True
+            signer.sign_image(target, registry, os.environ)
+            for kind, predicate_type in KINDS.items():
+                signer.attest_image(target, predicate_type, predicates[kind], registry, os.environ)
         signed = True
     except (AttestationError, OSError, ToolIntegrityError, ScannerError) as exc:
-        typer.echo(f"sentinel attest: {exc}; nothing was signed", err=True)
+        outcome = (
+            "no bundle kept; the registry may hold part of the set (not trusted)"
+            if pushing
+            else "nothing was signed"
+        )
+        typer.echo(f"sentinel attest: {exc}; {outcome}", err=True)
         raise typer.Exit(EXIT_NO_DECISION) from exc
     finally:
         if not signed:  # all four or none, whatever stopped the run; an earlier run's bundles go too
             for bundle in bundles:
                 bundle.unlink(missing_ok=True)
-    typer.echo(f"signed {len(bundles)} attestations of {target.name}@{target.digest} -> {directory}")
+    pushed = f"; image signed and the {len(KINDS)} attached in its registry" if push else ""
+    typer.echo(f"signed {len(bundles)} attestations of {target.reference} -> {directory}{pushed}")
 
 
 @app.command("verify")
@@ -1162,8 +1267,13 @@ def verify_command(
         ),
     ],
     evidence: Annotated[
-        Path, typer.Option(help="Evidence directory written by `sentinel attest` (offline verification).")
-    ],
+        Path | None,
+        typer.Option(
+            help="Evidence directory written by `sentinel attest` (offline verification). Without it, the "
+            "image's own signature and the attestations attached to it are read from its registry."
+        ),
+    ] = None,
+    registry_http: RegistryHttpOption = False,
     lock: LockOption = Path(LOCK_FILE_NAME),
     tools_dir: Annotated[
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
@@ -1179,7 +1289,11 @@ def verify_command(
         target = parse_image(image)
         check_public_key(key)  # a broken setup is "could not run" (3), not "this image is bad" (1)
         verifier = Verifier(key, load_lock(lock), tools_dir, platform)
-        report = verify_evidence(target, evidence, verifier, repo=repo, builder_id=builder_id)
+        if evidence is not None:
+            report = verify_evidence(target, evidence, verifier, repo=repo, builder_id=builder_id)
+        else:
+            registry = registry_for(target, allow_http=registry_http)
+            report = verify_registry(target, verifier, registry, os.environ, repo=repo, builder_id=builder_id)
     except (AttestationError, ToolIntegrityError, ScannerError) as exc:
         typer.echo(f"sentinel verify: {exc}\nFAIL CLOSED: the image is not trusted.", err=True)
         raise typer.Exit(EXIT_NO_DECISION) from exc
@@ -1254,6 +1368,40 @@ def sbom_command(
     typer.echo(
         f"syft {sbom.run.version}: {sbom.packages} package(s), {sbom.serial_number} -> {cyclonedx}, {spdx}"
     )
+
+
+@app.command("admission-policy")
+def admission_policy_command(
+    key: Annotated[
+        Path, typer.Option(help="Cosign public key of the releases (the one `sentinel verify` uses).")
+    ],
+    repo: Annotated[str, typer.Option(help="The repository releases must come from, owner/name.")],
+    builder_id: Annotated[
+        str, typer.Option(help="The release workflow, as SLSA builder id (the one `sentinel verify` uses).")
+    ],
+    image_glob: Annotated[
+        str, typer.Option(help="Images the policy applies to, e.g. kind-registry:5000/demo-shop/*.")
+    ],
+    out: Annotated[Path, typer.Option(help="Where to write the Kyverno ImageValidatingPolicy (YAML).")],
+    registry_http: RegistryHttpOption = False,
+) -> None:
+    """Write the Kyverno admission policy of SentinelCI releases (A5): a Pod runs an image matching the glob
+    only if `sentinel verify` would trust it. Exit code 3, with nothing written, for a value that is not what
+    it should be."""
+    if out.resolve() == key.resolve():  # checked before anything is deleted
+        typer.echo("sentinel admission-policy: --out is the key file; nothing was written", err=True)
+        raise typer.Exit(EXIT_NO_DECISION)
+    out.unlink(missing_ok=True)
+    try:
+        policy = render_policy(
+            public_key=key, image_glob=image_glob, repo=repo, builder_id=builder_id, allow_http=registry_http
+        )
+    except AttestationError as exc:
+        typer.echo(f"sentinel admission-policy: {exc}; nothing was written", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(policy, encoding="utf-8", newline="\n")
+    typer.echo(f"admission policy for {image_glob} -> {out}")
 
 
 # ---------------------------------------------------------------- remediate
