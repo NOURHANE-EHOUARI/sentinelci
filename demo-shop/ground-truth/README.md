@@ -22,6 +22,12 @@ seeds:
       gate: SC-001                # the gate rule this seed should trigger, when one applies
       detections:                 # detections verified with the pinned tools
         - {tool: gitleaks, rule: github-pat}
+  - id: GT-IAC-0NN                # a seed no pinned tool detects (none at the moment)
+    # ...
+    known_miss: >-                # required when expected.detections is empty, forbidden otherwise: which
+      Trivy 0.76.1 does not ...   # pinned tool and version misses the seed, the forms tried, and why
+    expected:
+      detections: []
 controls:
   - id: GT-CLEAN-001
     owner: A9
@@ -35,7 +41,7 @@ Matching rules for the harness:
 
 - A seed is **detected** when any listed `(tool, rule)` reports it in the seed's file. Secrets also match on
   the line, because Gitleaks reports exact lines. Other tools point at different lines for the same resource:
-  Trivy at the attribute, Checkov at the block.
+  Trivy at the attribute.
 - Other findings in a seeded file are real but unlisted issues. They count neither as hits nor as false
   positives. Only controls measure false positives.
 - Every seeded file names its ground-truth id in a comment, so a reader of the file knows it is deliberate.
@@ -43,6 +49,11 @@ Matching rules for the harness:
 - An SCA seed is detected when the tool reports its `vulnerability` on its `package` (the purl), wherever the
   tool locates it: Grype points at the lockfile (`package-lock.json`), the seed at the manifest line that
   declares the dependency, where a developer would fix it.
+- A seed with `known_miss` can't be detected. The evaluation counts it as a false negative in its category's
+  recall: it stays in the denominator, and the report lists it with its reason. It is never excluded or
+  reweighted.
+- When the still-missed check fails, record the detection in `expected.detections` and remove `known_miss`.
+  Never change the seed, the check or the scanner configuration to keep it missed.
 
 SCA seeds carry four more fields:
 
@@ -72,8 +83,12 @@ Fields planned for later tasks, optional today: `relevance` (0–3, for NDCG@10 
 - zizmor on every CI example;
 - the pinned Gitleaks and Trivy with SentinelCI's own configuration, when `SENTINEL_TOOLS_DIR` is set.
 
-Gitleaks must report exactly the secret seeds: 5 out of 5, and nothing on the controls. Checkov detections
-were verified with Checkov 3.4.0. They are checked automatically once its adapter is pinned (A1).
+Gitleaks must report exactly the secret seeds: 5 out of 5, and nothing on the controls. A seed that no pinned
+tool detects has `detections: []` and a `known_miss` saying why (ADR-0012; none at the moment: GT-IAC-004, the
+first, is detected by SentinelCI's own Trivy check SENTINEL-AWS-0001). It counts as a miss in
+the evaluation. The Trivy test checks, seed by seed, that it is still missed: any Trivy finding in its file
+fails the test and names the rules, so a tool upgrade that catches it shows up. Only IaC seeds can be known
+misses for now; another category gets the same check with its first one.
 
 `tests/demo_shop/test_sca_seeds.py` keeps the SCA seeds honest:
 
