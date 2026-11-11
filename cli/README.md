@@ -408,8 +408,15 @@ SENTINEL_API_TOKEN=... uv run sentinel upload --findings out/findings.ndjson --a
 
 ```bash
 uv run sentinel scan pipelines demo-shop --repo-root . --out out/pipelines.ndjson \
-  --repo NOURHANE-EHOUARI/sentinelci --commit "$GITHUB_SHA" --context pr
+  --repo NOURHANE-EHOUARI/sentinelci --commit "$GITHUB_SHA" --context pr \
+  --tool-status-out out/pipelines-status.json --timeout 300
 ```
+
+- **Tool status** (`--tool-status-out`, written on success and on failure, like the other scanners): `ok` with the
+  verified binary's sha256 and, as its `artifact_sha256`, the pinned wheel that carries that binary (also when
+  there was nothing to audit: the binary was still checked). A crash or an unreadable report is `failed`, a run
+  past `--timeout` (300 s by default) is `timeout`, a binary no pinned wheel carries is `integrity_mismatch`:
+  the gate blocks each one (SC-010). `sentinel-scan.yml` runs it on the head and, in pr mode, the base commit.
 
 - zizmor, a runtime dependency of the CLI (`uv.lock`). Right before it runs, the binary of the CLI's own
   environment (never one from `PATH`) must be one that a wheel pinned in `tools.lock.toml` carries
