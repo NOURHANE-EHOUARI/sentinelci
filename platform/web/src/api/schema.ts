@@ -28,7 +28,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * List Runs
+         * @description Recorded runs, newest first (the run id breaks ties, so a page never repeats or skips a run).
+         *
+         *     `ref` is matched exactly (`refs/heads/main`), like `repo`. A run whose findings are not uploaded yet is
+         *     listed too: its `findings_sha256` is null.
+         */
+        get: operations["list_runs_api_v1_runs_get"];
         put?: never;
         /**
          * Create Run
@@ -354,6 +361,17 @@ export interface components {
             /** Findings Uploaded At */
             findings_uploaded_at: string | null;
         };
+        /** RunPage */
+        RunPage: {
+            /** Items */
+            items: components["schemas"]["RunOut"][];
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
         /** UploadResult */
         UploadResult: {
             /**
@@ -406,6 +424,59 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+        };
+    };
+    list_runs_api_v1_runs_get: {
+        parameters: {
+            query?: {
+                repo?: string | null;
+                context?: ("pr" | "release" | "local") | null;
+                ref?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunPage"];
+                };
+            };
+            /** @description The request body is larger than the limit (64 KiB, or the upload limit for findings). */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description No database is configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
                 };
             };
         };
