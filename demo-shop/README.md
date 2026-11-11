@@ -42,6 +42,20 @@ or `lodash-es` (B9).
 built once B9's application and requirements exist. Its build context is an allow-list
 (`Dockerfile.release.dockerignore`), so the seeded configuration never enters the image.
 
+**shop-api's tests (B9, ADR-0014), not seeds.** They run only in the test image, never outside a container:
+- `services/shop-api/tests/`: behaviour tests (search, product, ping, order import, proxy, discount). They pass
+  on the seeded code and must still pass on any correct fix: A6's `llm:code` check runs them on a patch.
+- `services/shop-api/security_tests/`: one file per SAST seed, named after its Opengrep rule
+  (`test_<rule>.py`). Each fails on the seeded code and passes once its weakness is fixed. They are kept out of
+  `tests/`, because a fix of one seed leaves the other five.
+- `services/shop-api/Dockerfile.test`: the image they run in. It has the release's base digest and its
+  hash-pinned wheels, plus pytest and httpx2 (`requirements.test.txt`, hash-pinned too), and no application:
+  the code is mounted read-only. Build it, then use its id (`sha256:...`):
+  `docker build -f demo-shop/services/shop-api/Dockerfile.test -q demo-shop/services/shop-api`.
+- `tests/demo_shop/test_shop_api_tests.py` (SentinelCI's side) runs both suites in that image with
+  `SENTINEL_SHOP_TEST_IMAGE=<id>`. On the seeded code, the behaviour tests pass and each security test fails. With
+  the reference fix (`tests/demo_shop/fixtures/shop_api_reference_fix.py`), everything passes.
+
 **The gate blocks this target on purpose.** A pull request that adds a seed is blocked (SC-001 for a secret),
 which is how the demo shows the gate working. A release-mode scan of `main` blocks too, as long as the seeds
 are present.
