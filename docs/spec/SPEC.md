@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.62 | A7 measurement (§17): `make eval-correlation-calibrate` and `make eval-correlation` (`eval/correlation/`) measure the correlator on `make eval`'s findings: ARI, alert reduction and the ablation. Every finding is labelled with its true root cause (a seed's, or `root-causes.yaml`'s: what one fix resolves), the root causes are split once into calibration and test halves, the stage 2b threshold is calibrated on the first with the pinned embedding model (local Ollama, digest checked) and committed (`threshold.json`) before the second is measured. |
 | 1.1.59 | B5a (§8, ADR-0009): `sentinel_ai.providers.OllamaProvider`, the default model backend, on the standard library only. Local only (the loopback or the Compose service `ollama`; another host only when asked), no proxy, no redirect. The pinned digests of ADR-0009 are checked before a model's first request (a missing model or another digest is refused, nothing sent). `complete` asks for JSON of the schema, deterministic (temperature 0, fixed seed), and validates the answer (a `ValidationError` for the repair retry); `embed` returns one finite vector per text, all of one size. Time limits, an 8 MiB answer cap, and errors that never echo the prompt or the answer. `deploy/compose/README.md` says how to pull the pinned models. |
 | 1.1.48 | B8 detection report (§17): `make eval` scans demo-shop with SentinelCI's own scanners (`sentinel scan secrets|iac|pipelines|sast|sca`) and scores the findings against the ground truth with its matching rules: recall per category (a `known_miss` counts as a miss), false positives on the clean controls, unlisted findings listed, the benchmark's size against §17, and the canaries (measured with B5). A category whose tool did not run is not measured, never 0. The report (`out/eval/detection.json` and `.md`) is the same for the same inputs, byte for byte, and names each input by its digest. |
 | 1.1.46 | B9 demo seeds, application code (§17, ADR-0011 decision 6): shop-api is a FastAPI service (`demo-shop/services/shop-api/app/`, `python -m app` on port 8080, writing only to `/tmp`) with six SAST seeds (GT-SAST-001 to 006, Opengrep 6/6 with SentinelCI's rules) and a safely written control (GT-CLEAN-005). Two prompt-injection canaries (GT-CANARY-001, 002) get their own `canaries` list in the ground truth (id, location, the seed they sit near, a unique token): an AI output that repeats a token obeyed it. GT-SCA-001 and 002 are now `imported: true`. `requirements.release.txt` pins the release image's dependencies by the hashes of their wheels (none built from source, no seeded version), and `requirements.block.txt` is the same with the seeded pyyaml 5.3.1 pinned by its sdist's hash. |
@@ -829,6 +830,16 @@ groups; a findings file already has one finding per fingerprint, so stage 1 alon
 Findings with no ground-truth seed are left out of the ARI and listed. `sentinel_ai.correlate.evaluation`
 computes them: `ablation` (each configuration of stages), `sweep` (the curve), `calibrate` (the best ARI, a
 tie going to the highest threshold, which merges least); the embedder is called once per text for a sweep.
+
+Implemented (A7 measurement): `make eval-correlation-calibrate` and `make eval-correlation`
+(`eval/correlation/`) on the findings of `make eval`. A finding that detects a seed has the seed's root
+cause; every other finding is labelled in `root-causes.yaml` with what one fix resolves (a manifest's missing
+security context is one root cause for its twelve findings), written before the embedding stage ran on them,
+so the ARI sees right merges as well as wrong ones. The root causes are split once into a calibration half
+and a test half (`split.yaml` for the seeds, alternating by category; `half` for the others). Calibration
+picks the threshold on its half and writes `threshold.json` with the model and its digest, committed before
+the test half is measured; a threshold of another model is refused. Alert reduction counts the places the
+tools reported (each finding and its `other_locations`), since the raw reports are not kept.
 
 Implemented (B8a): the detection report, `make eval` (`eval/detection/`): recall per category, false positives on
 the clean controls, and unlisted findings, from SentinelCI's own findings; categories whose tool did not run are
