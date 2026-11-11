@@ -11,6 +11,7 @@
 | Version | Change |
 |---|---|
 | 1.1.39 | Threat model (§18, A10): `docs/threat-model.md` lists the assets, five attackers, the trust boundaries, and 29 threats, each with its control, where it lives, the test that proves it and its status (main, an open PR, or planned), then the residual risks accepted in the private phase. §18's signing key row follows ADR-0011 (no signing key on GitHub). |
+| 1.1.38 | A8 metrics (§10, Platform API 1.3.0): `GET /metrics` serves the §10 names in the Prometheus text format, read-only aggregates counted by PostgreSQL in a read-only transaction, with bounded labels only (never a repository, a commit, an id or free text). `sentinel_findings_open{priority,category}`: the findings of each repository's latest release run whose findings are recorded, by priority (`P0` to `P4`, or `unscored`) and category, every pair present once such a run exists, absent before. The other §10 metrics stay absent, not 0, until their data is stored (decisions: B1). Prometheus scrapes the API (`deploy/compose/prometheus`), and Grafana provisions a read-only `SentinelCI overview` dashboard with one panel per §10 metric, from files checked against §10's names and labels. |
 | 1.1.30 | Platform API migrations (B1, §13.3): going below 0004 stops, changing nothing, while any run keeps its uploaded findings bytes, which are the only copy `findings_sha256` was taken of; before, the downgrade dropped them without a word. A database without kept bytes still goes down. Raised on #57. |
 | 1.1.29 | Platform API 1.2.0 (B1, §13.3): the platform keeps each run's findings upload byte for byte and serves it at `GET /api/v1/runs/{id}/findings`, so a consumer that must match `findings_sha256` (the correlator's run document, #47; a replay) reads the exact bytes; the JSONB rows keep neither key order nor bytes. The database keeps only bytes that hash to the recorded digest, and the recorded-run trigger makes them immutable. Runs recorded before have none, and the API says so. |
 | 1.1.28 | Platform API 1.1.0 (B1, §13.3): one run per CI run. `POST /api/v1/runs` with the `repo`, `commit`, `context` and `run_id` of a run already recorded (a re-run of `sentinel upload`, #50) is answered 409 with the existing run, which the client resumes instead of recording the findings a second time; a unique index decides between concurrent requests. A run without `run_id` is always new. Migration 0003 stops, changing nothing, on a database that already holds a CI run twice. |
@@ -592,6 +593,15 @@ Remediation, Root-cause groups (A).
 Prometheus names: `sentinel_gate_decisions_total{verdict,context}`, `sentinel_findings_open{priority,category}`,
 `sentinel_pipeline_stage_duration_seconds{stage}`, `sentinel_remediation_attempts_total{strategy,outcome}`,
 `sentinel_ai_request_duration_seconds{task,model}`, `sentinel_attestation_verifications_total{result}`.
+
+Implemented (A8a): the platform API's `GET /metrics` (`platform/api/src/sentinel_api/metrics.py`) serves only
+these names, with only these labels, in the Prometheus text format. Values are counted by PostgreSQL in a read-only
+transaction, and no row is loaded. A metric whose data the platform does not store yet is absent, never 0, so
+Grafana shows "No data" rather than "0 BLOCK". Exposed so far: `sentinel_findings_open`, the findings of each
+repository's latest release run whose findings are recorded (what its default branch holds), by priority (`P0` to
+`P4`, or `unscored` before scoring) and category. Prometheus scrapes it, and Grafana provisions the read-only
+`SentinelCI overview` dashboard (`deploy/compose/grafana/provisioning/dashboards/`): open findings, gate block rate,
+remediation success, attestation verifications, stage and AI durations.
 
 ## 11. Technology stack
 
