@@ -213,7 +213,9 @@ def list_runs(
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0, le=MAX_OFFSET)] = 0,
 ) -> RunPage:
-    """Recorded runs, newest first (the run id breaks ties, so a page never repeats or skips a run).
+    """Recorded runs, newest first (the run id breaks ties). For a fixed set of runs, walking the pages never
+    repeats or skips one; while runs are being recorded, a new run at the top shifts later pages by one, and a
+    run's `created_at` is the start of its transaction, so a run committed later can sort as older.
 
     `ref` is matched exactly (`refs/heads/main`), like `repo`. A run whose findings are not uploaded yet is
     listed too: its `findings_sha256` is null.

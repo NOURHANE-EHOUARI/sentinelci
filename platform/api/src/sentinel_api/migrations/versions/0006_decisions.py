@@ -9,7 +9,8 @@ The database is the backstop for what the API checks:
 - a decision is only added to a run whose findings are recorded, if it was made on exactly those findings
   (`inputs.findings_digest` is `sha256:` and the run's `findings_sha256`) and is about the run's subject
   (repo, commit, context, and the ref when the decision names one);
-- the copied columns are the document's (`decision_id`, `verdict`);
+- the copied columns that are listed and counted are the document's (`decision_id`, `verdict`);
+  `evaluated_at` and `engine_version` are copied by the API only, for display (the document is the reference);
 - a decision never changes and is never deleted (a recorded run cannot be deleted either, migration 0002).
 
 Going back below 0006 would drop the only copy of those documents, so the downgrade stops, changing nothing,
