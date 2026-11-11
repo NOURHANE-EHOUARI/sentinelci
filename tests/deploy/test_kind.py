@@ -39,8 +39,17 @@ cluster = _load()
 class Fake:
     """Records every command and answers like Docker, kind and kubectl would on a given machine."""
 
-    def __init__(self, *, registry: str | None = None, clusters: str = "", network: str = "null") -> None:
+    def __init__(
+        self,
+        *,
+        registry: str | None = None,
+        clusters: str = "",
+        network: str = "null",
+        kubectl: str | None = '{"clientVersion": {"major": "1", "minor": "37", "gitVersion": "v1.37.0"}}',
+        docker: bool = True,
+    ) -> None:
         self.registry, self.clusters, self.network = registry, clusters, network
+        self.kubectl, self.docker = kubectl, docker  # kubectl None: not installed
         self.calls: list[tuple[list[str], str | None]] = []
 
     def __call__(
@@ -48,8 +57,16 @@ class Fake:
     ) -> subprocess.CompletedProcess[str]:
         args = list(args)
         self.calls.append((args, input))
-        out, code = "", 0
-        if args[:2] == ["docker", "inspect"] and args[3] == "{{.State.Running}}":
+        out, code, err = "", 0, ""
+        if args[:2] == ["kubectl", "version"]:
+            if self.kubectl is None:  # what run_command says when the binary is missing
+                raise cluster.ClusterError("kubectl could not run: FileNotFoundError")
+            out = self.kubectl
+        elif args[:2] == ["docker", "version"]:
+            out, code, err = (
+                ("29.1.0\n", 0, "") if self.docker else ("", 1, "Cannot connect to the Docker daemon")
+            )
+        elif args[:2] == ["docker", "inspect"] and args[3] == "{{.State.Running}}":
             out, code = (self.registry or "", 0) if self.registry is not None else ("", 1)
         elif args[:2] == ["docker", "inspect"]:
             out = self.network
@@ -57,7 +74,7 @@ class Fake:
             out = self.clusters
         elif args[1:3] == ["get", "nodes"]:
             out = "sentinel-control-plane\n"
-        return subprocess.CompletedProcess(args, code, out, "")
+        return subprocess.CompletedProcess(args, code, out, err)
 
     def commands(self) -> list[str]:
         return [" ".join(args) for args, _ in self.calls]
@@ -207,7 +224,10 @@ def test_the_policy_is_rendered_for_the_clusters_registry_and_applied(tmp_path: 
         [{"expression": "ref.lowerAscii().startsWith('kind-registry:5000/demo-shop/')"}]
     ] * 2
     assert all(d["spec"]["credentials"] == {"allowInsecureRegistry": True} for d in documents)
-    assert fake.commands() == [f"kubectl --context kind-sentinel apply -f {out}"]
+    assert fake.commands() == [
+        "kubectl version --client --output=json",
+        f"kubectl --context kind-sentinel apply -f {out}",
+    ]
 
 
 def test_down_deletes_the_cluster_and_the_registry(pins: Any) -> None:
@@ -221,3 +241,53 @@ def test_a_failing_command_is_named_and_stops_the_setup() -> None:
         cluster.run_command(["false"])
     with pytest.raises(cluster.ClusterError, match="could not run"):
         cluster.run_command(["/nonexistent/sentinel-kind-test"])
+
+
+# ---------------------------------------------------------------- what comes from the machine
+
+
+def test_the_node_image_gives_the_clusters_kubernetes_version() -> None:
+    assert cluster.node_version() == (1, 37, 0)
+    assert "kindest/node:v1.37.0@sha256:" in cluster.KIND_CONFIG.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("fake", "message"),
+    [
+        (Fake(kubectl=None), r"kubectl is not installed: install kubectl v1\.36 to v1\.38 \(the cluster runs "
+         r"Kubernetes v1\.37\.0, kind-config\.yaml\)"),
+        (Fake(kubectl='{"clientVersion": {"major": "1", "minor": "34"}}'), r"kubectl is v1\.34, outside the "
+         r"supported skew: use kubectl v1\.36 to v1\.38"),
+        (Fake(kubectl='{"clientVersion": {"major": "1", "minor": "40"}}'), r"kubectl is v1\.40, outside"),
+        (Fake(kubectl="error: unknown flag: --output"), r"gave no version: use kubectl v1\.36 to v1\.38"),
+        (Fake(docker=False), r"the Docker daemon does not answer \(`docker version`: Cannot connect to the "
+         r"Docker daemon\): start Docker"),
+    ],
+    ids=["no-kubectl", "kubectl-too-old", "kubectl-too-new", "kubectl-unreadable", "no-docker"],
+)  # fmt: skip
+def test_up_refuses_a_machine_without_docker_or_a_supported_kubectl_before_creating_anything(
+    fake: Fake, message: str, pinned: Any, cache: Path
+) -> None:
+    with pytest.raises(cluster.ClusterError, match=message):
+        cluster.up(pinned, "kind", cache, run=fake)
+    created = [c for c in fake.commands() if not c.startswith(("docker version", "kubectl version"))]
+    assert created == [], "nothing is started, created or applied"
+
+
+@pytest.mark.parametrize("minor", ["36", "37", "38", "37+"])
+def test_kubectl_within_one_minor_version_of_the_cluster_is_accepted(
+    minor: str, pinned: Any, cache: Path
+) -> None:
+    fake = Fake(kubectl=f'{{"clientVersion": {{"major": "1", "minor": "{minor}"}}}}')
+    cluster.up(pinned, "kind", cache, run=fake)
+    assert fake.commands()[:2] == [
+        "docker version --format {{.Server.Version}}",
+        "kubectl version --client --output=json",
+    ]
+
+
+def test_the_policy_is_not_rendered_without_a_supported_kubectl(tmp_path: Path) -> None:
+    out, fake = tmp_path / "policy.yaml", Fake(kubectl=None)
+    with pytest.raises(cluster.ClusterError, match="kubectl is not installed"):
+        cluster.policy(tmp_path / "release.pub", out, run=fake)
+    assert not out.exists()

@@ -6,7 +6,9 @@ Kyverno admission controller admits an image only if `sentinel verify` would tru
 
 ## Prerequisites
 
-- Docker and `kubectl`, from the machine.
+- Docker and `kubectl`, from the machine. `kubectl` must be within one minor version of the cluster's
+  Kubernetes (v1.36 to v1.38 for the v1.37.0 node image), the skew Kubernetes supports. `make kind-up` checks
+  both before it creates anything, and stops with what to install.
 - kind, pinned by sha256 in `tools.lock.toml`: `uv run sentinel tools install kind` (or `make tools`). The
   setup verifies it again before it runs.
 
