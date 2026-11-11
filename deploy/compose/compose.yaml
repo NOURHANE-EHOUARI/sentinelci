@@ -23,7 +23,7 @@ services:
   # Runs, findings, decisions, waivers, groups (B1); embeddings for correlation (A7).
   postgres:
     <<: *hardening
-    image: pgvector/pgvector:0.8.7-pg18@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+    image: pgvector/pgvector:0.8.7-pg18@sha256:c29f30688a9ad961691bdf0ec1650717cc132a5814619d80f80463d6e4c42e47
     environment:
       POSTGRES_USER: sentinel
       POSTGRES_DB: sentinel
@@ -62,7 +62,7 @@ services:
   # catalogs are turned off.
   seaweedfs:
     <<: *hardening
-    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+    image: chrislusf/seaweedfs:4.52@sha256:57877e32bb90073b37dc109b438ba66e84fd5ed9ced5f5c04f56444ef243ce59
     command:
       - server
       - -dir=/data
@@ -129,7 +129,7 @@ services:
   ollama:
     <<: *hardening
     profiles: [ai]
-    image: ollama/ollama:0.40.8@sha256:2b8eecdb85aa6ea67c381c8ecffec04b2658496cf2821a8f88b0485bdff198e8
+    image: ollama/ollama:0.40.14@sha256:ebaef4f4c5d93660e1f25f8ad085a112f51ccfb0e8458073e71793959dba91c9
     volumes:
       - ollama-models:/root/.ollama
     ports:
@@ -161,7 +161,7 @@ services:
   grafana:
     <<: *hardening
     profiles: [observability]
-    image: grafana/grafana:13.2.4@sha256:dbbc38ea21103cefb50396340cd88afec779c7e070b0a7bf5a75b4ce46651d3f
+    image: grafana/grafana:13.3.0@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?run make compose-env}
