@@ -86,8 +86,8 @@ token or a secret, and a job that holds one runs no repository code.
 |---|---|---|---|---|---|
 | T14 | The signing key is stolen from CI (A1, A5) | The release key never reaches GitHub; the laptop signer refuses unless the tree is clean at `origin/main`; Cosign prompts for the password, never stored | ADR-0011 | planned with `make release` | planned (A4c) |
 | T15 | A BLOCK image gets signed (A5, A2) | `sentinel attest` refuses a BLOCK or non-release decision, or a decision about another digest | `supplychain/attestations.py` | `cli/tests/supplychain/test_attestations.py` | main |
-| T16 | An unsigned, tampered or BLOCK image is deployed (A1, A4) | `sentinel verify` checks the signature and the four attestations; Kyverno applies the same checks at admission; a native admission policy only admits release images in the demo namespace | `supplychain/verify.py`, `deploy/kyverno`, ADR-0011 | `test_verify.py`; admission tests with the Kyverno CLI; `make demo-attack` (5 attacks) | verify: main; admission: PR #45, #60 to #62 |
-| T17 | A registry or bundle serves another image under the right name (A4) | Everything is addressed by digest; the attest step re-reads the digest from the layout itself; Kyverno re-verifies at admission | ADR-0011 | registry-mode tests | PR #44 |
+| T16 | An unsigned, tampered or BLOCK image is deployed (A1, A4) | `sentinel verify` checks the signature and the four attestations; Kyverno applies the same checks at admission; a native admission policy only admits release images in the demo namespace | `supplychain/verify.py`, `deploy/kyverno`, ADR-0011 | `test_verify.py`; admission tests with the Kyverno CLI; `make demo-attack` (5 attacks) | verify and the admission policy: main; the cluster: PR #60 to #62 |
+| T17 | A registry or bundle serves another image under the right name (A4) | Everything is addressed by digest; the attest step re-reads the digest from the layout itself; Kyverno re-verifies at admission | ADR-0011 | registry-mode tests | main |
 | T18 | The GitOps repository is edited to deploy something else (A5, A4) | A local bare repository served read-only inside kind (push refused); a NetworkPolicy lets only Argo CD's repo server reach it; admission still verifies whatever it deploys | `deploy/argocd` | `tests/deploy` and the kind end-to-end test of PR #61 | PR #61 |
 
 ### 4.4 Evidence: a decision can be checked later
@@ -102,7 +102,7 @@ token or a secret, and a job that holds one runs no repository code.
 | # | Threat (attacker) | Control | Where | Proof | Status |
 |---|---|---|---|---|---|
 | T21 | Unauthenticated or oversized writes (A1, A4) | Every port binds 127.0.0.1; writes need a bearer token, and the API only holds its sha256; bodies are capped before parsing or authentication | `platform/api`, `deploy/compose` | `test_ingest.py`, `test_compose.py` | main |
-| T22 | The upload client leaks its token (A4) | The token comes only from `SENTINEL_API_TOKEN`; no redirect is followed; plain http (loopback only) never goes through a proxy; the token is never printed, even in errors | `report/upload.py` | `cli/tests/report/test_upload.py` (stub servers, proxies, redirects) | PR #50 |
+| T22 | The upload client leaks its token (A4) | The token comes only from `SENTINEL_API_TOKEN`; no redirect is followed; plain http (loopback only) never goes through a proxy; the token is never printed, even in errors | `report/upload.py` | `cli/tests/report/test_upload.py` (stub servers, proxies, redirects) | main |
 | T23 | Metrics reveal what runs contain (A1) | Read-only aggregates, SPEC §10 names only, enumerated label values only (never a repository, commit or id) | `sentinel_api/metrics.py` | `test_metrics.py` | PR #67 |
 
 ### 4.6 AI: it advises, it never decides
@@ -110,8 +110,8 @@ token or a secret, and a job that holds one runs no repository code.
 | # | Threat (attacker) | Control | Where | Proof | Status |
 |---|---|---|---|---|---|
 | T24 | AI output changes a verdict, creates a waiver or merges (A3) | The decision path cannot import the AI package (import contract); AI output is advice stored next to the decision | `pyproject.toml` (`importlinter`), ADR-0004 | `lint-imports` in `make check` | main |
-| T25 | Finding text carries a prompt injection (A1, A3) | Findings are sent as JSON lines inside a delimited block, with `<` and `>` escaped; no ids, snippets or evidence are sent; an answer is schema-checked, retried once, and never replaces a deterministic label | `ai/.../correlate/labels.py` | guardrail tests (7 tampered guardrails) | PR #63 |
-| T26 | A secret reaches a model or comes back in its answer (A3) | Secret findings are never sent; text is redacted; an answer that contains a secret is refused | `ai/.../correlate/labels.py` | redaction tests | PR #63 |
+| T25 | Finding text carries a prompt injection (A1, A3) | Findings are sent as JSON lines inside a delimited block, with `<` and `>` escaped; no ids, snippets or evidence are sent; an answer is schema-checked, retried once, and never replaces a deterministic label | `ai/.../correlate/labels.py` | guardrail tests (7 tampered guardrails) | main |
+| T26 | A secret reaches a model or comes back in its answer (A3) | Secret findings are never sent; text is redacted; an answer that contains a secret is refused | `ai/.../correlate/labels.py` | redaction tests | main |
 
 ### 4.7 Remediation bot
 
