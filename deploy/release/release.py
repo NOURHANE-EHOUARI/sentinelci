@@ -4,6 +4,7 @@
     uv run python deploy/release/release.py --requirements requirements.block.txt --expect-block
     uv run python deploy/release/release.py key [--key ~/.sentinelci/release.key]
     uv run python deploy/release/release.py self-gate
+    uv run python deploy/release/release.py sentinelci --version X.Y.Z [--key ~/.sentinelci/release.key]
 
 During the private phase the laptop is the only signer (ADR-0011, decision 7): the release key never reaches
 GitHub. In order, and nothing past a failed step runs:
@@ -44,6 +45,15 @@ workflows, and Grype on the SBOM of the lockfiles), the commit's own `.sentinel/
 `sentinel evaluate --context release`. The decision and its evidence go to `out/self-gate/evidence`;
 nothing is signed. Exit 0: PASS or WARN; 1: BLOCK; 3: no decision.
 
+`sentinelci --version X.Y.Z` (`make release-sentinelci VERSION=X.Y.Z`, A10) releases SentinelCI itself: the
+self-gate first (a BLOCK builds nothing), then the wheels and source distributions of both packages and the
+policy bundle (the policies and the tool lock), built twice from the exported tree with the commit's time as
+SOURCE_DATE_EPOCH and refused unless both builds are byte for byte the same. Each artifact and SHA256SUMS is
+signed with the release key, each artifact attested twice (SLSA provenance v1, and the self-gate's decision),
+everything verified with the committed public key, and only then kept in `<out>/sentinelci-X.Y.Z` and tagged
+`vX.Y.Z` here (pushing the tag is left to the person). A version is released once: its tag must not exist
+here or on origin, and both packages must declare it.
+
 `key` (`make release-key`) makes the release key pair with the pinned Cosign: the private key, password
 protected, in ~/.sentinelci (never in the repository), and its public key at deploy/keys/release.pub, to be
 committed through a pull request.
@@ -66,12 +76,13 @@ import subprocess
 import sys
 import tarfile
 import time
+import tomllib
 import urllib.request
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 ROOT = Path(__file__).resolve().parents[2]
 REPO = "NOURHANE-EHOUARI/sentinelci"
@@ -91,6 +102,13 @@ SCANS = ("secrets", "sast", "iac", "pipelines", "container")
 SELF_SCANS = ("secrets", "sast", "iac", "pipelines", "sca")
 NOT_SELF = ("demo-shop",)
 WAIVERS = Path(".sentinel") / "waivers.yaml"  # read from the commit's tree, like the workflow's (ADR-0008)
+# SentinelCI's own release (A10): its two Python packages, and the policy bundle the gate decides with.
+PACKAGES = {"sentinelci": "cli", "sentinel-ai": "ai"}  # package -> its directory
+POLICY_BUNDLE = ("policies", "tools.lock.toml")
+DECISION_TYPE = "https://github.com/NOURHANE-EHOUARI/sentinelci/specs/release-decision/v1"  # as for images
+PROVENANCE_TYPE = "slsaprovenance1"  # https://slsa.dev/provenance/v1
+BUILD_TYPE = f"https://github.com/{REPO}/specs/local-release/v1"
+_VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 # With --expect-block, 0 is "blocked as expected" and 1 "not blocked": nothing is signed in either case.
 EXIT_RELEASED, EXIT_BLOCKED, EXIT_FAILED = 0, 1, 3
 COSIGN_IMAGE = "dev.cosignproject.cosign/image"
@@ -914,6 +932,231 @@ class SelfGate:
         return EXIT_BLOCKED if decided.blocked else EXIT_RELEASED
 
 
+# ---------------------------------------------------------------- SentinelCI's own release (A10)
+
+
+def package_versions(source: Path) -> dict[str, str]:
+    """The version each package's pyproject.toml declares, in the exported tree."""
+    versions = {}
+    for package, directory in PACKAGES.items():
+        project = tomllib.loads((source / directory / "pyproject.toml").read_text(encoding="utf-8"))[
+            "project"
+        ]
+        if project.get("name") != package:
+            raise ReleaseError(f"{directory}/pyproject.toml is not {package}'s")
+        versions[package] = str(project.get("version"))
+    return versions
+
+
+def check_tag_is_new(tag: str, run: Runner) -> None:
+    """A version is released once: its tag exists neither here nor on origin."""
+    if run(["git", "rev-parse", "--quiet", "--verify", f"refs/tags/{tag}"], check=False).returncode == 0:
+        raise ReleaseError(f"{tag} already exists here: a version is released once")
+    if run(["git", "ls-remote", "--tags", "origin", f"refs/tags/{tag}"]).stdout.strip():
+        raise ReleaseError(f"{tag} already exists on origin: a version is released once")
+
+
+def build_artifacts(
+    commit: str, version: str, source: Path, dist: Path, run: Runner, environ: Mapping[str, str]
+) -> list[Path]:
+    """The wheels and source distributions of both packages, built from the exported tree with the commit's
+    time as SOURCE_DATE_EPOCH, and the policy bundle (`git archive` of the policies and the tool lock)."""
+    dist.mkdir(parents=True)
+    epoch = run(["git", "log", "-1", "--format=%ct", commit]).stdout.strip()
+    env = {key: value for key, value in environ.items() if key != "COSIGN_PASSWORD"} | {
+        "SOURCE_DATE_EPOCH": epoch
+    }
+    for package in PACKAGES:
+        run(
+            [
+                "uv",
+                "--directory",
+                str(source),
+                "build",
+                "--quiet",
+                "--package",
+                package,
+                "--out-dir",
+                str(dist),
+            ],
+            env=env,
+            capture=False,
+        )
+    bundle = dist / f"sentinelci-policies-{version}.tar.gz"
+    run([
+        "git", "archive", "--format=tar.gz", f"--prefix=sentinelci-policies-{version}/", f"--output={bundle}",
+        commit, "--", *POLICY_BUNDLE,
+    ])  # fmt: skip
+    built = sorted(path for path in dist.iterdir() if path.is_file())
+    names = [path.name for path in built]
+    for package in PACKAGES:
+        stem = package.replace("-", "_")
+        if not any(n.startswith(f"{stem}-{version}-") and n.endswith(".whl") for n in names) or (
+            f"{stem}-{version}.tar.gz" not in names
+        ):
+            raise ReleaseError(
+                f"uv build gave no wheel and source distribution of {package} {version}: {names}"
+            )
+    return built
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def reproducible(first: Sequence[Path], second: Sequence[Path]) -> dict[str, str]:
+    """name -> sha256 of artifacts built twice, which must be byte for byte the same."""
+    a = {path.name: sha256_file(path) for path in first}
+    b = {path.name: sha256_file(path) for path in second}
+    differ = sorted(name for name in a.keys() | b.keys() if a.get(name) != b.get(name))
+    if differ:
+        raise ReleaseError(f"the build is not reproducible: {', '.join(differ)} differ between two builds")
+    return a
+
+
+def provenance(commit: str, version: str) -> dict[str, Any]:
+    """SLSA provenance v1 of the release: what was built, from which commit, by which builder. No clock: the
+    same commit and version give the same document."""
+    return {
+        "buildDefinition": {
+            "buildType": BUILD_TYPE,
+            "externalParameters": {
+                "repository": f"https://github.com/{REPO}",
+                "ref": MAIN,
+                "version": version,
+            },
+            "resolvedDependencies": [
+                {"uri": f"git+https://github.com/{REPO}@{MAIN}", "digest": {"gitCommit": commit}}
+            ],
+        },
+        "runDetails": {"builder": {"id": builder_id()}},
+    }
+
+
+@dataclass
+class SentinelRelease:
+    """`release.py sentinelci --version X.Y.Z` (`make release-sentinelci`): SentinelCI's own release, gated by
+    the self-gate and signed on this laptop like shop-api's image. Nothing is kept unless every signature and
+    attestation verifies with the committed public key."""
+
+    version: str
+    key: Path
+    out: Path
+    settings: Settings
+    fetch: bool = True
+    run: Runner | None = None
+    ask_password: Callable[[str], str] = getpass.getpass
+    environ: Mapping[str, str] = field(default_factory=lambda: dict(os.environ))
+    tool: Callable[[str], Path] | None = None  # default: the pinned tool, verified
+
+    def _run(self) -> Runner:
+        return self.run if self.run is not None else functools.partial(run_command, cwd=self.settings.root)
+
+    def _tool(self, name: str) -> Path:
+        if self.tool is not None:
+            return self.tool(name)
+        return verified_tool(name, self.settings.tools_dir, self.settings.lock)
+
+    def _cosign(self, args: Sequence[str], home: Path, password: str | None = None) -> None:
+        env = _tool_env(home) | ({"COSIGN_PASSWORD": password} if password is not None else {})
+        self._run()([str(self._tool("cosign")), *args], env=env)
+
+    def _gate(self, commit: str, paths: Paths) -> Decided:
+        run = self._run()
+        prepare_grype_db(paths, self.settings, run)
+        run_scans(self_scan_commands(commit, paths, self.settings), paths, run)
+        waivers = paths.source / WAIVERS
+        return gate(
+            commit, SELF_SCANS, paths, self.settings, run, waivers=waivers if waivers.is_file() else None
+        )
+
+    def _sign(self, built: Sequence[Path], sums: Path, predicate: Path, paths: Paths, password: str) -> None:
+        """Each artifact and SHA256SUMS signed; each artifact attested: its provenance, then the decision."""
+        private = ["--key", str(self.key), "--tlog-upload=false", "--use-signing-config=false", "--yes"]
+        for artifact in [*built, sums]:
+            self._cosign(["sign-blob", *private, "--bundle", f"{artifact}.sigstore.json", str(artifact)],
+                         paths.home, password)  # fmt: skip
+        for artifact in built:
+            for kind, kind_type, document in (
+                ("provenance", PROVENANCE_TYPE, predicate), ("decision", DECISION_TYPE, paths.decision),
+            ):  # fmt: skip
+                self._cosign(
+                    ["attest-blob", *private, "--type", kind_type, "--predicate", str(document),
+                     "--bundle", f"{artifact}.{kind}.sigstore.json", str(artifact)],
+                    paths.home, password,
+                )  # fmt: skip
+
+    def _verify(self, built: Sequence[Path], sums: Path, paths: Paths) -> None:
+        """With the committed public key only, as anyone who downloads the release (no log: ADR-0006)."""
+        public = ["--key", str(self.settings.public_key), "--insecure-ignore-tlog=true"]
+        for artifact in [*built, sums]:
+            self._cosign(["verify-blob", *public, "--bundle", f"{artifact}.sigstore.json", str(artifact)],
+                         paths.home)  # fmt: skip
+        for artifact in built:
+            for kind, kind_type in (("provenance", PROVENANCE_TYPE), ("decision", DECISION_TYPE)):
+                self._cosign(
+                    ["verify-blob-attestation", *public, "--type", kind_type,
+                     "--bundle", f"{artifact}.{kind}.sigstore.json", str(artifact)],
+                    paths.home,
+                )  # fmt: skip
+
+    def __call__(self) -> int:
+        run = self._run()
+        if not _VERSION.fullmatch(self.version):
+            raise ReleaseError(f"{self.version!r} is not a version (X.Y.Z)")
+        tag, paths, public_key = f"v{self.version}", Paths(self.out / "sentinelci"), self.settings.public_key
+        final, blocked = (
+            self.out / f"sentinelci-{self.version}",
+            self.out / f"sentinelci-{self.version}-block",
+        )
+        commit = preconditions(run, fetch=self.fetch, environ=self.environ)
+        check_tag_is_new(tag, run)
+        if final.exists():
+            raise ReleaseError(f"{final} exists: a version is released once")
+        check_key_files(self.key, public_key)
+        password = self.ask_password(f"Password of the release key {self.key}: ")
+        fresh_work(paths)
+        check_key_pair(self.key, public_key, password, self._tool("cosign"), run, paths.home)
+        export_tree(commit, paths.source, run)
+        versions = package_versions(paths.source)
+        if set(versions.values()) != {self.version}:
+            raise ReleaseError(
+                f"the packages declare {versions}, not {self.version}: bump them in a PR first"
+            )
+        print(f"release: SentinelCI {self.version} at {commit} (main): the self-gate first")
+        decided = self._gate(commit, paths)
+        print(
+            f"release: the gate says {decided.verdict} for {commit}: {', '.join(decided.rules) or 'no rule'}"
+        )
+        if decided.blocked:
+            replace_dir(paths.evidence, blocked)
+            print(f"release: nothing built or signed; the evidence is in {blocked}")
+            return EXIT_BLOCKED
+        dist = paths.work / "dist"
+        built = build_artifacts(commit, self.version, paths.source, dist, run, self.environ)
+        again = build_artifacts(commit, self.version, paths.source, paths.work / "again", run, self.environ)
+        digests = reproducible(built, again)
+        sums = dist / "SHA256SUMS"
+        sums.write_text("".join(f"{digests[name]}  {name}\n" for name in sorted(digests)), encoding="utf-8")
+        predicate = paths.work / "provenance.json"
+        predicate.write_text(json.dumps(provenance(commit, self.version), sort_keys=True), encoding="utf-8")
+        self._sign(built, sums, predicate, paths, password)
+        self._verify(built, sums, paths)
+        shutil.copyfile(predicate, dist / "provenance.json")
+        shutil.copyfile(paths.decision, dist / "decision.v1.json")
+        replace_dir(paths.evidence, dist / "evidence")
+        replace_dir(dist, final)
+        message = f"SentinelCI {self.version}\n\nSHA256SUMS sha256:{sha256_file(final / 'SHA256SUMS')}\n"
+        run(["git", "tag", "--annotate", tag, "--message", message, commit])
+        print(f"release: SentinelCI {self.version} signed and verified in {final}; tag {tag} made here, "
+              f"published with `git push origin {tag}`")  # fmt: skip
+        return EXIT_RELEASED
+
+
 # ---------------------------------------------------------------- the key pair
 
 
@@ -952,7 +1195,12 @@ def make_key(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    parser.add_argument("command", nargs="?", choices=["release", "key", "self-gate"], default="release")
+    parser.add_argument(
+        "command", nargs="?", choices=["release", "key", "self-gate", "sentinelci"], default="release"
+    )
+    parser.add_argument(
+        "--version", help="sentinelci: the version to release (X.Y.Z), as the packages declare"
+    )
     parser.add_argument("--key", type=Path, default=DEFAULT_KEY, help="the release private key (Cosign)")
     parser.add_argument("--requirements", default=DEFAULT_REQUIREMENTS,
                         help=f"the requirements file the image installs, in {SERVICE_DIR}")  # fmt: skip
@@ -985,6 +1233,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 cosign=lambda: verified_tool("cosign", settings.tools_dir, settings.lock),
             )  # fmt: skip
             return EXIT_RELEASED
+        if args.command == "sentinelci":
+            if not args.version:
+                raise ReleaseError("sentinelci needs --version X.Y.Z")
+            return SentinelRelease(
+                version=args.version, key=args.key.expanduser().resolve(),
+                out=(args.out or ROOT / "out" / "release").resolve(), settings=settings,
+                fetch=not args.no_fetch,
+            )()  # fmt: skip
         if args.command == "self-gate":
             out = (args.out or ROOT / "out" / "self-gate").resolve()
             return SelfGate(out=out, settings=settings, fetch=not args.no_fetch)()

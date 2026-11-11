@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help setup check lint format typecheck imports policy test zizmor tools tools-verify compose-env up down \
-	release release-block release-key self-gate
+	release release-block release-key self-gate release-sentinelci
 
 # OPA is a pinned binary, not a Python package: `uv run sentinel tools install opa` (tools.lock.toml).
 OPA ?= $(or $(SENTINEL_OPA),opa)
@@ -71,3 +71,6 @@ release-key: ## Make the release key pair (~/.sentinelci/release.key) and deploy
 
 self-gate: ## SentinelCI's release gate on its own tree at main, without demo-shop (A10) -> out/self-gate
 	uv run --locked python deploy/release/release.py self-gate
+
+release-sentinelci: ## SentinelCI's own release VERSION=X.Y.Z: self-gate, build twice, sign, verify, tag (A10)
+	uv run --locked python deploy/release/release.py sentinelci --version $(VERSION) $(if $(KEY),--key $(KEY))

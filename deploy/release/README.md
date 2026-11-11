@@ -1,7 +1,8 @@
 # Releases on the laptop (ADR-0011)
 
 While the repository is private, the laptop that holds the release key is the only signer: the key never
-reaches GitHub. `release.py` builds shop-api's release image, decides on it with the release gate, and signs it
+reaches GitHub. `release.py` builds shop-api's release image, decides on it with the release gate, and signs
+it
 only when the gate lets it through. Its docstring lists every step and what each one refuses.
 
 Needs Docker with buildx, `uv`, and the pinned tools (`make tools`, or `SENTINEL_TOOLS_DIR`).
@@ -27,8 +28,10 @@ make release-block   # the demo's BLOCK image (requirements.block.txt): the gate
 
 | Output | What it is | Read by |
 |---|---|---|
-| `out/release/bundle` | the image, its signature and its four attestations (`cosign save`) | `make demo-release` |
-| `out/release/evidence` | decision, findings, SBOMs, tool status, Sigstore bundles, evidence store, trust reports | `sentinel verify --evidence`, `sentinel replay` |
+| `out/release/bundle` | the image, its signature and its four attestations (`cosign save`) | `make
+demo-release` |
+| `out/release/evidence` | decision, findings, SBOMs, tool status, Sigstore bundles, evidence store, trust
+reports | `sentinel verify --evidence`, `sentinel replay` |
 | `out/release/block-image` | the BLOCK image's OCI layout, never signed | `make demo-attack` |
 | `out/release/block-evidence` | the BLOCK decision and its inputs | |
 
@@ -62,3 +65,36 @@ Its first run, on this branch, found five things in SentinelCI itself, now fixed
   done (`sentinel-sast-not-analysed`): now a `TypeVar`;
 - three fake, fingerprint-shaped values in test fixtures that Gitleaks reads as API keys: waived, each by
   its fingerprint, with an owner and an expiry, in `.sentinel/waivers.yaml`.
+
+## SentinelCI's own release (A10)
+
+```bash
+make release-sentinelci VERSION=1.0.0   # asks the key password; out/release/sentinelci-1.0.0, tag v1.0.0
+git push origin v1.0.0                  # publishing the tag is left to you
+```
+
+The same discipline as shop-api's image, applied to SentinelCI itself:
+1. **Gated.** The self-gate runs first, and a BLOCK builds and signs nothing.
+2. **Reproducible.** It builds the wheel and source distribution of `sentinelci` and `sentinel-ai`, plus the
+   policy bundle (`policies/` and `tools.lock.toml`). Everything is built twice, from the commit's own files,
+   with the commit's time as `SOURCE_DATE_EPOCH`, and the release is refused unless both builds are byte for
+   byte the same.
+3. **Signed and attested.** Each artifact and `SHA256SUMS` is signed with the release key. Each artifact is
+   attested twice: SLSA provenance v1 (the commit and the builder, no clock) and the self-gate's decision.
+4. **Verified before it is kept.** Everything is verified with the committed public key only, offline, as
+   anyone who downloads the release would. Only then is the release kept and the tag `vX.Y.Z` made, here.
+
+A version is released once: its tag must not exist here or on origin, and both packages must declare it (bump
+them through a pull request first).
+
+To check a downloaded artifact:
+
+```bash
+cosign verify-blob --key deploy/keys/release.pub --insecure-ignore-tlog=true \
+  --bundle sentinelci-1.0.0-py3-none-any.whl.sigstore.json sentinelci-1.0.0-py3-none-any.whl
+cosign verify-blob-attestation --key deploy/keys/release.pub --insecure-ignore-tlog=true --type slsaprovenance1 \
+  --bundle sentinelci-1.0.0-py3-none-any.whl.provenance.sigstore.json sentinelci-1.0.0-py3-none-any.whl
+```
+
+(`--insecure-ignore-tlog=true` because nothing goes to the public transparency log while the repository is
+private, ADR-0006.)
