@@ -5,7 +5,9 @@ simulated by replacing the process call, the installed distribution or the envir
 """
 
 import dataclasses
+import hashlib
 import json
+import re
 import shutil
 import subprocess
 import tomllib
@@ -165,8 +167,9 @@ def test_another_cis_file_is_skipped_and_reported_never_counted_as_audited(tmp_p
     assert scan.run is not None and "ci/config.yml" not in scan.run.args
     (repo / "examples" / "label.yml").unlink()
     assert scan_pipelines_with_run(repo, lock=LOCK) == PipelineScan(
-        results=[], run=None, audited=[], skipped=["ci/config.yml", "ci/other.yml"], version="1.31.1"
-    )
+        results=[], run=None, audited=[], skipped=["ci/config.yml", "ci/other.yml"], version="1.31.1",
+        binary_sha256=verified_zizmor(LOCK).sha256,
+    )  # fmt: skip
 
 
 def test_zizmor_gets_a_minimal_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -192,8 +195,9 @@ def test_nothing_to_audit_runs_nothing_but_still_checks_the_binary(
     repo = tmp_path / "empty"
     repo.mkdir()
     assert scan_pipelines_with_run(repo, lock=LOCK) == PipelineScan(
-        results=[], run=None, audited=[], skipped=[], version="1.31.1"
-    )
+        results=[], run=None, audited=[], skipped=[], version="1.31.1",
+        binary_sha256=verified_zizmor(LOCK).sha256,
+    )  # fmt: skip
 
     def missing(name: str) -> Any:
         raise PackageNotFoundError(name)
@@ -332,9 +336,9 @@ def test_a_timeout_is_a_scanner_error(tmp_path: Path, monkeypatch: pytest.Monkey
         scan_pipelines_with_run(_repo(tmp_path), lock=LOCK, timeout_s=1)
 
 
-def _cli(target: Path, out: Path, repo_root: Path | None = None) -> tuple[int, str]:
+def _cli(target: Path, out: Path, repo_root: Path | None = None, *extra: str) -> tuple[int, str]:
     args = ["scan", "pipelines", str(target), "--out", str(out), "--repo", "o/r", "--commit", "0" * 40,
-            "--context", "pr", "--lock", str(REPO_LOCK)]  # fmt: skip
+            "--context", "pr", "--lock", str(REPO_LOCK), *extra]  # fmt: skip
     if repo_root is not None:
         args += ["--repo-root", str(repo_root)]
     result = CliRunner().invoke(app, args)
@@ -405,3 +409,65 @@ def test_cli_refuses_a_bad_target(tmp_path: Path, case: str) -> None:
         target = repo / ".github" / "workflows" / "label.yml"
     code, output = _cli(target, tmp_path / "out.ndjson", repo)
     assert code == 3 and "FAIL CLOSED" in output
+
+
+# ---------------------------------------------------------------- tool status (the gate's SC-010, A3)
+
+
+def _status_validator() -> Any:
+    from jsonschema import Draft202012Validator
+
+    schema = json.loads((ROOT / "schemas" / "tool-status.v1.json").read_text(encoding="utf-8"))
+    return Draft202012Validator(schema)
+
+
+@pytest.mark.parametrize("files", ["a-workflow", "nothing-to-audit"])
+def test_cli_records_an_ok_tool_status_with_the_verified_binary_and_its_wheel(
+    tmp_path: Path, files: str
+) -> None:
+    repo = _repo(tmp_path) if files == "a-workflow" else tmp_path / "empty"
+    repo.mkdir(exist_ok=True)
+    status = tmp_path / "status.json"
+    code, output = _cli(repo, tmp_path / "out.ndjson", None, "--tool-status-out", str(status))
+    assert code == 0, output
+    document = json.loads(status.read_text())
+    assert not list(_status_validator().iter_errors(document))
+    binary = verified_zizmor(LOCK)
+    wheels = {wheel.sha256: wheel.binary_sha256 for wheel in LOCK.python_tools["zizmor"].wheels}
+    (tool,) = document["tools"].values()
+    assert list(document["tools"]) == ["zizmor"] and tool["status"] == "ok" and tool["version"] == "1.31.1"
+    assert tool["binary_sha256"] == binary.sha256 and wheels[tool["artifact_sha256"]] == binary.sha256
+    assert document["lock_sha256"] == hashlib.sha256(REPO_LOCK.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("how", "status_name"),
+    [("crash", "failed"), ("timeout", "timeout"), ("tampered", "integrity_mismatch")],
+)
+def test_cli_records_a_failure_so_the_gate_blocks_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, how: str, status_name: str
+) -> None:
+    if how == "crash":
+        monkeypatch.setattr(zizmor.subprocess, "run", lambda *a, **k: _Completed(2, ""))
+    elif how == "timeout":
+
+        def slow(*args: Any, **kwargs: Any) -> Any:
+            raise subprocess.TimeoutExpired(cmd="zizmor", timeout=kwargs["timeout"])
+
+        monkeypatch.setattr(zizmor.subprocess, "run", slow)
+    status = tmp_path / "status.json"
+    lock = REPO_LOCK
+    if how == "tampered":  # the installed binary is not one a pinned wheel carries
+        lock = tmp_path / "tools.lock.toml"
+        lock.write_text(re.sub(r'binary_sha256 = "[0-9a-f]{64}"', 'binary_sha256 = "' + "0" * 64 + '"',
+                               REPO_LOCK.read_text()))  # fmt: skip
+    status.write_text("stale")
+    code, output = _cli(_repo(tmp_path), tmp_path / "out.ndjson", None, "--tool-status-out", str(status),
+                        "--timeout", "37", "--lock", str(lock))  # fmt: skip
+    assert code == 3 and "FAIL CLOSED" in output, output
+    document = json.loads(status.read_text())
+    assert not list(_status_validator().iter_errors(document))
+    assert document["tools"]["zizmor"]["status"] == status_name
+    assert document["tools"]["zizmor"]["version"] == "1.31.1", "the pinned version: it may never have run"
+    if how == "timeout":
+        assert "37 s" in document["tools"]["zizmor"]["detail"]
