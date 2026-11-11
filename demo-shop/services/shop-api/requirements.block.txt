@@ -1,7 +1,7 @@
-# INTENTIONALLY VULNERABLE (GT-SCA-001): the demo's BLOCK image (ADR-0011 decision 6). requirements.release.txt
-# with pyyaml replaced by the seeded 5.3.1 (CVE-2020-14343, code execution through FullLoader, which
-# app/main.py uses: GT-SAST-003), pinned by the hash of its sdist (PyYAML-5.3.1.tar.gz): it has no wheel for
-# Python 3.12, so this is the one package built from source. Build it with
+# INTENTIONALLY VULNERABLE (GT-SCA-001, GT-CONTAINER-001): the demo's BLOCK image (ADR-0011 decision 6).
+# requirements.release.txt with pyyaml replaced by the seeded 5.3.1 (CVE-2020-14343, code execution through
+# FullLoader, which app/main.py uses: GT-SAST-003), pinned by the hash of its sdist (PyYAML-5.3.1.tar.gz): it
+# has no wheel for Python 3.12, so this is the one package built from source. Build it with
 #   docker buildx build -f Dockerfile.release --build-arg REQUIREMENTS=requirements.block.txt .
 # The gate blocks it (SC-002, P0) and the attest step refuses to sign it. Never deploy it.
 annotated-doc==0.0.5 \

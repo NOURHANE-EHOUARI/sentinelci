@@ -72,6 +72,34 @@ risk model or the policies, and the checks below say so when it does. `imported:
 service declares and never imports (B9's code must keep it that way). `imported: true` is added once B9's
 code imports the package.
 
+**Container seeds** (category CONTAINER, A9) are vulnerable packages in an image built from demo-shop. They
+carry the SCA fields (`package`, `vulnerability`, `cve`, `kev`) and the image they are in:
+
+```yaml
+    location: {path: services/shop-api/requirements.block.txt, line: 352}   # where the version is pinned
+    image:
+      dockerfile: services/shop-api/Dockerfile.release                       # relative to demo-shop/
+      build_args: {REQUIREMENTS: requirements.block.txt}
+```
+
+- A container seed is **detected** when the tool reports its `vulnerability` on its `package` in the built
+  image (`sentinel scan image`, CONTAINER findings). Its `location` is the file a developer would change; the
+  finding itself names the image and the layer, not a repository path.
+- Other findings of the image (its base image's packages) are real but unlisted. They count neither as hits nor
+  as false positives, like other findings in a seeded file.
+- `tests/demo_shop/test_container_seeds.py` checks the pin at its line, that the release image (the
+  Dockerfile's default) does not ship the seed, the advisory in the feed fixtures and the gate rule. The
+  detection needs the built image and a Grype database:
+
+  ```bash
+  cd demo-shop/services/shop-api
+  docker buildx build -f Dockerfile.release --build-arg REQUIREMENTS=requirements.block.txt \
+    --output type=oci,dest=/tmp/block.oci.tar .
+  cd -
+  SENTINEL_BLOCK_IMAGE_ARCHIVE=/tmp/block.oci.tar SENTINEL_GRYPE_DB_DIR=<sentinel tools grype-db --db-dir> \
+    SENTINEL_TOOLS_DIR=<sentinel tools install --dest> uv run pytest tests/demo_shop/test_container_seeds.py
+  ```
+
 Fields planned for later tasks, optional today: `relevance` (0–3, for NDCG@10 against the CVSS baseline) and
 `group` (shared root cause, for ARI).
 
