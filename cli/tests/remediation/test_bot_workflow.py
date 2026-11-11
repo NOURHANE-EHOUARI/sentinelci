@@ -102,7 +102,7 @@ def test_verify_judges_with_the_scanned_commits_pipeline_and_the_scanners_the_pr
     required = re.search(r'"pr": \{([^}]*)\}', (ROOT / "policies" / "required_tools.rego").read_text())
     assert required is not None
     tools = set(re.findall(r'"(\w+)"', required[1]))
-    kinds = {"gitleaks": "scan secrets", "trivy": "scan iac"}
+    kinds = {"gitleaks": "scan secrets", "trivy": "scan iac", "zizmor": "scan pipelines"}
     assert tools <= kinds.keys(), (
         f"a scanner the pr gate requires is not run by verify: {tools - kinds.keys()}"
     )
@@ -117,11 +117,13 @@ def test_the_verify_job_outlives_every_scanner_run() -> None:
     per_run = int(re.search(r'^  SCANNER_TIMEOUT_S: "(\d+)"$', text, re.MULTILINE)[1])  # type: ignore[index]
     strategies = len(re.search(r"for strategy in ([a-z ]+); do", text)[1].split())  # type: ignore[index]
     run = step("verify", VERIFY_STEP)["run"]
-    assert run.count('"${common[@]}"') == 4 and '--timeout "$SCANNER_TIMEOUT_S"' in run
-    # The scanned commit: Gitleaks on its tree, Trivy. Each proposal: Gitleaks in git mode (two passes),
-    # Trivy.
+    assert run.count('"${common[@]}"') == 4 and run.count('"${audit[@]}"') == 3
+    assert '--timeout "$SCANNER_TIMEOUT_S"' in run
+    # The scanned commit: Gitleaks on its tree, Trivy, zizmor. Each proposal: Gitleaks in git mode (two
+    # passes), Trivy, zizmor.
     trivy = per_run + 60  # the runner's own limit on top of Trivy's --timeout (scanners/trivy.py)
-    worst = 300 + per_run + trivy + strategies * (2 * per_run + trivy)  # 300: setup, installs, OPA, uploads
+    setup = 300  # setup, installs, OPA, uploads
+    worst = setup + 2 * per_run + trivy + strategies * (3 * per_run + trivy)
     assert worst <= workflow()["jobs"]["verify"]["timeout-minutes"] * 60
 
 
