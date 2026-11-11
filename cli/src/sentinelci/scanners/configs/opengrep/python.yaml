@@ -97,13 +97,29 @@ rules:
       - pattern: pickle.loads(...)
       - pattern: pickle.load(...)
       - pattern: marshal.loads(...)
+      # PyYAML's loaders that can build arbitrary Python objects: the full and unsafe ones, by name, by keyword
+      # or as the second argument, for one document or for all of them (FullLoader runs code in pyyaml < 5.4).
       - pattern: yaml.unsafe_load(...)
-      - pattern: yaml.load(..., Loader=yaml.Loader, ...)
-      - pattern: yaml.load(..., Loader=yaml.UnsafeLoader, ...)
-      - pattern: yaml.load(..., Loader=yaml.FullLoader, ...)
+      - pattern: yaml.unsafe_load_all(...)
+      - pattern: yaml.full_load(...)
+      - pattern: yaml.full_load_all(...)
       - patterns:
-          - pattern: yaml.load($DATA)
+          - pattern-either:
+              - pattern: yaml.$LOAD(..., Loader=yaml.Loader, ...)
+              - pattern: yaml.$LOAD(..., Loader=yaml.UnsafeLoader, ...)
+              - pattern: yaml.$LOAD(..., Loader=yaml.FullLoader, ...)
+              - pattern: yaml.$LOAD($DATA, yaml.Loader)
+              - pattern: yaml.$LOAD($DATA, yaml.UnsafeLoader)
+              - pattern: yaml.$LOAD($DATA, yaml.FullLoader)
+          - metavariable-regex:
+              metavariable: $LOAD
+              regex: ^load(_all)?$
+      - patterns:
+          - pattern-either:
+              - pattern: yaml.load($DATA)
+              - pattern: yaml.load_all($DATA)
           - pattern-not: yaml.load(..., Loader=..., ...)
+          - pattern-not: yaml.load_all(..., Loader=..., ...)
 
   - id: python-tls-verification-disabled
     languages: [python]

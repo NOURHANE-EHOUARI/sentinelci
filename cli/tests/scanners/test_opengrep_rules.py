@@ -122,6 +122,46 @@ CASES: list[tuple[str, str, bool, str]] = [
      '    yaml.safe_load(text)\n'
      '    yaml.load(text, Loader=yaml.SafeLoader)\n'
      '    return json.loads(text)\n'),
+    # Every unsafe PyYAML loader form (#74 review: GT-SCA-001 is about FullLoader), one per file.
+    ('python-unsafe-deserialization', 'de-full.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return yaml.full_load(text)\n'),
+    ('python-unsafe-deserialization', 'de-full-all.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return list(yaml.full_load_all(text))\n'),
+    ('python-unsafe-deserialization', 'de-unsafe-all.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return list(yaml.unsafe_load_all(text))\n'),
+    ('python-unsafe-deserialization', 'de-load-all-full.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return list(yaml.load_all(text, Loader=yaml.FullLoader))\n'),
+    ('python-unsafe-deserialization', 'de-load-all-bare.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return list(yaml.load_all(text))\n'),
+    ('python-unsafe-deserialization', 'de-positional.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return yaml.load(text, yaml.FullLoader)\n'),
+    ('python-unsafe-deserialization', 'de-positional-all.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return list(yaml.load_all(text, yaml.UnsafeLoader))\n'),
+    ('python-unsafe-deserialization', 'de-from-import.py', True,
+     'from yaml import FullLoader, load\n'
+     'def f(text):\n'
+     '    return load(text, Loader=FullLoader)\n'),
+    ('python-unsafe-deserialization', 'de-all-ok.py', False,
+     'import yaml\n'
+     'def f(text):\n'
+     '    list(yaml.safe_load_all(text))\n'
+     '    list(yaml.load_all(text, Loader=yaml.SafeLoader))\n'
+     '    yaml.load(text, yaml.SafeLoader)\n'
+     '    return list(yaml.load_all(text, yaml.CSafeLoader))\n'),
     ('python-tls-verification-disabled', 'tls1.py', True,
      'import requests\n'
      'def f(u):\n'
