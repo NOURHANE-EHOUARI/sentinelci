@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.39 | Threat model (§18, A10): `docs/threat-model.md` lists the assets, five attackers, the trust boundaries, and 29 threats, each with its control, where it lives, the test that proves it and its status (main, an open PR, or planned), then the residual risks accepted in the private phase. §18's signing key row follows ADR-0011 (no signing key on GitHub). |
 | 1.1.30 | Platform API migrations (B1, §13.3): going below 0004 stops, changing nothing, while any run keeps its uploaded findings bytes, which are the only copy `findings_sha256` was taken of; before, the downgrade dropped them without a word. A database without kept bytes still goes down. Raised on #57. |
 | 1.1.29 | Platform API 1.2.0 (B1, §13.3): the platform keeps each run's findings upload byte for byte and serves it at `GET /api/v1/runs/{id}/findings`, so a consumer that must match `findings_sha256` (the correlator's run document, #47; a replay) reads the exact bytes; the JSONB rows keep neither key order nor bytes. The database keeps only bytes that hash to the recorded digest, and the recorded-run trigger makes them immutable. Runs recorded before have none, and the API says so. |
 | 1.1.28 | Platform API 1.1.0 (B1, §13.3): one run per CI run. `POST /api/v1/runs` with the `repo`, `commit`, `context` and `run_id` of a run already recorded (a re-run of `sentinel upload`, #50) is answered 409 with the existing run, which the client resumes instead of recording the findings a second time; a unique index decides between concurrent requests. A run without `run_id` is always new. Migration 0003 stops, changing nothing, on a database that already holds a CI run twice. |
@@ -806,7 +807,7 @@ manipulate the AI (verdict unchanged) → prove (`sentinel replay`, Grafana).
 | Laptop resources | Compose profiles; small quantized model on the stronger machine |
 | Direct push to `main` (no server-side protection while private) | Team convention, local pre-commit guard, CI on every push to `main` |
 | Actions minutes (private) | Path filters, caches, nightly full scans |
-| Signing key in CI (private phase) | Only the attest job references it; rotate and switch to keyless when public |
+| Signing key (private phase) | Never on GitHub: a laptop signer with a password-protected key, run only from a clean tree at `origin/main` (ADR-0011); keyless signing in CI when public |
 | External APIs down | Snapshots and offline fixtures |
 | Scanner noise | Diff-aware gating, risk scoring, correlation, waivers |
 | Integration drift | Contracts + fixtures in CI; weekly sync |
@@ -814,6 +815,9 @@ manipulate the AI (verdict unchanged) → prove (`sentinel replay`, Grafana).
 | Vulnerable demo code misused | Local only, fake secrets, loud labelling |
 | Our own supply chain | SHA pins, tools verify, Dependabot cooldown, zizmor, review of dependencies |
 | AI hallucinations | Grounding, schemas, advisory only, deterministic verification, evaluation |
+
+The threats to SentinelCI itself (who attacks, which control answers, where it is tested, what remains) are
+in `docs/threat-model.md`.
 
 ## 19. CV and interview kit
 
