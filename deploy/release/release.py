@@ -323,11 +323,16 @@ def stage(commit: str, context: Context, source: Path, run: Runner) -> Path:
 # ---------------------------------------------------------------- 3. the image
 
 
-def build(context_dir: Path, requirements: str, archive: Path, run: Runner) -> None:
+def build(
+    context_dir: Path, requirements: str, archive: Path, run: Runner, *, wheels_only: bool = True
+) -> None:
+    """Build the image as an OCI layout. A release installs wheels only (no setup.py runs, every byte is
+    hashed); only the demo's BLOCK image, whose seeded pyyaml 5.3.1 has no wheel, may build from an sdist."""
     run(
         [
             "docker", "buildx", "build", "--file", str(context_dir / DOCKERFILE),
             "--build-arg", f"REQUIREMENTS={requirements}",
+            "--build-arg", f"ONLY_BINARY={':all:' if wheels_only else ':none:'}",
             "--output", f"type=oci,dest={archive}", "--provenance=false", "--sbom=false",
             str(context_dir),
         ],
@@ -731,7 +736,7 @@ class Release:
             check_key_pair(self.key, public_key, password, self._tool("cosign"), run, paths.home)
         context = build_context(commit, self.requirements, run)
         target = stage(commit, context, paths.source, run)
-        build(target, context.requirements, paths.archive, run)
+        build(target, context.requirements, paths.archive, run, wheels_only=not self.expect_block)
         extract(paths.archive, paths.layout)
         digest = layout_digest(paths.layout)
         print(f"release: built {IMAGE_NAME}@{digest}")
