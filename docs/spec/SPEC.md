@@ -204,14 +204,6 @@ harmless options. Merge commits are scanned with `--diff-merges=remerge`, so a s
 (an "evil merge") is found while an honest merge of the base branch blames nobody (octopus merges excepted:
 remerge does not diff them, so they get a second `first-parent` pass, which also reports what the other parents
 already had; the PR baseline drops what the base branch has). Each Gitleaks pass gets the full scanner time
-limit, so git mode can take twice as long. Dir mode opens archives (`.zip`, nested up to 3 levels). Grype never
-reads the scanned repository: it matches the Syft SBOM, from a private working directory with SentinelCI's
-configuration, offline, against a database the pipeline prepared (`sentinel tools grype-db`: the same verified
-Grype and configuration, which pins the update URL, then Grype's own validity check, offline); a database built
-more than five days ago fails the scan (SC-010), and a report whose recorded configuration hides matches (ignore rules beyond Grype's built-in
-kernel-header rules, VEX, exclusions, `only-fixed`, `by-cve`) is refused. Legitimate exceptions go through
-waivers (§6.4).
-
 limit, so git mode can take twice as long. Dir mode opens archives (`.zip`, nested up to 3 levels). Trivy
 (`sentinel scan iac`) never loads the repository's `trivy.yaml` or `.trivyignore` (`--config ""`,
 `--ignorefile ""`), refuses a tree that contains inline `trivy:ignore` / `tfsec:ignore` comments (no flag turns
@@ -247,6 +239,13 @@ job log, never counted as audited. Fingerprints (§13.1) use the job (`jobs.<id>
 the code it is about, never the step's position, so adding a step does not make a job's findings new, while a new
 expression in a job is a new finding.
 
+Grype (`sentinel scan sca`, findings of category SCA) never reads the scanned repository: it matches the Syft
+SBOM, from a private working directory with SentinelCI's configuration, offline, against a database the pipeline
+prepared (`sentinel tools grype-db`: the same verified Grype and configuration, which pins the update URL, then
+Grype's own validity check, offline); a database built more than five days ago fails the scan (SC-010), and a
+report whose recorded configuration hides matches (ignore rules beyond Grype's built-in kernel-header rules, VEX,
+exclusions, `only-fixed`, `only-notfixed`, `ignore-wontfix`, a distro override, `by-cve`) is refused. Legitimate
+exceptions go through waivers (§6.4).
 
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
