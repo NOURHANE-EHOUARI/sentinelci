@@ -76,7 +76,8 @@ def demo_shop_tree() -> str | None:
         return None
     try:
         dirty = subprocess.run(  # noqa: S603 (a fixed git command)
-            [git, "status", "--porcelain", "--", "demo-shop"],
+            # --ignored: the scanners read ignored files too (a local `*.key`), so they make a tree unclean.
+            [git, "status", "--porcelain", "--ignored", "--", "demo-shop"],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -153,7 +154,11 @@ def markdown(data: dict[str, Any]) -> str:
     out = ["# demo-shop detection report (B8)", ""]
     inputs = data["inputs"]
     out += [f"- Ground truth: `sha256:{inputs['ground_truth_sha256']}`"]
-    out += [f"- demo-shop tree: `{inputs.get('demo_shop_tree') or 'not a clean checkout: not reproducible'}`"]
+    if inputs.get("findings_recorded"):
+        out += ["- demo-shop tree: recorded findings (`--findings`): their tree is not checked"]
+    else:
+        tree = inputs.get("demo_shop_tree") or "not a clean checkout: not reproducible"
+        out += [f"- demo-shop tree: `{tree}`"]
     for tool, run in data["tools"].items():
         detail = run.get("version") or run.get("reason", "")
         out += [f"- {tool}: {run['status']}" + (f" ({detail})" if detail else "")]
@@ -213,6 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     args.out.mkdir(parents=True, exist_ok=True)
     findings: dict[str, list[dict[str, Any]]] = {}
+    files: dict[str, Path] = {}
     runs: list[ToolRun] = []
     summaries: list[str] = []
     for tool in SCANS:
@@ -225,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
             version = next((str(f["tool"].get("version")) for f in loaded if f.get("tool")), None)
             runs.append(ToolRun(tool, "ok", version=version))
             findings[tool] = loaded
+            files[tool] = path
             continue
         path = args.out / "findings" / f"{tool}.ndjson"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -235,12 +242,13 @@ def main(argv: list[str] | None = None) -> int:
             summaries.append(summary)
         if run.status == "ok":
             findings[tool] = load(path)
+            files[tool] = path
     inputs: dict[str, Any] = {
-        "demo_shop_tree": demo_shop_tree(),
-        "findings_sha256": {
-            tool: sha256("".join(json.dumps(f, sort_keys=True) + "\n" for f in rows).encode())
-            for tool, rows in sorted(findings.items())
-        },
+        # Recorded findings may come from another tree than this checkout's: none is claimed for them.
+        "demo_shop_tree": None if args.findings is not None else demo_shop_tree(),
+        "findings_recorded": args.findings is not None,
+        # The digests of the files themselves, so `sha256sum` checks them.
+        "findings_sha256": {tool: sha256(files[tool].read_bytes()) for tool in sorted(findings)},
         "scanner_summaries": [re.sub(r" written to .*$", "", line) for line in summaries],
     }
     data = report(GROUND_TRUTH.read_bytes(), findings, runs, inputs)

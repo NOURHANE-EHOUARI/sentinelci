@@ -2,15 +2,19 @@
 positives on the clean controls, from SentinelCI's own findings (Finding v1) and the ground truth.
 
 The matching rules are the ground truth's (demo-shop/ground-truth/README.md):
-- a seed is detected when a finding of one of its listed `(tool, rule)` pairs reports it in the seed's file
+- a seed is detected only by a finding of its own category, and when that finding is one of its listed
+  `(tool, rule)` pairs and reports it in the seed's file
   (its `location` or one of its `other_locations`); a secret must also be on the seed's line;
-- an SCA seed is detected when its vulnerability is reported on its package (the purl), wherever;
+- an SCA or CONTAINER seed is detected when its vulnerability is reported on its package (the purl),
+  wherever (in an image, the path is one of the image's own);
 - a seed with `known_miss` lists no detection: it counts as a miss in its category's recall, never excluded;
 - a finding by a tool a control lists in `must_not_detect`, in the control's file, is a false positive;
 - any other finding is real but unlisted: it counts neither as a hit nor as a false positive, and is listed.
 
-A category is measured only if every tool its seeds list ran. A tool that could not run (no Grype database, a
-CLI without the command) leaves its categories "not measured", never at a recall of 0.
+A category is measured only if every tool its seeds list ran a scan of that category: grype scanning
+manifests (SCA) says nothing about images (CONTAINER). A tool that could not run (no Grype database, a CLI
+without the command) leaves its categories "not measured", never at a recall of 0. A category whose seeds are
+all known misses lists no tool, and is measured: its recall is 0.
 
 Pure functions: the same ground truth, findings and tool statuses give the same result, byte for byte.
 Owner: Track B (B8).
@@ -25,14 +29,32 @@ from typing import Any
 SCAN_ROOT = "demo-shop/"
 
 
+# The categories each scan of `make eval` covers (eval/detection/run.py). An image scan, when it is wired in,
+# is another run of grype or trivy that covers CONTAINER.
+SCAN_CATEGORIES: dict[str, tuple[str, ...]] = {
+    "gitleaks": ("SECRET",),
+    "trivy": ("IAC",),
+    "zizmor": ("PIPELINE",),
+    "opengrep": ("SAST",),
+    "grype": ("SCA",),
+}
+
+
 @dataclass(frozen=True)
 class ToolRun:
-    """One scanner's run: `ok` with its version, or why it did not run (`failed`, `skipped`)."""
+    """One scanner's run: `ok` with its version, or why it did not run (`failed`, `skipped`); and the
+    categories it scanned (by default, those of its scan in SCAN_CATEGORIES)."""
 
     tool: str
     status: str  # ok | failed | skipped
     version: str | None = None
     reason: str | None = None
+    categories: tuple[str, ...] | None = None
+
+    def scanned(self) -> tuple[str, ...]:
+        if self.status != "ok":
+            return ()
+        return self.categories if self.categories is not None else SCAN_CATEGORIES.get(self.tool, ())
 
 
 def _places(finding: Mapping[str, Any]) -> set[str]:
@@ -62,11 +84,13 @@ def _purl(finding: Mapping[str, Any]) -> str | None:
 
 def detects(seed: Mapping[str, Any], finding: Mapping[str, Any]) -> bool:
     """Whether `finding` reports `seed`, by one of the seed's listed (tool, rule) pairs."""
+    if finding.get("category") != seed["category"]:
+        return False
     pairs = {(d["tool"], d["rule"]) for d in seed["expected"]["detections"]}
     if (_tool(finding), finding.get("rule_id")) not in pairs:
         return False
-    if seed["category"] == "SCA":
-        return _purl(finding) == seed["package"]
+    if seed["category"] in ("SCA", "CONTAINER"):  # a package: wherever it is reported (in an image, a path
+        return _purl(finding) == seed["package"]  # inside the image's file system)
     if seed["location"]["path"] not in _places(finding):
         return False
     if seed["category"] == "SECRET":
@@ -81,6 +105,7 @@ def _tools_of(seeds: Iterable[Mapping[str, Any]]) -> set[str]:
 def score(truth: Mapping[str, Any], findings: list[Mapping[str, Any]], runs: list[ToolRun]) -> dict[str, Any]:
     """The detection report: per category, per control, and the unlisted findings."""
     ran = {run.tool for run in runs if run.status == "ok"}
+    scanned = {(run.tool, category) for run in runs for category in run.scanned()}
     seeds: list[Mapping[str, Any]] = truth["seeds"]
     controls: list[Mapping[str, Any]] = truth["controls"]
     hits: dict[str, list[int]] = {}  # seed id -> indexes of the findings that detect it
@@ -91,10 +116,15 @@ def score(truth: Mapping[str, Any], findings: list[Mapping[str, Any]], runs: lis
     for category in sorted({seed["category"] for seed in seeds}):
         members = [seed for seed in seeds if seed["category"] == category]
         tools = sorted(_tools_of(members))
-        missing_tools = [tool for tool in tools if tool not in ran]
+        missing = [
+            tool if tool not in ran else f"{tool} did not scan {category}"
+            for tool in tools
+            if (tool, category) not in scanned
+        ]
+        all_known_misses = all("known_miss" in seed for seed in members)
         entry: dict[str, Any] = {"seeds": len(members), "tools": tools}
-        if missing_tools or not tools:
-            entry |= {"measured": False, "reason": f"not run: {', '.join(missing_tools) or 'no tool listed'}"}
+        if missing or (not tools and not all_known_misses):
+            entry |= {"measured": False, "reason": f"not run: {', '.join(missing) or 'no tool listed'}"}
         else:
             detected = sorted(seed["id"] for seed in members if hits[seed["id"]])
             missed = [
