@@ -79,12 +79,19 @@ def test_the_four_predicates_of_a_release() -> None:
     ]
     assert provenance["runDetails"] == {
         "builder": {"id": BUILDER},
-        "metadata": {"invocationId": f"https://github.com/{REPO}/actions/runs/1234567890/attempts/1"},
+        "metadata": {"invocationId": f"https://github.com/{REPO}/actions/runs/1234567890"},
     }
 
 
 def test_the_predicates_never_depend_on_the_clock() -> None:
     assert json.dumps(predicates(), sort_keys=True) == json.dumps(predicates(), sort_keys=True)
+
+
+def test_a_re_run_of_the_attest_job_signs_the_same_statements() -> None:
+    """#44 review, blocking 1: GitHub's "Re-run jobs" increments GITHUB_RUN_ATTEMPT. If the attempt were
+    signed, registry mode would see two different releases of the digest (ambiguous, NOT TRUSTED)."""
+
+    assert predicates(env=GITHUB_ENV | {"GITHUB_RUN_ATTEMPT": "2"}) == predicates()
 
 
 @pytest.mark.parametrize(

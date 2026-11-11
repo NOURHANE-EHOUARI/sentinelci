@@ -1,0 +1,140 @@
+# SentinelCI release-evidence admission policy (task A5, SPEC section 7, ADR-0010).
+#
+# Rendered by `sentinel admission-policy` from the same parameters as `sentinel verify`: the release public key,
+# the repository and the release workflow. Do not edit a rendered copy: render it again.
+#
+# A Pod is admitted only if every image matching the glob is a SentinelCI release: signed by the release key
+# (`cosign sign`), with the four attestations `sentinel attest --push` attaches, bound together exactly as
+# `sentinel verify` checks them. Cosign 3 stores the image signature as a DSSE statement of type
+# https://sigstore.dev/cosign/sign/v1, and verifyImageSignatures accepts any statement the key signed about
+# the digest (an attestation included), so the signature is required here as an attestation of that type.
+# Validations run in order and the first that fails is the reason given; the signatures are checked first,
+# because extractPayload reads only verified statements. An image without a digest is refused (verifyDigest);
+# in a cluster, mutateDigest first pins a tag to the digest it resolves to.
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: ${name}
+spec:
+  validationActions: [Deny]
+  failurePolicy: Fail
+  # Each admission makes five registry verifications; a timeout denies (failurePolicy: Fail). The API server's
+  # maximum, so that a slow registry is a deny only when it is really unavailable.
+  webhookConfiguration:
+    timeoutSeconds: 30
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ['']
+        apiVersions: ['v1']
+        operations: ['CREATE', 'UPDATE']
+        # One resource per document: 'pods' (with Kyverno's autogen, so a Deployment, Job or CronJob is refused
+        # itself), or 'pods/ephemeralcontainers' (kubectl debug), which in the same policy would turn autogen off.
+        resources: ['${resource}']
+  # A prefix of the lower-cased reference: registry host names ignore case, and a glob does not.
+  matchImageReferences:
+    - expression: "ref.lowerAscii().startsWith('${image_prefix}')"
+  validationConfigurations:
+    mutateDigest: true
+    verifyDigest: true
+    required: true
+  credentials:
+    allowInsecureRegistry: ${allow_http}
+  attestors:
+    - name: release
+      cosign:
+        key:
+          data: |
+${public_key}
+        ctlog:
+          # Private mode (ADR-0006): nothing is uploaded to a transparency log, so there is no entry to check.
+          insecureIgnoreTlog: true
+          insecureIgnoreSCT: true
+  attestations:
+    - name: signature
+      intoto:
+        type: ${signature_type}
+    - name: decision
+      intoto:
+        type: ${decision_type}
+    - name: sbom
+      intoto:
+        type: ${sbom_type}
+    - name: vuln
+      intoto:
+        type: ${vuln_type}
+    - name: provenance
+      intoto:
+        type: ${provenance_type}
+  validations:
+    - message: 'signature: the image itself is not signed by the release key'
+      expression: >-
+        images.all(kind, images[kind].all(image,
+          verifyAttestationSignatures(image, attestations.signature, [attestors.release]) > 0))
+    - message: 'signature: no release decision signed by the release key'
+      expression: >-
+        images.all(kind, images[kind].all(image,
+          verifyAttestationSignatures(image, attestations.decision, [attestors.release]) > 0))
+    - message: 'signature: no SBOM (CycloneDX) signed by the release key'
+      expression: >-
+        images.all(kind, images[kind].all(image,
+          verifyAttestationSignatures(image, attestations.sbom, [attestors.release]) > 0))
+    - message: 'signature: no vulnerability scan signed by the release key'
+      expression: >-
+        images.all(kind, images[kind].all(image,
+          verifyAttestationSignatures(image, attestations.vuln, [attestors.release]) > 0))
+    - message: 'signature: no provenance (SLSA v1) signed by the release key'
+      expression: >-
+        images.all(kind, images[kind].all(image,
+          verifyAttestationSignatures(image, attestations.provenance, [attestors.release]) > 0))
+    - message: 'decision: not a release decision'
+      expression: >-
+        images.all(kind, images[kind].all(image,
+          extractPayload(image, attestations.decision).predicate.subject.context == 'release'))
+    - message: 'decision: not a non-BLOCK Decision v1 verdict'
+      expression: >-
+        images.all(kind, images[kind].all(image,
+          extractPayload(image, attestations.decision).predicate.verdict in ['PASS', 'WARN'] &&
+          extractPayload(image, attestations.decision).predicate.schema_version in [${decision_versions}] &&
+          !extractPayload(image, attestations.decision).predicate.violations.exists(v, v.effect != 'WARN')))
+    - message: 'decision: about another image'
+      expression: >-
+        images.all(kind, images[kind].all(image, image.contains('@') &&
+          image.split('@')[1] == extractPayload(image, attestations.decision).predicate.subject.image_digest))
+    - message: 'decision: from another repository'
+      expression: >-
+        images.all(kind, images[kind].all(image,
+          extractPayload(image, attestations.decision).predicate.subject.repo == '${repo}'))
+    - message: 'provenance: not built by the release workflow'
+      expression: >-
+        images.all(kind, images[kind].all(image,
+          extractPayload(image, attestations.provenance).predicate.runDetails.builder.id == '${builder_id}'))
+    - message: "provenance: not built from the decision's commit"
+      expression: >-
+        images.all(kind, images[kind].all(image,
+          extractPayload(image, attestations.provenance).predicate.buildDefinition.resolvedDependencies
+            .exists(d, d.uri.startsWith('${source_prefix}')) &&
+          extractPayload(image, attestations.provenance).predicate.buildDefinition.resolvedDependencies
+            .filter(d, d.uri.startsWith('${source_prefix}'))
+            .all(d, d.digest.gitCommit ==
+              extractPayload(image, attestations.decision).predicate.subject.commit)))
+    - message: 'vulnerability scan: does not name this decision'
+      expression: >-
+        images.all(kind, images[kind].all(image,
+          extractPayload(image, attestations.vuln).predicate.scanner.result.decision_id ==
+            extractPayload(image, attestations.decision).predicate.decision_id))
+    - message: "vulnerability scan: not the decision's findings"
+      expression: >-
+        images.all(kind, images[kind].all(image,
+          extractPayload(image, attestations.vuln).predicate.scanner.result.findings_digest ==
+            extractPayload(image, attestations.decision).predicate.inputs.findings_digest))
+    - message: "vulnerability scan: not the decision's SBOM"
+      expression: >-
+        images.all(kind, images[kind].all(image,
+          extractPayload(image, attestations.vuln).predicate.scanner.result.sbom.digest ==
+            extractPayload(image, attestations.decision).predicate.inputs.sbom_digest))
+    - message: 'SBOM: not the one the vulnerability scan names'
+      expression: >-
+        images.all(kind, images[kind].all(image,
+          extractPayload(image, attestations.sbom).predicate.bomFormat == 'CycloneDX' &&
+          extractPayload(image, attestations.sbom).predicate.serialNumber ==
+            extractPayload(image, attestations.vuln).predicate.scanner.result.sbom.serial_number))

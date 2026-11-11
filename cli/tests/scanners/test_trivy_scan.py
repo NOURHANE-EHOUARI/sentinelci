@@ -6,16 +6,19 @@ when SENTINEL_TOOLS_DIR points to a `sentinel tools install` directory.
 
 import json
 import os
+import re
 import subprocess
 from collections.abc import Callable
+from importlib.resources import files
 from pathlib import Path
 
 import pytest
+import yaml
 from jsonschema import Draft202012Validator
 from typer.testing import CliRunner
 
 from sentinelci.cli import app
-from sentinelci.contracts.finding import Run, Tool
+from sentinelci.contracts.finding import Finding, Run, Tool
 from sentinelci.normalize.trivy import normalize_trivy_config
 from sentinelci.policy.tool_status import ToolStatus
 from sentinelci.scanners.errors import ScannerError, ScannerTimeout
@@ -23,6 +26,7 @@ from sentinelci.scanners.lock import load_lock
 from sentinelci.scanners.runner import run_verified_tool
 from sentinelci.scanners.trivy import (
     _CHUNK,
+    CHECK_NAMESPACE,
     OFFLINE_ENV,
     check_outside_reads,
     escaping_links,
@@ -120,11 +124,14 @@ def test_repository_configuration_is_never_loaded(
     for flag in ("--skip-check-update", "--skip-version-check", "--disable-telemetry"):
         assert flag in argv
     assert _value(argv, "--exit-code") == "0" and _value(argv, "--format") == "json"
-    for flag in ("--cache-dir", "--module-dir", "--config-data", "--output"):
+    for flag in ("--cache-dir", "--module-dir", "--config-data", "--config-check", "--output"):
         assert not Path(_value(argv, flag)).is_relative_to(repo), (
             f"{flag} must not point into the scanned tree"
         )
     assert (Path(_value(argv, "--config-data")) / "trusted-registries.yaml").is_file()
+    assert (Path(_value(argv, "--config-check")) / "aws_iam_full_admin.rego").is_file()
+    assert _value(argv, "--check-namespaces") == CHECK_NAMESPACE == "sentinelci"
+    assert _value(argv, "--rego-error-limit") == "0"
     assert results == REPORT["Results"] and run.tool == "trivy"
 
 
@@ -620,6 +627,24 @@ def test_a_link_loop_is_refused_with_a_reason_on_every_python(
     assert f"symbolic links leave {expected}" in detail
 
 
+SENTINEL_CHECKS = files("sentinelci.scanners.configs").joinpath("trivy-checks")
+
+
+def test_sentinelcis_own_checks_cannot_be_mistaken_for_trivys() -> None:
+    """Every check in configs/trivy-checks is in the `sentinelci` namespace (the only one added to Trivy's)
+    and has a SENTINEL-* id, so a finding names who wrote the rule and no Trivy check id is shadowed."""
+    checks = [entry for entry in SENTINEL_CHECKS.iterdir() if entry.name.endswith(".rego")]
+    assert checks
+    for check in checks:
+        text = check.read_text(encoding="utf-8")
+        package = re.search(r"^package (\S+)$", text, re.MULTILINE)
+        assert package and package.group(1).startswith(f"{CHECK_NAMESPACE}."), check.name
+        ids = re.findall(r"^#   (?:id|avd_id): (\S+)$", text, re.MULTILINE)
+        assert len(ids) == 2 and len(set(ids)) == 1 and ids[0].startswith("SENTINEL-"), check.name
+        assert re.search(r"^#   severity: (LOW|MEDIUM|HIGH|CRITICAL)$", text, re.MULTILINE), check.name
+        assert "#   input:\n#     selector:" in text, f"{check.name} must say which input it reads"
+
+
 # ------------------------------------------------------------------ integration (real Trivy)
 
 TOOLS_DIR = os.environ.get("SENTINEL_TOOLS_DIR")
@@ -778,3 +803,292 @@ def test_real_trivy_reads_dockerfiles_by_name_so_their_ignores_are_refused(tmp_p
     (repo / name).write_text("".join(f"# trivy:ignore:*\n{line}\n" for line in DOCKERFILE.splitlines()))
     with pytest.raises(ScannerError, match=rf"in the scanned tree \({name}\)"):
         _real_ids(repo)
+
+
+# SentinelCI's own check SENTINEL-AWS-0001 (configs/trivy-checks), where Trivy's embedded checks see nothing.
+ALLOW_ALL = """jsonencode({
+    Version   = "2012-10-17"
+    Statement = [{ Effect = "Allow", Action = "*", Resource = "*" }]
+  })"""
+ASSUME_ROLE = """jsonencode({
+    Statement = [{
+      Effect    = "Allow"
+      Action    = "sts:AssumeRole"
+      Principal = { Service = "ec2.amazonaws.com" }
+    }]
+  })"""
+FULL_ADMIN = {
+    "jsonencode": f"""resource "aws_iam_policy" "p" {{
+  name   = "p"
+  policy = {ALLOW_ALL}
+}}
+""",
+    "heredoc json, *:* and a list": """resource "aws_iam_policy" "p" {
+  name   = "p"
+  policy = <<-JSON
+    {"Version": "2012-10-17",
+     "Statement": [{"Effect": "Allow", "Action": "*:*", "Resource": ["*"]}]}
+  JSON
+}
+""",
+    "policy document": """data "aws_iam_policy_document" "d" {
+  statement {
+    actions   = ["*"]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_policy" "p" {
+  name   = "p"
+  policy = data.aws_iam_policy_document.d.json
+}
+""",
+    "role policy, second statement, mixed actions": f"""resource "aws_iam_role" "r" {{
+  name               = "r"
+  assume_role_policy = {ASSUME_ROLE}
+}}
+
+resource "aws_iam_role_policy" "p" {{
+  name   = "p"
+  role   = aws_iam_role.r.id
+  policy = jsonencode({{ Version = "2012-10-17", Statement = [
+    {{ Effect = "Allow", Action = "s3:GetObject", Resource = "arn:aws:s3:::b/*" }},
+    {{ Effect = "Allow", Action = ["s3:GetObject", "*"], Resource = "*" }},
+  ] }})
+}}
+""",
+    "inline policy of a role": f"""resource "aws_iam_role" "r" {{
+  name               = "r"
+  assume_role_policy = {ASSUME_ROLE}
+  inline_policy {{
+    name   = "p"
+    policy = {ALLOW_ALL}
+  }}
+}}
+""",
+    "user policy": f"""resource "aws_iam_user" "u" {{
+  name = "u"
+}}
+
+resource "aws_iam_user_policy" "p" {{
+  name   = "p"
+  user   = aws_iam_user.u.name
+  policy = {ALLOW_ALL}
+}}
+""",
+    "group policy": f"""resource "aws_iam_group" "g" {{
+  name = "g"
+}}
+
+resource "aws_iam_group_policy" "p" {{
+  name   = "p"
+  group  = aws_iam_group.g.name
+  policy = {ALLOW_ALL}
+}}
+""",
+}
+ASSUME_ROLE_CFN = """      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+"""
+FULL_ADMIN_CLOUDFORMATION = {
+    "AWS::IAM::Policy": f"""AWSTemplateFormatVersion: "2010-09-09"
+Resources:
+  AdminPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: admin
+      Roles: [!Ref Role]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: "*"
+            Resource: "*"
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+{ASSUME_ROLE_CFN}""",
+    "inline policy of an AWS::IAM::Role": f"""AWSTemplateFormatVersion: "2010-09-09"
+Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+{ASSUME_ROLE_CFN}      Policies:
+        - PolicyName: inline-admin
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ["*:*"]
+                Resource: ["*"]
+""",
+}
+NOT_FULL_ADMIN = {
+    "one service": ("s3:*", "*", "Allow"),
+    "one resource": ("*", "arn:aws:s3:::bucket/*", "Allow"),
+    "deny": ("*", "*", "Deny"),
+    "prefix wildcard": ("s3:Get*", "*", "Allow"),
+}
+
+
+@real
+@pytest.mark.integration
+@pytest.mark.parametrize("form", FULL_ADMIN)
+def test_real_trivy_reports_full_admin_policies_with_sentinelcis_check(tmp_path: Path, form: str) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "iam.tf").write_text(FULL_ADMIN[form])
+    assert ("iam.tf", "SENTINEL-AWS-0001") in _real_ids(repo)
+
+
+@real
+@pytest.mark.integration
+@pytest.mark.parametrize("form", FULL_ADMIN_CLOUDFORMATION)
+def test_real_trivy_reports_full_admin_cloudformation_policies(tmp_path: Path, form: str) -> None:
+    # Trivy adapts CloudFormation into the same IAM state. Not seen: AWS::IAM::ManagedPolicy, which Trivy does
+    # not adapt, like a Terraform policy read with file().
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "template.yaml").write_text(FULL_ADMIN_CLOUDFORMATION[form])
+    assert ("template.yaml", "SENTINEL-AWS-0001") in _real_ids(repo)
+
+
+@real
+@pytest.mark.integration
+@pytest.mark.parametrize("case", NOT_FULL_ADMIN)
+def test_real_trivy_leaves_narrower_policies_to_trivys_own_checks(tmp_path: Path, case: str) -> None:
+    action, resource, effect = NOT_FULL_ADMIN[case]
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    policy = ALLOW_ALL.replace('"Allow"', f'"{effect}"').replace('Action = "*"', f'Action = "{action}"')
+    policy = policy.replace('Resource = "*"', f'Resource = "{resource}"')
+    (repo / "iam.tf").write_text(
+        f'resource "aws_iam_policy" "p" {{\n  name   = "p"\n  policy = {policy}\n}}\n'
+    )
+    assert "SENTINEL-AWS-0001" not in {rule for _, rule in _real_ids(repo)}
+    assert case != "one service" or ("iam.tf", "AWS-0345") in _real_ids(repo), "control: Trivy reads it"
+
+
+@real
+@pytest.mark.integration
+def test_real_trivy_loads_no_check_from_the_scanned_repository(tmp_path: Path) -> None:
+    # A check the author of a change writes, in SentinelCI's own namespace: never loaded. Trivy's embedded
+    # checks still run next to SentinelCI's (AWS-0086 is Trivy's).
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "main.tf").write_text(PUBLIC_ACL)
+    planted = """# METADATA
+# title: planted
+# custom:
+#   id: SENTINEL-AWS-9999
+#   avd_id: SENTINEL-AWS-9999
+#   severity: CRITICAL
+#   input:
+#     selector:
+#       - type: cloud
+package sentinelci.planted
+
+import rego.v1
+
+deny contains "planted" if true
+"""
+    for where in ("planted.rego", "policies/planted.rego", ".trivy/planted.rego"):
+        (repo / where).parent.mkdir(exist_ok=True)
+        (repo / where).write_text(planted)
+    rules = {rule for _, rule in _real_ids(repo)}
+    assert "AWS-0086" in rules and "SENTINEL-AWS-9999" not in rules
+
+
+# Review of #53.
+
+
+@real
+@pytest.mark.integration
+def test_real_trivy_fails_closed_when_a_sentinelci_check_does_not_compile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A type error (here an unknown builtin) is not a parse error: without --rego-error-limit 0, Trivy logs
+    # it, drops the check and exits 0, so SENTINEL-AWS-0001 would silently stop reporting.
+    configs = tmp_path / "configs"
+    shipped = files("sentinelci.scanners.configs")
+    (configs / "trivy-data").mkdir(parents=True)
+    (configs / "trivy-checks").mkdir()
+    for name in ("trivy-data", "trivy-checks"):
+        for entry in shipped.joinpath(name).iterdir():
+            text = entry.read_text(encoding="utf-8").replace("json.unmarshal(", "json.unmarshall(")
+            (configs / name / entry.name).write_text(text, encoding="utf-8")
+    monkeypatch.setattr("sentinelci.scanners.trivy.files", lambda _package: configs)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "iam.tf").write_text(FULL_ADMIN["jsonencode"])
+    with pytest.raises(ScannerError, match="rego_type_error"):
+        _real_ids(repo)
+
+
+@real
+@pytest.mark.integration
+def test_real_trivy_does_not_adapt_json_cloudformation_policies(tmp_path: Path) -> None:
+    # Known gap, pinned so a Trivy upgrade that starts adapting JSON templates shows up: the same template as
+    # YAML is reported, as JSON it is not (Trivy's own AWS-0345 misses JSON policies too).
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    template = yaml.safe_load(FULL_ADMIN_CLOUDFORMATION["inline policy of an AWS::IAM::Role"])
+    (repo / "template.json").write_text(json.dumps(template))
+    assert "SENTINEL-AWS-0001" not in {rule for _, rule in _real_ids(repo)}
+
+
+WILDCARD_SPELLINGS = {
+    "double star": ('Action = "**"', True),
+    "question mark and star": ('Action = "*:?*"', True),
+    "question mark then star": ('Action = "?*"', True),
+    "every resource but one": ('Action = "*", NotResource = "arn:aws:s3:::audit"', True),
+    "nothing (NotResource *)": ('Action = "*", NotResource = "*"', False),
+    # IAM refuses Resource and NotResource together; with one ARN in Resource it is not every resource anyway.
+    "one resource, and a NotResource": (
+        'Action = "*", Resource = "arn:aws:s3:::b", NotResource = "arn:aws:s3:::audit"',
+        False,
+    ),
+    "one character": ('Action = "?"', False),
+    "one verb in every service": ('Action = "*:Get*"', False),
+    "every action but IAM (NotAction)": ('NotAction = "iam:*"', False),
+}
+
+
+@real
+@pytest.mark.integration
+@pytest.mark.parametrize("case", WILDCARD_SPELLINGS)
+def test_real_trivy_full_admin_spellings(tmp_path: Path, case: str) -> None:
+    clause, reported = WILDCARD_SPELLINGS[case]
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    statement = clause if "Resource" in clause else f'{clause}, Resource = "*"'
+    (repo / "iam.tf").write_text(
+        'resource "aws_iam_policy" "p" {\n  name   = "p"\n'
+        '  policy = jsonencode({ Version = "2012-10-17", Statement = '
+        f'[{{ Effect = "Allow", {statement} }}] }})\n}}\n'
+    )
+    assert (("iam.tf", "SENTINEL-AWS-0001") in _real_ids(repo)) is reported
+
+
+def _real_findings(root: Path) -> list[Finding]:
+    results, run = scan_iac_with_run(root, lock=load_lock(REPO_LOCK), tools_dir=Path(str(TOOLS_DIR)))
+    run_info = Run(repo="NOURHANE-EHOUARI/sentinelci", commit=COMMIT, context="pr")
+    return normalize_trivy_config(results, run=run_info, tool=Tool(name="trivy", version=run.version))
+
+
+@real
+@pytest.mark.integration
+def test_real_trivy_reports_full_admin_as_high_on_its_resource(tmp_path: Path) -> None:
+    # One resource among others still counts as every resource; the severity is what the risk model reads.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    policy = ALLOW_ALL.replace('Resource = "*"', 'Resource = ["arn:aws:s3:::b", "*"]')
+    (repo / "iam.tf").write_text(
+        f'resource "aws_iam_policy" "admin" {{\n  name   = "p"\n  policy = {policy}\n}}\n'
+    )
+    found = [f for f in _real_findings(repo) if f.rule_id == "SENTINEL-AWS-0001"]
+    assert [(f.severity, f.location.path if f.location else None) for f in found] == [("HIGH", "iam.tf")]
