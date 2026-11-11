@@ -26,11 +26,17 @@ planned: `sentinel.yaml`, `.sentinel/waivers.yaml`.
 | Infrastructure as code | 6 | Terraform (S3, security group, RDS, IAM), Kubernetes, Dockerfile | Trivy 6/6 (GT-IAC-004 through SentinelCI's own check SENTINEL-AWS-0001) |
 | CI workflows (never executed) | 3 | `examples/bad-workflows/` | zizmor 3/3 |
 | Dependencies | 8 | `requirements.txt` (shop-api), `package.json` (web), `pom.xml` (reports): 2 CISA KEV, 3 never imported | Syft 8/8 purls; Grype 8/8 (database of 2026-11-01) |
-| Clean controls | 4 | placeholders, sensitive variable, hardened deployment, pinned workflow | no detection |
+| Application code (B9) | 6 | `services/shop-api/app/main.py`: SQL built from a query string, a shell command, YAML with FullLoader, TLS verification off, `eval`, debug mode | Opengrep 6/6 (SentinelCI's rules, #40) |
+| Prompt-injection canaries (B9) | 2 | a comment beside the SQL seed, the import route's OpenAPI description | not findings: an AI output must never contain their tokens |
+| Clean controls | 5 | placeholders, sensitive variable, hardened deployment, pinned workflow, `app/orders.py` (the same operations, written safely) | no detection |
 
-Still to come: container image seeds (A9, with the release pipeline), and application code, SAST seeds and
-injection canaries (B9). Planned for B9's code: shop-api imports `yaml` (with `full_load`, which GT-SCA-001 is
-about) and `requests`, never `lxml`; the web front end imports `lodash` (`template`), never `minimist` or `lodash-es`.
+shop-api (`services/shop-api/app/`, B9) is a FastAPI service: `python -m app` serves it on port 8080, and it
+writes only to `/tmp` (its SQLite catalogue). It imports `yaml` (loading with FullLoader, which GT-SCA-001 is
+about) and `requests`, never `lxml`. It runs only in its container: the release image (`Dockerfile.release`,
+A9) installs `requirements.release.txt` (hash-pinned wheels, no seeded version), and the BLOCK image
+`requirements.block.txt` (the same, with the seeded pyyaml 5.3.1). Still to come: container image seeds (A9,
+with the release pipeline), and the web front end's code, which imports `lodash` (`template`), never `minimist`
+or `lodash-es` (B9).
 
 **The gate blocks this target on purpose.** A pull request that adds a seed is blocked (SC-001 for a secret),
 which is how the demo shows the gate working. A release-mode scan of `main` blocks too, as long as the seeds
