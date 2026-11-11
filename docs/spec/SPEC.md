@@ -15,6 +15,7 @@
 | 1.1.41 | A1 image adapter (§5 stage 7, §13.1): `sentinel scan image` scans a built image's OCI layout archive with the pinned Syft and Grype, offline, into CONTAINER findings (`package` and `image`: digest, reference, layer), one per (vulnerability, purl base) with the CONTAINER fingerprint. The report must be about the given manifest digest, and its configuration must hide nothing, as for `scan sca`. A tool status for Syft and Grype (a failed Syft leaves Grype `not_run`), so the gate records a failed image scan as SC-010. |
 | 1.1.40 | A9 release image (ADR-0011, decision 6): `demo-shop/services/shop-api/Dockerfile.release`, the hardened image `make release` will build once B9's application and requirements exist. Python 3.12.16-slim pinned by digest in every stage; dependencies from a hash-pinned file (`--require-hashes --no-deps`, `REQUIREMENTS` selects the BLOCK image's); a final stage with no RUN, as UID and GID 10001, on port 8080, no HEALTHCHECK or curl; no `# syntax=` frontend pulled at build time; a build context allow-listed by `Dockerfile.release.dockerignore` (the application and the two requirements files, never the seeded configuration). The pinned Trivy reports only DS-0026 (no HEALTHCHECK), by design. |
 | 1.1.39 | Threat model (§18, A10): `docs/threat-model.md` lists the assets, five attackers, the trust boundaries, and 29 threats, each with its control, where it lives, the test that proves it and its status (main, an open PR, or planned), then the residual risks accepted in the private phase. §18's signing key row follows ADR-0011 (no signing key on GitHub). |
+| 1.1.34 | A7 stage 3 and evaluation (§8, §17): `correlate.labels.label_groups` lets a model write the labels of groups of two findings or more (never a secret's), from findings sent as escaped JSON data without ids, snippets or evidence and with secrets redacted; one repair retry, else the template stays; an answer with a secret is refused; a template fix is never replaced; the group records the model and the prompt and input sha256. `correlate.evaluation`: ablation, the ARI-vs-threshold sweep and the calibration. |
 | 1.1.30 | Platform API migrations (B1, §13.3): going below 0004 stops, changing nothing, while any run keeps its uploaded findings bytes, which are the only copy `findings_sha256` was taken of; before, the downgrade dropped them without a word. A database without kept bytes still goes down. Raised on #57. |
 | 1.1.29 | Platform API 1.2.0 (B1, §13.3): the platform keeps each run's findings upload byte for byte and serves it at `GET /api/v1/runs/{id}/findings`, so a consumer that must match `findings_sha256` (the correlator's run document, #47; a replay) reads the exact bytes; the JSONB rows keep neither key order nor bytes. The database keeps only bytes that hash to the recorded digest, and the recorded-run trigger makes them immutable. Runs recorded before have none, and the API says so. |
 | 1.1.28 | Platform API 1.1.0 (B1, §13.3): one run per CI run. `POST /api/v1/runs` with the `repo`, `commit`, `context` and `run_id` of a run already recorded (a re-run of `sentinel upload`, #50) is answered 409 with the existing run, which the client resumes instead of recording the findings a second time; a unique index decides between concurrent requests. A run without `run_id` is always new. Migration 0003 stops, changing nothing, on a database that already holds a CI run twice. |
@@ -547,8 +548,17 @@ AI runs after the decision is stored, writes only advisory tables, and every out
   package, the same advisory under any of its ids, the same rule in the same file; deterministic) → stage 2b
   embeddings (pgvector) + average-linkage clustering within a category, never for secrets (each is rotated on
   its own) → stage 3 LLM labels and single fix for the groups it is given (it labels, it never forms groups);
-  each stage measured separately (ARI, alert reduction). A fix is proposed only when one change resolves every
-  member. A run's groups travel in a correlation document (`schemas/correlation.v1.json`) with the sha256 of
+  each stage measured separately (ARI, alert reduction). Stage 3 (`correlate.labels`) is given the groups of
+  two findings or more, never one with a secret; each finding goes as one JSON line in a `<findings>` data
+  block, with `<` and `>` escaped, without its id, snippet or evidence, and with anything that looks like a
+  secret redacted. The answer must validate (one line each, the contract's lengths), with one repair retry,
+  else the group keeps its template labels; an answer that quotes a secret is refused; a template's fix is
+  never replaced. A labelled group records the provider, the model and the sha256 of the prompt and of its
+  input. A template fix is proposed only when one change resolves every member; a model's fix only fills a
+  group that had none, and is advice that no stage verifies. The group's template title and shared key go in a
+  `<group>` data block, escaped like the findings, and the prompt names both blocks as data. Redaction covers
+  known token prefixes, `Bearer`/`Basic` values, a URL's password and any assignment whose name holds password,
+  secret, token, key or credential (single or double quotes, prefixed names such as `DB_PASSWORD`). A run's groups travel in a correlation document (`schemas/correlation.v1.json`) with the sha256 of
   the findings they came from (computed on the bytes B1 recorded, `GET /api/v1/runs/{id}/findings`), the stages
   that ran, the threshold and the embedding model; if the embedder fails, stages 1 and 2a are kept and the
   document records the embedding stage as `skipped`, with the failure, so an outage never reads as an
@@ -816,7 +826,9 @@ in a container, or a split of seeds fixed before any score is looked at), then c
 before the demo-shop run. On demo-shop, the ARI-vs-threshold curve, with stage 2b on and off, is reported as
 sensitivity only. Alert reduction counts raw tool reports (`out/raw/`, so stage 1 merges the tools) against
 groups; a findings file already has one finding per fingerprint, so stage 1 alone reduces nothing there.
-Findings with no ground-truth seed are left out of the ARI and listed.
+Findings with no ground-truth seed are left out of the ARI and listed. `sentinel_ai.correlate.evaluation`
+computes them: `ablation` (each configuration of stages), `sweep` (the curve), `calibrate` (the best ARI, a
+tie going to the highest threshold, which merges least); the embedder is called once per text for a sweep.
 
 **Demo (5 min):** context (2026 incident) → BLOCK on a PR → understand (score factors, AI advisory) → fix (bot PR,
 VERIFIED) → release (signed, `sentinel verify`, Argo CD, Kyverno admits) → attack (bad image denied) →
