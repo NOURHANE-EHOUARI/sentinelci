@@ -10,9 +10,10 @@
 
 Exposed now:
 - `sentinel_findings_open{priority,category}` (gauge): the findings of each repository's latest release run
-  whose findings are recorded (what its default branch holds), by priority (`P0` to `P4` from `risk`, or
-  `unscored`) and category, summed over the repositories. Once such a run exists, every pair is present, at 0
-  when there is none, so a series never vanishes; with none, the metric is absent.
+  of its default branch (`SENTINEL_DEFAULT_REF`, default `refs/heads/main`) whose findings are recorded, by
+  priority (`P0` to `P4` from `risk`, or `unscored`) and category, summed over the repositories. Once such a
+  run exists, every pair is present, at 0 when there is none, so a series never vanishes; with none, the
+  metric is absent.
 
 Absent until their data is stored: `sentinel_gate_decisions_total` (decisions, B1),
 `sentinel_remediation_attempts_total` (remediation jobs, A6), `sentinel_attestation_verifications_total`,
@@ -26,7 +27,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal, get_args
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import Response
 from sqlalchemy import case, func, literal, select, text
 from sqlalchemy.orm import Session
@@ -96,14 +97,15 @@ def render(families: Sequence[Family]) -> str:
     return "".join(f"{line}\n" for line in lines)
 
 
-def findings_open(session: Session) -> Family | None:
-    """Open findings by priority and category: those of each repository's latest release run."""
+def findings_open(session: Session, default_ref: str) -> Family | None:
+    """Open findings by priority and category: those of each repository's latest release run of its default
+    branch (`default_ref`). A release run of another ref (a manual run on a feature branch) is not counted."""
     newest_first = func.row_number().over(
         partition_by=Run.repo, order_by=(Run.findings_uploaded_at.desc(), Run.id.desc())
     )
     ranked = (
         select(Run.id, newest_first.label("rank"))
-        .where(Run.context == "release", Run.findings_sha256.is_not(None))
+        .where(Run.context == "release", Run.ref == default_ref, Run.findings_sha256.is_not(None))
         .subquery()
     )
     latest = select(ranked.c.id).where(ranked.c.rank == 1).subquery()
@@ -130,7 +132,7 @@ def findings_open(session: Session) -> Family | None:
 
 
 # Each metric the platform can compute; one returns None while its data is not stored.
-METRICS: tuple[Callable[[Session], Family | None], ...] = (findings_open,)
+METRICS: tuple[Callable[[Session, str], Family | None], ...] = (findings_open,)
 
 
 @router.get(
@@ -142,8 +144,9 @@ METRICS: tuple[Callable[[Session], Family | None], ...] = (findings_open,)
         **_errors(503),
     },
 )
-def metrics(session: SessionDep) -> Response:
+def metrics(request: Request, session: SessionDep) -> Response:
     """Prometheus metrics (SPEC section 10): read-only aggregates, bounded labels, absent until stored."""
     session.execute(text("SET TRANSACTION READ ONLY"))
-    families = [family for metric in METRICS if (family := metric(session)) is not None]
+    default_ref: str = request.app.state.settings.default_ref
+    families = [family for metric in METRICS if (family := metric(session, default_ref)) is not None]
     return Response(content=render(families), media_type=CONTENT_TYPE)
