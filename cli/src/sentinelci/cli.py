@@ -72,6 +72,7 @@ from sentinelci.policy.vex import DEFAULT_VEX_PATH
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
 from sentinelci.remediation.apply import apply_proposal
 from sentinelci.remediation.check import CheckError, check_iac
+from sentinelci.remediation.code import LLM_CODE, CodeCheckError, check_code
 from sentinelci.remediation.dockerfile import propose as propose_dockerfile
 from sentinelci.remediation.gate import check_proposal, verify_proposal
 from sentinelci.remediation.kubernetes import propose as propose_kubernetes
@@ -1686,38 +1687,60 @@ def remediate_check(
         Path, typer.Option(help="The tree of the patched commit (exported the same way).")
     ],
     findings: Annotated[
-        Path,
+        Path | None,
         typer.Option(
-            help="IaC findings NDJSON of the commit the proposal applies to: the fixer is re-run on them."
+            help="IaC findings NDJSON of the commit the proposal applies to: a deterministic fixer is re-run "
+            "on them (required for the IaC strategies)."
         ),
-    ],
+    ] = None,
+    test_image: Annotated[
+        str | None,
+        typer.Option(
+            help="For llm:code: the image the service's tests run in, pinned by digest (name@sha256:... or a "
+            "local sha256: image id)."
+        ),
+    ] = None,
 ) -> None:
-    """Build and test an infrastructure-as-code proposal for the verification gate, and print the result
-    as JSON. Build: every edited file still parses into the same resources (a manifest's documents, a
-    Dockerfile's stages). Tests: the patch changes only what its strategy may change, and the proposal is the
-    fixer's own: re-run on the base tree (the whole commit) and --findings, it proposes exactly this. Their
-    results are what `sentinel remediate verify` takes as --build-ok/--build-failed and
-    --tests-ok/--tests-failed.
+    """Build and test a proposal for the verification gate, and print the result as JSON. Their results are
+    what `sentinel remediate verify` takes as --build-ok/--build-failed and --tests-ok/--tests-failed.
+
+    Infrastructure as code: build = every edited file still parses into the same resources (a manifest's
+    documents, a Dockerfile's stages); tests = the patch changes only what its strategy may change, and the
+    proposal is the fixer's own: re-run on the base tree (the whole commit) and --findings, it proposes
+    exactly this. llm:code (ADR-0014): build = every edited file is Python that still parses; tests = the
+    service's own tests, from the base commit, run against the patched code in a sandboxed container from
+    --test-image (no network, read-only, no capability, as nobody, with a time limit); the JSON then carries
+    the end of their output as `log`.
 
     Exit code 0 when both hold, 1 when one does not (the JSON says which file and why), 3 when they cannot
     be checked honestly (a strategy with no build or tests defined here, a file that is not a regular file
-    of both trees, a base file this check cannot read, findings that cannot be read): nothing is verified
-    then.
+    of both trees, a base file this check cannot read, findings that cannot be read, a test image not pinned
+    by digest, a test container that could not run): nothing is verified then.
     """
     try:
         applied = PatchProposal.model_validate_json(proposal.read_bytes())
-        base_findings = list(_read_findings(findings, "base findings").values())
-        checked = check_iac(applied, base_root, patched_root, base_findings)
-    except (OSError, ValidationError, CheckError, RemediationError) as exc:
+        if applied.strategy == LLM_CODE:
+            if test_image is None:
+                raise CodeCheckError("llm:code needs --test-image: its tests run in that image")
+            code = check_code(applied, base_root, patched_root, test_image=test_image)
+            build_ok, tests_ok, problems, log = code.build_ok, code.tests_ok, code.problems, code.log
+        else:
+            if findings is None:
+                raise CheckError("the IaC strategies need --findings: the fixer is re-run on them")
+            base_findings = list(_read_findings(findings, "base findings").values())
+            checked = check_iac(applied, base_root, patched_root, base_findings)
+            build_ok, tests_ok, problems, log = checked.build_ok, checked.tests_ok, checked.problems, None
+    except (OSError, ValidationError, CheckError, CodeCheckError, RemediationError) as exc:
         typer.echo(f"sentinel remediate check: {exc}\nFAIL CLOSED: nothing is verified.", err=True)
         raise typer.Exit(EXIT_NO_DECISION) from exc
-    typer.echo(
-        json.dumps({
-            "proposal_id": applied.proposal_id, "strategy": applied.strategy, "build_ok": checked.build_ok,
-            "tests_ok": checked.tests_ok, "problems": checked.problems,
-        })
-    )  # fmt: skip
-    if not (checked.build_ok and checked.tests_ok):
+    result: dict[str, Any] = {
+        "proposal_id": applied.proposal_id, "strategy": applied.strategy, "build_ok": build_ok,
+        "tests_ok": tests_ok, "problems": problems,
+    }  # fmt: skip
+    if log is not None:
+        result["log"] = log
+    typer.echo(json.dumps(result))
+    if not (build_ok and tests_ok):
         raise typer.Exit(EXIT_NOT_VERIFIED)
 
 
