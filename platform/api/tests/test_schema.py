@@ -10,6 +10,7 @@ import pytest
 import yaml
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
+from psycopg import sql
 from sqlalchemy import create_engine, inspect
 
 from sentinel_api.config import Settings, sqlalchemy_url
@@ -34,7 +35,7 @@ def test_the_migrations_build_exactly_the_models(database_url: str) -> None:
 def test_the_migrations_go_down_and_up_again(postgres_server: str) -> None:
     name = f"t_{uuid.uuid4().hex}"
     with psycopg.connect(f"{postgres_server}/sentinel", autocommit=True) as conn:
-        conn.execute(f'CREATE DATABASE "{name}"')
+        conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
     url = f"{postgres_server}/{name}"
     upgrade(url)
     downgrade(url, "base")
@@ -59,7 +60,7 @@ def test_a_ci_run_recorded_twice_stops_the_unique_index_migration(postgres_serve
     """A database from before 0003 may hold a CI run twice: the migration stops and changes nothing."""
     name = f"t_{uuid.uuid4().hex}"
     with psycopg.connect(f"{postgres_server}/sentinel", autocommit=True) as conn:
-        conn.execute(f'CREATE DATABASE "{name}"')
+        conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
     url = f"{postgres_server}/{name}"
     upgrade(url, "0002")
     insert = (
@@ -84,7 +85,7 @@ def test_going_below_0004_stops_while_a_run_keeps_its_uploaded_bytes(postgres_se
     """
     name = f"t_{uuid.uuid4().hex}"
     with psycopg.connect(f"{postgres_server}/sentinel", autocommit=True) as conn:
-        conn.execute(f'CREATE DATABASE "{name}"')
+        conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
     url = f"{postgres_server}/{name}"
     upgrade(url)
     with psycopg.connect(url, autocommit=True) as conn:
