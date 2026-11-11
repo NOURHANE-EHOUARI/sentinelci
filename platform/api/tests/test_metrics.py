@@ -6,6 +6,7 @@ data is not stored is absent, never 0.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -58,9 +59,10 @@ def record(
     commit: str,
     context: str,
     *documents: dict[str, Any],
+    ref: str = "refs/heads/main",
 ) -> str:
-    """A run and, when given, its findings (moved to that run)."""
-    run = {"repo": repo, "commit": commit, "context": context}
+    """A run of `ref` (the default branch unless said) and, when given, its findings (moved to that run)."""
+    run = {"repo": repo, "commit": commit, "context": context, "ref": ref}
     created = client.post("/api/v1/runs", json=run, headers=headers)
     assert created.status_code == 201, created.text
     run_id: str = created.json()["id"]
@@ -131,6 +133,35 @@ def test_open_findings_are_those_of_each_repositorys_latest_release_run(
     assert non_zero == {
         ("P0", "SCA"): 1, ("P2", "SCA"): 1, (UNSCORED, "CONTAINER"): 1, (UNSCORED, "SECRET"): 1,
     }  # fmt: skip
+
+
+def test_a_release_run_of_another_ref_is_not_the_default_branchs(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    """A manual run on a feature branch is a release run too (workflow_dispatch): it must not replace the
+    default branch's open findings (#67 review)."""
+    record(client, headers, REPO_A, COMMITS[0], "release", SECRET, SCA_P0)
+    before = open_findings(client)
+    record(client, headers, REPO_A, COMMITS[1], "release", CONTAINER, ref="refs/heads/try-something")
+    record(client, headers, REPO_B, COMMITS[2], "release", SCA_P2, ref="refs/heads/try-something")
+    assert open_findings(client) == before
+    assert {key: value for key, value in before.items() if value} == {
+        ("P0", "SCA"): 1,
+        (UNSCORED, "SECRET"): 1,
+    }
+
+
+def test_the_default_branch_is_a_setting(database_url: str, headers: dict[str, str]) -> None:
+    settings = Settings(
+        database_url=database_url,
+        token_sha256=frozenset({hashlib.sha256(headers["Authorization"].split()[1].encode()).hexdigest()}),
+        default_ref="refs/heads/trunk",
+    )
+    with TestClient(create_app(settings)) as client:
+        record(client, headers, REPO_A, COMMITS[0], "release", SECRET)
+        assert client.get("/metrics").text == "", "main is not the default branch here"
+        record(client, headers, REPO_A, COMMITS[1], "release", SCA_P0, ref="refs/heads/trunk")
+        assert {key for key, value in open_findings(client).items() if value} == {("P0", "SCA")}
 
 
 # ---------------------------------------------------------------- what it may say

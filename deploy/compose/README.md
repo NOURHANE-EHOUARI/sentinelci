@@ -54,8 +54,23 @@ again, for example after a lost answer) is answered 409 with the existing run in
 findings only if `findings_sha256` is null. In GitHub Actions the run id is `<run id>/<run attempt>`, so a re-run
 of the job is a new run. A run without `run_id` (a local run) is always new. `GET /api/v1/runs/<run id>/findings` gives the upload back
 byte for byte (its sha256 is `findings_sha256`), for the correlator or a replay. Bodies are capped before
-authentication: 64 KiB for JSON, `SENTINEL_API_MAX_UPLOAD_BYTES` (32 MiB by default) for a findings upload. To
-rotate the token, delete both `SENTINEL_API_TOKEN` lines from `.env` and run `make compose-env`.
+authentication: 64 KiB for JSON, `SENTINEL_API_MAX_UPLOAD_BYTES` (32 MiB by default) for a findings upload or a
+correlation. To rotate the token, delete both `SENTINEL_API_TOKEN` lines from `.env` and run `make compose-env`.
+
+A run's correlations (the correlator's root-cause groups, advisory: the gate never reads them) are posted after
+its findings, as one Correlation v1 document:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/v1/runs/<run id>/correlations -H "Authorization: Bearer $SENTINEL_API_TOKEN" \
+  -H 'Content-Type: application/json' --data-binary @correlation.json
+curl -s http://127.0.0.1:8000/api/v1/runs/<run id>/correlations            # the latest version, byte for byte
+curl -s http://127.0.0.1:8000/api/v1/runs/<run id>/correlations/versions   # every version, newest first
+```
+
+The API records it only if its `findings_sha256` is the run's and its groups hold each of the run's findings
+exactly once. A version is named by the sha256 of its bytes (the same bytes again: 409 with that version), and is
+never changed or deleted. `GET /metrics` counts the release runs of the default branch only: set
+`SENTINEL_DEFAULT_REF` (default `refs/heads/main`) if yours is another.
 
 ## Observability (A8)
 
