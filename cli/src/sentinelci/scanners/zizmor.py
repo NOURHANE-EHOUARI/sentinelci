@@ -35,7 +35,7 @@ from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import Any
 
-from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
+from sentinelci.scanners.errors import ScannerError, ScannerTimeout, ToolIntegrityError
 from sentinelci.scanners.lock import LOCK_FILE_NAME, ToolLock
 from sentinelci.scanners.runner import DEFAULT_TIMEOUT_S, ToolRun, minimal_env
 
@@ -78,6 +78,7 @@ class PipelineScan:
     audited: list[str]
     skipped: list[str]  # found by their `jobs:` key, but zizmor cannot load them as GitHub workflows
     version: str  # of the verified binary, checked even when nothing was audited
+    binary_sha256: str  # of the verified binary, for the tool status
 
 
 def verified_zizmor(lock: ToolLock) -> VerifiedBinary:
@@ -157,7 +158,7 @@ def _run(
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            raise ScannerError(f"zizmor timed out after {timeout_s:g} s") from exc
+            raise ScannerTimeout(f"zizmor timed out after {timeout_s:g} s") from exc
         except OSError as exc:
             raise ScannerError(f"zizmor could not be started: {exc}") from exc
 
@@ -173,7 +174,7 @@ def scan_pipelines_with_run(
     while files:
         remaining = timeout_s - (time.monotonic() - started)
         if remaining <= 0:
-            raise ScannerError(f"zizmor timed out after {timeout_s} s")
+            raise ScannerTimeout(f"zizmor timed out after {timeout_s} s")
         completed = _run(binary, root, files, remaining)
         if completed.returncode != 1:
             break
@@ -188,7 +189,10 @@ def scan_pipelines_with_run(
         files.remove(unloadable)  # another CI's file with a `jobs:` key: not a GitHub workflow
         skipped.append(unloadable)
     if not files:
-        return PipelineScan(results=[], run=None, audited=[], skipped=sorted(skipped), version=binary.version)
+        return PipelineScan(
+            results=[], run=None, audited=[], skipped=sorted(skipped), version=binary.version,
+            binary_sha256=binary.sha256,
+        )  # fmt: skip
     if completed.returncode not in FINDINGS_EXIT_CODES:
         tail = completed.stderr.strip()[-2000:]
         raise ScannerError(f"zizmor exited with code {completed.returncode}: {tail}")
@@ -213,5 +217,6 @@ def scan_pipelines_with_run(
         duration_s=time.monotonic() - started,
     )
     return PipelineScan(
-        results=results, run=run, audited=files, skipped=sorted(skipped), version=binary.version
-    )
+        results=results, run=run, audited=files, skipped=sorted(skipped), version=binary.version,
+        binary_sha256=binary.sha256,
+    )  # fmt: skip

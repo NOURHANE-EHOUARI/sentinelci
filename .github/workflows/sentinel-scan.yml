@@ -18,9 +18,10 @@ name: sentinel-scan
 # Modes
 # - pull_request: diff-aware. Gitleaks scans only the commits of the pull request (base..head), forced to text
 #   patches, so secrets added and removed again inside the pull request are still found. Trivy scans the
-#   infrastructure as code of the whole tree, offline. The base commit's tree is scanned by both, as a baseline:
-#   only what the change introduces can block. Without a baseline (its scan failed), every finding counts.
-# - push / workflow_dispatch: release mode. The working tree at the pushed commit is scanned in full by both
+#   infrastructure as code of the whole tree, offline, and zizmor its CI workflows (SC-009). The base commit's
+#   tree is scanned by all three, as a baseline: only what the change introduces can block. Without a baseline
+#   (its scan failed), every finding counts.
+# - push / workflow_dispatch: release mode. The working tree at the pushed commit is scanned in full by the three
 #   scanners, without a baseline.
 
 on:
@@ -45,7 +46,7 @@ jobs:
   scan:
     name: scan (no secrets, read-only)
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 45
     permissions:
       contents: read # check out the pipeline and the change to scan; nothing else
     steps:
@@ -186,6 +187,31 @@ jobs:
             : > "$RUNNER_TEMP/scan/iac.ndjson"
           fi
 
+      - name: Audit CI workflows (zizmor, the CLI's own, verified right before it runs)
+        env:
+          SENTINEL: ${{ github.workspace }}/pipeline/.venv/bin/sentinel
+          CONTEXT: ${{ steps.context.outputs.context }}
+          HEAD_SHA: ${{ steps.context.outputs.head_sha }}
+          REF: ${{ steps.context.outputs.ref }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          SCAN_PATH: ${{ inputs.path }}
+        # Every GitHub workflow, action and Dependabot file under the path, and any other YAML file with a `jobs:`
+        # key, of the head commit in both modes: SC-009 blocks a high-severity issue the change introduces. The
+        # change's workflows are only read, never run. Failures are recorded like the other scans'.
+        run: |
+          set -uo pipefail
+          status=0
+          "$SENTINEL" scan pipelines "target/$SCAN_PATH" --repo-root target \
+            --out "$RUNNER_TEMP/scan/pipelines.ndjson" --tool-status-out "$RUNNER_TEMP/scan/pipelines-status.json" \
+            --timeout "$SCANNER_TIMEOUT_S" \
+            --repo "$REPO" --commit "$HEAD_SHA" --context "$CONTEXT" --ref "$REF" --run-id "$RUN_ID" \
+            --lock pipeline/tools.lock.toml || status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "::warning::the CI workflow audit failed (exit $status): the gate records it as SC-010"
+            : > "$RUNNER_TEMP/scan/pipelines.ndjson"
+          fi
+
       - name: Combine the scanner outputs for the gate
         env:
           SENTINEL: ${{ github.workspace }}/pipeline/.venv/bin/sentinel
@@ -193,7 +219,9 @@ jobs:
         run: >-
           "$SENTINEL" scan combine
           --findings "$RUNNER_TEMP/scan/secrets.ndjson" --findings "$RUNNER_TEMP/scan/iac.ndjson"
+          --findings "$RUNNER_TEMP/scan/pipelines.ndjson"
           --tool-status "$RUNNER_TEMP/scan/secrets-status.json" --tool-status "$RUNNER_TEMP/scan/iac-status.json"
+          --tool-status "$RUNNER_TEMP/scan/pipelines-status.json"
           --out "$RUNNER_TEMP/out/findings.ndjson" --tool-status-out "$RUNNER_TEMP/out/tool-status.json"
 
       - name: Scan the base commit as a baseline (pull requests only)
@@ -217,8 +245,12 @@ jobs:
             && "$SENTINEL" scan secrets "$base/$SCAN_PATH" --mode dir \
               --out "$RUNNER_TEMP/scan/baseline-secrets.ndjson" "${common[@]}" \
             && "$SENTINEL" scan iac "$base/$SCAN_PATH" --out "$RUNNER_TEMP/scan/baseline-iac.ndjson" "${common[@]}" \
+            && "$SENTINEL" scan pipelines "$base/$SCAN_PATH" --repo-root "$base" --repo "$REPO" --commit "$BASE_SHA" \
+              --context pr --timeout "$SCANNER_TIMEOUT_S" --lock pipeline/tools.lock.toml \
+              --out "$RUNNER_TEMP/scan/baseline-pipelines.ndjson" \
             && "$SENTINEL" scan combine --out "$RUNNER_TEMP/out/baseline.ndjson" \
-              --findings "$RUNNER_TEMP/scan/baseline-secrets.ndjson" --findings "$RUNNER_TEMP/scan/baseline-iac.ndjson"
+              --findings "$RUNNER_TEMP/scan/baseline-secrets.ndjson" --findings "$RUNNER_TEMP/scan/baseline-iac.ndjson" \
+              --findings "$RUNNER_TEMP/scan/baseline-pipelines.ndjson"
           then
             echo "baseline: $(wc -l < "$RUNNER_TEMP/out/baseline.ndjson") finding(s) on the base commit"
           else
