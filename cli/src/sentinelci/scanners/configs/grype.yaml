@@ -1,0 +1,37 @@
+# SentinelCI's Grype configuration (task A1). It is passed explicitly (-c), and Grype runs in a private working
+# directory and home, so a .grype.yaml (Grype reads it from its working directory and home) is never loaded:
+# ignore rules, VEX documents or only-fixed written by the author of a change cannot hide a vulnerability.
+# Grype never reads the scanned repository either: it reads the SBOM that Syft made of it.
+check-for-app-update: false
+
+# Nothing is hidden. SentinelCI exceptions are waivers, recorded with the decision. The normalizer refuses a
+# report that shows any of these changed (normalize/grype.py).
+only-fixed: false
+only-notfixed: false
+ignore-wontfix: ""
+ignore: []
+exclude: []
+vex-documents: []
+vex-add: []
+distro: ""
+
+# Ids as the matched record names them: a GHSA stays a GHSA. by-cve would rename it to a CVE id, which changes
+# the finding's rule id and fingerprint (SPEC 13.1) whenever the database learns about a CVE.
+by-cve: false
+# No timestamp: the same SBOM and database give the same report.
+timestamp: false
+
+# Offline: no Maven Central lookup, no database download during a scan. The database is the directory the
+# pipeline prepared (GRYPE_DB_CACHE_DIR, set by the scanner), checked against its own hash before use.
+external-sources:
+  enable: false
+db:
+  auto-update: false
+  validate-by-hash-on-start: true
+  require-update-check: false
+  # A scan refuses a database built more than five days ago (GRYPE_DB_VALIDATE_AGE=false only for replays).
+  max-allowed-built-age: 120h
+  # Where `sentinel tools grype-db` downloads the database from, with the system's certificate authorities.
+  # The scan itself never downloads.
+  update-url: "https://grype.anchore.io/databases"
+  ca-cert: ""
