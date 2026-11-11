@@ -112,7 +112,9 @@ def redact(text: str) -> str:
 
 
 def _clip(value: object) -> str:
-    text = " ".join(str(value).split())
+    """Redacted first, then clipped: a token cut by the clip would no longer match its pattern, and its start
+    would be sent."""
+    text = " ".join(redact(str(value)).split())
     return text if len(text) <= MAX_FIELD else text[: MAX_FIELD - 3] + "..."
 
 
@@ -134,8 +136,8 @@ def _described(finding: Mapping[str, Any]) -> dict[str, Any]:
         "cwe": list(finding.get("cwe") or [])[:5],
     }
     return {
-        key: (redact(_clip(value)) if isinstance(value, str) else
-              [redact(_clip(v)) for v in value] if isinstance(value, list) else value)
+        key: (_clip(value) if isinstance(value, str) else
+              [_clip(v) for v in value] if isinstance(value, list) else value)
         for key, value in described.items()
         if value not in (None, [], "")
     }  # fmt: skip
