@@ -22,7 +22,7 @@ seeds:
       gate: SC-001                # the gate rule this seed should trigger, when one applies
       detections:                 # detections verified with the pinned tools
         - {tool: gitleaks, rule: github-pat}
-  - id: GT-IAC-004
+  - id: GT-IAC-0NN                # a seed no pinned tool detects (none at the moment)
     # ...
     known_miss: >-                # required when expected.detections is empty, forbidden otherwise: which
       Trivy 0.76.1 does not ...   # pinned tool and version misses the seed, the forms tried, and why
@@ -84,7 +84,8 @@ Fields planned for later tasks, optional today: `relevance` (0–3, for NDCG@10 
 - the pinned Gitleaks and Trivy with SentinelCI's own configuration, when `SENTINEL_TOOLS_DIR` is set.
 
 Gitleaks must report exactly the secret seeds: 5 out of 5, and nothing on the controls. A seed that no pinned
-tool detects has `detections: []` and a `known_miss` saying why (GT-IAC-004, ADR-0012). It counts as a miss in
+tool detects has `detections: []` and a `known_miss` saying why (ADR-0012; none at the moment: GT-IAC-004, the
+first, is detected by SentinelCI's own Trivy check SENTINEL-AWS-0001). It counts as a miss in
 the evaluation. The Trivy test checks, seed by seed, that it is still missed: any Trivy finding in its file
 fails the test and names the rules, so a tool upgrade that catches it shows up. Only IaC seeds can be known
 misses for now; another category gets the same check with its first one.

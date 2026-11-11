@@ -9,7 +9,10 @@ written by the author of the change, so each one is neutralized:
   0.76 has no flag to disable them, so a scan target that contains either marker is refused (fail closed),
   like `.gitleaksignore`. Exceptions go through SentinelCI waivers;
 - WASM modules (`~/.trivy/modules`) and the check cache -> private, empty directories. The Rego checks are the
-  ones embedded in the pinned binary (`--skip-check-update`), so the result depends on the lock only;
+  ones embedded in the pinned binary (`--skip-check-update`), so the result depends on the lock only, plus
+  SentinelCI's own checks (`configs/trivy-checks`, namespace `sentinelci`, ids `SENTINEL-*`) for gaps in
+  Trivy's (ADR-0012), which ship with the CLI like the rest of its scanner configuration. A check that does
+  not compile stops the scan (`--rego-error-limit 0`): Trivy would otherwise drop it and exit 0;
 - check data -> SentinelCI's own `--config-data` (for example the trusted image registries).
 
 Trivy also downloads the remote Terraform modules that the scanned code names (`git::https://...`, registry
@@ -93,6 +96,10 @@ OFFLINE_ENV = {
     "GIT_TERMINAL_PROMPT": "0",
     "GIT_CONFIG_NOSYSTEM": "1",
 }
+
+
+# The Rego package prefix of SentinelCI's own Trivy checks (configs/trivy-checks).
+CHECK_NAMESPACE = "sentinelci"
 
 
 def _relative_target(target: Path, repo_root: Path) -> str:
@@ -358,7 +365,11 @@ def scan_iac_with_run(
         for name in ("cache", "modules"):
             (work / name).mkdir()
         report = work / "report.json"
-        with as_file(files("sentinelci.scanners.configs").joinpath("trivy-data")) as config_data:
+        configs = files("sentinelci.scanners.configs")
+        with (
+            as_file(configs.joinpath("trivy-data")) as config_data,
+            as_file(configs.joinpath("trivy-checks")) as checks,
+        ):
             args = [
                 "config",
                 "--config", "",
@@ -366,6 +377,11 @@ def scan_iac_with_run(
                 "--cache-dir", str(work / "cache"),
                 "--module-dir", str(work / "modules"),
                 "--config-data", str(config_data),
+                "--config-check", str(checks),
+                "--check-namespaces", CHECK_NAMESPACE,
+                # Stop on any check that does not compile: Trivy would otherwise log a type error, drop the
+                # check and exit 0, so a SentinelCI check could silently stop reporting.
+                "--rego-error-limit", "0",
                 "--skip-check-update",
                 "--skip-version-check",
                 "--disable-telemetry",
