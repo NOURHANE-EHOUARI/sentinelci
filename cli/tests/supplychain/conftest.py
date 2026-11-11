@@ -106,3 +106,8 @@ def github_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
         monkeypatch.setenv(name, value)
     monkeypatch.setenv("COSIGN_PASSWORD", "")
     return dict(GITHUB_ENV)
+
+
+# The registry fixtures live in oci.py, which imports this module: they are made visible to every test of the
+# package here, at the end, once this module's names exist.
+from .oci import crane, keys, registry  # noqa: E402, F401

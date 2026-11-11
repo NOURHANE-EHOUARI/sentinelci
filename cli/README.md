@@ -468,3 +468,59 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
     tool status; for a `--tool-status` that is not the one the decision recorded, or that does not show the
     scanner of every target `ok`: a scan that failed, was skipped or never ran must not vouch for the patch;
   - `--out` can never be one of the inputs.
+
+## `sentinel admission-policy` (Kyverno admission of releases, A5)
+
+Writes the Kyverno `ImageValidatingPolicy` (`policies.kyverno.io/v1`, Kyverno 1.19) that admits a Pod only if
+every image matching the glob is a release `sentinel verify` would trust. It takes the same parameters as
+`sentinel verify`:
+
+```bash
+uv run sentinel admission-policy --key cosign.pub --repo NOURHANE-EHOUARI/sentinelci \
+  --builder-id <release workflow ref> --image-glob kind-registry:5000/demo-shop/* \
+  --registry-http --out deploy/kyverno/release-evidence.yaml
+```
+
+- **What it requires**, checked in this order (the first that fails is the reason given):
+  - the image signature (`cosign sign`) and the four attestations, each signed by the key;
+  - a release decision with a non-BLOCK Decision v1 verdict (`PASS` or `WARN`, a `schema_version` of the
+    Decision v1 contract, rendered from it, and no violation other than `WARN`), about this digest, from
+    `--repo`;
+  - provenance from `--builder-id`, built from the decision's commit (every source of the repository);
+  - a vulnerability result naming the decision, its findings and its SBOM;
+  - that SBOM, a CycloneDX document with the `serialNumber` the result names.
+- **Why the signature is required as an attestation.** `verifyImageSignatures` accepts any statement the key
+  signed about the digest, an attestation included (see registry mode above). So the policy requires a
+  statement of type `https://sigstore.dev/cosign/sign/v1`.
+- **Which images.** `--image-glob` is `<registry>/<path>*`, with one trailing `*`. It is matched as a prefix of
+  the lower-cased image reference, because registry host names ignore case: `LOCALHOST:5000/...` is checked
+  too. With `--registry-http`, the registry must be local (a loopback host, or a single-label host with a port
+  such as `kind-registry:5000`), as for `sentinel verify`.
+- **Digests.** An image without a digest is refused (`verifyDigest`). In a cluster, `mutateDigest` first pins
+  a tag to the digest it resolves to.
+- **Scope.** Pod creation and updates, with Kyverno's autogen, so a Deployment, Job or CronJob with a refused
+  image is refused itself when applied; and, in a second document, the `pods/ephemeralcontainers` subresource
+  that `kubectl debug` uses. Every container is checked, init and ephemeral too. An image outside the glob is
+  not this policy's business: restricting which registries may run at all is a separate policy. Kyverno's
+  default install excludes `kube-system` and its own namespace (`resourceFilters` and the webhook
+  `namespaceSelector`). Whoever can create Pods there is out of scope until the cluster install (A5b) narrows
+  that.
+- **Timeout.** Each admission makes five registry verifications. The webhook timeout is set to the API
+  server's maximum (30 s), and a timeout denies (`failurePolicy: Fail`).
+- **The key file** must hold exactly one PEM public key and nothing else. The policy is committed, so a private
+  key next to the public one would be committed with it. `--out` can never be the key file.
+- **Where it is weaker than `sentinel verify`.** Admission refuses every case the tests cover, and `sentinel
+  verify` refuses them too. But CEL reads one statement per type (`extractPayload`) and checks fields, so it
+  does not check:
+  - the full Decision v1 schema, beyond the verdict, the version and the violations;
+  - the vulnerability result's schema and its totals;
+  - a second, different statement of the same type, which `sentinel verify` refuses as ambiguous.
+    `sentinel attest --push` refuses to attach a second release of a digest; someone holding the key could
+    still attach one with Cosign directly (ADR-0010 decision 4).
+- **Keys.** Private mode only: a key pair. The keyless attestor (GitHub mode) comes with keyless
+  `sentinel verify`, after the repository goes public.
+- **Values are checked before they are written** (exit `3`, nothing written): they end up in YAML and in CEL
+  string literals.
+- **Tests.** `kyverno apply` (pinned in `tools.lock.toml`) evaluates the policy as the admission controller
+  does, against a real registry. Every case `sentinel verify` refuses there, admission refuses too (the tests
+  compare the two verdicts, not the reasons).

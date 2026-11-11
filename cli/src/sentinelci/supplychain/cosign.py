@@ -81,29 +81,32 @@ class Registry:
 
 
 def registry_for(image: Image, *, allow_http: bool) -> Registry:
-    """The registry settings for `image`. Plain HTTP is for a local registry only: a loopback host, or a
-    single-label host with a port (kind's `kind-registry:5000`). Anywhere else it would send the image and,
-    with `DOCKER_CONFIG`, the registry credentials across the network in clear, so it is refused."""
+    """The registry settings for `image`. Plain HTTP is for a local registry only (`check_local_registry`)."""
     if allow_http:
-        host = _registry_host(image)
-        if host is None:
-            raise AttestationError(
-                f"{image.name} names no registry host: plain HTTP (--registry-http) needs a local registry"
-            )
-        name = host
-        local = _is_loopback(name) or "." not in name  # a single label: localhost, or kind-registry:5000
-        if not local:
-            raise AttestationError(
-                "plain HTTP (--registry-http) is for a local registry only (loopback, or a single-label "
-                f"host with a port such as kind-registry:5000), not {name}"
-            )
+        check_local_registry(image.name)
     return Registry(allow_http=allow_http)
 
 
-def _registry_host(image: Image) -> str | None:
-    """The host of the image's registry, without its port, or None when the name has none: its first part is
-    a registry only with a dot, a port or as `localhost` (otherwise it is a Docker Hub repository)."""
-    first, slash, _ = image.name.partition("/")
+def check_local_registry(name: str) -> None:
+    """AttestationError unless the registry of `name` (an image name, or a prefix of one) is local: a
+    loopback host, or a single-label host with a port (kind's `kind-registry:5000`). Plain HTTP anywhere else
+    would send the image and, with `DOCKER_CONFIG`, the registry credentials across the network in clear."""
+    host = _registry_host(name)
+    if host is None:
+        raise AttestationError(
+            f"{name} names no registry host: plain HTTP (--registry-http) needs a local one"
+        )
+    if not (_is_loopback(host) or "." not in host):  # a single label: localhost, or kind-registry:5000
+        raise AttestationError(
+            "plain HTTP (--registry-http) is for a local registry only (loopback, or a single-label "
+            f"host with a port such as kind-registry:5000), not {host}"
+        )
+
+
+def _registry_host(name: str) -> str | None:
+    """The host of the registry in an image name, without its port, or None when the name has none: its first
+    part is a registry only with a dot, a port or as `localhost` (otherwise it is a Docker Hub repository)."""
+    first, slash, _ = name.partition("/")
     if not slash or not ("." in first or ":" in first or first == "localhost"):
         return None
     return first.partition(":")[0]

@@ -116,4 +116,8 @@ signed predicate is not byte-identical to the file it came from.
 - Provenance written by the CLI in the attest job is a claim of the workflow, not a hardened builder: SLSA Build
   L2 at best until GitHub artifact attestations (L3 target) replace it in GitHub mode.
 - Kyverno (A5) must require the same predicate types and the same decision conditions; its policy is checked
-  against bundles produced by this code.
+  against bundles produced by this code. CEL reads one statement per type, so admission does not see the full
+  schemas or a second statement of a type; `sentinel verify` does (A5 README).
+- No freshness bound: neither verifier limits a decision's age, and nothing revokes a release. A digest
+  released once stays admissible after a later CVE is published, until it is removed from the registry or a
+  newer policy refuses it. Both verifiers agree on this.
