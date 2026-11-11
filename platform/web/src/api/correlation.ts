@@ -33,3 +33,49 @@ export function groupOf(document: unknown, findingId: string): GroupView | null 
   }
   return null;
 }
+
+export interface RunGroupView extends GroupView {
+  findingIds: string[];
+  model: string | null;
+}
+
+export interface CorrelationView {
+  version: string;
+  stages: string[];
+  groups: RunGroupView[];
+}
+
+/** Every group of a Correlation v1 document, largest first, read field by field (a group without a title or a
+ * root cause is left out, never shown half-read); null when the document is not one. */
+export function correlationOf(document: unknown): CorrelationView | null {
+  if (!isRecord(document) || !Array.isArray(document.groups)) return null;
+  const correlator = isRecord(document.correlator) ? document.correlator : {};
+  const groups: RunGroupView[] = [];
+  for (const group of document.groups) {
+    if (!isRecord(group) || !Array.isArray(group.finding_ids)) continue;
+    if (typeof group.title !== "string" || typeof group.root_cause !== "string") continue;
+    const findingIds = group.finding_ids.filter((id): id is string => typeof id === "string");
+    groups.push({
+      groupId: typeof group.group_id === "string" ? group.group_id : "",
+      title: group.title,
+      rootCause: group.root_cause,
+      singleFix: typeof group.single_fix === "string" ? group.single_fix : null,
+      stage: typeof group.stage === "string" ? group.stage : "",
+      labelledBy: group.labelled_by === "llm" ? "llm" : "template",
+      members: findingIds.length,
+      findingIds,
+      model: typeof group.model === "string" ? group.model : null,
+    });
+  }
+  groups.sort((a, b) => b.members - a.members || a.groupId.localeCompare(b.groupId));
+  return {
+    version: typeof correlator.version === "string" ? correlator.version : "",
+    stages: Array.isArray(correlator.stages) ? correlator.stages.filter((s): s is string => typeof s === "string") : [],
+    groups,
+  };
+}
+
+/** SPEC section 10: alert reduction = 1 − groups ÷ raw findings (null without findings). */
+export function alertReduction(groups: number, findings: number): number | null {
+  return findings > 0 ? 1 - groups / findings : null;
+}

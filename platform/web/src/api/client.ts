@@ -6,6 +6,7 @@ export type FindingDetail = components["schemas"]["FindingDetail"];
 export type CorrelationVersion = components["schemas"]["CorrelationOut"];
 export type ReleasePage = components["schemas"]["ReleasePage"];
 export type ReleaseSummary = components["schemas"]["ReleaseOut"];
+export type RunSummary = components["schemas"]["RunOut"];
 
 export class ApiError extends Error {
   constructor(
@@ -62,6 +63,10 @@ export async function getCorrelation(runId: string): Promise<unknown> {
     if (error instanceof ApiError && error.status === 404) return null;
     throw error;
   }
+}
+
+export async function getRun(runId: string): Promise<RunSummary> {
+  return (await get(`/api/v1/runs/${encodeURIComponent(runId)}`)).json() as Promise<RunSummary>;
 }
 
 /** GET /metrics: Prometheus text. */
