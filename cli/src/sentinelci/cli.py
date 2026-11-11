@@ -87,7 +87,7 @@ from sentinelci.risk import RiskModel, RiskModelError, score_finding
 from sentinelci.scanners.combine import CombineError, combine_findings, combine_tool_statuses
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
-from sentinelci.scanners.grype import scan_sca, update_database
+from sentinelci.scanners.grype import SbomScanFailure, scan_sca, update_database
 from sentinelci.scanners.installer import VerificationReport, detect_platform, install_tools, verify_tools
 from sentinelci.scanners.lock import LOCK_FILE_NAME, ToolLock, load_lock
 from sentinelci.scanners.opengrep import rule_ids, scan_sast_with_run
@@ -96,6 +96,7 @@ from sentinelci.scanners.runner import ToolRun
 from sentinelci.scanners.status import (
     outcome_from_error,
     outcome_from_run,
+    outcome_not_run,
     tool_status_document,
     write_tool_status,
 )
@@ -834,6 +835,7 @@ def tools_grype_db(
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
     ] = DEFAULT_TOOLS_DIR,
     platform: PlatformOption = None,
+    timeout: ScanTimeoutOption = SCAN_TIMEOUT_DEFAULT_S,
 ) -> None:
     """Prepare Grype's vulnerability database with the verified Grype and SentinelCI's configuration.
 
@@ -850,6 +852,7 @@ def tools_grype_db(
             platform=platform,
             archive=archive,
             allow_stale_db=allow_stale_db,
+            timeout_s=timeout,
         )
     except (ToolIntegrityError, ScannerError) as exc:
         raise _fail_closed(exc) from exc
@@ -1092,6 +1095,16 @@ def _write_status(
     typer.echo(f"tool status written to {destination}", err=True)
 
 
+def _sbom_scan_outcomes(failure: SbomScanFailure, lock: ToolLock, platform: str | None) -> dict[str, Any]:
+    """Syft's and Grype's outcomes when one of them failed: Grype never ran after a failed Syft."""
+    outcomes = {failure.tool: outcome_from_error(failure.tool, failure.error, lock=lock)}
+    if failure.sbom is not None:
+        outcomes["syft"] = outcome_from_run(failure.sbom.run, lock=lock, platform=platform)
+    else:
+        outcomes["grype"] = outcome_not_run("grype", "not started: Syft produced no SBOM", lock=lock)
+    return outcomes
+
+
 @scan_app.command("sast")
 def scan_sast_cmd(
     target: Annotated[Path, typer.Argument(help="Directory to scan with SentinelCI's SAST rules.")],
@@ -1109,14 +1122,23 @@ def scan_sast_cmd(
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
     ] = (DEFAULT_TOOLS_DIR),
     platform: PlatformOption = None,
+    timeout: ScanTimeoutOption = SCAN_TIMEOUT_DEFAULT_S,
+    tool_status_out: Annotated[
+        Path | None,
+        typer.Option(
+            help="Also write a tool status (schemas/tool-status.v1.json), on success and on failure, so the "
+            "gate can record a failed scan as SC-010."
+        ),
+    ] = None,
 ) -> None:
     """Static analysis with the verified Opengrep binary and SentinelCI's own rules (offline, never configured
     or silenced by the scanned repository): findings of category SAST."""
-    out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
+    _clear(out, tool_status_out)
     root = repo_root or target
-    try:
+
+    def scan(tool_lock: ToolLock) -> tuple[list[Finding], ToolRun]:
         scan = scan_sast_with_run(
-            target, lock=load_lock(lock), tools_dir=tools_dir, repo_root=root, platform=platform
+            target, lock=tool_lock, tools_dir=tools_dir, repo_root=root, platform=platform, timeout_s=timeout
         )
         findings = normalize_opengrep(
             scan.results,
@@ -1127,16 +1149,14 @@ def scan_sast_cmd(
             scan_root=scan.target.relative_to(root.resolve()).as_posix(),
             gaps=scan.gaps,
         )
-    except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
-        raise _fail_closed(exc) from exc
-    out.parent.mkdir(parents=True, exist_ok=True)
-    write_ndjson(findings, out)
-    if scan.warnings:  # analysed only in part: say where, in the job log
-        typer.echo(
-            f"warning: opengrep reported {len(scan.warnings)} problem(s): {'; '.join(scan.warnings)}",
-            err=True,
-        )
-    typer.echo(f"opengrep {scan.run.version}: {len(findings)} finding(s) written to {out}")
+        if scan.warnings:  # analysed only in part: say where, in the job log
+            typer.echo(
+                f"warning: opengrep reported {len(scan.warnings)} problem(s): {'; '.join(scan.warnings)}",
+                err=True,
+            )
+        return findings, scan.run
+
+    _scan_and_record("opengrep", scan, out=out, tool_status_out=tool_status_out, lock=lock, platform=platform)
 
 
 @scan_app.command("pipelines")
@@ -1235,35 +1255,62 @@ def scan_sca_cmd(
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
     ] = (DEFAULT_TOOLS_DIR),
     platform: PlatformOption = None,
+    timeout: ScanTimeoutOption = SCAN_TIMEOUT_DEFAULT_S,
+    tool_status_out: Annotated[
+        Path | None,
+        typer.Option(
+            help="Also write a tool status (schemas/tool-status.v1.json) for Syft and Grype, on success and "
+            "on failure, so the gate can record a failed scan as SC-010."
+        ),
+    ] = None,
 ) -> None:
     """Vulnerable dependencies: the verified Syft's SBOM of the tree, matched by the verified Grype, offline.
 
     The scan never downloads: the database is the directory given in --db-dir. Exit code 3, with no findings
     file written, when a tool fails or is tampered with, the database is missing, invalid or stale, or the
-    report shows a silenced match.
+    report shows a silenced match. The tool status names each tool's own outcome: Grype is `not_run` when
+    Syft failed, and a report that cannot be trusted is Grype's failure.
     """
-    out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
+    _clear(out, tool_status_out)
     root = repo_root or target
+    host = platform or _host_platform()
+    tool_lock: ToolLock | None = None
+    outcomes: dict[str, dict[str, Any]] = {}
     try:
+        tool_lock = load_lock(lock)
         scan = scan_sca(
             target,
             repo_root=root,
             name=repo,
             db_dir=db_dir,
-            lock=load_lock(lock),
+            lock=tool_lock,
             tools_dir=tools_dir,
             platform=platform,
             allow_stale_db=allow_stale_db,
+            timeout_s=timeout,
         )
+        outcomes = {
+            "syft": outcome_from_run(scan.sbom.run, lock=tool_lock, platform=host),
+            "grype": outcome_from_run(scan.grype, lock=tool_lock, platform=host),
+        }
         findings = normalize_grype(
             scan.report,
             run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
             scan_root=scan.scan_root,
         )
+    except SbomScanFailure as failure:
+        if tool_status_out is not None and tool_lock is not None:
+            _write_status(tool_status_out, lock, host, _sbom_scan_outcomes(failure, tool_lock, host))
+        raise _fail_closed(failure.error) from failure
     except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
+        if tool_status_out is not None and tool_lock is not None and outcomes:
+            outcomes["grype"] = outcome_from_error("grype", exc, lock=tool_lock)  # its report is not trusted
+            _write_status(tool_status_out, lock, host, outcomes)
         raise _fail_closed(exc) from exc
     out.parent.mkdir(parents=True, exist_ok=True)
     write_ndjson(findings, out)
+    if tool_status_out is not None:  # last: an `ok` status never vouches for a findings file not yet written
+        _write_status(tool_status_out, lock, host, outcomes)
     database = scan.database
     typer.echo(
         f"grype {scan.grype.version} on the SBOM of syft {scan.sbom.run.version} ({scan.sbom.packages} "

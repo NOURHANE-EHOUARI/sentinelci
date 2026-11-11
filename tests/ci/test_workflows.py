@@ -123,6 +123,7 @@ def test_the_pipeline_change_warning_covers_every_input_read_from_the_base_commi
 
 SCAN_WORKFLOW = ROOT / ".github" / "workflows" / "sentinel-scan.yml"
 SETUP_MARGIN_S = 300  # checkouts, uv sync, tool installation, upload
+SCAN_KINDS = ("secrets", "sast", "sca", "iac", "pipelines")  # every scanner of the gate (SPEC section 5)
 TRIVY_BACKSTOP_S = 60  # the runner's own limit on top of Trivy's --timeout (scanners/trivy.py)
 
 
@@ -142,7 +143,7 @@ def test_the_scan_job_outlives_every_scanner_run() -> None:
     minutes = int(re.search(r"^    timeout-minutes: (\d+)$", job, re.MULTILINE)[1])  # type: ignore[index]
     worst = SETUP_MARGIN_S
     for step in _steps(job):
-        if "scan secrets" in step or "scan iac" in step or "scan pipelines" in step:
+        if any(f"scan {kind}" in step for kind in SCAN_KINDS) or "tools grype-db" in step:
             assert '--timeout "$SCANNER_TIMEOUT_S"' in step, f"step without a scanner time limit: {step[:60]}"
         for call in step.split('"$SENTINEL" scan pipelines')[1:]:  # zizmor takes no shared argument list
             assert '--timeout "$SCANNER_TIMEOUT_S"' in call.split("&&")[0], "zizmor without a time limit"
@@ -150,6 +151,9 @@ def test_the_scan_job_outlives_every_scanner_run() -> None:
             worst += per_run * (2 if "--mode git" in step else 1)  # git mode: remerge pass + octopus pass
         worst += step.count("scan iac") * (per_run + TRIVY_BACKSTOP_S)
         worst += step.count("scan pipelines") * per_run
+        worst += step.count("scan sast") * per_run
+        worst += step.count("scan sca") * 2 * per_run  # Syft, then Grype
+        worst += step.count("tools grype-db") * 2 * per_run  # the update, then Grype's own status check
     assert worst <= minutes * 60, f"the scan job needs {worst} s, its timeout-minutes allow {minutes * 60} s"
 
 
@@ -174,18 +178,40 @@ def test_the_gate_scores_with_the_base_model_then_evaluates_the_scored_findings(
     )
 
 
+def test_grypes_database_is_the_only_download_prepared_once_before_every_dependency_scan() -> None:
+    """SCA is offline: one `tools grype-db` step fills the database every `scan sca` reads (head and
+    baseline), keeps its evidence with the scan outputs, and leaves a failure for the scans to record
+    (SC-010)."""
+    text = SCAN_WORKFLOW.read_text(encoding="utf-8")
+    steps = _steps(_job(text, "scan", "gate"))
+    (install,) = [step for step in steps if step.startswith("Install the pinned scanners")]
+    assert '"$SENTINEL" tools install gitleaks trivy opengrep syft grype' in install
+    preparing = [index for index, step in enumerate(steps) if '"$SENTINEL" tools grype-db' in step]
+    scanning = [index for index, step in enumerate(steps) if '"$SENTINEL" scan sca' in step]
+    assert len(preparing) == 1 and len(scanning) == 2 and preparing[0] < min(scanning)
+    database = '--db-dir "$RUNNER_TEMP/grype-db"'
+    prepare = steps[preparing[0]]
+    assert database in prepare and '--report "$RUNNER_TEMP/out/grype-db.json"' in prepare
+    assert "|| status=$?" in prepare and "set -e" not in prepare, "a failed download must not stop the job"
+    for index in scanning:
+        for call in steps[index].split('"$SENTINEL" scan sca')[1:]:
+            assert database in call.split("&&")[0], "every dependency scan reads the prepared database"
+            assert "--allow-stale-db" not in call
+    assert "--allow-stale-db" not in prepare
+
+
 def test_the_pr_gate_and_its_baseline_run_the_same_scanners() -> None:
     """Only what the change introduces can block: every scanner of the head also scans the base (A3)."""
     text = SCAN_WORKFLOW.read_text(encoding="utf-8")
     steps = _steps(_job(text, "scan", "gate"))
     (baseline,) = [step for step in steps if step.startswith("Scan the base commit as a baseline")]
     head = [step for step in steps if not step.startswith("Scan the base commit")]
-    for kind in ("secrets", "iac", "pipelines"):
+    for kind in SCAN_KINDS:
         assert any(f'"$SENTINEL" scan {kind}' in step for step in head), kind
         assert f'"$SENTINEL" scan {kind}' in baseline, f"{kind}: not in the baseline"
         assert f"baseline-{kind}.ndjson" in baseline.split("scan combine", 1)[1], f"{kind}: not combined"
     (combine,) = [step for step in steps if step.startswith("Combine the scanner outputs")]
-    for kind in ("secrets", "iac", "pipelines"):
+    for kind in SCAN_KINDS:
         assert f'--findings "$RUNNER_TEMP/scan/{kind}.ndjson"' in combine
         assert f'--tool-status "$RUNNER_TEMP/scan/{kind}-status.json"' in combine, (
             "a failure must reach the gate"

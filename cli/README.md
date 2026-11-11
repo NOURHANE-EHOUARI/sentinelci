@@ -289,6 +289,11 @@ uv run sentinel normalize grype grype.json --scan-root demo-shop --out out/sca.n
   hides matches (ignore rules beyond Grype's built-in kernel-header rules, VEX, exclusions, `only-fixed`,
   `only-notfixed`, `ignore-wontfix`, a distro override, `by-cve`). An image report is refused by
   `normalize grype` (CONTAINER findings need the image digest: the image adapter).
+- **Tool status** (`--tool-status-out`, written on success and on failure, like the other scanners): one entry
+  for Syft and one for Grype. When Syft fails, Grype is `not_run` (it never starts); when Grype fails, or its
+  report cannot be trusted, Syft stays `ok` and Grype carries the failure. `--timeout` limits each run of both
+  tools, and `sentinel tools grype-db` takes the same `--timeout`. In `sentinel-scan.yml`, the database is
+  prepared once before the scans, which run on the head commit and on the PR baseline.
 
 
 ## `sentinel sbom` (SBOMs, A4)
@@ -466,3 +471,7 @@ uv run sentinel scan sast demo-shop --repo-root . --out out/sast.ndjson \
   (`Opengrep did not analyse lines 12-19 of app.py (PartialParsing). ...`). Valid modern syntax Opengrep cannot
   parse yet (a PEP 695 `def f[T]`, some TypeScript) shows up this way until Opengrep catches up: waive it with
   a reviewed expiry, never with a scanner flag. The job log still names each file and counts its lines.
+- **Tool status** (`--tool-status-out`, written on success and on failure, like the other scanners) and a time
+  limit (`--timeout`): an Opengrep that fails, times out, reports what cannot be trusted or does not match the
+  lock is recorded, so the gate blocks with SC-010 and its reason. `sentinel-scan.yml` runs the scan on the head
+  commit and on the PR baseline.

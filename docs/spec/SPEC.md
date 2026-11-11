@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.43 | A3 (§5): the gate runs SAST and SCA. `sentinel-scan.yml` installs Opengrep, Syft and Grype from the lock, prepares Grype's database once (`sentinel tools grype-db --timeout`, evidence in `grype-db.json`), then runs `sentinel scan sast` and `sentinel scan sca` on the head commit and on the PR baseline, combined with the other scanners. Both commands take `--timeout` and `--tool-status-out`: Opengrep's run is recorded like the others'; the SCA status names Syft and Grype apart (`SbomScanFailure` says which one failed; Grype is `not_run` after a failed Syft; a report that cannot be trusted is Grype's failure). The scan job's limit goes to 85 minutes, the sum of its runs at 300 s each. Whether the gate requires these tools is `policies/required_tools.rego` (B4). |
 | 1.1.37 | A3 CI workflow audit in the gate (§5): `sentinel-scan.yml` runs `sentinel scan pipelines` (zizmor) on the head commit in both modes and on the base commit for the pr baseline, so SC-009 now blocks a high-severity CI workflow issue a change introduces (demo-shop: GT-PIPELINE-001 to 003). `scan pipelines` writes a tool status like the other scanners (`--tool-status-out`, `--timeout`): `ok` with the verified binary's sha256 and, as its artifact, the pinned wheel that carries it; a crash, a timeout or a binary no pinned wheel carries is `failed`, `timeout` or `integrity_mismatch`, and the gate blocks it (SC-010). The scan job's limit is 45 minutes, for the extra runs. zizmor is not in `policies/required_tools.rego` yet (Track B): until it is, a workflow that drops the audit is not caught by the gate. |
 | 1.1.30 | Platform API migrations (B1, §13.3): going below 0004 stops, changing nothing, while any run keeps its uploaded findings bytes, which are the only copy `findings_sha256` was taken of; before, the downgrade dropped them without a word. A database without kept bytes still goes down. Raised on #57. |
 | 1.1.29 | Platform API 1.2.0 (B1, §13.3): the platform keeps each run's findings upload byte for byte and serves it at `GET /api/v1/runs/{id}/findings`, so a consumer that must match `findings_sha256` (the correlator's run document, #47; a replay) reads the exact bytes; the JSONB rows keep neither key order nor bytes. The database keeps only bytes that hash to the recorded digest, and the recorded-run trigger makes them immutable. Runs recorded before have none, and the API says so. |
@@ -288,6 +289,12 @@ failure, and the scan job keeps going, so a failed, timed-out or tampered scanne
 with its reason. A missing tool status is SC-010 too. Each scanner run has a time limit (`--timeout`, 300 s in
 `sentinel-scan.yml`), and the scan job's own limit outlives the sum of its runs, so a slow scanner ends as a
 recorded `timeout`, not as a killed job.
+**Scanners of the gate:** Gitleaks (secrets), Opengrep (SAST, SentinelCI's rules only), Syft then Grype (SCA),
+Trivy (IaC) and zizmor (CI workflows), each on the head commit and on the PR baseline, each with its tool status:
+the SCA status names Syft and Grype apart, and Grype is `not_run` when Syft failed. Grype's database is the only
+download of a scan: `sentinel tools grype-db` prepares it once, before any scan, and its evidence (schema, build
+time, checksum) is kept with the scan outputs; the scans themselves are offline, and a database that could not be
+prepared makes them fail (SC-010).
 **Scoring:** the gate job scores the findings with the base commit's risk model (`sentinel score`, §6.2) before
 `sentinel evaluate`; the decision records, and the PR comment shows, the scored findings. A scoring failure means no
 decision (exit 3).
