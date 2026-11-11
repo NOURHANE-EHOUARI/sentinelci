@@ -1364,7 +1364,7 @@ wheels = [
 
 [[package]]
 name = "sentinel-ai"
-version = "0.1.0"
+version = "1.0.0"
 source = { editable = "ai" }
 dependencies = [
     { name = "pydantic" },
@@ -1413,7 +1413,7 @@ requires-dist = [{ name = "sentinelci", editable = "cli" }]
 
 [[package]]
 name = "sentinelci"
-version = "0.2.0"
+version = "1.0.0"
 source = { editable = "cli" }
 dependencies = [
     { name = "pydantic" },
