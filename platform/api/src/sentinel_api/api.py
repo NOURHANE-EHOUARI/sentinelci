@@ -96,6 +96,13 @@ class FindingItem(BaseModel):
     finding: dict[str, Any]
 
 
+class RunPage(BaseModel):
+    items: list[RunOut]  # newest first
+    total: int
+    limit: int
+    offset: int
+
+
 class FindingPage(BaseModel):
     items: list[FindingItem]
     total: int
@@ -192,6 +199,32 @@ def create_run(body: RunCreate, session: SessionDep) -> RunOut | JSONResponse:
         return _run_exists(existing)
     session.refresh(run)
     return _run_out(run)
+
+
+@router.get("/runs", tags=["runs"], responses=_errors(413, 503))
+def list_runs(
+    session: SessionDep,
+    repo: Annotated[str | None, Query(pattern=_REPO, max_length=200)] = None,
+    context: RunContext | None = None,
+    ref: Annotated[str | None, Query(pattern=_LINE, min_length=1, max_length=255)] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    offset: Annotated[int, Query(ge=0, le=MAX_OFFSET)] = 0,
+) -> RunPage:
+    """Recorded runs, newest first (the run id breaks ties, so a page never repeats or skips a run).
+
+    `ref` is matched exactly (`refs/heads/main`), like `repo`. A run whose findings are not uploaded yet is
+    listed too: its `findings_sha256` is null.
+    """
+    query = select(Run)
+    if repo is not None:
+        query = query.where(Run.repo == repo)
+    if context is not None:
+        query = query.where(Run.context == context)
+    if ref is not None:
+        query = query.where(Run.ref == ref)
+    total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
+    runs = session.scalars(query.order_by(Run.created_at.desc(), Run.id).limit(limit).offset(offset))
+    return RunPage(items=[_run_out(run) for run in runs], total=total, limit=limit, offset=offset)
 
 
 @router.get("/runs/{run_id}", tags=["runs"], responses=_errors(404, 413, 503))

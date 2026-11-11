@@ -17,7 +17,7 @@ from sentinel_api.metrics import router as metrics_router
 from sentinelci import __version__ as engine_version
 
 # The version of the API contract (schemas/openapi.yaml), not of the engine: it changes only with the API.
-API_VERSION = "1.4.0"
+API_VERSION = "1.5.0"
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

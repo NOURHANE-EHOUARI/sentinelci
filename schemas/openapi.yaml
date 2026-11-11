@@ -2,7 +2,7 @@
 openapi: 3.1.0
 info:
   title: SentinelCI API
-  version: 1.4.0
+  version: 1.5.0
 paths:
   /healthz:
     get:
@@ -36,12 +36,14 @@ paths:
 
         second time. A run without `run_id` (a local run) is always a new run.'
       operationId: create_run_api_v1_runs_post
+      security:
+      - HTTPBearer: []
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/RunCreate'
-        required: true
       responses:
         '201':
           description: Successful Response
@@ -81,8 +83,97 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-      security:
-      - HTTPBearer: []
+    get:
+      tags:
+      - runs
+      summary: List Runs
+      description: 'Recorded runs, newest first (the run id breaks ties, so a page
+        never repeats or skips a run).
+
+
+        `ref` is matched exactly (`refs/heads/main`), like `repo`. A run whose findings
+        are not uploaded yet is
+
+        listed too: its `findings_sha256` is null.'
+      operationId: list_runs_api_v1_runs_get
+      parameters:
+      - name: repo
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 200
+            pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+          - type: 'null'
+          title: Repo
+      - name: context
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - pr
+            - release
+            - local
+            type: string
+          - type: 'null'
+          title: Context
+      - name: ref
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 255
+            pattern: ^[^\r\n\u2028\u2029]*$
+          - type: 'null'
+          title: Ref
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000000
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunPage'
+        '413':
+          description: The request body is larger than the limit (64 KiB, or the upload
+            limit for findings).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '503':
+          description: No database is configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/runs/{run_id}:
     get:
       tags:
@@ -906,6 +997,29 @@ components:
       - findings_sha256
       - findings_uploaded_at
       title: RunOut
+    RunPage:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/RunOut'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+      type: object
+      required:
+      - items
+      - total
+      - limit
+      - offset
+      title: RunPage
     UploadResult:
       properties:
         run_id:
