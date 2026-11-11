@@ -324,26 +324,28 @@ class RemediateCode:
         return destination
 
     def _scan(self, tree: Path, commit: str, work: Path, out: Path, *, git_range: str | None) -> Path:
-        """Gitleaks (on the tree, or on the commits of `git_range`), Opengrep and Trivy, combined into `out`;
-        returns the combined tool status. A scan that fails is not a pass: the attempt is FAILED."""
+        """Gitleaks (on the tree, or on the commits of `git_range`), Opengrep, Trivy and zizmor (the scanners
+        the pr gate requires, and the SAST target's), combined into `out`; returns the combined tool status. A
+        scan that fails is not a pass: the attempt is FAILED."""
         work.mkdir(parents=True, exist_ok=True)
-        common = ["--repo", REPO, "--commit", commit, "--context", "pr", "--run-id", "local",
-                  "--timeout", str(self.settings.timeout_s), "--lock", str(self.settings.lock),
-                  "--tools-dir", str(self.settings.tools_dir)]  # fmt: skip
+        audit = ["--repo", REPO, "--commit", commit, "--context", "pr", "--run-id", "local",
+                 "--timeout", str(self.settings.timeout_s), "--lock", str(self.settings.lock)]  # fmt: skip
+        tools = ["--tools-dir", str(self.settings.tools_dir)]  # zizmor is the CLI's own: not for its audit
         target = str(tree / SCAN_PATH)
         if git_range is None:
-            secrets = ["scan", "secrets", target, "--mode", "dir", "--repo-root", str(tree)]
+            secrets = ["scan", "secrets", target, "--mode", "dir", "--repo-root", str(tree), *tools]
         else:
             secrets = ["scan", "secrets", str(self.repo), "--mode", "git", "--log-opts",
-                       f"{git_range} -- {SCAN_PATH}", "--repo-root", str(self.repo)]  # fmt: skip
+                       f"{git_range} -- {SCAN_PATH}", "--repo-root", str(self.repo), *tools]  # fmt: skip
         scans = {
             "secrets": secrets,
-            "sast": ["scan", "sast", target, "--repo-root", str(tree)],
-            "iac": ["scan", "iac", target, "--repo-root", str(tree)],
+            "sast": ["scan", "sast", target, "--repo-root", str(tree), *tools],
+            "iac": ["scan", "iac", target, "--repo-root", str(tree), *tools],
+            "pipelines": ["scan", "pipelines", target, "--repo-root", str(tree)],
         }
         combine = ["scan", "combine", "--out", str(out), "--tool-status-out", str(work / "status.json")]
         for name, args in scans.items():
-            self.run(sentinel(*args, *common, "--out", str(work / f"{name}.ndjson"), "--tool-status-out",
+            self.run(sentinel(*args, *audit, "--out", str(work / f"{name}.ndjson"), "--tool-status-out",
                               str(work / f"{name}-status.json")))  # fmt: skip
             combine += [
                 "--findings",

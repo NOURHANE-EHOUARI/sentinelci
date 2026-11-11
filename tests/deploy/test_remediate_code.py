@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -185,7 +186,7 @@ class Loop:
             return ok()
         if args[0] == "scan":
             name = args[1]
-            tool = {"secrets": "gitleaks", "sast": "opengrep", "iac": "trivy"}[name]
+            tool = {"secrets": "gitleaks", "sast": "opengrep", "iac": "trivy", "pipelines": "zizmor"}[name]
             commit = self.option(args, "--commit")
             base = name == "sast" and "/base/" in args[2]  # the scanned commit holds the finding
             Path(self.option(args, "--out")).write_text(json.dumps(finding(commit)) + "\n" if base else "")
@@ -260,6 +261,23 @@ def test_a_verified_first_attempt_runs_every_step_once(repo: Path, tmp_path: Pat
     assert loop.option(patched_secrets[0], "--log-opts").startswith(f"{head}..")
     work = tmp_path / "out" / head[:12]
     assert json.loads((work / "summary.json").read_text()) == summary
+
+
+def test_both_commits_are_scanned_by_every_scanner_the_pr_gate_requires(repo: Path, tmp_path: Path) -> None:
+    """A required scanner without a status is SC-010 on every attempt: the gate's own list decides."""
+    loop = Loop(repo, tmp_path, Scenario())
+    loop()
+    required = re.search(r'"pr": \{([^}]*)\}', (ROOT / "policies" / "required_tools.rego").read_text())
+    assert required is not None
+    kinds = {"gitleaks": "secrets", "trivy": "iac", "zizmor": "pipelines", "opengrep": "sast"}
+    tools = set(re.findall(r'"(\w+)"', required[1])) | {"opengrep"}  # opengrep: the SAST targets' scanner
+    assert tools <= kinds.keys(), f"a scanner the pr gate requires is not run: {tools - kinds.keys()}"
+    for tool in tools:
+        scans = loop.named("scan", kinds[tool])
+        assert len(scans) == 2, f"{tool}: the scanned commit and the patched commit"
+        assert all(("--tools-dir" in scan) == (tool != "zizmor") for scan in scans), "zizmor is the CLI's own"
+    (combine, _) = loop.named("scan", "combine")
+    assert combine.count("--tool-status") == len(kinds), "every scanner's status reaches the gate"
 
 
 def test_a_rejected_attempt_is_retried_with_what_rejected_it(repo: Path, tmp_path: Path) -> None:
