@@ -281,6 +281,47 @@ uv run sentinel sbom out/image-oci --source oci-dir --name demo-shop/shop-api \
   file for both, or a path that cannot be cleared is refused before anything is written.
 - The package count it prints leaves out the operating-system component Syft adds for an image.
 
+## `sentinel upload` (findings to the platform, M1)
+
+Sends one run's findings to the SentinelCI platform (the B1 ingestion API, `schemas/openapi.yaml`): first
+`POST /api/v1/runs`, then the NDJSON exactly as the scan wrote it.
+
+```bash
+SENTINEL_API_TOKEN=... uv run sentinel upload --findings out/findings.ndjson --api-url http://localhost:8000 \
+  --repo NOURHANE-EHOUARI/sentinelci --commit <sha> --context local
+```
+
+- **A report, never a decision.** It runs after the verdict and never changes it: exit `0` when the platform
+  recorded exactly these findings (with `--resume`, also when it already had them), `4` when it did not. It
+  never exits with the gate's codes, `1` or `3`, and never with a traceback: a malformed answer, an unusable
+  URL or an unexpected error is exit `4` too, with one line that names no secret.
+- **The token** comes only from `SENTINEL_API_TOKEN`. It is never an argument and is never printed, not even
+  in an error: if the platform's answer quotes it back, the message shows `<SENTINEL_API_TOKEN>` instead. It
+  must be visible ASCII (no space, line break or non-ASCII character). In CI the step runs only in a job that
+  runs no repository code.
+- **The URL** is `https://`, or `http://` on the loopback (`localhost`, `127.0.0.1`, `[::1]`). It is ASCII
+  (an international host name in its `xn--` form) and holds no credentials, query, fragment, white space or
+  control character. A redirect is refused, because it would
+  carry the token elsewhere. Plain `http://` never goes through a proxy (`http_proxy` is ignored), since the
+  proxy would see the token in clear text; `https://` goes through `HTTPS_PROXY`, which only sees a `CONNECT`.
+- **Time limits:** 60 s for each network operation, and 120 s for each request as a whole, so a platform that
+  answers one byte at a time cannot hold the step.
+- **The findings are checked first**, as the API checks them: Finding v1, each id once, each about the run
+  given by `--repo/--commit/--context` (and `--ref/--run-id` when the findings carry them). A bad file never
+  leaves an empty run behind.
+- **The platform's `findings_sha256`** must be the sha256 of the bytes sent.
+- **Resuming.** Once the run exists, any failure names it, a lost or malformed answer included, and
+  `--resume <run id>` finishes it without creating another (or confirms that the platform has these findings).
+  A run that already holds other findings (another sha256 or another count) is refused, and so is a run about
+  another repo, commit, context, ref or run id: the message names the fields that differ. When the findings are
+  larger than the platform's upload limit, the message says so: `--resume` cannot help, and the run stays empty.
+- **CI runs resume themselves.** With `--run-id`, the platform answers the same CI run again with 409 and the
+  run it has (API 1.1.0), so the same command again finishes or confirms that run, with no `--resume`. The run
+  id is free text: in GitHub Actions it is `<run id>/<run attempt>` (the scan's `--run-id` too, since the
+  findings carry it), so a re-run of the job is a new run, as it is a new scan and a new decision. A run with no
+  `--run-id` (a local run) is recorded anew each time.
+
+
 ## `sentinel scan pipelines` (CI workflows, A1)
 
 ```bash
