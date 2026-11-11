@@ -152,7 +152,7 @@ Runs the OPA policies in `policies/` and writes a Decision record (`schemas/deci
   statement or document dated after `--evaluated-at` blocks (SC-010). Products are package purls (`pkg:oci` is
   refused: an image matches no finding). An invalid document, a duplicate JSON key, or one over 4 MiB exits 3.
 - Required scanners (`policies/required_tools.rego`, part of the policy bundle, so read from the base branch):
-  gitleaks and trivy in `pr` and `release`, none in `local`. A required tool left out of the tool status, or no tool
+  gitleaks, trivy and zizmor in `pr` and `release`, none in `local`. A required tool left out of the tool status, or no tool
   status at all in a context that requires tools, is an SC-010 BLOCK (`Scanner missing` /
   `Tool status missing`): a workflow that drops a scanner cannot turn its silence into a pass.
 - The decision is `schema_version` 1.2 (with `baseline_digest` / `tool_status_digest`) when either option is
@@ -408,8 +408,15 @@ SENTINEL_API_TOKEN=... uv run sentinel upload --findings out/findings.ndjson --a
 
 ```bash
 uv run sentinel scan pipelines demo-shop --repo-root . --out out/pipelines.ndjson \
-  --repo NOURHANE-EHOUARI/sentinelci --commit "$GITHUB_SHA" --context pr
+  --repo NOURHANE-EHOUARI/sentinelci --commit "$GITHUB_SHA" --context pr \
+  --tool-status-out out/pipelines-status.json --timeout 300
 ```
+
+- **Tool status** (`--tool-status-out`, written on success and on failure, like the other scanners): `ok` with the
+  verified binary's sha256 and, as its `artifact_sha256`, the pinned wheel that carries that binary (also when
+  there was nothing to audit: the binary was still checked). A crash or an unreadable report is `failed`, a run
+  past `--timeout` (300 s by default) is `timeout`, a binary no pinned wheel carries is `integrity_mismatch`:
+  the gate blocks each one (SC-010). `sentinel-scan.yml` runs it on the head and, in pr mode, the base commit.
 
 - zizmor, a runtime dependency of the CLI (`uv.lock`). Right before it runs, the binary of the CLI's own
   environment (never one from `PATH`) must be one that a wheel pinned in `tools.lock.toml` carries
