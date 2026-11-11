@@ -49,6 +49,7 @@ import psycopg  # noqa: E402  (after the standard platform module is back)
 import pytest  # noqa: E402
 import yaml  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+from psycopg import sql  # noqa: E402
 
 from sentinel_api.config import Settings  # noqa: E402
 from sentinel_api.main import create_app  # noqa: E402
@@ -127,7 +128,7 @@ def database_url(postgres_server: str) -> str:
     """A fresh database for one test, migrated to the latest schema."""
     name = f"t_{uuid.uuid4().hex}"
     with psycopg.connect(f"{postgres_server}/sentinel", autocommit=True) as conn:
-        conn.execute(f'CREATE DATABASE "{name}"')
+        conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
     url = f"{postgres_server}/{name}"
     upgrade(url)
     return url
