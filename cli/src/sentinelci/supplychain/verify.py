@@ -4,11 +4,16 @@
 check passes. A check that cannot be evaluated (its attestation is missing or malformed) fails: fail closed.
 """
 
+import base64
+import binascii
+import hashlib
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import ValidationError
 
@@ -25,6 +30,8 @@ from sentinelci.supplychain.attestations import (
 from sentinelci.supplychain.cosign import Registry, Verified, Verifier
 
 ATTESTATIONS_DIR = "attestations"
+_PEM_BODY = re.compile(r"-----BEGIN PUBLIC KEY-----\s+([A-Za-z0-9+/=\s]+?)\s+-----END PUBLIC KEY-----")
+_LINE_BREAK = re.compile(r"[\r\n\u2028\u2029]+")
 LABELS = {
     "decision": "release decision",
     "sbom": "SBOM (CycloneDX)",
@@ -56,6 +63,50 @@ class TrustReport:
         failed = sum(1 for c in self.checks if not c.ok)
         lines.append(f"{verdict}: {len(self.checks) - failed}/{len(self.checks)} checks passed")
         return "\n".join(lines) + "\n"
+
+
+def public_key_sha256(path: Path) -> str:
+    """sha256 of the public key itself (the DER bytes of the PEM block): which key a report trusted, the same
+    whatever the file's line endings or comments."""
+    match = _PEM_BODY.search(path.read_text(encoding="ascii"))
+    if match is None:
+        raise AttestationError(f"{path} is not a PEM public key (-----BEGIN PUBLIC KEY-----)")
+    try:
+        der = base64.b64decode("".join(match.group(1).split()), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise AttestationError(f"{path}: the public key is not valid base64") from exc
+    return hashlib.sha256(der).hexdigest()
+
+
+def _one_line(text: str, limit: int) -> str:
+    return _LINE_BREAK.sub(" ", text)[:limit]
+
+
+def report_document(
+    report: TrustReport,
+    *,
+    mode: Literal["registry", "evidence"],
+    repo: str,
+    builder_id: str,
+    key_sha256: str,
+    verified_at: datetime,
+) -> dict[str, Any]:
+    """The trust report as `schemas/trust-report.v1.json` (`sentinel verify --report-json`): every check in
+    its order, each on one line, and the verdict."""
+    return {
+        "schema_version": "1.0",
+        "image": {"name": report.image.name, "digest": report.image.digest},
+        "mode": mode,
+        "repo": repo,
+        "builder_id": builder_id,
+        "key_sha256": key_sha256,
+        "verified_at": verified_at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "trusted": report.trusted,
+        "checks": [
+            {"name": _one_line(check.name, 120), "ok": check.ok, "detail": _one_line(check.detail, 300)}
+            for check in report.checks
+        ],
+    }
 
 
 def _decision(predicate: Any) -> tuple[Decision | None, str]:

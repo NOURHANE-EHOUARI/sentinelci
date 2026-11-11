@@ -225,6 +225,9 @@ class Platform:
     def upload(self, run_id: str, data: bytes) -> tuple[int, Any]:
         return self._request("POST", f"/api/v1/runs/{run_id}/findings", data, NDJSON)
 
+    def post_release(self, data: bytes) -> tuple[int, Any]:
+        return self._request("POST", "/api/v1/releases", data, "application/json")
+
 
 def _json(raw: bytes) -> Any:
     if len(raw) > MAX_RESPONSE_BYTES:

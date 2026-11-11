@@ -250,6 +250,11 @@ uv run sentinel verify registry.local/demo-shop/shop-api@sha256:<digest> --evide
 - Exit code `0` trusted, `1` not trusted (any check failed), `3` the verification could not run (for example
   a Cosign binary that does not match `tools.lock.toml`). Offline: the evidence directory and the public key
   are all it needs.
+- `--report-json <file>` also writes the report as `schemas/trust-report.v1.json`, trusted or not: the mode
+  (`registry` or `evidence`), the repository and builder id required, the sha256 of the public key (its DER
+  bytes, so a key file's line endings do not change it), the time, and every check in order with a one-line
+  detail. An older file at that path is removed first, and nothing is written when the verification cannot run
+  (exit `3`). It is what `sentinel upload-release` sends to the platform.
 
 **Registry mode.** With `--push`, `sentinel attest` also signs the image itself (`cosign sign`) and attaches
 the four statements to it in its registry (`cosign attest`), always by digest. That copy is what Kyverno reads
@@ -322,6 +327,26 @@ uv run sentinel sbom out/image-oci --source oci-dir --name demo-shop/shop-api \
   `sentinel attest` binds, ADR-0010) and an SPDX document. An output inside the target, a directory, the same
   file for both, or a path that cannot be cleared is refused before anything is written.
 - The package count it prints leaves out the operating-system component Syft adds for an image.
+
+## `sentinel upload-release` (release evidence to the platform, A8)
+
+```bash
+SENTINEL_API_TOKEN=... uv run sentinel upload-release --decision out/release/evidence/decision.v1.json \
+  --trust-report out/release/evidence/trust-report.registry.json \
+  --trust-report out/release/evidence/trust-report.evidence.json --api-url http://localhost:8000
+```
+
+- Sends `schemas/release-evidence.v1.json` to `POST /api/v1/releases`: the release decision and the trust
+  reports of its image (none for a BLOCK, which nothing signed), registry mode first. The Releases & evidence
+  page shows it.
+- Checked first as the platform checks it (a release decision about an image; each report about that image
+  and repository, one per mode, `trusted` exactly when every check passed; no trusted report for a BLOCK), so a
+  document the platform would refuse is never sent. The same files always give the same bytes.
+- A release is recorded once: sending the same evidence again is "already recorded" (exit `0`); other
+  evidence for a recorded decision is refused (exit `4`), since a release never changes.
+- Like `sentinel upload`: the token only from `SENTINEL_API_TOKEN`, https or the loopback only, no redirect,
+  exit `4` on any failure with a line that names no secret. A report: the release, its decision and its
+  signatures are unchanged whatever happens.
 
 ## `sentinel upload` (findings to the platform, M1)
 

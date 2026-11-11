@@ -2,7 +2,7 @@
 openapi: 3.1.0
 info:
   title: SentinelCI API
-  version: 1.4.0
+  version: 1.5.0
 paths:
   /healthz:
     get:
@@ -605,6 +605,192 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/releases:
+    post:
+      tags:
+      - releases
+      summary: Record Release
+      description: Record a release decision and the trust reports of its image, kept
+        byte for byte, once.
+      operationId: record_release_api_v1_releases_post
+      security:
+      - HTTPBearer: []
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseOut'
+        '401':
+          description: 'No valid ingestion token (`Authorization: Bearer <token>`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '413':
+          description: The document is larger than the upload limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '415':
+          description: The evidence is not `application/json`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '503':
+          description: No database is configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '409':
+          description: 'The decision is recorded already (`release`): with these bytes,
+            or with other evidence, which never changes.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseExists'
+      requestBody:
+        required: true
+        description: One Release evidence v1 document (schemas/release-evidence.v1.json).
+        content:
+          application/json:
+            schema:
+              type: object
+    get:
+      tags:
+      - releases
+      summary: List Releases
+      description: The releases, newest first (as recorded), without their documents.
+      operationId: list_releases_api_v1_releases_get
+      parameters:
+      - name: repo
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 200
+            pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+          - type: 'null'
+          title: Repo
+      - name: verdict
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - PASS
+            - WARN
+            - BLOCK
+            type: string
+          - type: 'null'
+          title: Verdict
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000000
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleasePage'
+        '413':
+          description: The document is larger than the upload limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '503':
+          description: No database is configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/releases/{image_digest}/evidence:
+    get:
+      tags:
+      - releases
+      summary: Get Release Evidence
+      description: The image's latest release (or the release `decision_id`), exactly
+        as it was posted.
+      operationId: get_release_evidence_api_v1_releases__image_digest__evidence_get
+      parameters:
+      - name: image_digest
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^sha256:[a-f0-9]{64}$
+          title: Image Digest
+      - name: decision_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: One release of the image; the latest without it.
+          title: Decision Id
+        description: One release of the image; the latest without it.
+      responses:
+        '200':
+          description: 'The Release evidence v1 document byte for byte: its sha256
+            is the ETag.'
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          description: No release recorded for this image (or this decision).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '413':
+          description: The document is larger than the upload limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '503':
+          description: No database is configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /metrics:
     get:
       tags:
@@ -788,6 +974,101 @@ components:
       - context
       - created_at
       title: Occurrence
+    ReleaseExists:
+      properties:
+        detail:
+          type: string
+          title: Detail
+        release:
+          $ref: '#/components/schemas/ReleaseOut'
+      type: object
+      required:
+      - detail
+      - release
+      title: ReleaseExists
+      description: '409: this decision is recorded already (`release`); with the same
+        bytes when `release.sha256` is
+
+        theirs.'
+    ReleaseOut:
+      properties:
+        decision_id:
+          type: string
+          format: uuid
+          title: Decision Id
+        repo:
+          type: string
+          title: Repo
+        commit:
+          type: string
+          title: Commit
+        ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ref
+        image_digest:
+          type: string
+          title: Image Digest
+        verdict:
+          type: string
+          enum:
+          - PASS
+          - WARN
+          - BLOCK
+          title: Verdict
+        trusted:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Trusted
+        evaluated_at:
+          type: string
+          format: date-time
+          title: Evaluated At
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        sha256:
+          type: string
+          title: Sha256
+      type: object
+      required:
+      - decision_id
+      - repo
+      - commit
+      - ref
+      - image_digest
+      - verdict
+      - trusted
+      - evaluated_at
+      - created_at
+      - sha256
+      title: ReleaseOut
+    ReleasePage:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/ReleaseOut'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+      type: object
+      required:
+      - items
+      - total
+      - limit
+      - offset
+      title: ReleasePage
     RunCreate:
       properties:
         repo:

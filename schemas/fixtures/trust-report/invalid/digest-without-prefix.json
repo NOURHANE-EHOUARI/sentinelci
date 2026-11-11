@@ -1,0 +1,95 @@
+{
+  "schema_version": "1.0",
+  "image": {
+    "name": "127.0.0.1:5001/demo-shop/shop-api",
+    "digest": "5c3e1f0a9b8d7c6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e"
+  },
+  "mode": "registry",
+  "repo": "NOURHANE-EHOUARI/sentinelci",
+  "builder_id": "https://github.com/NOURHANE-EHOUARI/sentinelci/deploy/release/release.py@refs/heads/main",
+  "key_sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+  "verified_at": "2026-11-11T16:30:12Z",
+  "trusted": true,
+  "checks": [
+    {
+      "name": "signature: the image itself",
+      "ok": true,
+      "detail": "signed by the key (1 signature(s))"
+    },
+    {
+      "name": "signature: release decision",
+      "ok": true,
+      "detail": "signed by the key"
+    },
+    {
+      "name": "signature: SBOM (CycloneDX)",
+      "ok": true,
+      "detail": "signed by the key"
+    },
+    {
+      "name": "signature: vulnerability scan",
+      "ok": true,
+      "detail": "signed by the key"
+    },
+    {
+      "name": "signature: provenance (SLSA v1)",
+      "ok": true,
+      "detail": "signed by the key"
+    },
+    {
+      "name": "decision: valid Decision v1",
+      "ok": true,
+      "detail": "0193f2c4-7a1e-7b3c-9d2e-4f5a6b7c8d9f (schema 1.4)"
+    },
+    {
+      "name": "decision: release context",
+      "ok": true,
+      "detail": "context release"
+    },
+    {
+      "name": "decision: verdict is not BLOCK",
+      "ok": true,
+      "detail": "verdict WARN"
+    },
+    {
+      "name": "decision: about this image",
+      "ok": true,
+      "detail": "image sha256:5c3e1f0a9b8d7c6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e"
+    },
+    {
+      "name": "decision: from the expected repository",
+      "ok": true,
+      "detail": "repository NOURHANE-EHOUARI/sentinelci"
+    },
+    {
+      "name": "provenance: built by the expected workflow",
+      "ok": true,
+      "detail": "builder https://github.com/NOURHANE-EHOUARI/sentinelci/deploy/release/release.py@refs/heads/main"
+    },
+    {
+      "name": "provenance: built from the decision's commit",
+      "ok": true,
+      "detail": "git+https://github.com/NOURHANE-EHOUARI/sentinelci@refs/heads/main at ['4b825dc642cb6eb9a060e54bf8d69288fbee4904']"
+    },
+    {
+      "name": "vulnerability scan: names this decision",
+      "ok": true,
+      "detail": "decision 0193f2c4-7a1e-7b3c-9d2e-4f5a6b7c8d9f"
+    },
+    {
+      "name": "vulnerability scan: the decision's findings",
+      "ok": true,
+      "detail": "findings sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    {
+      "name": "vulnerability scan: the decision's SBOM",
+      "ok": true,
+      "detail": "SBOM sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    {
+      "name": "SBOM: the one the vulnerability scan names",
+      "ok": true,
+      "detail": "CycloneDX True, serialNumber urn:uuid:3e671687-395b-41f5-a30f-a58921a69b79"
+    }
+  ]
+}

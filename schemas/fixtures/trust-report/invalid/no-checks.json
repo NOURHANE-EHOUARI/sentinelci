@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0",
+  "image": {
+    "name": "127.0.0.1:5001/demo-shop/shop-api",
+    "digest": "sha256:5c3e1f0a9b8d7c6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e"
+  },
+  "mode": "registry",
+  "repo": "NOURHANE-EHOUARI/sentinelci",
+  "builder_id": "https://github.com/NOURHANE-EHOUARI/sentinelci/deploy/release/release.py@refs/heads/main",
+  "key_sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+  "verified_at": "2026-11-11T16:30:12Z",
+  "trusted": true,
+  "checks": []
+}
