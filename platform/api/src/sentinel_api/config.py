@@ -9,6 +9,9 @@ from typing import Self
 
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 DEFAULT_MAX_UPLOAD_BYTES = 32 * 1024 * 1024
+# What the default branch's release runs record as `ref`: the open findings are theirs (GET /metrics).
+DEFAULT_REF = "refs/heads/main"
+_REF = re.compile(r"refs/[^\x00-\x20\x7f]{1,240}")
 
 
 class ConfigError(ValueError):
@@ -22,6 +25,7 @@ class Settings:
     # SHA-256 (hex) of every token allowed to write. Empty: every write is refused, never allowed.
     token_sha256: frozenset[str]
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
+    default_ref: str = DEFAULT_REF
 
     @classmethod
     def from_env(cls) -> Self:
@@ -37,10 +41,14 @@ class Settings:
         limit = os.environ.get("SENTINEL_API_MAX_UPLOAD_BYTES", "")
         if limit and not limit.isdigit():
             raise ConfigError("SENTINEL_API_MAX_UPLOAD_BYTES must be a number of bytes")
+        default_ref = os.environ.get("SENTINEL_DEFAULT_REF", "") or DEFAULT_REF
+        if not _REF.fullmatch(default_ref):
+            raise ConfigError("SENTINEL_DEFAULT_REF must be a full git ref, such as refs/heads/main")
         return cls(
             database_url=os.environ.get("SENTINEL_DATABASE_URL") or None,
             token_sha256=hashes,
             max_upload_bytes=int(limit) if limit else DEFAULT_MAX_UPLOAD_BYTES,
+            default_ref=default_ref,
         )
 
 

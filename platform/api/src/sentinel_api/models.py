@@ -7,9 +7,11 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     LargeBinary,
@@ -89,3 +91,24 @@ class RunFinding(Base):
     document: Mapped[dict[str, Any]] = mapped_column(JSONB)
 
     run: Mapped[Run] = relationship(back_populates="findings")
+
+
+class Correlation(Base):
+    """One version of a run's correlation (Correlation v1, A7), kept byte for byte. Advisory: never read by
+    the gate. A version is named by the sha256 of its bytes; the latest is the one recorded last (`seq`)."""
+
+    __tablename__ = "correlations"
+    __table_args__ = (
+        CheckConstraint("sha256 ~ '^[a-f0-9]{64}$'", name="correlations_sha256"),
+        # The bytes are kept only as the bytes the version's name was taken of.
+        CheckConstraint("encode(sha256(document), 'hex') = sha256", name="correlations_bytes_match"),
+    )
+
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True)
+    sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # The order of recording, for "the latest version": created_at can tie.
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(always=True), unique=True)
+    correlator_version: Mapped[str] = mapped_column(String(64))
+    group_count: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    document: Mapped[bytes] = deferred(mapped_column(LargeBinary, nullable=False))

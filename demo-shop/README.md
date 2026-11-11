@@ -38,6 +38,10 @@ A9) installs `requirements.release.txt` (hash-pinned wheels, no seeded version),
 with the release pipeline), and the web front end's code, which imports `lodash` (`template`), never `minimist`
 or `lodash-es` (B9).
 
+**Not a seed:** `services/shop-api/Dockerfile.release` is the hardened release image (ADR-0011, decision 6),
+built once B9's application and requirements exist. Its build context is an allow-list
+(`Dockerfile.release.dockerignore`), so the seeded configuration never enters the image.
+
 **The gate blocks this target on purpose.** A pull request that adds a seed is blocked (SC-001 for a secret),
 which is how the demo shows the gate working. A release-mode scan of `main` blocks too, as long as the seeds
 are present.

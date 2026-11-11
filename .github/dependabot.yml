@@ -22,6 +22,17 @@ updates:
       python:
         patterns: ["*"]
 
+  # The dashboard (platform/web/package-lock.json). Exact versions; npm never runs package scripts there.
+  - package-ecosystem: npm
+    directory: /platform/web
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      dashboard:
+        patterns: ["*"]
+
   # Local platform images (deploy/compose), pinned by tag and digest.
   - package-ecosystem: docker-compose
     directory: /deploy/compose
