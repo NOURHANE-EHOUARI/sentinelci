@@ -257,6 +257,7 @@ report whose recorded configuration hides matches (ignore rules beyond Grype's b
 exclusions, `only-fixed`, `only-notfixed`, `ignore-wontfix`, a distro override, `by-cve`) is refused. Legitimate
 exceptions go through waivers (§6.4).
 
+
 Stage 7, the image: `sentinel scan image` runs the same Syft on the image's OCI layout archive
 (what `docker buildx build --output type=oci` writes, no registry), checks that it is the image of the given
 manifest digest, and matches its SBOM with the same Grype and database. Its findings are CONTAINER findings, each
