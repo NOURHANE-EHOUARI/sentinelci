@@ -47,7 +47,7 @@ from sentinelci.remediation.dockerfile import NON_ROOT_USER, Instruction, add_on
 from sentinelci.remediation.dockerfile import propose as propose_dockerfile
 from sentinelci.remediation.kubernetes import POD_SPEC_PATHS
 from sentinelci.remediation.kubernetes import propose as propose_kubernetes
-from sentinelci.remediation.proposal import FixContext, Plan, RemediationError
+from sentinelci.remediation.proposal import FixContext, Plan, RemediationError, lines_of
 from sentinelci.scanners.runner import is_within
 
 KUBERNETES = "deterministic:kubernetes"
@@ -240,7 +240,7 @@ def _dockerfile_tests(path: str, before: list[str], after: list[str], base_root:
 def _check_dockerfile(
     path: str, before_text: str, after_text: str, base_root: Path
 ) -> tuple[list[str], list[str]]:
-    before, after = before_text.splitlines(keepends=True), after_text.splitlines(keepends=True)
+    before, after = lines_of(before_text), lines_of(after_text)
     build = _dockerfile_build(path, before, after)
     return build, ([] if build else _dockerfile_tests(path, before, after, base_root))
 

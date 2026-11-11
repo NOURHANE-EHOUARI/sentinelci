@@ -35,7 +35,7 @@ from datetime import datetime
 from pathlib import Path
 
 from sentinelci.contracts.finding import Finding
-from sentinelci.remediation.proposal import FixContext, Fixed, NotFixable, Plan, propose_fixes
+from sentinelci.remediation.proposal import FixContext, Fixed, NotFixable, Plan, lines_of, propose_fixes
 from sentinelci.scanners.runner import is_within
 
 NON_ROOT_USER = "10001:10001"
@@ -196,7 +196,7 @@ def _no_recommends(edit: _Edit, instructions: list[Instruction]) -> None:
         for offset in reversed(edits):
             text = text[:offset] + " --no-install-recommends" + text[offset:]
         if edits:  # text is inserted within lines: the line count, so every instruction's place, is kept
-            edit.lines[ins.start : ins.end] = text.splitlines(keepends=True)
+            edit.lines[ins.start : ins.end] = lines_of(text)
 
 
 EditFunction = Callable[[_Edit, list[Instruction]], None]
@@ -221,7 +221,7 @@ def _held_lines(others: Sequence[Finding], path: str) -> set[int]:
 def fix_dockerfile(text: str, rule_ids: Iterable[str], context: FixContext | None = None) -> Fixed:
     """Apply the edits of `rule_ids` (those this fixer knows) to a Dockerfile. Without a context, no ADD
     source can be checked, so ADD stays."""
-    lines = text.splitlines(keepends=True)
+    lines = lines_of(text)
     _check(lines)
     held = _held_lines(context.others, context.path) if context else set()
     edit = _Edit(lines=lines, held=held, context=context, left_open=set())
