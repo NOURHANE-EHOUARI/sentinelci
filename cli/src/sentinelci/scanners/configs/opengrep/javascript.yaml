@@ -1,0 +1,114 @@
+# SentinelCI's SAST rules for JavaScript and TypeScript (Opengrep, Semgrep rule format). Owned by SentinelCI,
+# like python.yaml: fixed messages, and a positive and a negative case per rule in the tests.
+rules:
+  - id: js-shell-command-from-data
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: A command that is not a constant string runs through a shell; data in it can run other commands.
+    metadata:
+      title: OS command built from data runs through a shell
+      cwe: [CWE-78]
+      confidence: HIGH
+    patterns:
+      - pattern-either:
+          - pattern: $CP.exec($CMD, ...)
+          - pattern: $CP.execSync($CMD, ...)
+          - pattern: exec($CMD, ...)
+          - pattern: execSync($CMD, ...)
+      # The module by both of its names: "node:child_process" is the one current Node documentation uses. A
+      # metavariable-regex on the name would miss the `import ... from` forms, so each form is written twice.
+      - pattern-either:
+          - pattern-inside: |
+              $CP = require("child_process")
+              ...
+          - pattern-inside: |
+              import $CP from "child_process"
+              ...
+          - pattern-inside: |
+              import * as $CP from "child_process"
+              ...
+          - pattern-inside: |
+              const { ..., exec, ... } = require("child_process")
+              ...
+          - pattern-inside: |
+              const { ..., execSync, ... } = require("child_process")
+              ...
+          - pattern-inside: |
+              import { ..., exec, ... } from "child_process"
+              ...
+          - pattern-inside: |
+              import { ..., execSync, ... } from "child_process"
+              ...
+          - pattern-inside: |
+              $CP = require("node:child_process")
+              ...
+          - pattern-inside: |
+              import $CP from "node:child_process"
+              ...
+          - pattern-inside: |
+              import * as $CP from "node:child_process"
+              ...
+          - pattern-inside: |
+              const { ..., exec, ... } = require("node:child_process")
+              ...
+          - pattern-inside: |
+              const { ..., execSync, ... } = require("node:child_process")
+              ...
+          - pattern-inside: |
+              import { ..., exec, ... } from "node:child_process"
+              ...
+          - pattern-inside: |
+              import { ..., execSync, ... } from "node:child_process"
+              ...
+      - metavariable-pattern:
+          metavariable: $CMD
+          patterns:
+            - pattern-not: '"..."'
+
+  - id: js-code-evaluated-from-data
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: eval or the Function constructor runs code that is not a constant string; data in it runs as code.
+    metadata:
+      title: JavaScript code evaluated from data
+      cwe: [CWE-95]
+      confidence: HIGH
+    patterns:
+      - pattern-either:
+          - pattern: eval($CODE)
+          - pattern: new Function(..., $CODE)
+      - metavariable-pattern:
+          metavariable: $CODE
+          patterns:
+            - pattern-not: '"..."'
+
+  - id: js-html-from-data
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: HTML built from data that is not a constant string is inserted into the page (cross-site scripting).
+    metadata:
+      title: HTML inserted from data
+      cwe: [CWE-79]
+      confidence: MEDIUM
+    patterns:
+      - pattern-either:
+          - pattern: $EL.innerHTML = $HTML
+          - pattern: $EL.outerHTML = $HTML
+          - pattern: document.write($HTML)
+          - pattern: $EL.insertAdjacentHTML($POS, $HTML)
+      - metavariable-pattern:
+          metavariable: $HTML
+          patterns:
+            - pattern-not: '"..."'
+
+  - id: js-tls-verification-disabled
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: TLS certificate verification is turned off; anyone on the network path can read or change the traffic.
+    metadata:
+      title: TLS certificate verification disabled
+      cwe: [CWE-295]
+      confidence: HIGH
+    pattern-either:
+      - pattern: '{..., rejectUnauthorized: false, ...}'
+      - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
