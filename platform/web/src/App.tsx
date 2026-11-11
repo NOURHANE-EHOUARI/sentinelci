@@ -9,6 +9,7 @@ const FindingDetailPage = lazy(() => import("./pages/FindingDetail").then((m) =>
 const GroupsPage = lazy(() => import("./pages/Groups").then((m) => ({ default: m.GroupsPage })));
 const RemediationsPage = lazy(() => import("./pages/Remediations").then((m) => ({ default: m.RemediationsPage })));
 const RemediationDetailPage = lazy(() => import("./pages/RemediationDetail").then((m) => ({ default: m.RemediationDetailPage })));
+const SupplyChainPage = lazy(() => import("./pages/SupplyChain").then((m) => ({ default: m.SupplyChainPage })));
 const ReleasesPage = lazy(() => import("./pages/Releases").then((m) => ({ default: m.ReleasesPage })));
 const ReleaseDetailPage = lazy(() => import("./pages/ReleaseDetail").then((m) => ({ default: m.ReleaseDetailPage })));
 
@@ -30,6 +31,9 @@ export function App() {
           <NavLink to="/releases" className={link}>
             Releases
           </NavLink>
+          <NavLink to="/supply-chain" className={link}>
+            Supply chain
+          </NavLink>
           <NavLink to="/remediations" className={link}>
             Remediation
           </NavLink>
@@ -44,6 +48,7 @@ export function App() {
           <Route path="/runs/:runId/groups" element={<GroupsPage />} />
           <Route path="/releases" element={<ReleasesPage />} />
           <Route path="/releases/:imageDigest" element={<ReleaseDetailPage />} />
+          <Route path="/supply-chain" element={<SupplyChainPage />} />
           <Route path="/remediations" element={<RemediationsPage />} />
           <Route path="/remediations/:proposalId" element={<RemediationDetailPage />} />
           <Route path="*" element={<p>No such page.</p>} />
