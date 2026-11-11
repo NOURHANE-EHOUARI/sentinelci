@@ -500,3 +500,93 @@ def test_attempts_follow_the_remediation_loop(
 def test_the_answer_schema_is_a_pydantic_model() -> None:
     assert issubclass(CodeFix, BaseModel)
     assert set(CodeFix.model_json_schema()["properties"]) == {"edits", "rationale"}
+
+
+# ---------------------------------------------------------------- hostile files (review of #81)
+
+
+def sent_lines(provider: Scripted) -> list[dict[str, Any]]:
+    body = provider.calls[0][1].split("<code>\n")[1].split("\n</code>")[0]
+    return [json.loads(line) for line in body.splitlines()]
+
+
+PING_CALL = '    return subprocess.run(f"ping -c 1 {host}", shell=True)\n'
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "import subprocess\n\x0c\ndef ping(host):\n" + PING_CALL,
+        'NOTE = "a\u2028b\x85c"\n\n\ndef ping(host):\n' + PING_CALL,
+    ],
+    ids=["form-feed", "line-separators-in-a-string"],
+)
+def test_lines_are_counted_on_line_feeds_only_as_the_scanner_and_git_count_them(
+    tmp_path: Path, text: str
+) -> None:
+    flagged = text.split("\n").index('    return subprocess.run(f"ping -c 1 {host}", shell=True)') + 1
+    root = repo(tmp_path, text)
+    target = finding("python-shell-command-from-data", flagged)
+    safe = '    return subprocess.run(["ping", "-c", "1", host], check=False)'
+    provider = Scripted(fix((flagged, flagged, [safe])))
+    outcome = propose(root, provider, target=target, findings=[target])
+    assert [line["n"] for line in sent_lines(provider) if line.get("flagged")] == [flagged]
+    assert sent_lines(provider)[flagged - 1]["text"] == text.split("\n")[flagged - 1]
+    assert outcome.status == "proposed", outcome.reason
+    patched = text.replace('f"ping -c 1 {host}", shell=True)', '["ping", "-c", "1", host], check=False)')
+    changed = [line[0] for line in outcome.proposal.diff.split("\n")[3:] if line[:1] in ("-", "+")]
+    assert changed == ["-", "+"], "only the flagged line changes"
+    git = ["git", "-C", str(root)]
+    subprocess.run([*git, "apply", "-"], input=outcome.proposal.diff, text=True, check=True)
+    assert (root / "app/main.py").read_bytes() == patched.encode("utf-8"), "every other character is kept"
+
+
+def test_a_file_without_a_final_line_break_keeps_it_that_way(tmp_path: Path) -> None:
+    root = repo(tmp_path, MAIN.rstrip("\n"))
+    answer = fix((PING_LINE, PING_LINE, ['    return subprocess.run(["ping", host])']))
+    outcome = propose(root, Scripted(answer), target=PING)
+    assert outcome.status == "proposed", outcome.reason
+    assert outcome.proposal.diff.endswith("\n\\ No newline at end of file\n")
+    subprocess.run(["git", "-C", str(root), "apply", "-"], input=outcome.proposal.diff, text=True, check=True)
+    assert not (root / "app/main.py").read_text(encoding="utf-8").endswith("\n")
+
+
+DEEP = "x = " + "-" * 10_000 + "1"  # deep enough for CPython's parser to give up (MemoryError)
+
+
+def test_a_file_the_parser_cannot_handle_is_no_crash(tmp_path: Path) -> None:
+    root = repo(tmp_path, DEEP + "\n" + MAIN)
+    target = finding("python-sql-built-from-strings", SQL_LINE + 1)
+    outcome = propose(root, Scripted(fix((SQL_LINE + 1, SQL_LINE + 1, [SAFE_SQL]))), target=target,
+                      findings=[target])  # fmt: skip
+    assert outcome.status == "proposed", "an old file that cannot be parsed skips the check, as before"
+
+
+def test_an_edit_that_the_parser_cannot_handle_is_refused(tmp_path: Path) -> None:
+    """The same nesting, spread over continuation lines (a replacement line is at most 500 characters)."""
+    deep = ["        return " + "-" * 480 + "\\", *(["-" * 490 + "\\"] * 20), "1"]
+    provider = Scripted(fix((SQL_LINE, SQL_LINE, deep)), fix((SQL_LINE, SQL_LINE, deep)))
+    outcome = propose(repo(tmp_path), provider)
+    assert (outcome.status, outcome.reason) == ("unavailable", "the fixed file is not valid Python")
+
+
+def test_a_suppression_of_another_kind_than_the_lines_had_is_refused(tmp_path: Path) -> None:
+    text = MAIN.replace("'%{q}%'\")", "'%{q}%'\")  # noqa: E501")
+    answer = fix((SQL_LINE, SQL_LINE, [SAFE_SQL + "  # noqa: E501 nosemgrep"]))
+    outcome = propose(repo(tmp_path, text), Scripted(answer, answer))
+    assert (outcome.status, outcome.reason) == (
+        "unavailable",
+        "an edit adds a scanner suppression: nosemgrep",
+    )
+
+
+def test_a_symbolic_link_anywhere_on_the_path_is_never_followed(tmp_path: Path) -> None:
+    """`src/x -> ../app` stays inside the repository and is still a link: the path is not the file."""
+    root = repo(tmp_path)
+    (root / "src").mkdir()
+    (root / "src/x").symlink_to(root / "app", target_is_directory=True)
+    target = finding("python-sql-built-from-strings", SQL_LINE, path="src/x/main.py")
+    provider = Scripted()
+    outcome = propose(root, provider, target=target, findings=[target])
+    assert (outcome.status, outcome.reason) == ("not sent", "not a regular file inside the repository")
+    assert provider.calls == []

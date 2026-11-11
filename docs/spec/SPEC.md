@@ -589,13 +589,14 @@ Implemented (B6): the LLM code fixer, `sentinel_ai.patch.propose_code_fix`, a li
 calls with one SAST finding, the scan's findings, the checkout and a provider (§8.1). The model never writes a
 diff: it answers with line edits of the lines it was shown (`CodeFix`), and the diff is computed from the file on
 disk, so it edits only the flagged file. Only a SAST finding of the scan, with a line, in a regular UTF-8 file
-inside the repository is sent; a file in which a secret was found is never sent. The finding (without its id,
+inside the repository (no symbolic link on its path, lines counted on line feeds only) is sent; a file in which a secret was found is never sent. The finding (without its id,
 snippet or evidence) and the code go as JSON lines in `<finding>` and `<code>` blocks, `<` and `>` escaped, named
 as data in the prompt; a file over 400 lines is sent as a 400-line window around the finding, and nothing is sent
 past 60 000 characters. A line that looks like a secret is sent redacted and cannot be edited. An answer is
 refused, and asked again once with the reason, when an edit leaves the lines sent, overlaps another, misses the
 flagged lines, adds a scanner suppression (`nosemgrep`, `nosec`, `noqa`...) or something that looks like a
-secret, changes nothing, or leaves a Python file that no longer parses; the proposal must then pass A6's
+secret, changes nothing, or leaves a Python file that no longer parses (a file the parser cannot handle is
+never a crash); the proposal must then pass A6's
 `check_proposal` and `git apply --check`. A rejected proposal is retried (attempts 2 and 3) with its diff and the
 redacted end of the CI log in a `<previous_attempt>` block. The outcome records the sha256 of what was sent, and
 the proposal names its model and prompt version (`sentinel-patch-code/1`). There is no model behind it until B5's

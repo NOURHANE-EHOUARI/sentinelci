@@ -4,9 +4,11 @@ The model never writes a diff. It answers with line edits (`CodeFix`: replace li
 shown with these lines), and the diff is computed here from the file on disk, so it applies by construction
 and edits nothing but the flagged file. Only a proposal that passes every guardrail leaves this module, as a
 `PatchProposal` (`llm:code`) that the remediation loop (A6) checks, applies and verifies like any other:
-- **Scope.** Only a SAST finding with a line, in a regular UTF-8 file inside the repository, is sent. The
-  edits must stay within the lines that were sent, must not overlap, and one of them must change the flagged
-  lines. The proposal passes A6's own check (`gate.check_proposal`) and `git apply --check`.
+- **Scope.** Only a SAST finding with a line, in a regular UTF-8 file inside the repository (no symbolic
+  link anywhere on its path), is sent. Lines are counted on line feeds only, as the scanner and git count
+  them, so a form feed or U+2028 never shifts them. The edits must stay within the lines that were sent, must
+  not overlap, and one of them must change the flagged lines. The proposal passes A6's own check
+  (`gate.check_proposal`) and `git apply --check`.
 - **Nothing secret is sent or comes back.** A file in which a secret was found is never sent. Any line that
   looks like a secret is sent redacted and cannot be edited, and an answer that adds something that looks
   like a secret (in its code or its rationale) is refused.
@@ -27,6 +29,7 @@ Owner: Track B (B6).
 """
 
 import ast
+import difflib
 import hashlib
 import json
 import os
@@ -47,8 +50,7 @@ from sentinel_ai.providers import LLMProvider
 from sentinelci.contracts.finding import Finding
 from sentinelci.contracts.remediation import MAX_ATTEMPTS, Model, PatchProposal
 from sentinelci.remediation.gate import check_proposal
-from sentinelci.remediation.proposal import RemediationError, proposal_id_of, unified_diff
-from sentinelci.scanners.runner import is_within
+from sentinelci.remediation.proposal import RemediationError, proposal_id_of
 
 PROMPT_VERSION = "sentinel-patch-code/1"
 STRATEGY: Final = "llm:code"
@@ -196,7 +198,9 @@ def _read(target: Finding, findings: Sequence[Finding], repo_root: Path) -> tupl
         if other.category == "SECRET" and any(place is not None and place.path == path for place in places):
             raise _NotSent("a file with a secret is never sent")
     file = repo_root / path
-    if file.is_symlink() or not file.is_file() or not is_within(file, repo_root):
+    # The resolved path must be the named one: no symbolic link anywhere on the path, not even one that stays
+    # inside the repository (`src/x -> ../.git`).
+    if not file.is_file() or file.resolve() != repo_root.resolve() / path:
         raise _NotSent("not a regular file inside the repository")
     try:
         text = file.read_bytes().decode("utf-8")  # as stored: CRLF is not turned into LF
@@ -204,9 +208,32 @@ def _read(target: Finding, findings: Sequence[Finding], repo_root: Path) -> tupl
         raise _NotSent("not UTF-8 text") from None
     if "\r" in text:
         raise _NotSent("CRLF line endings: a diff of the LF text would not apply")
-    if end > len(text.splitlines()):
+    if end > len(_lines(text)):
         raise _NotSent("the finding's lines are not in the file")
     return path, text, start, end
+
+
+def _lines(text: str) -> list[str]:
+    """The file's lines as the scanner, git and the diff count them: split on `\n` only. `str.splitlines`
+    also splits on a form feed, U+2028 and other characters, which would shift every later line number."""
+    lines = text.split("\n")
+    if text.endswith("\n"):
+        lines.pop()
+    return lines
+
+
+def _diff(path: str, old: str, new: str) -> str:
+    """A `git apply`-able diff of one text file, with lines split on `\n` only (see `_lines`), and git's
+    marker when the last line has no line break."""
+
+    def kept(text: str) -> list[str]:
+        parts = text.split("\n")
+        return [part + "\n" for part in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
+
+    body = []
+    for line in difflib.unified_diff(kept(old), kept(new), f"a/{path}", f"b/{path}", n=3):
+        body.append(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n")
+    return f"diff --git a/{path} b/{path}\n" + "".join(body)
 
 
 def _window(count: int, start: int, end: int) -> tuple[int, int]:
@@ -270,10 +297,12 @@ def _edited(fix: CodeFix, lines: list[str], sent: _Sent, start: int, end: int) -
         raise _Refused(f"no edit changes the flagged lines {start}-{end}")
     original = set(lines)
     for edit in edits:
+        # A suppression may stay only if the replaced lines already held one of the same kind.
+        had = _suppressions(" ".join(lines[edit.start_line - 1 : edit.end_line]))
         for line in edit.replacement:
-            suppression = _SUPPRESSIONS.search(line)
-            if suppression and not _SUPPRESSIONS.search(" ".join(lines[edit.start_line - 1 : edit.end_line])):
-                raise _Refused(f"an edit adds a scanner suppression: {suppression.group(1).lower()}")
+            added = sorted(_suppressions(line) - had)
+            if added:
+                raise _Refused(f"an edit adds a scanner suppression: {added[0]}")
             if REDACTED in line or (redact(line) != line and line not in original):
                 raise _Refused("an edit adds something that looks like a secret")
     if redact(fix.rationale) != fix.rationale:
@@ -286,10 +315,16 @@ def _edited(fix: CodeFix, lines: list[str], sent: _Sent, start: int, end: int) -
     return result
 
 
+def _suppressions(text: str) -> set[str]:
+    return {match.group(1).lower() for match in _SUPPRESSIONS.finditer(text)}
+
+
 def _parses(path: str, text: str) -> bool:
+    """Whether the file parses. Deeply nested code makes CPython's parser raise MemoryError or RecursionError:
+    such a file is hostile input, not a reason to crash."""
     try:
         ast.parse(text, filename=path)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
         return False
     return True
 
@@ -301,7 +336,7 @@ def _check_python(path: str, old: str, new: str) -> None:
         ast.parse(new, filename=path)
     except SyntaxError as exc:
         raise _Refused(f"the fixed file is not valid Python: line {exc.lineno}") from None
-    except ValueError:
+    except (ValueError, MemoryError, RecursionError):
         raise _Refused("the fixed file is not valid Python") from None
 
 
@@ -371,7 +406,7 @@ def propose_code_fix(
         raise ValueError("attempt 1 has no feedback; a retry (attempt 2 or 3) carries the previous one's")
     try:
         path, text, start, end = _read(target, findings, repo_root)
-        lines = text.splitlines()
+        lines = _lines(text)
         user, sent = _prompt(target, lines, start, end, feedback)
     except _NotSent as exc:
         return Outcome("not sent", str(exc))
@@ -382,7 +417,7 @@ def propose_code_fix(
         edited = _edited(fix, lines, sent, start, end)
         new = "\n".join(edited) + ("\n" if final_newline and edited else "")
         _check_python(path, text, new)
-        diff = unified_diff(path, text, new)
+        diff = _diff(path, text, new)
         proposal = PatchProposal(
             schema_version="1.0",
             proposal_id=proposal_id_of(STRATEGY, attempt, [target.id], diff),
