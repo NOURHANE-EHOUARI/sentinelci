@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.58 | B6 (§9): the LLM code fixer, `sentinel_ai.patch.propose_code_fix`, turns one SAST finding into an `llm:code` PatchProposal. The model answers with line edits of the lines it was shown, never a diff: the diff is computed from the file on disk, so it edits only the flagged file, and it must pass A6's `check_proposal` and `git apply --check`. A file with a secret is never sent, a line that looks like a secret is sent redacted and cannot be edited, the finding and code travel as escaped data blocks, and an answer that leaves the lines sent, misses the flagged lines, overlaps, adds a scanner suppression or a secret, changes nothing or breaks a Python file's syntax is refused (one repair retry). Retries (attempts 2 and 3) carry the previous diff and the redacted end of the CI log. `sentinel-ai` now depends on `sentinelci` (workspace) for the Finding and PatchProposal contracts and A6's checks. |
 | 1.1.39 | Threat model (§18, A10): `docs/threat-model.md` lists the assets, five attackers, the trust boundaries, and 29 threats, each with its control, where it lives, the test that proves it and its status (main, an open PR, or planned), then the residual risks accepted in the private phase. §18's signing key row follows ADR-0011 (no signing key on GitHub). |
 | 1.1.34 | A7 stage 3 and evaluation (§8, §17): `correlate.labels.label_groups` lets a model write the labels of groups of two findings or more (never a secret's), from findings sent as escaped JSON data without ids, snippets or evidence and with secrets redacted; one repair retry, else the template stays; an answer with a secret is refused; a template fix is never replaced; the group records the model and the prompt and input sha256. `correlate.evaluation`: ablation, the ARI-vs-threshold sweep and the calibration. |
 | 1.1.30 | Platform API migrations (B1, §13.3): going below 0004 stops, changing nothing, while any run keeps its uploaded findings bytes, which are the only copy `findings_sha256` was taken of; before, the downgrade dropped them without a word. A database without kept bytes still goes down. Raised on #57. |
@@ -583,6 +584,22 @@ can still change how a workload runs: a non-root UID/GID (a UID or GID above 100
 system and dropped capabilities can stop a workload that writes into its image, owns files by another UID or needs
 a capability. The rationale names them, and "build OK" does not include a cluster deploy test yet. A file with a
 workload kind the fixer does not edit is left alone, so no finding on it is claimed.
+
+Implemented (B6): the LLM code fixer, `sentinel_ai.patch.propose_code_fix`, a library the remediation loop (A6)
+calls with one SAST finding, the scan's findings, the checkout and a provider (§8.1). The model never writes a
+diff: it answers with line edits of the lines it was shown (`CodeFix`), and the diff is computed from the file on
+disk, so it edits only the flagged file. Only a SAST finding of the scan, with a line, in a regular UTF-8 file
+inside the repository is sent; a file in which a secret was found is never sent. The finding (without its id,
+snippet or evidence) and the code go as JSON lines in `<finding>` and `<code>` blocks, `<` and `>` escaped, named
+as data in the prompt; a file over 400 lines is sent as a 400-line window around the finding, and nothing is sent
+past 60 000 characters. A line that looks like a secret is sent redacted and cannot be edited. An answer is
+refused, and asked again once with the reason, when an edit leaves the lines sent, overlaps another, misses the
+flagged lines, adds a scanner suppression (`nosemgrep`, `nosec`, `noqa`...) or something that looks like a
+secret, changes nothing, or leaves a Python file that no longer parses; the proposal must then pass A6's
+`check_proposal` and `git apply --check`. A rejected proposal is retried (attempts 2 and 3) with its diff and the
+redacted end of the CI log in a `<previous_attempt>` block. The outcome records the sha256 of what was sent, and
+the proposal names its model and prompt version (`sentinel-patch-code/1`). There is no model behind it until B5's
+provider; the guardrails are tested with a scripted one.
 Manifests are edited round-trip (comments, order and quoting kept); a file whose layout cannot be reproduced exactly
 is left alone. A proposal touches only flagged files and its diff applies with `git apply`. The gate verifies only
 a proposal it could verify honestly (its id matches its content; its findings are in the base scan; its diff edits,
