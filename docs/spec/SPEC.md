@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.59 | B5a (§8, ADR-0009): `sentinel_ai.providers.OllamaProvider`, the default model backend, on the standard library only. Local only (the loopback or the Compose service `ollama`; another host only when asked), no proxy, no redirect. The pinned digests of ADR-0009 are checked before a model's first request (a missing model or another digest is refused, nothing sent). `complete` asks for JSON of the schema, deterministic (temperature 0, fixed seed), and validates the answer (a `ValidationError` for the repair retry); `embed` returns one finite vector per text, all of one size. Time limits, an 8 MiB answer cap, and errors that never echo the prompt or the answer. `deploy/compose/README.md` says how to pull the pinned models. |
 | 1.1.39 | Threat model (§18, A10): `docs/threat-model.md` lists the assets, five attackers, the trust boundaries, and 29 threats, each with its control, where it lives, the test that proves it and its status (main, an open PR, or planned), then the residual risks accepted in the private phase. §18's signing key row follows ADR-0011 (no signing key on GitHub). |
 | 1.1.34 | A7 stage 3 and evaluation (§8, §17): `correlate.labels.label_groups` lets a model write the labels of groups of two findings or more (never a secret's), from findings sent as escaped JSON data without ids, snippets or evidence and with secrets redacted; one repair retry, else the template stays; an answer with a secret is refused; a template fix is never replaced; the group records the model and the prompt and input sha256. `correlate.evaluation`: ablation, the ARI-vs-threshold sweep and the calibration. |
 | 1.1.30 | Platform API migrations (B1, §13.3): going below 0004 stops, changing nothing, while any run keeps its uploaded findings bytes, which are the only copy `findings_sha256` was taken of; before, the downgrade dropped them without a word. A database without kept bytes still goes down. Raised on #57. |
@@ -530,6 +531,13 @@ AI runs after the decision is stored, writes only advisory tables, and every out
 - **Provider interface** `sentinel_ai.providers.LLMProvider` (`complete(system, user, schema)`, `embed(texts)`).
   Default: local models via Ollama, `gemma4:12b-it-qat` for generation and `qwen3-embedding:0.6b` for
   embeddings, pinned by digest (ADR-0009, measured in `eval/model-selection/`). No multi-provider gateway dependency.
+  Implemented (B5a): `sentinel_ai.providers.OllamaProvider`, on the standard library only. It talks to the
+  loopback or the Compose service `ollama` (another host only when asked, `allow_remote`), never through a proxy,
+  and refuses redirects. Before a model's first request it checks the server's digest of it against ADR-0009: a
+  missing model or another digest is refused and nothing is sent. `complete` asks for JSON of the schema
+  (`format`), at temperature 0 with a fixed seed, and validates the answer itself (a `ValidationError` is for the
+  caller's repair retry); `embed` returns one finite vector per text, all of one size. Every request has a time
+  limit and an 8 MiB answer cap, and a `ProviderError` never holds the prompt or the answer.
 - **Grounding:** offline CWE catalogue, OSV advisory text, code window; references must come from the context.
 - **Guardrails:** import contract; untrusted text in delimited data blocks; schema validation with one repair
   retry, else "unavailable"; secret redaction before any prompt; model/prompt/input hash logged; injection
