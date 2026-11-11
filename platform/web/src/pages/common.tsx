@@ -63,3 +63,15 @@ export function utc(value: string | null): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "—" : `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
+
+const OUTCOME_STYLE: Record<string, string> = {
+  VERIFIED: "bg-emerald-100 text-emerald-800",
+  REJECTED: "bg-amber-100 text-amber-800",
+  FAILED: "bg-red-100 text-red-800",
+};
+
+/** The outcome of a remediation attempt. */
+export function Outcome({ value }: { value: string }) {
+  const style = OUTCOME_STYLE[value] ?? "bg-slate-100 text-slate-700";
+  return <span className={`rounded px-1.5 py-0.5 text-xs font-semibold ${style}`}>{value}</span>;
+}

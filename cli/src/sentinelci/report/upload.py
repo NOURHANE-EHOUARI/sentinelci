@@ -228,6 +228,9 @@ class Platform:
     def post_release(self, data: bytes) -> tuple[int, Any]:
         return self._request("POST", "/api/v1/releases", data, "application/json")
 
+    def post_remediation(self, data: bytes) -> tuple[int, Any]:
+        return self._request("POST", "/api/v1/remediations", data, "application/json")
+
 
 def _json(raw: bytes) -> Any:
     if len(raw) > MAX_RESPONSE_BYTES:

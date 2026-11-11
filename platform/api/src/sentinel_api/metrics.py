@@ -19,9 +19,13 @@ Exposed now:
   trust report trusted it, `not_trusted` otherwise. A BLOCK carries no report: nothing was signed, so nothing
   was verified. A release is never deleted, so the count only grows. Absent until one is recorded.
 
+- `sentinel_remediation_attempts_total{strategy,outcome}` (counter): the recorded attempts of the remediation
+  loop (`POST /api/v1/remediations`), by strategy and outcome (VERIFIED, REJECTED, FAILED). Once one is
+  recorded, every pair is present, at 0 when there is none; an attempt is never deleted, so the counts only
+  grow. Absent until one is recorded. Remediation success (SPEC §10) is VERIFIED ÷ all, per strategy.
+
 Absent until their data is stored: `sentinel_gate_decisions_total` (decisions, B1),
-`sentinel_remediation_attempts_total` (remediation jobs, A6), `sentinel_pipeline_stage_duration_seconds` and
-`sentinel_ai_request_duration_seconds`.
+`sentinel_pipeline_stage_duration_seconds` and `sentinel_ai_request_duration_seconds`.
 """
 
 from __future__ import annotations
@@ -37,13 +41,16 @@ from sqlalchemy import case, func, literal, select, text
 from sqlalchemy.orm import Session
 
 from sentinel_api.api import SessionDep, _errors
-from sentinel_api.models import Release, Run, RunFinding
+from sentinel_api.models import Release, Remediation, Run, RunFinding
 from sentinelci.contracts.finding import Category
+from sentinelci.contracts.remediation import Outcome, Strategy
 
 CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 PRIORITIES = ("P0", "P1", "P2", "P3", "P4")
 UNSCORED = "unscored"
 CATEGORIES: tuple[str, ...] = get_args(Category)
+STRATEGIES: tuple[str, ...] = get_args(Strategy)
+OUTCOMES: tuple[str, ...] = get_args(Outcome)
 # SPEC §10: the only names this endpoint may expose, each with its labels (a test keeps them in step).
 SPEC_METRICS: dict[str, tuple[str, ...]] = {
     "sentinel_gate_decisions_total": ("verdict", "context"),
@@ -154,8 +161,34 @@ def attestation_verifications(session: Session, _default_ref: str) -> Family | N
     )
 
 
+def remediation_attempts(session: Session, _default_ref: str) -> Family | None:
+    """The recorded attempts of the remediation loop, by strategy and outcome."""
+    rows = session.execute(
+        select(Remediation.strategy, Remediation.outcome, func.count()).group_by(
+            Remediation.strategy, Remediation.outcome
+        )
+    ).all()
+    if not rows:
+        return None
+    counts = {(strategy, outcome): count for strategy, outcome, count in rows}
+    return Family(
+        name="sentinel_remediation_attempts_total",
+        kind="counter",
+        help="Recorded attempts of the remediation loop, by strategy and outcome.",
+        samples=[
+            ({"strategy": strategy, "outcome": outcome}, counts.get((strategy, outcome), 0))
+            for strategy in STRATEGIES
+            for outcome in OUTCOMES
+        ],
+    )
+
+
 # Each metric the platform can compute; one returns None while its data is not stored.
-METRICS: tuple[Callable[[Session, str], Family | None], ...] = (findings_open, attestation_verifications)
+METRICS: tuple[Callable[[Session, str], Family | None], ...] = (
+    findings_open,
+    attestation_verifications,
+    remediation_attempts,
+)
 
 
 @router.get(

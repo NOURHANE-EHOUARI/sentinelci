@@ -93,3 +93,24 @@ class VerificationResult(_Contract):
                 "VERIFIED needs a build, passing tests, the target gone, no new finding and no BLOCK"
             )
         return self
+
+
+class RemediationAttempt(_Contract):
+    """`schemas/remediation-attempt.v1.json`: one attempt of the loop, its proposal and its result, for the
+    platform (`sentinel upload-remediation`, `POST /api/v1/remediations`, A8). `problem()` adds the rules JSON
+    Schema cannot express."""
+
+    schema_version: Literal["1.0"]
+    repo: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+    proposal: PatchProposal
+    result: VerificationResult
+
+    def problem(self) -> str | None:
+        """Why the result is not this proposal's, or None."""
+        if self.result.proposal_id != self.proposal.proposal_id:
+            return f"the result is about proposal {self.result.proposal_id}, not {self.proposal.proposal_id}"
+        if self.result.attempt != self.proposal.attempt:
+            return f"the result is about attempt {self.result.attempt}, not {self.proposal.attempt}"
+        if self.result.verified_at < self.proposal.created_at:
+            return "the result was verified before the proposal was made"
+        return None

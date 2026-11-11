@@ -20,7 +20,7 @@ from sentinel_api.models import Base
 
 ROOT = Path(__file__).resolve().parents[3]
 OPENAPI = ROOT / "schemas" / "openapi.yaml"
-HEAD = "0006"  # the latest migration: a downgrade that stops leaves the database there
+HEAD = "0007"  # the latest migration: a downgrade that stops leaves the database there
 
 
 def test_the_migrations_build_exactly_the_models(database_url: str) -> None:
@@ -150,3 +150,28 @@ def test_going_below_0006_stops_while_a_release_is_kept(postgres_server: str) ->
     with psycopg.connect(url) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
         assert conn.execute("SELECT count(*) FROM releases").fetchone() == (1,)
+
+
+def test_going_below_0007_stops_while_a_remediation_attempt_is_kept(postgres_server: str) -> None:
+    """Dropping `remediations` would lose the only copy of what the loop reported: the downgrade stops,
+    changing nothing, while any attempt is kept."""
+    name = f"t_{uuid.uuid4().hex}"
+    with psycopg.connect(f"{postgres_server}/sentinel", autocommit=True) as conn:
+        conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+    url = f"{postgres_server}/{name}"
+    upgrade(url)
+    document = b'{"schema_version": "1.0"}'
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO remediations (proposal_id, repo, strategy, attempt, finding_count, outcome, "
+            "verdict, build_ok, tests_ok, target_resolved, new_finding_count, proposed_at, verified_at, "
+            "sha256, "
+            "document) VALUES (gen_random_uuid(), 'o/r', 'llm:code', 1, 1, 'FAILED', 'PASS', false, "
+            "false, false, 0, now(), now(), encode(sha256(%s), 'hex'), %s)",
+            (document, document),
+        )
+    with pytest.raises(RuntimeError, match=r"1 remediation attempt\(s\) are kept"):
+        downgrade(url, "0006")
+    with psycopg.connect(url) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
+        assert conn.execute("SELECT count(*) FROM remediations").fetchone() == (1,)

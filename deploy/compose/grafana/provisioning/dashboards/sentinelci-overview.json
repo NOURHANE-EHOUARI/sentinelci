@@ -298,7 +298,7 @@
     {
       "id": 10,
       "type": "row",
-      "title": "Supply chain and remediation (attestation verifications from recorded releases; the rest once stored)",
+      "title": "Supply chain and remediation (from recorded releases and remediation attempts; stage and AI durations once stored)",
       "collapsed": false,
       "gridPos": {
         "h": 1,

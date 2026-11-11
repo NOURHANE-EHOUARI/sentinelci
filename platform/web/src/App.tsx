@@ -7,6 +7,8 @@ const OverviewPage = lazy(() => import("./pages/Overview").then((m) => ({ defaul
 const FindingsPage = lazy(() => import("./pages/Findings").then((m) => ({ default: m.FindingsPage })));
 const FindingDetailPage = lazy(() => import("./pages/FindingDetail").then((m) => ({ default: m.FindingDetailPage })));
 const GroupsPage = lazy(() => import("./pages/Groups").then((m) => ({ default: m.GroupsPage })));
+const RemediationsPage = lazy(() => import("./pages/Remediations").then((m) => ({ default: m.RemediationsPage })));
+const RemediationDetailPage = lazy(() => import("./pages/RemediationDetail").then((m) => ({ default: m.RemediationDetailPage })));
 const ReleasesPage = lazy(() => import("./pages/Releases").then((m) => ({ default: m.ReleasesPage })));
 const ReleaseDetailPage = lazy(() => import("./pages/ReleaseDetail").then((m) => ({ default: m.ReleaseDetailPage })));
 
@@ -28,6 +30,9 @@ export function App() {
           <NavLink to="/releases" className={link}>
             Releases
           </NavLink>
+          <NavLink to="/remediations" className={link}>
+            Remediation
+          </NavLink>
         </nav>
       </header>
       <main className="mx-auto max-w-6xl px-4 py-6">
@@ -39,6 +44,8 @@ export function App() {
           <Route path="/runs/:runId/groups" element={<GroupsPage />} />
           <Route path="/releases" element={<ReleasesPage />} />
           <Route path="/releases/:imageDigest" element={<ReleaseDetailPage />} />
+          <Route path="/remediations" element={<RemediationsPage />} />
+          <Route path="/remediations/:proposalId" element={<RemediationDetailPage />} />
           <Route path="*" element={<p>No such page.</p>} />
         </Routes>
         </Suspense>
