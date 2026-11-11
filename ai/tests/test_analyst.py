@@ -359,6 +359,22 @@ def test_a_symbolic_link_inside_the_repository_is_not_read(tmp_path: Path) -> No
     assert code_window(SQL, root) is None
 
 
+def test_a_symbolic_link_on_the_path_is_not_followed_even_inside_the_repository(tmp_path: Path) -> None:
+    root = checkout(tmp_path)
+    (root / "src").mkdir()
+    (root / "src/x").symlink_to(root / "app", target_is_directory=True)
+    assert code_window(finding(location={"path": "src/x/main.py", "start_line": 23}), root) is None
+
+
+def test_code_lines_are_counted_on_line_feeds_only(tmp_path: Path) -> None:
+    root = checkout(tmp_path)
+    text = CODE.replace("# line 5\n", "# line 5 \x0c and \u2028 inside\n")
+    (root / "app/main.py").write_text(text, encoding="utf-8")
+    window = code_window(SQL, root)
+    assert window is not None
+    assert [line["text"] for line in window if line.get("flagged")] == [VULNERABLE]
+
+
 def test_list_fields_are_redacted_too() -> None:
     sent = described(finding(aliases=[f"leaked-{TOKEN}"], cwe=["CWE-89"]))
     assert sent["aliases"] == ["leaked-[REDACTED]"] and sent["cwe"] == ["CWE-89"]

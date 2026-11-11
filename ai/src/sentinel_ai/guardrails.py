@@ -25,7 +25,6 @@ from pydantic import BaseModel, ValidationError
 from sentinel_ai.correlate.labels import REDACTED, redact
 from sentinel_ai.providers import LLMProvider
 from sentinelci.contracts.finding import Finding
-from sentinelci.scanners.runner import is_within
 
 __all__ = ["REDACTED", "Refused", "code_window", "described", "json_line", "quotes_a_secret", "redact"]
 
@@ -102,12 +101,19 @@ def code_window(finding: Finding, repo_root: Path | None) -> list[dict[str, Any]
     if repo_root is None or location is None or location.start_line is None:
         return None
     file = repo_root / location.path
-    if file.is_symlink() or not file.is_file() or not is_within(file, repo_root):
+    # The resolved path must be the named one: no symbolic link anywhere on the path, even one inside the
+    # repository.
+    if not file.is_file() or file.resolve() != repo_root.resolve() / location.path:
         return None
     try:
-        lines = file.read_bytes().decode("utf-8").splitlines()
+        text = file.read_bytes().decode("utf-8")
     except (OSError, UnicodeDecodeError):
         return None
+    # Lines as the scanner and git count them: on line feeds only (`splitlines` also splits on a form feed and
+    # U+2028, which would shift every later line).
+    lines = text.split("\n")
+    if text.endswith("\n"):
+        lines.pop()
     start = location.start_line
     end = max(start, location.end_line or start)
     if start > len(lines):
