@@ -73,7 +73,8 @@ def _errors(*codes: int) -> dict[int | str, dict[str, Any]]:
 
 _EXISTS: dict[int | str, dict[str, Any]] = {
     409: {
-        "model": DecisionExists,
+        # Two shapes, so a generated client never assumes `decision` is there.
+        "model": DecisionExists | ErrorOut,
         "description": "The run's decision is recorded already, these bytes or others (`decision`); the "
         "`decision_id` is another run's (`decision`: that run's); or the run's findings are not recorded "
         "yet (`detail` only).",
