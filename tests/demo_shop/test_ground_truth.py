@@ -259,3 +259,23 @@ def test_trivy_finds_every_iac_seed_and_nothing_in_controls() -> None:
             f"{seed['id']} is a known miss, but Trivy now reports {rules} in its file. If a rule flags "
             "the seed, list it in expected.detections and drop known_miss; never edit the seed to hide it"
         )
+
+
+def test_every_requirements_file_that_pins_a_seeded_version_is_listed() -> None:
+    """Syft reads every requirements*.txt: each one that pins an SCA seed's version is the seed's manifest or
+    in its `also_in`, so no place Grype reports for it is unlisted (#74 review). The release image's file pins
+    none."""
+    for seed in SEEDS:
+        purl = seed.get("package", "")
+        if not purl.startswith("pkg:pypi/"):
+            continue
+        name, version = purl.removeprefix("pkg:pypi/").split("@")
+        listed = {seed["location"]["path"], *seed.get("also_in", [])}
+        for manifest in sorted(DEMO.rglob("requirements*.txt")):
+            text = manifest.read_text(encoding="utf-8").lower()
+            if re.search(rf"^{re.escape(name)}=={re.escape(version)}(\s|$)", text, re.MULTILINE):
+                assert manifest.relative_to(DEMO).as_posix() in listed, (
+                    f"{seed['id']}: {manifest} is not listed"
+                )
+        for path in seed.get("also_in", []):
+            assert (DEMO / path).is_file(), f"{seed['id']}: {path} does not exist"

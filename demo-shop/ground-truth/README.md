@@ -63,7 +63,12 @@ SCA seeds carry four more fields:
     cve: CVE-2021-28957                   # its CVE alias: the key of the enrichment snapshot
     kev: false                            # listed in CISA KEV (from the feed fixtures)
     imported: false                       # optional: first-party code imports it (true) or never does (false)
+    also_in: [services/shop-api/requirements.block.txt]   # optional: other manifests that pin the same version
 ```
+
+`also_in` lists every other manifest that declares the seeded version, so a place the scanner reports is never an
+unlisted one. Grype reports one finding per vulnerability and package, with each manifest as a place
+(`location`, then `other_locations`, sorted by path), so the seed is still one detection.
 
 The SCA seeds are the seven packages of the offline feed fixtures (`eval/feeds/`) and `lodash-es`, which
 lodash's advisory also names, so enrichment, scoring and the gate run on them with no network. Their `expected.gate` is what the engine gives with those fixtures and
