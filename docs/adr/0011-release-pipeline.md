@@ -51,7 +51,10 @@ registry (ADR-0006, decision 4). Facts checked with the pinned tools on 2026-11-
 2. **Build without a registry and without credentials:**
    `docker buildx build --output type=oci,dest=image.oci.tar --provenance=false --sbom=false`.
    - BuildKit's own attestations are off: SentinelCI's four statements are the evidence.
-   - The release digest is the manifest digest in the layout's `index.json`.
+   - The release digest is the one BuildKit records for the image it built (`--metadata-file`,
+     `containerimage.digest`); the layout's `index.json` must name exactly that one manifest. Before Syft reads
+     the layout, every blob must hold the content its digest names (review of #70: Syft checks the manifest,
+     not the layers).
 3. **Analyse the layout, decide on its digest:**
    - `sentinel sbom` (oci-archive, `--image-digest`) gives CycloneDX and SPDX;
    - Grype scans the SBOM (CONTAINER findings, adapter A1) and the source scans run as in `sentinel-scan.yml`;

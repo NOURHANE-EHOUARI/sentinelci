@@ -435,6 +435,42 @@ def test_the_build_reads_the_staged_context_not_the_working_tree(repo: Path, tmp
     assert build.args[-1] == str(repo / "out" / "release" / "work" / "source" / SERVICE)
     assert "REQUIREMENTS=requirements.release.txt" in build.args
     assert "ONLY_BINARY=:all:" in build.args, "a release installs wheels only"
+    assert build.option("--metadata-file") == str(repo / "out" / "release" / "work" / "build.json")
+
+
+@pytest.mark.parametrize(
+    ("recorded", "message"),
+    [
+        ("sha256:" + "9" * 64, "not the image the build recorded"),
+        ("latest", "names no image digest"),
+        (None, "names no image digest"),
+    ],
+    ids=["another-image", "not-a-digest", "missing"],
+)
+def test_the_image_is_the_one_the_build_recorded_not_the_one_the_layout_claims(
+    repo: Path, tmp_path: Path, recorded: str | None, message: str
+) -> None:
+    """Review of #70: the layout's index.json is its own claim, BuildKit's --metadata-file the builder's."""
+    recorder = Recorder(repo)
+    FakeTools(recorder)
+
+    def build(call: Call) -> Any:
+        support.fake_build(call.args)
+        Path(call.option("--metadata-file")).write_text(json.dumps({"containerimage.digest": recorded}))
+        return done()
+
+    recorder.fakes["docker buildx build"] = build
+    with pytest.raises(release.ReleaseError, match=message):
+        make_release(repo, tmp_path, recorder)()
+    assert recorder.named("sentinel scan") == [] and recorder.named("sentinel attest") == [], "nothing ran"
+
+
+def test_unreadable_build_metadata_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "build.json").write_text("{not json")
+    with pytest.raises(release.ReleaseError, match="cannot be read"):
+        release.built_digest(tmp_path / "build.json")
+    with pytest.raises(release.ReleaseError, match="cannot be read"):
+        release.built_digest(tmp_path / "missing.json")
 
 
 def test_a_block_signs_nothing_and_keeps_the_image_for_the_attack_demo(repo: Path, tmp_path: Path) -> None:

@@ -137,9 +137,13 @@ def fake_build(args: Sequence[str]) -> str:
         if p.is_file()
     }
     files["etc/os-release"] = b'PRETTY_NAME="Debian GNU/Linux 13 (trixie)"\nID=debian\nVERSION_ID="13"\n'
-    metadata = f"opt/venv/lib/python3.12/site-packages/PyYAML-{pin.group(1)}.dist-info/METADATA"
-    files[metadata] = f"Metadata-Version: 2.1\nName: PyYAML\nVersion: {pin.group(1)}\n".encode()
-    return oci_archive(Path(dest), files)
+    dist_info = f"opt/venv/lib/python3.12/site-packages/PyYAML-{pin.group(1)}.dist-info/METADATA"
+    files[dist_info] = f"Metadata-Version: 2.1\nName: PyYAML\nVersion: {pin.group(1)}\n".encode()
+    digest = oci_archive(Path(dest), files)
+    # BuildKit's --metadata-file: the digest of the image it built, which the release trusts over the layout.
+    metadata = Path(args[list(args).index("--metadata-file") + 1])
+    metadata.write_text(json.dumps({"containerimage.digest": digest, "buildx.build.ref": "fake/fake/fake"}))
+    return digest
 
 
 @dataclass

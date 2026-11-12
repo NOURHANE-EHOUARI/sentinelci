@@ -14,8 +14,10 @@ GitHub. In order, and nothing past a failed step runs:
 2. The build context comes from the commit, not the working tree: `git archive HEAD` of the release
    Dockerfile, its `.dockerignore` allow-list and exactly the files that list admits (no link, nothing git
    ignores).
-3. `docker buildx build --output type=oci --provenance=false --sbom=false`: no registry, no credentials. The
-   image is the one manifest of the layout's index.json, and its digest is the release's.
+3. `docker buildx build --output type=oci --provenance=false --sbom=false --metadata-file`: no registry, no
+   credentials. The release digest is the one BuildKit recorded (`containerimage.digest`), and the layout's
+   index.json must name exactly that one manifest; `sentinel sbom` and `sentinel scan image` then check every
+   blob of the layout against its digest before Syft reads it.
 4. Decide (ADR-0011, decision 3), in the release context: the SBOM of the image (`sentinel sbom`), Grype's
    database (`sentinel tools grype-db`), the source scans of the build context (secrets, SAST, IaC, CI
    workflows), the image's own scan (CONTAINER findings: the dependencies it ships), then `sentinel score` and
@@ -324,20 +326,40 @@ def stage(commit: str, context: Context, source: Path, run: Runner) -> Path:
 
 
 def build(
-    context_dir: Path, requirements: str, archive: Path, run: Runner, *, wheels_only: bool = True
+    context_dir: Path,
+    requirements: str,
+    archive: Path,
+    metadata: Path,
+    run: Runner,
+    *,
+    wheels_only: bool = True,
 ) -> None:
-    """Build the image as an OCI layout. A release installs wheels only (no setup.py runs, every byte is
-    hashed); only the demo's BLOCK image, whose seeded pyyaml 5.3.1 has no wheel, may build from an sdist."""
+    """Build the image as an OCI layout, and have BuildKit record the digest it built in `metadata`. A
+    release installs wheels only (no setup.py runs, every byte is hashed); only the demo's BLOCK image, whose
+    seeded pyyaml 5.3.1 has no wheel, may build from an sdist."""
     run(
         [
             "docker", "buildx", "build", "--file", str(context_dir / DOCKERFILE),
             "--build-arg", f"REQUIREMENTS={requirements}",
             "--build-arg", f"ONLY_BINARY={':all:' if wheels_only else ':none:'}",
             "--output", f"type=oci,dest={archive}", "--provenance=false", "--sbom=false",
+            "--metadata-file", str(metadata),
             str(context_dir),
         ],
         capture=False,
     )  # fmt: skip
+
+
+def built_digest(metadata: Path) -> str:
+    """The digest BuildKit recorded for the image it built (`containerimage.digest`): the builder's word,
+    not the layout's own index.json. A layout only shows it holds the image it is asked about (#70)."""
+    try:
+        recorded = json.loads(metadata.read_text(encoding="utf-8")).get("containerimage.digest")
+    except (OSError, ValueError, AttributeError) as exc:
+        raise ReleaseError(f"the build's metadata {metadata} cannot be read: {exc}") from exc
+    if not isinstance(recorded, str) or not _DIGEST.fullmatch(recorded):
+        raise ReleaseError(f"the build's metadata names no image digest ({recorded!r})")
+    return recorded
 
 
 def layout_digest(layout: Path) -> str:
@@ -397,6 +419,10 @@ class Paths:
     @property
     def archive(self) -> Path:
         return self.work / "image.oci.tar"
+
+    @property
+    def metadata(self) -> Path:
+        return self.work / "build.json"
 
     @property
     def layout(self) -> Path:
@@ -736,9 +762,19 @@ class Release:
             check_key_pair(self.key, public_key, password, self._tool("cosign"), run, paths.home)
         context = build_context(commit, self.requirements, run)
         target = stage(commit, context, paths.source, run)
-        build(target, context.requirements, paths.archive, run, wheels_only=not self.expect_block)
+        build(
+            target,
+            context.requirements,
+            paths.archive,
+            paths.metadata,
+            run,
+            wheels_only=not self.expect_block,
+        )
         extract(paths.archive, paths.layout)
         digest = layout_digest(paths.layout)
+        recorded = built_digest(paths.metadata)
+        if digest != recorded:
+            raise ReleaseError(f"the layout holds {digest}, not the image the build recorded ({recorded})")
         print(f"release: built {IMAGE_NAME}@{digest}")
         decided = decide(commit, target, digest, paths, self.settings, run)
         print(
