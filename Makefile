@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup check lint format typecheck imports policy test zizmor tools tools-verify compose-env up down \
+.PHONY: help setup check lint format typecheck imports policy test zizmor web eval tools tools-verify compose-env up down \
 	release release-block release-key self-gate release-sentinelci
 
 # OPA is a pinned binary, not a Python package: `uv run sentinel tools install opa` (tools.lock.toml).
@@ -13,7 +13,7 @@ setup: ## Install the locked workspace and git hooks
 	uv sync --locked
 	uv run pre-commit install
 
-check: lint typecheck imports policy test zizmor ## Everything CI runs
+check: lint typecheck imports policy test zizmor web ## Everything CI runs
 
 lint: ## Ruff lint + format check
 	uv run ruff check .
@@ -42,6 +42,14 @@ test: ## Unit and contract tests
 
 zizmor: ## Static security audit of GitHub Actions workflows
 	uv run zizmor --offline --min-severity low .github/workflows
+
+web: ## Dashboard: locked install (no package scripts), typed client up to date, types, tests, build
+	cd platform/web && npm ci && npm run check
+
+# The scanners come from SENTINEL_TOOLS_DIR (default .sentinel/tools); DB_DIR=<grype-db dir> measures SCA too.
+EVAL_TOOLS ?= $(or $(SENTINEL_TOOLS_DIR),.sentinel/tools)
+eval: ## Detection report of demo-shop (B8): out/eval/detection.json and detection.md
+	uv run python eval/detection/run.py --tools-dir $(EVAL_TOOLS) $(if $(DB_DIR),--db-dir $(DB_DIR))
 
 tools: ## Download, hash-check and install the pinned scanners into .sentinel/tools
 	uv run sentinel tools install
