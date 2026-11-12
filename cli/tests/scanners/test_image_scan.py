@@ -77,14 +77,19 @@ def oci_archive(path: Path, files: dict[str, bytes]) -> str:
     return "sha256:" + hashlib.sha256(manifest).hexdigest()
 
 
+SHOP_API_FILES = {
+    "etc/os-release": b'PRETTY_NAME="Debian GNU/Linux 13 (trixie)"\nID=debian\nVERSION_ID="13"\n',
+    "var/lib/dpkg/status": b"Package: openssl\nStatus: install ok installed\nArchitecture: amd64\n"
+                           b"Version: 3.0.11-1\nDescription: TLS toolkit\n\n",
+    PYYAML_METADATA: b"Metadata-Version: 2.1\nName: PyYAML\nVersion: 5.3.1\n",
+}  # fmt: skip
+# The layer's diff_id: the digest of its uncompressed tar, as the config's rootfs lists it (not the blob's).
+SHOP_API_LAYER = "sha256:" + hashlib.sha256(_layer(SHOP_API_FILES)).hexdigest()
+
+
 def shop_api_image(path: Path) -> str:
     """An image holding the seeded pyyaml 5.3.1 (GT-SCA-001's package) and a Debian package database."""
-    return oci_archive(path, {
-        "etc/os-release": b'PRETTY_NAME="Debian GNU/Linux 13 (trixie)"\nID=debian\nVERSION_ID="13"\n',
-        "var/lib/dpkg/status": b"Package: openssl\nStatus: install ok installed\nArchitecture: amd64\n"
-                               b"Version: 3.0.11-1\nDescription: TLS toolkit\n\n",
-        PYYAML_METADATA: b"Metadata-Version: 2.1\nName: PyYAML\nVersion: 5.3.1\n",
-    })  # fmt: skip
+    return oci_archive(path, SHOP_API_FILES)
 
 
 def scan(archive: Path, digest: str, tmp_path: Path, db_dir: Path, *extra: str) -> Result:
@@ -156,6 +161,7 @@ def test_the_seeded_pyyaml_in_an_image_is_a_container_finding_of_its_layer(
     for finding in findings:
         assert not [e.message for e in finding_validator.iter_errors(finding)]
         assert finding["image"]["digest"] == digest and finding["image"]["ref"] == REF
+        assert finding["image"]["layer"] == SHOP_API_LAYER, "the layer's diff_id (review of #70, nit 1)"
     pyyaml = [f for f in findings if f["package"]["purl"] == "pkg:pypi/pyyaml@5.3.1"]
     assert "GHSA-8q59-q68h-6hv4" in {f["rule_id"] for f in pyyaml}, "GT-SCA-001's advisory, now in an image"
     assert {tool["status"] for tool in status_of(tmp_path).values()} == {"ok"}

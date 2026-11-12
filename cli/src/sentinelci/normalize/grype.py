@@ -390,17 +390,28 @@ class ImageSubject:
     digest: str
     ref: str | None = None
 
+    def __post_init__(self) -> None:
+        if not _SHA256.fullmatch(self.digest):
+            raise NormalizationError(f"image digest {self.digest!r} is not sha256:<64 lowercase hex>")
+        # The finding's digest is the image's: a reference with its own tag or digest would put a second
+        # identity in the same evidence (review of #70, should fix 3). A port is a `:` before the last `/`.
+        if self.ref is not None and (not self.ref or "@" in self.ref or ":" in self.ref.rsplit("/", 1)[-1]):
+            raise NormalizationError(
+                f"image reference {self.ref!r} is not a repository without tag or digest "
+                "(e.g. kind-registry:5000/demo-shop/shop-api)"
+            )
+
 
 def _layer(locations: Sequence[Mapping[str, Any]], where: str) -> str | None:
-    """The layer of the package's first place in the image, by path: where a fix has to change it."""
+    """The layer of the package's first place in the image, by path: where a fix has to change it. Every
+    place's layer is checked, not only the one used (review of #70, nit 2)."""
+    layers: list[str | None] = []
     for location in sorted(locations, key=lambda loc: str(loc.get("path", ""))):
         layer = location.get("layerID")
-        if layer is None:
-            continue
-        if not isinstance(layer, str) or not _SHA256.fullmatch(layer):
+        if layer is not None and (not isinstance(layer, str) or not _SHA256.fullmatch(layer)):
             raise NormalizationError(f"{where} names a layer that is not a sha256 digest: {layer!r}")
-        return layer
-    return None
+        layers.append(layer)
+    return next((layer for layer in layers if layer is not None), None)
 
 
 def _image_place(match: Mapping[str, Any], where: str) -> tuple[str, _Place, str | None]:
