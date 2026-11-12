@@ -83,6 +83,13 @@ def test_an_attempt_is_recorded_once(client: TestClient, headers: dict[str, str]
         (lambda d: d["result"].update(verified_at="2026-11-11T08:00:00Z"), "verified before the proposal"),
         (lambda d: d["proposal"].update(strategy="manual"), "proposal.strategy"),
         (lambda d: d.pop("repo"), "repo"),
+        # Strict, as the schema is: a value of another JSON type is refused, never coerced (review of #88).
+        (lambda d: d["result"].update(tests_ok=1), "result.tests_ok"),
+        (lambda d: d["result"].update(build_ok="yes"), "result.build_ok"),
+        (lambda d: d["result"].update(target_resolved=1.0), "result.target_resolved"),
+        (lambda d: (d["proposal"].update(attempt="1"), d["result"].update(attempt="1")), "attempt"),
+        (lambda d: d["result"].update(pull_request="81"), "result.pull_request"),
+        (lambda d: d["result"].update(verified_at=1893456000), "result.verified_at"),
     ],
 )  # fmt: skip
 def test_an_attempt_that_contradicts_itself_or_the_gate_is_refused(
@@ -94,6 +101,40 @@ def test_an_attempt_that_contradicts_itself_or_the_gate_is_refused(
     assert refused.status_code == 422, refused.text
     assert message in refused.json()["detail"][0]["msg"]
     assert client.get("/api/v1/remediations").json()["total"] == 0
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (raw(VERIFIED).replace(b'"repo":', b'"repo": "o/r",\n  "repo":', 1), "repeats a key"),
+        (raw(VERIFIED).replace(b'"attempt": 1,', b'"attempt": NaN,', 1), "NaN is not JSON"),
+    ],
+)
+def test_bytes_that_mean_two_things_are_refused(
+    client: TestClient, headers: dict[str, str], body: bytes, message: str
+) -> None:
+    refused = post(client, headers, body)
+    assert refused.status_code == 422 and message in refused.json()["detail"][0]["msg"], refused.text
+    assert client.get("/api/v1/remediations").json()["total"] == 0
+
+
+def test_an_attempt_larger_than_a_small_json_body_is_recorded(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    """A dependency bump that regenerates a lockfile makes a diff larger than 64 KiB: the route's upload limit
+    applies, not the limit of small JSON bodies."""
+    document = copy.deepcopy(VERIFIED)
+    document["proposal"]["diff"] += "+" + "x" * 100_000 + "\n"
+    created = post(client, headers, raw(document))
+    assert created.status_code == 201, created.text
+
+
+def test_a_result_may_be_verified_the_instant_it_is_proposed(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    document = copy.deepcopy(VERIFIED)
+    document["result"]["verified_at"] = document["proposal"]["created_at"]
+    assert post(client, headers, raw(document)).status_code == 201
 
 
 def test_recording_needs_the_token_and_json(client: TestClient, headers: dict[str, str]) -> None:
@@ -117,17 +158,44 @@ def test_a_recorded_attempt_never_changes(
                 conn.execute(statement, (VERIFIED["proposal"]["proposal_id"],))
 
 
-def test_the_database_holds_the_verification_gate_too(client: TestClient, database_url: str) -> None:
-    body = raw(VERIFIED)
-    with psycopg.connect(database_url, autocommit=True) as conn, pytest.raises(psycopg.errors.CheckViolation):
+GATE = {
+    "build_ok": True,
+    "tests_ok": True,
+    "target_resolved": True,
+    "new_finding_count": 0,
+    "verdict": "PASS",
+}
+
+
+@pytest.mark.parametrize(
+    "failed",
+    [{"build_ok": False}, {"tests_ok": False}, {"target_resolved": False}, {"new_finding_count": 1},
+     {"verdict": "BLOCK"}],
+)  # fmt: skip
+def test_the_database_refuses_a_verified_attempt_with_any_failed_condition(
+    client: TestClient, database_url: str, failed: dict[str, Any]
+) -> None:
+    body, row = raw(VERIFIED), GATE | failed
+    with (
+        psycopg.connect(database_url, autocommit=True) as conn,
+        pytest.raises(psycopg.errors.CheckViolation, match="remediations_verified_gate"),
+    ):
         conn.execute(
             "INSERT INTO remediations (proposal_id, repo, strategy, attempt, finding_count, outcome, "
             "verdict, build_ok, tests_ok, target_resolved, new_finding_count, proposed_at, verified_at, "
-            "sha256, "
-            "document) VALUES (gen_random_uuid(), 'o/r', 'llm:code', 1, 1, 'VERIFIED', 'PASS', true, false, "
-            "true, 0, now(), now(), %s, %s)",
-            (hashlib.sha256(body).hexdigest(), body),
-        )
+            "sha256, document) VALUES (gen_random_uuid(), 'o/r', 'llm:code', 1, 1, 'VERIFIED', "
+            "%s, %s, %s, %s, %s, now(), now(), %s, %s)",
+            (row["verdict"], row["build_ok"], row["tests_ok"], row["target_resolved"],
+             row["new_finding_count"], hashlib.sha256(body).hexdigest(), body),
+        )  # fmt: skip
+
+
+def test_the_listed_columns_are_the_documents(client: TestClient, headers: dict[str, str]) -> None:
+    document = copy.deepcopy(REJECTED)
+    document["result"]["new_findings"] = ["d" * 64, "e" * 64]
+    created = post(client, headers, raw(document))
+    assert created.status_code == 201, created.text
+    assert (created.json()["new_finding_count"], created.json()["tests_ok"]) == (2, False)
 
 
 def test_attempts_are_counted_by_strategy_and_outcome(client: TestClient, headers: dict[str, str]) -> None:

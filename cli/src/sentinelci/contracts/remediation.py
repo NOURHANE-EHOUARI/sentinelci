@@ -1,6 +1,8 @@
 """Read models of the remediation contracts: `schemas/patch-proposal.v1.json` and
 `schemas/verification-result.v1.json` (SPEC §9). The contract fixtures pin each model to its schema: every
-valid fixture is accepted and every invalid one refused."""
+valid fixture is accepted and every invalid one refused. Strict, like the decision's and the release's models:
+a value of another JSON type (`1` for `true`, `"81"` for `81`, a Unix time for a date) is refused, as the
+schema refuses it, never coerced."""
 
 import re
 from datetime import datetime
@@ -37,7 +39,7 @@ Timestamp = Annotated[datetime, AfterValidator(_utc_timestamp)]
 
 
 class _Contract(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
 class Model(_Contract):
