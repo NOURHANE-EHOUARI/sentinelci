@@ -272,6 +272,7 @@ exclusions, `only-fixed`, `only-notfixed`, `ignore-wontfix`, a distro override, 
 exceptions go through waivers (§6.4).
 
 
+
 Stage 7, the image: `sentinel scan image` runs the same Syft on the image's OCI layout archive
 (what `docker buildx build --output type=oci` writes, no registry), checks that it is the image of the given
 manifest digest, and matches its SBOM with the same Grype and database. Its findings are CONTAINER findings, each
@@ -302,6 +303,13 @@ match on the skipped text with the same occurrence numbering (§13.1), with a me
 quotes no code. Valid modern syntax Opengrep cannot parse yet (a PEP 695 `def f[T]`, some TypeScript constructs)
 shows up this way until Opengrep catches up: the way out is a reviewed waiver with an expiry, never a scanner
 flag.
+
+Stage 7, the image: `sentinel scan image` runs the same Syft on the image's OCI layout archive
+(what `docker buildx build --output type=oci` writes, no registry), checks that it is the image of the given
+manifest digest, and matches its SBOM with the same Grype and database. Its findings are CONTAINER findings, each
+with the image's digest and reference and the layer the package is in (its first place by path); a report about
+another image is refused. The tool status names Syft and Grype separately: Grype is `not_run` when Syft failed.
+
 
 
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
