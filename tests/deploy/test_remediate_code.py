@@ -175,6 +175,9 @@ class Loop:
         if args[:3] == ["tools", "verify", "opa"]:
             Path(self.option(args, "--report")).write_text('{"tools": {"opa": {"version": "1.10.1"}}}')
             return ok()
+        if args[:2] == ["tools", "grype-db"]:
+            Path(self.option(args, "--report")).write_text('{"tools": {"grype": {"status": "ok"}}}')
+            return ok()
         if args[:2] == ["scan", "combine"]:
             found = [Path(args[i + 1]).read_text() for i, a in enumerate(args) if a == "--findings"]
             Path(self.option(args, "--out")).write_text("".join(found))
@@ -186,11 +189,12 @@ class Loop:
             return ok()
         if args[0] == "scan":
             name = args[1]
-            tool = {"secrets": "gitleaks", "sast": "opengrep", "iac": "trivy", "pipelines": "zizmor"}[name]
+            names = {"secrets": ["gitleaks"], "sast": ["opengrep"], "sca": ["syft", "grype"],
+                     "iac": ["trivy"], "pipelines": ["zizmor"]}[name]  # fmt: skip
             commit = self.option(args, "--commit")
             base = name == "sast" and "/base/" in args[2]  # the scanned commit holds the finding
             Path(self.option(args, "--out")).write_text(json.dumps(finding(commit)) + "\n" if base else "")
-            status = {"tools": {tool: {"status": "ok", "version": "1"}}}
+            status = {"tools": {tool: {"status": "ok", "version": "1"} for tool in names}}
             Path(self.option(args, "--tool-status-out")).write_text(json.dumps(status))
             return ok()
         if args[:2] == ["remediate", "apply"]:
@@ -272,15 +276,26 @@ def test_both_commits_are_scanned_by_every_scanner_the_pr_gate_requires(repo: Pa
     loop()
     required = re.search(r'"pr": \{([^}]*)\}', (ROOT / "policies" / "required_tools.rego").read_text())
     assert required is not None
-    kinds = {"gitleaks": "secrets", "trivy": "iac", "zizmor": "pipelines", "opengrep": "sast"}
-    tools = set(re.findall(r'"(\w+)"', required[1])) | {"opengrep"}  # opengrep: the SAST targets' scanner
+    kinds = {
+        "gitleaks": "secrets", "opengrep": "sast", "syft": "sca", "grype": "sca", "trivy": "iac",
+        "zizmor": "pipelines",
+    }  # fmt: skip
+    tools = set(re.findall(r'"(\w+)"', required[1]))
     assert tools <= kinds.keys(), f"a scanner the pr gate requires is not run: {tools - kinds.keys()}"
-    for tool in tools:
-        scans = loop.named("scan", kinds[tool])
+    # Every scanner the pr gate may require, whatever this tree's policy lists (B4's #114 adds Opengrep, Syft
+    # and Grype): without one, the gate holds SC-010 and no attempt can be VERIFIED.
+    for tool, kind in kinds.items():
+        scans = loop.named("scan", kind)
         assert len(scans) == 2, f"{tool}: the scanned commit and the patched commit"
         assert all(("--tools-dir" in scan) == (tool != "zizmor") for scan in scans), "zizmor is the CLI's own"
     (combine, _) = loop.named("scan", "combine")
-    assert combine.count("--tool-status") == len(kinds), "every scanner's status reaches the gate"
+    assert combine.count("--tool-status") == len(set(kinds.values())), "every scan's status reaches the gate"
+    (database,) = loop.named("tools", "grype-db")
+    assert database[database.index("--db-dir") + 1] == str(loop.loop.settings.grype_db)
+    assert all(
+        scan[scan.index("--db-dir") + 1] == str(loop.loop.settings.grype_db)
+        for scan in loop.named("scan", "sca")
+    )
 
 
 def test_a_rejected_attempt_is_retried_with_what_rejected_it(repo: Path, tmp_path: Path) -> None:

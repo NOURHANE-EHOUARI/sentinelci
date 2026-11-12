@@ -143,6 +143,7 @@ class Settings:
     test_image: str
     tools_dir: Path
     lock: Path = ROOT / "tools.lock.toml"
+    grype_db: Path = ROOT / "out" / "grype-db"  # Grype's database, prepared at the start of each run
     timeout_s: int = 600
     publish: bool = False
     api_url: str | None = None
@@ -199,6 +200,12 @@ class RemediateCode:
         self.opa_manifest = self.work / "opa-manifest.json"
         self.run(sentinel("tools", "verify", "opa", "--lock", str(self.settings.lock), "--dest",
                           str(self.settings.tools_dir), "--report", str(self.opa_manifest)))  # fmt: skip
+        # The dependency scans need Grype's database: the only download, checked against its listing's
+        # checksum. Without it nothing is scanned, so nothing is verified.
+        database = ["--db-dir", str(self.settings.grype_db), "--report", str(self.work / "grype-db.json")]
+        limits = ["--timeout", str(self.settings.timeout_s), "--lock", str(self.settings.lock)]
+        tools = ["--tools-dir", str(self.settings.tools_dir)]
+        self.run(sentinel("tools", "grype-db", *database, *limits, *tools))
         self.before = self.work / "before.ndjson"
         self._scan(self.base_tree, base, self.work / "base-scan", self.before, git_range=None)
         findings = self._findings(self.before)
@@ -330,14 +337,15 @@ class RemediateCode:
         return destination
 
     def _scan(self, tree: Path, commit: str, work: Path, out: Path, *, git_range: str | None) -> Path:
-        """Gitleaks (on the tree, or on the commits of `git_range`), Opengrep, Trivy and zizmor (the scanners
-        the pr gate requires, and the SAST target's), combined into `out`; returns the combined tool status. A
-        scan that fails is not a pass: the attempt is FAILED."""
+        """Gitleaks (on the tree, or on the commits of `git_range`), Opengrep, Syft then Grype, Trivy and
+        zizmor (every scanner the pr gate requires, policies/required_tools.rego), combined into `out`;
+        returns the combined tool status. A scan that fails is not a pass: the attempt is FAILED."""
         work.mkdir(parents=True, exist_ok=True)
         audit = ["--repo", REPO, "--commit", commit, "--context", "pr", "--run-id", "local",
                  "--timeout", str(self.settings.timeout_s), "--lock", str(self.settings.lock)]  # fmt: skip
         tools = ["--tools-dir", str(self.settings.tools_dir)]  # zizmor is the CLI's own: not for its audit
         target = str(tree / SCAN_PATH)
+        database = ["--db-dir", str(self.settings.grype_db)]  # prepared at the start of the run
         if git_range is None:
             secrets = ["scan", "secrets", target, "--mode", "dir", "--repo-root", str(tree), *tools]
         else:
@@ -346,6 +354,7 @@ class RemediateCode:
         scans = {
             "secrets": secrets,
             "sast": ["scan", "sast", target, "--repo-root", str(tree), *tools],
+            "sca": ["scan", "sca", target, "--repo-root", str(tree), *database, *tools],
             "iac": ["scan", "iac", target, "--repo-root", str(tree), *tools],
             "pipelines": ["scan", "pipelines", target, "--repo-root", str(tree)],
         }
@@ -420,6 +429,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0] if __doc__ else None)
     parser.add_argument("--test-image", required=True, help="Image of the service's tests, pinned by digest.")
     parser.add_argument("--tools-dir", type=Path, default=ROOT / ".sentinel" / "tools")
+    parser.add_argument("--grype-db", type=Path, default=ROOT / "out" / "grype-db",
+                        help="Where Grype's database is prepared (`sentinel tools grype-db`).")  # fmt: skip
     parser.add_argument("--finding", help="Only this SAST finding (its id).")
     parser.add_argument("--publish", action="store_true", help="Push each VERIFIED branch and open its PR.")
     parser.add_argument("--api-url", help="Record every attempt on this platform (SENTINEL_API_TOKEN).")
@@ -435,7 +446,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     model = provider.generation
     settings = Settings(
         test_image=args.test_image, tools_dir=args.tools_dir, publish=args.publish, api_url=args.api_url,
-        finding=args.finding,
+        finding=args.finding, grype_db=args.grype_db.resolve(),
     )  # fmt: skip
     loop = RemediateCode(
         settings, propose_code_fix, provider, model.name, model.digest, fetch=not args.no_fetch
