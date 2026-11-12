@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 from jsonschema import Draft202012Validator, FormatChecker, validators
+from referencing import Registry, Resource
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMAS = ROOT / "schemas"
@@ -67,12 +68,17 @@ def matched_values() -> dict[str, set[str]]:
         yield from errors
 
     recorder = validators.extend(Draft202012Validator, {"pattern": recording})
+    registry = Registry().with_resources(  # a contract may refer to another by its $id
+        (schema["$id"], Resource.from_contents(schema))
+        for schema in (json.loads(f.read_text(encoding="utf-8")) for f in schema_files())
+    )
     for schema_file in schema_files():
         schema = json.loads(schema_file.read_text(encoding="utf-8"))
         fixtures = FIXTURES / schema_file.name.removesuffix(".v1.json") / "valid"
         for fixture in sorted(fixtures.glob("*.json")):
             instance = json.loads(fixture.read_text(encoding="utf-8"))
-            assert not list(recorder(schema, format_checker=FormatChecker()).iter_errors(instance))
+            validator = recorder(schema, format_checker=FormatChecker(), registry=registry)
+            assert not list(validator.iter_errors(instance))
     return seen
 
 

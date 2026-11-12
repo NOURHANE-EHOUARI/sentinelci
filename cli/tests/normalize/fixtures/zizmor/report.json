@@ -1,0 +1,1112 @@
+[
+  {
+    "ident": "template-injection",
+    "desc": "code injection via template expansion",
+    "url": "https://docs.zizmor.sh/audits/#template-injection",
+    "determinations": {
+      "confidence": "High",
+      "severity": "High",
+      "persona": "Regular"
+    },
+    "locations": [
+      {
+        "symbolic": {
+          "key": {
+            "Local": {
+              "verbatim_path": "examples/bad-workflows/issue-title-injection.yml"
+            }
+          },
+          "annotation": "this step",
+          "route": {
+            "route": [
+              {
+                "Key": "jobs"
+              },
+              {
+                "Key": "label"
+              },
+              {
+                "Key": "steps"
+              },
+              {
+                "Index": 0
+              }
+            ]
+          },
+          "feature_kind": "Normal",
+          "kind": "Hidden"
+        },
+        "concrete": {
+          "location": {
+            "start_point": {
+              "row": 16,
+              "column": 8
+            },
+            "end_point": {
+              "row": 21,
+              "column": 0
+            },
+            "offset_span": {
+              "start": 417,
+              "end": 615
+            }
+          },
+          "feature": "run: |\n          echo \"New issue: ${{ github.event.issue.title }}\"\n          gh issue edit \"${{ github.event.issue.number }}\" --add-label triage\n        env:\n          GH_TOKEN: ${{ github.token }}\n",
+          "comments": []
+        }
+      },
+      {
+        "symbolic": {
+          "key": {
+            "Local": {
+              "verbatim_path": "examples/bad-workflows/issue-title-injection.yml"
+            }
+          },
+          "annotation": "may expand into attacker-controllable code",
+          "route": {
+            "route": [
+              {
+                "Key": "jobs"
+              },
+              {
+                "Key": "label"
+              },
+              {
+                "Key": "steps"
+              },
+              {
+                "Index": 0
+              },
+              {
+                "Key": "run"
+              }
+            ]
+          },
+          "feature_kind": {
+            "Subfeature": {
+              "after": 18,
+              "fragment": {
+                "Raw": "github.event.issue.title"
+              }
+            }
+          },
+          "kind": "Primary"
+        },
+        "concrete": {
+          "location": {
+            "start_point": {
+              "row": 17,
+              "column": 31
+            },
+            "end_point": {
+              "row": 17,
+              "column": 55
+            },
+            "offset_span": {
+              "start": 455,
+              "end": 479
+            }
+          },
+          "feature": "|\n          echo \"New issue: ${{ github.event.issue.title }}\"\n          gh issue edit \"${{ github.event.issue.number }}\" --add-label triage",
+          "comments": []
+        }
+      },
+      {
+        "symbolic": {
+          "key": {
+            "Local": {
+              "verbatim_path": "examples/bad-workflows/issue-title-injection.yml"
+            }
+          },
+          "annotation": "this run block",
+          "route": {
+            "route": [
+              {
+                "Key": "jobs"
+              },
+              {
+                "Key": "label"
+              },
+              {
+                "Key": "steps"
+              },
+              {
+                "Index": 0
+              },
+              {
+                "Key": "run"
+              }
+            ]
+          },
+          "feature_kind": "KeyOnly",
+          "kind": "Related"
+        },
+        "concrete": {
+          "location": {
+            "start_point": {
+              "row": 16,
+              "column": 8
+            },
+            "end_point": {
+              "row": 16,
+              "column": 11
+            },
+            "offset_span": {
+              "start": 417,
+              "end": 420
+            }
+          },
+          "feature": "run",
+          "comments": []
+        }
+      }
+    ],
+    "ignored": false,
+    "fixes": [
+      {
+        "title": "replace expression with environment variable",
+        "key": {
+          "Local": {
+            "verbatim_path": "examples/bad-workflows/issue-title-injection.yml"
+          }
+        },
+        "disposition": "unsafe"
+      }
+    ]
+  },
+  {
+    "ident": "artipacked",
+    "desc": "credential persistence through GitHub Actions artifacts",
+    "url": "https://docs.zizmor.sh/audits/#artipacked",
+    "determinations": {
+      "confidence": "Low",
+      "severity": "Medium",
+      "persona": "Regular"
+    },
+    "locations": [
+      {
+        "symbolic": {
+          "key": {
+            "Local": {
+              "verbatim_path": "examples/bad-workflows/overprivileged-unpinned.yml"
+            }
+          },
+          "annotation": "does not set persist-credentials: false",
+          "route": {
+            "route": [
+              {
+                "Key": "jobs"
+              },
+              {
+                "Key": "build"
+              },
+              {
+                "Key": "steps"
+              },
+              {
+                "Index": 0
+              }
+            ]
+          },
+          "feature_kind": "Normal",
+          "kind": "Primary"
+        },
+        "concrete": {
+          "location": {
+            "start_point": {
+              "row": 15,
+              "column": 8
+            },
+            "end_point": {
+              "row": 15,
+              "column": 35
+            },
+            "offset_span": {
+              "start": 455,
+              "end": 482
+            }
+          },
+          "feature": "uses: actions/checkout@main",
+          "comments": []
+        }
+      }
+    ],
+    "ignored": false,
+    "fixes": [
+      {
+        "title": "set persist-credentials: false",
+        "key": {
+          "Local": {
+            "verbatim_path": "examples/bad-workflows/overprivileged-unpinned.yml"
+          }
+        },
+        "disposition": "unsafe"
+      }
+    ]
+  },
+  {
+    "ident": "excessive-permissions",
+    "desc": "overly broad permissions",
+    "url": "https://docs.zizmor.sh/audits/#excessive-permissions",
+    "determinations": {
+      "confidence": "High",
+      "severity": "High",
+      "persona": "Regular"
+    },
+    "locations": [
+      {
+        "symbolic": {
+          "key": {
+            "Local": {
+              "verbatim_path": "examples/bad-workflows/overprivileged-unpinned.yml"
+            }
+          },
+          "annotation": "uses write-all permissions",
+          "route": {
+            "route": [
+              {
+                "Key": "permissions"
+              }
+            ]
+          },
+          "feature_kind": "Normal",
+          "kind": "Primary"
+        },
+        "concrete": {
+          "location": {
+            "start_point": {
+              "row": 9,
+              "column": 0
+            },
+            "end_point": {
+              "row": 9,
+              "column": 22
+            },
+            "offset_span": {
+              "start": 370,
+              "end": 392
+            }
+          },
+          "feature": "permissions: write-all",
+          "comments": []
+        }
+      }
+    ],
+    "ignored": false,
+    "fixes": []
+  },
+  {
+    "ident": "unpinned-uses",
+    "desc": "unpinned action reference",
+    "url": "https://docs.zizmor.sh/audits/#unpinned-uses",
+    "determinations": {
+      "confidence": "High",
+      "severity": "High",
+      "persona": "Regular"
+    },
+    "locations": [
+      {
+        "symbolic": {
+          "key": {
+            "Local": {
+              "verbatim_path": "examples/bad-workflows/overprivileged-unpinned.yml"
+            }
+          },
+          "annotation": "this step",
+          "route": {
+            "route": [
+              {
+                "Key": "jobs"
+              },
+              {
+                "Key": "build"
+              },
+              {
+                "Key": "steps"
+              },
+              {
+                "Index": 0
+              }
+            ]
+          },
+          "feature_kind": "Normal",
+          "kind": "Hidden"
+        },
+        "concrete": {
+          "location": {
+            "start_point": {
+              "row": 15,
+              "column": 8
+            },
+            "end_point": {
+              "row": 15,
+              "column": 35
+            },
+            "offset_span": {
+              "start": 455,
+              "end": 482
+            }
+          },
+          "feature": "uses: actions/checkout@main",
+          "comments": []
+        }
+      },
+      {
+        "symbolic": {
+          "key": {
+            "Local": {
+              "verbatim_path": "examples/bad-workflows/overprivileged-unpinned.yml"
+            }
+          },
+          "annotation": "action is not pinned to a hash (required by blanket policy)",
+          "route": {
+            "route": [
+              {
+                "Key": "jobs"
+              },
+              {
+                "Key": "build"
+              },
+              {
+                "Key": "steps"
+              },
+              {
+                "Index": 0
+              },
+              {
+                "Key": "uses"
+              }
+            ]
+          },
+          "feature_kind": {
+            "Subfeature": {
+              "after": 0,
+              "fragment": {
+                "Raw": "actions/checkout@main"
+              }
+            }
+          },
+          "kind": "Primary"
+        },
+        "concrete": {
+          "location": {
+            "start_point": {
+              "row": 15,
+              "column": 14
+            },
+            "end_point": {
+              "row": 15,
+              "column": 35
+            },
+            "offset_span": {
+              "start": 461,
+              "end": 482
+            }
+          },
+          "feature": "actions/checkout@main",
+          "comments": []
+        }
+      }
+    ],
+    "ignored": false,
+    "fixes": []
+  },
+  {
+    "ident": "unpinned-uses",
+    "desc": "unpinned action reference",
+    "url": "https://docs.zizmor.sh/audits/#unpinned-uses",
+    "determinations": {
+      "confidence": "High",
+      "severity": "High",
+      "persona": "Regular"
+    },
+    "locations": [
+      {
+        "symbolic": {
+          "key": {
+            "Local": {
+              "verbatim_path": "examples/bad-workflows/overprivileged-unpinned.yml"
+            }
+          },
+          "annotation": "this step",
+          "route": {
+            "route": [
+              {
+                "Key": "jobs"
+              },
+              {
+                "Key": "build"
+              },
+              {
+                "Key": "steps"
+              },
+              {
+                "Index": 1
+              }
+            ]
+          },
+          "feature_kind": "Normal",
+          "kind": "Hidden"
+        },
+        "concrete": {
+          "location": {
+            "start_point": {
+              "row": 16,
+              "column": 8
+            },
+            "end_point": {
+              "row": 18,
+              "column": 23
+            },
+            "offset_span": {
+              "start": 491,
+              "end": 567
+            }
+          },
+          "feature": "uses: aquasecurity/trivy-action@master\n        with:\n          scan-type: fs",
+          "comments": []
+        }
+      },
+      {
+        "symbolic": {
+          "key": {
+            "Local": {
+              "verbatim_path": "examples/bad-workflows/overprivileged-unpinned.yml"
+            }
+          },
+          "annotation": "action is not pinned to a hash (required by blanket policy)",
+          "route": {
+            "route": [
+              {
+                "Key": "jobs"
+              },
+              {
+                "Key": "build"
+              },
+              {
+                "Key": "steps"
+              },
+              {
+                "Index": 1
+              },
+              {
+                "Key": "uses"
+              }
+            ]
+          },
+          "feature_kind": {
+            "Subfeature": {
+              "after": 0,
+              "fragment": {
+                "Raw": "aquasecurity/trivy-action@master"
+              }
+            }
+          },
+          "kind": "Primary"
+        },
+        "concrete": {
+          "location": {
+            "start_point": {
+              "row": 16,
+              "column": 14
+            },
+            "end_point": {
+              "row": 16,
+              "column": 46
+            },
+            "offset_span": {
+              "start": 497,
+              "end": 529
+            }
+          },
+          "feature": "aquasecurity/trivy-action@master",
+          "comments": []
+        }
+      }
+    ],
+    "ignored": false,
+    "fixes": []
+  },
+  {
+    "ident": "unpinned-uses",
+    "desc": "unpinned action reference",
+    "url": "https://docs.zizmor.sh/audits/#unpinned-uses",
+    "determinations": {
+      "confidence": "High",
+      "severity": "High",
+      "persona": "Regular"
+    },
+    "locations": [
+      {
+        "symbolic": {
+          "key": {
+            "Local": {
+              "verbatim_path": "examples/bad-workflows/overprivileged-unpinned.yml"
+            }
+          },
+          "annotation": "this job",
+          "route": {
+            "route": [
+              {
+                "Key": "jobs"
+              },
+              {
+                "Key": "publish"
+              }
+            ]
+          },
+          "feature_kind": "Normal",
+          "kind": "Hidden"
+        },
+        "concrete": {
+          "location": {
+            "start_point": {
+              "row": 20,
+              "column": 2
+            },
+            "end_point": {
+              "row": 24,
+              "column": 0
+            },
+            "offset_span": {
+              "start": 596,
+              "end": 717
+            }
+          },
+          "feature": "  publish:\n    needs: build\n    uses: example-org/shared-workflows/.github/workflows/publish.yml@main\n    secrets: inherit\n",
+          "comments": []
+        }
+      },
+      {
+        "symbolic": {
+          "key": {
+            "Local": {
+              "verbatim_path": "examples/bad-workflows/overprivileged-unpinned.yml"
+            }
+          },
+          "annotation": "action is not pinned to a hash (required by blanket policy)",
+          "route": {
+            "route": [
+              {
+                "Key": "jobs"
+              },
+              {
+                "Key": "publish"
+              },
+              {
+                "Key": "uses"
+              }
+            ]
+          },
+          "feature_kind": {
+            "Subfeature": {
+              "after": 0,
+              "fragment": {
+                "Raw": "example-org/shared-workflows/.github/workflows/publish.yml@main"
+              }
+            }
+          },
+          "kind": "Primary"
+        },
+        "concrete": {
+          "location": {
+            "start_point": {
+              "row": 22,
+              "column": 10
+            },
+            "end_point": {
+              "row": 22,
+              "column": 73
+            },
+            "offset_span": {
+              "start": 632,
+              "end": 695
+            }
+          },
+          "feature": "example-org/shared-workflows/.github/workflows/publish.yml@main",
+          "comments": []
+        }
+      }
+    ],
+    "ignored": false,
+    "fixes": []
+  },
+  {
+    "ident": "secrets-inherit",
+    "desc": "secrets unconditionally inherited by called workflow",
+    "url": "https://docs.zizmor.sh/audits/#secrets-inherit",
+    "determinations": {
+      "confidence": "High",
+      "severity": "Medium",
+      "persona": "Regular"
+    },
+    "locations": [
+      {
+        "symbolic": {
+          "key": {
+            "Local": {
+              "verbatim_path": "examples/bad-workflows/overprivileged-unpinned.yml"
+            }
+          },
+          "annotation": "this reusable workflow",
+          "route": {
+            "route": [
+              {
+                "Key": "jobs"
+              },
+              {
+                "Key": "publish"
+              },
+              {
+                "Key": "uses"
+              }
+            ]
+          },
+          "feature_kind": {
+            "Subfeature": {
+              "after": 0,
+              "fragment": {
+                "Raw": "example-org/shared-workflows/.github/workflows/publish.yml@main"
+              }
+            }
+          },
+          "kind": "Primary"
+        },
+        "concrete": {
+          "location": {
+            "start_point": {
+              "row": 22,
+              "column": 10
+            },
+            "end_point": {
+              "row": 22,
+              "column": 73
+            },
+            "offset_span": {
+              "start": 632,
+              "end": 695
+            }
+          },
+          "feature": "example-org/shared-workflows/.github/workflows/publish.yml@main",
+          "comments": []
+        }
+      },
+      {
+        "symbolic": {
+          "key": {
+            "Local": {
+              "verbatim_path": "examples/bad-workflows/overprivileged-unpinned.yml"
+            }
+          },
+          "annotation": "inherits all parent secrets",
+          "route": {
+            "route": [
+              {
+                "Key": "jobs"
+              },
+              {
+                "Key": "publish"
+              },
+              {
+                "Key": "secrets"
+              }
+            ]
+          },
+          "feature_kind": "Normal",
+          "kind": "Related"
+        },
+        "concrete": {
+          "location": {
+            "start_point": {
+              "row": 23,
+              "column": 4
+            },
+            "end_point": {
+              "row": 23,
+              "column": 20
+            },
+            "offset_span": {
+              "start": 700,
+              "end": 716
+            }
+          },
+          "feature": "    secrets: inherit",
+          "comments": []
+        }
+      }
+    ],
+    "ignored": false,
+    "fixes": []
+  },
+  {
+    "ident": "artipacked",
+    "desc": "credential persistence through GitHub Actions artifacts",
+    "url": "https://docs.zizmor.sh/audits/#artipacked",
+    "determinations": {
+      "confidence": "Low",
+      "severity": "Medium",
+      "persona": "Regular"
+    },
+    "locations": [
+      {
+        "symbolic": {
+          "key": {
+            "Local": {
+              "verbatim_path": "examples/bad-workflows/pwn-request.yml"
+            }
+          },
+          "annotation": "does not set persist-credentials: false",
+          "route": {
+            "route": [
+              {
+                "Key": "jobs"
+              },
+              {
+                "Key": "preview"
+              },
+              {
+                "Key": "steps"
+              },
+              {
+                "Index": 0
+              }
+            ]
+          },
+          "feature_kind": "Normal",
+          "kind": "Primary"
+        },
+        "concrete": {
+          "location": {
+            "start_point": {
+              "row": 12,
+              "column": 8
+            },
+            "end_point": {
+              "row": 14,
+              "column": 56
+            },
+            "offset_span": {
+              "start": 392,
+              "end": 488
+            }
+          },
+          "feature": "uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}",
+          "comments": []
+        }
+      }
+    ],
+    "ignored": false,
+    "fixes": [
+      {
+        "title": "set persist-credentials: false",
+        "key": {
+          "Local": {
+            "verbatim_path": "examples/bad-workflows/pwn-request.yml"
+          }
+        },
+        "disposition": "unsafe"
+      }
+    ]
+  },
+  {
+    "ident": "excessive-permissions",
+    "desc": "overly broad permissions",
+    "url": "https://docs.zizmor.sh/audits/#excessive-permissions",
+    "determinations": {
+      "confidence": "Medium",
+      "severity": "Medium",
+      "persona": "Regular"
+    },
+    "locations": [
+      {
+        "symbolic": {
+          "key": {
+            "Local": {
+              "verbatim_path": "examples/bad-workflows/pwn-request.yml"
+            }
+          },
+          "annotation": "this job",
+          "route": {
+            "route": [
+              {
+                "Key": "jobs"
+              },
+              {
+                "Key": "preview"
+              }
+            ]
+          },
+          "feature_kind": "Normal",
+          "kind": "Related"
+        },
+        "concrete": {
+          "location": {
+            "start_point": {
+              "row": 9,
+              "column": 2
+            },
+            "end_point": {
+              "row": 19,
+              "column": 0
+            },
+            "offset_span": {
+              "start": 337,
+              "end": 637
+            }
+          },
+          "feature": "  preview:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n      - run: npm install && npm run build\n      - run: ./scripts/deploy-preview.sh\n        env:\n          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}\n",
+          "comments": []
+        }
+      },
+      {
+        "symbolic": {
+          "key": {
+            "Local": {
+              "verbatim_path": "examples/bad-workflows/pwn-request.yml"
+            }
+          },
+          "annotation": "default permissions used due to no permissions: block",
+          "route": {
+            "route": [
+              {
+                "Key": "jobs"
+              },
+              {
+                "Key": "preview"
+              }
+            ]
+          },
+          "feature_kind": "Normal",
+          "kind": "Primary"
+        },
+        "concrete": {
+          "location": {
+            "start_point": {
+              "row": 9,
+              "column": 2
+            },
+            "end_point": {
+              "row": 19,
+              "column": 0
+            },
+            "offset_span": {
+              "start": 337,
+              "end": 637
+            }
+          },
+          "feature": "  preview:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n      - run: npm install && npm run build\n      - run: ./scripts/deploy-preview.sh\n        env:\n          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}\n",
+          "comments": []
+        }
+      }
+    ],
+    "ignored": false,
+    "fixes": []
+  },
+  {
+    "ident": "dangerous-triggers",
+    "desc": "use of fundamentally insecure workflow trigger",
+    "url": "https://docs.zizmor.sh/audits/#dangerous-triggers",
+    "determinations": {
+      "confidence": "Medium",
+      "severity": "High",
+      "persona": "Regular"
+    },
+    "locations": [
+      {
+        "symbolic": {
+          "key": {
+            "Local": {
+              "verbatim_path": "examples/bad-workflows/pwn-request.yml"
+            }
+          },
+          "annotation": "this workflow",
+          "route": {
+            "route": [
+              {
+                "Key": "on"
+              }
+            ]
+          },
+          "feature_kind": "Normal",
+          "kind": "Hidden"
+        },
+        "concrete": {
+          "location": {
+            "start_point": {
+              "row": 5,
+              "column": 0
+            },
+            "end_point": {
+              "row": 6,
+              "column": 22
+            },
+            "offset_span": {
+              "start": 301,
+              "end": 327
+            }
+          },
+          "feature": "on:\n  pull_request_target:",
+          "comments": []
+        }
+      },
+      {
+        "symbolic": {
+          "key": {
+            "Local": {
+              "verbatim_path": "examples/bad-workflows/pwn-request.yml"
+            }
+          },
+          "annotation": "pull_request_target is almost always used insecurely",
+          "route": {
+            "route": [
+              {
+                "Key": "on"
+              },
+              {
+                "Key": "pull_request_target"
+              }
+            ]
+          },
+          "feature_kind": "KeyOnly",
+          "kind": "Primary"
+        },
+        "concrete": {
+          "location": {
+            "start_point": {
+              "row": 6,
+              "column": 2
+            },
+            "end_point": {
+              "row": 6,
+              "column": 21
+            },
+            "offset_span": {
+              "start": 307,
+              "end": 326
+            }
+          },
+          "feature": "pull_request_target",
+          "comments": []
+        }
+      }
+    ],
+    "ignored": false,
+    "fixes": []
+  },
+  {
+    "ident": "unpinned-uses",
+    "desc": "unpinned action reference",
+    "url": "https://docs.zizmor.sh/audits/#unpinned-uses",
+    "determinations": {
+      "confidence": "High",
+      "severity": "High",
+      "persona": "Regular"
+    },
+    "locations": [
+      {
+        "symbolic": {
+          "key": {
+            "Local": {
+              "verbatim_path": "examples/bad-workflows/pwn-request.yml"
+            }
+          },
+          "annotation": "this step",
+          "route": {
+            "route": [
+              {
+                "Key": "jobs"
+              },
+              {
+                "Key": "preview"
+              },
+              {
+                "Key": "steps"
+              },
+              {
+                "Index": 0
+              }
+            ]
+          },
+          "feature_kind": "Normal",
+          "kind": "Hidden"
+        },
+        "concrete": {
+          "location": {
+            "start_point": {
+              "row": 12,
+              "column": 8
+            },
+            "end_point": {
+              "row": 14,
+              "column": 56
+            },
+            "offset_span": {
+              "start": 392,
+              "end": 488
+            }
+          },
+          "feature": "uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}",
+          "comments": []
+        }
+      },
+      {
+        "symbolic": {
+          "key": {
+            "Local": {
+              "verbatim_path": "examples/bad-workflows/pwn-request.yml"
+            }
+          },
+          "annotation": "action is not pinned to a hash (required by blanket policy)",
+          "route": {
+            "route": [
+              {
+                "Key": "jobs"
+              },
+              {
+                "Key": "preview"
+              },
+              {
+                "Key": "steps"
+              },
+              {
+                "Index": 0
+              },
+              {
+                "Key": "uses"
+              }
+            ]
+          },
+          "feature_kind": {
+            "Subfeature": {
+              "after": 0,
+              "fragment": {
+                "Raw": "actions/checkout@v4"
+              }
+            }
+          },
+          "kind": "Primary"
+        },
+        "concrete": {
+          "location": {
+            "start_point": {
+              "row": 12,
+              "column": 14
+            },
+            "end_point": {
+              "row": 12,
+              "column": 33
+            },
+            "offset_span": {
+              "start": 398,
+              "end": 417
+            }
+          },
+          "feature": "actions/checkout@v4",
+          "comments": []
+        }
+      }
+    ],
+    "ignored": false,
+    "fixes": []
+  }
+]

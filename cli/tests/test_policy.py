@@ -487,9 +487,20 @@ def test_an_invalid_service_context_is_never_recorded(tmp_path: Path, opa_binary
     assert not decision.exists()
 
 
+def test_an_invalid_vex_document_is_never_recorded(tmp_path: Path, opa_binary: Path) -> None:
+    bad = ROOT / "schemas" / "fixtures" / "vex" / "invalid" / "not-affected-without-justification.json"
+    code, out, decision = run_evaluate(tmp_path, b"", "--vex", str(bad), "--opa", str(opa_binary))
+    assert code == 3, out
+    assert not decision.exists()
+
+
 @pytest.mark.parametrize(
     ("option", "content"),
-    [("--service-context", b"version: 1\nservice: demo\nexposure: internal\n"), ("--waivers", b"")],
+    [
+        ("--service-context", b"version: 1\nservice: demo\nexposure: internal\n"),
+        ("--waivers", b""),
+        ("--vex", (ROOT / "schemas/fixtures/vex/valid/one-statement.json").read_bytes()),
+    ],
 )
 def test_output_may_not_be_an_input(tmp_path: Path, opa_binary: Path, option: str, content: bytes) -> None:
     """#22 review: `--output sentinel.yaml` deleted the repository's sentinel.yaml before reading it."""

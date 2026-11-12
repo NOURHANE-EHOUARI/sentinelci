@@ -19,6 +19,18 @@
       "version": "1.6.0",
       "status": "timeout",
       "detail": "opengrep timed out after 900 s"
+    },
+    "trivy": {
+      "version": "0.76.1",
+      "artifact_sha256": "c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0",
+      "binary_sha256": "d1dfca6ae10a1ad4540bb94e64f0510077c47008920a9b554986b39dca573d83",
+      "status": "ok"
+    },
+    "zizmor": {
+      "version": "1.31.1",
+      "artifact_sha256": "58e878eb2dbd2c6183c105e1ac28c14f7dd1eca44a783f1fe2a69647d012c410",
+      "binary_sha256": "5c7ded5347e2f3c96046457668405dffbceda2ad065a26abd59717252c51686f",
+      "status": "ok"
     }
   }
 }

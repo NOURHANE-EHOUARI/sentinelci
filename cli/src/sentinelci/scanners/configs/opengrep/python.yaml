@@ -1,0 +1,144 @@
+# SentinelCI's SAST rules for Python (Opengrep, Semgrep rule format). Owned by SentinelCI: the scanned
+# repository never adds, changes or silences a rule (exceptions are waivers). Messages are fixed text, never
+# interpolated with code, so no code reaches a finding. Every rule is pinned by a positive and a negative case
+# in cli/tests/scanners/test_opengrep_rules.py.
+rules:
+  - id: python-shell-command-from-data
+    languages: [python]
+    severity: ERROR
+    message: A command that is not a constant string runs through a shell; data in it can run other commands.
+    metadata:
+      title: OS command built from data runs through a shell
+      cwe: [CWE-78]
+      confidence: HIGH
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern: subprocess.$FUNC($CMD, ..., shell=True, ...)
+              - metavariable-regex:
+                  metavariable: $FUNC
+                  regex: ^(run|call|check_call|check_output|Popen)$
+          - pattern: subprocess.getoutput($CMD)
+          - pattern: subprocess.getstatusoutput($CMD)
+          - pattern: os.system($CMD)
+          - pattern: os.popen($CMD, ...)
+      - metavariable-pattern:
+          metavariable: $CMD
+          patterns:
+            - pattern-not: '"..."'
+
+  - id: python-code-evaluated-from-data
+    languages: [python]
+    severity: ERROR
+    message: eval or exec runs code that is not a constant string; data in it runs as Python.
+    metadata:
+      title: Python code evaluated from data
+      cwe: [CWE-95]
+      confidence: HIGH
+    patterns:
+      - pattern-either:
+          - pattern: eval($CODE, ...)
+          - pattern: exec($CODE, ...)
+      - metavariable-pattern:
+          metavariable: $CODE
+          patterns:
+            - pattern-not: '"..."'
+
+  - id: python-sql-built-from-strings
+    languages: [python]
+    severity: ERROR
+    message: A SQL statement is built by formatting or concatenating strings; pass values as query parameters.
+    metadata:
+      title: SQL statement built from strings
+      cwe: [CWE-89]
+      confidence: HIGH
+    pattern-either:
+      # The receiver's name does not matter (cursor, connection, session): the method's name does.
+      - patterns:
+          - pattern-either:
+              - pattern: $DB.$EXEC(f"...", ...)
+              - pattern: $DB.$EXEC("..." % $VALUES, ...)
+              - pattern: $DB.$EXEC("..." + $VALUE, ...)
+              - pattern: $DB.$EXEC($VALUE + "...", ...)
+              - pattern: $DB.$EXEC("...".format(...), ...)
+              # The statement built in a variable first, then executed: the most common shape of CWE-89.
+              - patterns:
+                  - pattern-either:
+                      - pattern-inside: |
+                          $Q = f"..."
+                          ...
+                      - pattern-inside: |
+                          $Q = "..." % $VALUES
+                          ...
+                      - pattern-inside: |
+                          $Q = "..." + $VALUE
+                          ...
+                      - pattern-inside: |
+                          $Q = "...".format(...)
+                          ...
+                  - pattern: $DB.$EXEC($Q, ...)
+          - metavariable-regex:
+              metavariable: $EXEC
+              regex: ^(execute|executemany|executescript|exec_driver_sql)$
+      - pattern: sqlalchemy.text(f"...")
+      - pattern: sqlalchemy.text("..." % $VALUES)
+      - pattern: sqlalchemy.text("..." + $VALUE)
+      - pattern: sqlalchemy.text("...".format(...))
+
+  - id: python-unsafe-deserialization
+    languages: [python]
+    severity: ERROR
+    message: Data is deserialized with a format that can run code (pickle, marshal, unsafe YAML loaders).
+    metadata:
+      title: Deserialization that can run code
+      cwe: [CWE-502]
+      confidence: MEDIUM
+    pattern-either:
+      - pattern: pickle.loads(...)
+      - pattern: pickle.load(...)
+      - pattern: marshal.loads(...)
+      - pattern: yaml.unsafe_load(...)
+      - pattern: yaml.load(..., Loader=yaml.Loader, ...)
+      - pattern: yaml.load(..., Loader=yaml.UnsafeLoader, ...)
+      - pattern: yaml.load(..., Loader=yaml.FullLoader, ...)
+      - patterns:
+          - pattern: yaml.load($DATA)
+          - pattern-not: yaml.load(..., Loader=..., ...)
+
+  - id: python-tls-verification-disabled
+    languages: [python]
+    severity: WARNING
+    message: TLS certificate verification is turned off; anyone on the network path can read or change the traffic.
+    metadata:
+      title: TLS certificate verification disabled
+      cwe: [CWE-295]
+      confidence: HIGH
+    pattern-either:
+      - pattern: requests.$METHOD(..., verify=False, ...)
+      - pattern: httpx.$METHOD(..., verify=False, ...)
+      - pattern: ssl._create_unverified_context(...)
+
+  - id: python-debug-mode-enabled
+    languages: [python]
+    severity: WARNING
+    message: The web framework runs in debug mode, which can show code and stack traces to anyone.
+    metadata:
+      title: Web framework debug mode enabled
+      cwe: [CWE-489]
+      confidence: MEDIUM
+    pattern-either:
+      - pattern: $APP.run(..., debug=True, ...)
+      - pattern: fastapi.FastAPI(..., debug=True, ...)
+
+  - id: python-jwt-signature-not-verified
+    languages: [python]
+    severity: ERROR
+    message: A JWT is decoded without verifying its signature or with the "none" algorithm; anyone can forge it.
+    metadata:
+      title: JWT signature not verified
+      cwe: [CWE-347]
+      confidence: HIGH
+    pattern-either:
+      - pattern: 'jwt.decode(..., options={..., "verify_signature": False, ...}, ...)'
+      - pattern: jwt.decode(..., verify=False, ...)
+      - pattern: jwt.decode(..., algorithms=[..., "none", ...], ...)
