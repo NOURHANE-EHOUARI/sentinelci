@@ -1222,38 +1222,53 @@ def scan_pipelines_cmd(
         Path | None, typer.Option(help="Repository root (default: the target itself).")
     ] = None,
     lock: LockOption = Path(LOCK_FILE_NAME),
+    timeout: ScanTimeoutOption = SCAN_TIMEOUT_DEFAULT_S,
+    tool_status_out: Annotated[
+        Path | None,
+        typer.Option(
+            help="Also write a tool status (schemas/tool-status.v1.json), on success and on failure, so the "
+            "gate can record a failed scan as SC-010."
+        ),
+    ] = None,
 ) -> None:
     """Audit CI workflows with the zizmor of this environment, checked against tools.lock.toml (offline, never
     configured by the scanned repository): findings of category PIPELINE, for rule SC-009."""
-    out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
+    _clear(out, tool_status_out)
     root = repo_root or target
-    try:
+
+    def scan(tool_lock: ToolLock) -> tuple[list[Finding], ToolRun]:
         if not target.is_dir():
             raise ScannerError(f"{target} is not a directory")
-        scan_root = target.resolve().relative_to(root.resolve()).as_posix()
-        scan = scan_pipelines_with_run(target, lock=load_lock(lock))
+        try:
+            scan_root = target.resolve().relative_to(root.resolve()).as_posix()
+        except ValueError as exc:
+            raise ScannerError(f"{target} is outside the repository root {root}") from exc
+        scan = scan_pipelines_with_run(target, lock=tool_lock, timeout_s=timeout)
         findings = normalize_zizmor(
             scan.results,
             run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
             tool=Tool(name="zizmor", version=scan.version),
             scan_root=scan_root,
         )
-    except ValueError as exc:
-        raise _fail_closed(ScannerError(f"{target} is outside the repository root {root}")) from exc
-    except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
-        raise _fail_closed(exc) from exc
-    out.parent.mkdir(parents=True, exist_ok=True)
-    write_ndjson(findings, out)
-    if scan.skipped:  # never counted as audited: say which ones, in the job log
+        if scan.skipped:  # never counted as audited: say which ones, in the job log
+            typer.echo(
+                f"warning: {len(scan.skipped)} file(s) with a `jobs:` key are not GitHub workflows zizmor "
+                f"can load, not audited: {', '.join(scan.skipped)}",
+                err=True,
+            )
+        skipped = f", {len(scan.skipped)} skipped" if scan.skipped else ""
         typer.echo(
-            f"warning: {len(scan.skipped)} file(s) with a `jobs:` key are not GitHub workflows zizmor can "
-            f"load, not audited: {', '.join(scan.skipped)}",
-            err=True,
+            f"zizmor {scan.version}: {len(scan.audited)} file(s) audited{skipped}, {len(findings)} finding(s)"
         )
-    skipped = f", {len(scan.skipped)} skipped" if scan.skipped else ""
-    typer.echo(
-        f"zizmor {scan.version}: {len(scan.audited)} file(s) audited{skipped}, {len(findings)} finding(s) "
-        f"written to {out}"
+        # Nothing to audit: the binary was still verified, so its status is `ok` with no finding.
+        tool_run = scan.run or ToolRun(
+            tool="zizmor", version=scan.version, binary_sha256=scan.binary_sha256, args=(), returncode=0,
+            stdout="", stderr="", duration_s=0.0,
+        )  # fmt: skip
+        return findings, tool_run
+
+    _scan_and_record(
+        "zizmor", scan, out=out, tool_status_out=tool_status_out, lock=lock, platform=_host_platform()
     )
 
 

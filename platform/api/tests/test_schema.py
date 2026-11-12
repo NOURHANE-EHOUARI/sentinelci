@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 import yaml
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
+from psycopg import sql
 from sqlalchemy import create_engine, inspect
 
 from sentinel_api.config import Settings, sqlalchemy_url
@@ -34,7 +36,7 @@ def test_the_migrations_build_exactly_the_models(database_url: str) -> None:
 def test_the_migrations_go_down_and_up_again(postgres_server: str) -> None:
     name = f"t_{uuid.uuid4().hex}"
     with psycopg.connect(f"{postgres_server}/sentinel", autocommit=True) as conn:
-        conn.execute(f'CREATE DATABASE "{name}"')
+        conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
     url = f"{postgres_server}/{name}"
     upgrade(url)
     downgrade(url, "base")
@@ -59,7 +61,7 @@ def test_a_ci_run_recorded_twice_stops_the_unique_index_migration(postgres_serve
     """A database from before 0003 may hold a CI run twice: the migration stops and changes nothing."""
     name = f"t_{uuid.uuid4().hex}"
     with psycopg.connect(f"{postgres_server}/sentinel", autocommit=True) as conn:
-        conn.execute(f'CREATE DATABASE "{name}"')
+        conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
     url = f"{postgres_server}/{name}"
     upgrade(url, "0002")
     insert = (
@@ -84,7 +86,7 @@ def test_going_below_0004_stops_while_a_run_keeps_its_uploaded_bytes(postgres_se
     """
     name = f"t_{uuid.uuid4().hex}"
     with psycopg.connect(f"{postgres_server}/sentinel", autocommit=True) as conn:
-        conn.execute(f'CREATE DATABASE "{name}"')
+        conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
     url = f"{postgres_server}/{name}"
     upgrade(url)
     with psycopg.connect(url, autocommit=True) as conn:
@@ -95,6 +97,68 @@ def test_going_below_0004_stops_while_a_run_keeps_its_uploaded_bytes(postgres_se
         )
     with pytest.raises(RuntimeError, match=r"1 run\(s\) keep their uploaded findings bytes"):
         downgrade(url, "0003")
-    with psycopg.connect(url) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == ("0004",)
+    with psycopg.connect(url) as conn:  # one transaction: nothing changed, the head included
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == ("0006",)
         assert conn.execute("SELECT findings_ndjson FROM runs").fetchone() == (b"{}",)
+
+
+def test_going_below_0005_stops_while_a_correlation_is_kept(postgres_server: str) -> None:
+    """Dropping `correlations` would lose the only copy of what the correlator posted: the downgrade stops,
+    changing nothing, while any version is kept."""
+    name = f"t_{uuid.uuid4().hex}"
+    with psycopg.connect(f"{postgres_server}/sentinel", autocommit=True) as conn:
+        conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+    url = f"{postgres_server}/{name}"
+    upgrade(url)
+    document = b'{"findings_sha256": "' + b"b" * 64 + b'"}'
+    with psycopg.connect(url, autocommit=True) as conn:
+        run = conn.execute(
+            "INSERT INTO runs (id, repo, commit, context, findings_sha256, findings_uploaded_at) "
+            "VALUES (gen_random_uuid(), 'o/r', repeat('a', 40), 'pr', repeat('b', 64), now()) RETURNING id"
+        ).fetchone()
+        assert run is not None
+        conn.execute(
+            "INSERT INTO correlations (run_id, sha256, correlator_version, group_count, document) "
+            "VALUES (%s, encode(sha256(%s), 'hex'), '0.1.0', 0, %s)",
+            (run[0], document, document),
+        )
+    with pytest.raises(RuntimeError, match=r"1 correlation version\(s\) are kept"):
+        downgrade(url, "0004")  # 0006 goes down (no decision is kept), 0005 stops
+    with psycopg.connect(url) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == ("0006",)
+        assert conn.execute("SELECT count(*) FROM correlations").fetchone() == (1,)
+
+
+def test_going_below_0006_stops_while_a_decision_is_kept(postgres_server: str) -> None:
+    """Dropping `decisions` would lose the only copy of what the gate decided: the downgrade stops, changing
+    nothing, while any decision is kept."""
+    name = f"t_{uuid.uuid4().hex}"
+    with psycopg.connect(f"{postgres_server}/sentinel", autocommit=True) as conn:
+        conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+    url = f"{postgres_server}/{name}"
+    upgrade(url)
+    decision_id = str(uuid.uuid4())
+    document = json.dumps(
+        {
+            "decision_id": decision_id,
+            "verdict": "PASS",
+            "subject": {"repo": "o/r", "commit": "a" * 40, "context": "pr"},
+            "inputs": {"findings_digest": "sha256:" + "b" * 64},
+        }
+    ).encode()
+    with psycopg.connect(url, autocommit=True) as conn:
+        run = conn.execute(
+            "INSERT INTO runs (id, repo, commit, context, findings_sha256, findings_uploaded_at) "
+            "VALUES (gen_random_uuid(), 'o/r', repeat('a', 40), 'pr', repeat('b', 64), now()) RETURNING id"
+        ).fetchone()
+        assert run is not None
+        conn.execute(
+            "INSERT INTO decisions (run_id, sha256, decision_id, verdict, evaluated_at, engine_version, "
+            "document) VALUES (%s, encode(sha256(%s), 'hex'), %s, 'PASS', now(), '0.1.0', %s)",
+            (run[0], document, decision_id, document),
+        )
+    with pytest.raises(RuntimeError, match=r"1 decision\(s\) are kept"):
+        downgrade(url, "0005")
+    with psycopg.connect(url) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == ("0006",)
+        assert conn.execute("SELECT count(*) FROM decisions").fetchone() == (1,)
