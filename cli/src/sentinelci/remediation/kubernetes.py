@@ -165,7 +165,7 @@ def _round_trip(text: str) -> tuple[YAML, list[Any]]:
 
 
 # kind -> the path from the document to its pod spec.
-_POD_SPEC_PATHS: dict[str, tuple[str, ...]] = {
+POD_SPEC_PATHS: dict[str, tuple[str, ...]] = {
     "Pod": ("spec",),
     "Deployment": ("spec", "template", "spec"), "StatefulSet": ("spec", "template", "spec"),
     "DaemonSet": ("spec", "template", "spec"), "ReplicaSet": ("spec", "template", "spec"),
@@ -181,17 +181,17 @@ def _holds_containers(node: Any) -> bool:
 
 
 def _pod_specs(document: Any) -> list[Any]:
-    """The pod spec of a workload of a kind in `_POD_SPEC_PATHS`. Another kind that holds containers is
+    """The pod spec of a workload of a kind in `POD_SPEC_PATHS`. Another kind that holds containers is
     NotFixable: its findings would be claimed but never resolved."""
     if not isinstance(document, dict):
         return []
     kind = document.get("kind")
-    if kind not in _POD_SPEC_PATHS:
+    if kind not in POD_SPEC_PATHS:
         if _holds_containers(document):
             raise NotFixable(f"kind {kind} is not supported")
         return []
     node: Any = document
-    for key in _POD_SPEC_PATHS[kind]:
+    for key in POD_SPEC_PATHS[kind]:
         node = node.get(key) if isinstance(node, dict) else None
     return [node] if isinstance(node, dict) else []
 

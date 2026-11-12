@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "finding_id": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+  "summary": "The product search builds its SQL query from the search text.",
+  "impact": "An attacker can read or change any table the application's database user can reach.",
+  "exploit_scenario": "A search for ' OR '1'='1 returns every product; a UNION SELECT reads other tables.",
+  "fix_guidance": "Pass the search text as a query parameter (%s with a tuple) instead of formatting it into the SQL string.",
+  "references": [
+    "CWE-89",
+    "https://cwe.mitre.org/data/definitions/89.html"
+  ],
+  "confidence": 1.2,
+  "model": {
+    "provider": "ollama",
+    "name": "gemma4:12b-it-qat",
+    "digest": "sha256:38044be4f923e5a55264ed7df4eaac2676651a905f735197c504045140c02bd3",
+    "prompt_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "input_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "created_at": "2026-11-11T20:00:00Z"
+}
