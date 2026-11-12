@@ -2,6 +2,7 @@ import { screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { alertReduction, correlationOf } from "../api/correlation";
 import { fakeApi, renderAt } from "../test-utils";
+import LLM_LABELLED from "../../../../schemas/fixtures/root-cause-group/valid/llm-labelled.json";
 
 const RUN = "11111111-1111-4111-8111-111111111111";
 const [A, B, C, D] = ["a", "b", "c", "d"].map((c) => c.repeat(64)) as [string, string, string, string];
@@ -15,8 +16,9 @@ const group = (ids: string[], extra: Record<string, unknown> = {}) => ({
 });
 const CORRELATION = {
   schema_version: "1.0", findings_sha256: "e".repeat(64), correlator: { version: "0.3.0", stages: ["dedup", "structural"] },
-  groups: [group([D]), group([A, B, C], { labelled_by: "llm", model: "qwen2.5:7b", title: "PyYAML 5.3.1",
-    root_cause: '<img src=x onerror="alert(1)">', single_fix: "Upgrade pyyaml to 5.4." })],
+  // The model-labelled group is the contract's own valid fixture, with the run's findings and an untrusted text.
+  groups: [group([D]), { ...LLM_LABELLED, finding_ids: [A, B, C], title: "PyYAML 5.3.1",
+    root_cause: '<img src=x onerror="alert(1)">', single_fix: "Upgrade pyyaml to 5.4." }],
 };
 const finding = (id: string, title: string) => ({ id, title, severity: "CRITICAL", category: "SCA", rule_id: "r",
   tool: { name: "grype" }, location: { path: "requirements.txt" } });
@@ -37,7 +39,7 @@ describe("Root-cause groups", () => {
     const { container } = renderAt(`/runs/${RUN}/groups`);
     const pyyaml = await screen.findByRole("article", { name: "Group: PyYAML 5.3.1" });
     const label = pyyaml.firstElementChild?.textContent;
-    expect(label).toBe("3 findings · stage structural · written by a model (qwen2.5:7b)"); // the model as named
+    expect(label).toBe("3 findings · stage structural · written by a model (ollama gemma4:12b-it-qat)");
     expect(within(pyyaml).getByText('<img src=x onerror="alert(1)">')).toBeTruthy();
     expect(container.querySelector("img")).toBeNull();
     const members = await within(pyyaml).findAllByRole("link");
@@ -47,6 +49,14 @@ describe("Root-cause groups", () => {
     expect(within(summary).getByText("50 %")).toBeTruthy(); // 1 − 2 groups ÷ 4 findings
     expect(within(summary).getByText("0.3.0 · dedup + structural")).toBeTruthy();
     expect(screen.getByText(/Advisory: the gate never reads these groups/)).toBeTruthy();
+  });
+
+  it("gives no alert reduction when a group could not be read", async () => {
+    api({ ...CORRELATION, groups: [...CORRELATION.groups, { finding_ids: [A], title: 7, root_cause: "r" }] });
+    renderAt(`/runs/${RUN}/groups`);
+    const summary = await screen.findByRole("list", { name: "Correlation summary" });
+    expect(within(summary).getByText("Alert reduction").nextSibling?.textContent).toBe("—");
+    expect(screen.getByRole("alert").textContent).toBe("1 group(s) of this correlation could not be read and are not shown.");
   });
 
   it("says when the run has no correlation", async () => {
@@ -80,9 +90,18 @@ describe("correlationOf", () => {
     const view = correlationOf({ correlator: { version: 3, stages: ["dedup", 4] },
       groups: [group([A]), { finding_ids: [B], title: 1, root_cause: "r" }, group([C, D]), null] });
     expect(view?.groups.map((g) => g.members)).toEqual([2, 1]);
+    expect(view?.unread).toBe(2);
     expect(view?.version).toBe("");
     expect(view?.stages).toEqual(["dedup"]);
     expect(correlationOf({ groups: "none" })).toBeNull();
+  });
+
+  it("names a group's model by its provider and name, and nothing else as a model", () => {
+    const named = (model: unknown) => correlationOf({ groups: [{ ...LLM_LABELLED, model }] })?.groups[0]?.model;
+    expect(named(LLM_LABELLED.model)).toBe("ollama gemma4:12b-it-qat");
+    expect(named({ name: "gemma4:12b-it-qat" })).toBe("gemma4:12b-it-qat");
+    expect(named("qwen2.5:7b")).toBeNull(); // a string is not Root-cause group v1
+    expect(named({ provider: "ollama", name: 4 })).toBeNull();
   });
 
   it("computes the alert reduction of SPEC section 10", () => {

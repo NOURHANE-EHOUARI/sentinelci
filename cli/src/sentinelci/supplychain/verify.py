@@ -51,6 +51,9 @@ class Check:
 class TrustReport:
     image: Image
     checks: tuple[Check, ...]
+    # The decision the verified decision attestation holds, None without a valid one: the platform records
+    # a report only next to the decision it names (review of #86).
+    decision_id: str | None = None
 
     @property
     def trusted(self) -> bool:
@@ -99,6 +102,7 @@ def report_document(
         "mode": mode,
         "repo": repo,
         "builder_id": builder_id,
+        "decision_id": report.decision_id,
         "key_sha256": key_sha256,
         "verified_at": verified_at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "trusted": report.trusted,
@@ -181,6 +185,14 @@ IMAGE_SIGNATURE_CHECK = "signature: the image itself"
 
 def _unavailable(names: tuple[str, ...], reason: str) -> list[Check]:
     return [Check(name, False, reason) for name in names]
+
+
+def verified_decision_id(verified: Mapping[str, Verified]) -> str | None:
+    """The `decision_id` of the decision the verified decision attestation holds, or None when there is no
+    valid one: what the trust report names, whatever the other checks found."""
+    outcome = verified.get("decision")
+    decision, _ = _decision(outcome.predicate if outcome is not None else None)
+    return decision.decision_id if decision is not None else None
 
 
 def trust_checks(
@@ -269,7 +281,8 @@ def verify_evidence(
         kind: verifier.verify(directory / f"{kind}.sigstore.json", image, predicate_type)
         for kind, predicate_type in KINDS.items()
     }
-    return TrustReport(image, trust_checks(image, verified, repo=repo, builder_id=builder_id))
+    checks = trust_checks(image, verified, repo=repo, builder_id=builder_id)
+    return TrustReport(image, checks, verified_decision_id(verified))
 
 
 def verify_registry(
@@ -293,4 +306,5 @@ def verify_registry(
         signature.problem is None,
         signature.problem or f"signed by the key ({signature.predicate} signature(s))",
     )
-    return TrustReport(image, (signed, *trust_checks(image, verified, repo=repo, builder_id=builder_id)))
+    checks = trust_checks(image, verified, repo=repo, builder_id=builder_id)
+    return TrustReport(image, (signed, *checks), verified_decision_id(verified))

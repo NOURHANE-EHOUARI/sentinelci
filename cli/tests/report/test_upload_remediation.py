@@ -104,12 +104,23 @@ def test_another_document_for_a_recorded_proposal_is_refused(tmp_path: Path, pla
     assert result.exit_code == 4 and "recorded already with another document" in result.output
 
 
+def test_a_201_for_other_bytes_is_not_an_upload(
+    tmp_path: Path, platform: str, fake: Fake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fake, "post", lambda headers, body: (201, {
+        "proposal_id": ATTEMPT["proposal"]["proposal_id"], "sha256": "0" * 64}))  # fmt: skip
+    result = upload(tmp_path, platform)
+    assert result.exit_code == 4 and "recorded other bytes" in result.output, result.output
+
+
 @pytest.mark.parametrize(
     ("change", "message"),
     [
         (lambda d: d["result"].update(tests_ok=False), "VERIFIED needs a build, passing tests"),
         (lambda d: d["result"].update(attempt=2), "about attempt 2, not 1"),
         (lambda d: d.update(repo="not a repo"), "repo"),
+        (lambda d: d["result"].update(tests_ok=1), "result.tests_ok"),  # strict: the schema's types
+        (lambda d: d["result"].update(verified_at=1893456000), "result.verified_at"),
     ],
 )
 def test_an_attempt_the_platform_would_refuse_is_never_sent(

@@ -4,6 +4,12 @@ import { getRemediation } from "../api/client";
 import { asAttempt } from "../api/remediation";
 import { Failure, Loading, Outcome, utc, Verdict } from "./common";
 
+const CONDITION: Record<string, { label: string; style: string }> = {
+  true: { label: "ok", style: "text-emerald-700" },
+  false: { label: "FAIL", style: "text-red-700" },
+  null: { label: "unknown", style: "text-slate-500" },
+};
+
 /** One attempt: the verification gate's conditions, then the proposal (rationale, files, the diff as text). */
 export function RemediationDetailPage() {
   const { proposalId = "" } = useParams();
@@ -17,7 +23,13 @@ export function RemediationDetailPage() {
         ← Remediation
       </Link>
       <h1 className="mt-2 flex flex-wrap items-center gap-3 text-xl font-semibold">
-        <Outcome value={view.outcome} />
+        {view.contradicts ? (
+          <span className="rounded bg-red-100 px-1.5 py-0.5 text-xs font-semibold text-red-800">
+            {view.outcome}?
+          </span>
+        ) : (
+          <Outcome value={view.outcome} />
+        )}
         <span className="font-mono text-base">{view.strategy}</span>
       </h1>
       <div className="mt-1 flex flex-wrap items-center gap-3 text-sm text-slate-600">
@@ -34,12 +46,19 @@ export function RemediationDetailPage() {
         </p>
       )}
 
+      {view.contradicts && (
+        <p role="alert" className="mt-3 rounded border border-red-200 bg-red-50 p-2 text-sm text-red-800">
+          This document contradicts itself: it says VERIFIED, but a condition of the gate below does not hold or
+          can't be read. Don't trust this attempt.
+        </p>
+      )}
+
       <h2 className="mb-2 mt-6 font-medium">Verification gate</h2>
       <ul className="space-y-1 text-sm" aria-label="Verification gate">
         {view.conditions.map((condition) => (
           <li key={condition.name} className="flex items-center gap-2">
-            <span className={`w-10 text-xs font-semibold ${condition.ok ? "text-emerald-700" : "text-red-700"}`}>
-              {condition.ok ? "ok" : "FAIL"}
+            <span className={`w-16 text-xs font-semibold ${CONDITION[String(condition.ok)]!.style}`}>
+              {CONDITION[String(condition.ok)]!.label}
             </span>
             {condition.name}
           </li>
