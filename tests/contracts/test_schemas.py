@@ -29,6 +29,8 @@ CONTRACTS = {
     "correlation": "correlation.v1.json",
     "trust-report": "trust-report.v1.json",
     "release-evidence": "release-evidence.v1.json",
+    "explanation": "explanation.v1.json",
+    "triage-hint": "triage-hint.v1.json",
 }
 
 
