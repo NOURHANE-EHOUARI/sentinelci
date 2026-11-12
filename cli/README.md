@@ -152,7 +152,7 @@ Runs the OPA policies in `policies/` and writes a Decision record (`schemas/deci
   statement or document dated after `--evaluated-at` blocks (SC-010). Products are package purls (`pkg:oci` is
   refused: an image matches no finding). An invalid document, a duplicate JSON key, or one over 4 MiB exits 3.
 - Required scanners (`policies/required_tools.rego`, part of the policy bundle, so read from the base branch):
-  gitleaks and trivy in `pr` and `release`, none in `local`. A required tool left out of the tool status, or no tool
+  gitleaks, trivy and zizmor in `pr` and `release`, none in `local`. A required tool left out of the tool status, or no tool
   status at all in a context that requires tools, is an SC-010 BLOCK (`Scanner missing` /
   `Tool status missing`): a workflow that drops a scanner cannot turn its silence into a pass.
 - The decision is `schema_version` 1.2 (with `baseline_digest` / `tool_status_digest`) when either option is
@@ -429,8 +429,15 @@ SENTINEL_API_TOKEN=... uv run sentinel upload --findings out/findings.ndjson --a
 
 ```bash
 uv run sentinel scan pipelines demo-shop --repo-root . --out out/pipelines.ndjson \
-  --repo NOURHANE-EHOUARI/sentinelci --commit "$GITHUB_SHA" --context pr
+  --repo NOURHANE-EHOUARI/sentinelci --commit "$GITHUB_SHA" --context pr \
+  --tool-status-out out/pipelines-status.json --timeout 300
 ```
+
+- **Tool status** (`--tool-status-out`, written on success and on failure, like the other scanners): `ok` with the
+  verified binary's sha256 and, as its `artifact_sha256`, the pinned wheel that carries that binary (also when
+  there was nothing to audit: the binary was still checked). A crash or an unreadable report is `failed`, a run
+  past `--timeout` (300 s by default) is `timeout`, a binary no pinned wheel carries is `integrity_mismatch`:
+  the gate blocks each one (SC-010). `sentinel-scan.yml` runs it on the head and, in pr mode, the base commit.
 
 - zizmor, a runtime dependency of the CLI (`uv.lock`). Right before it runs, the binary of the CLI's own
   environment (never one from `PATH`) must be one that a wheel pinned in `tools.lock.toml` carries
@@ -585,3 +592,37 @@ uv run sentinel admission-policy --key cosign.pub --repo NOURHANE-EHOUARI/sentin
 - **Tests.** `kyverno apply` (pinned in `tools.lock.toml`) evaluates the policy as the admission controller
   does, against a real registry. Every case `sentinel verify` refuses there, admission refuses too (the tests
   compare the two verdicts, not the reasons).
+
+## `sentinel scan sast` (SAST, A1)
+
+```bash
+uv run sentinel scan sast demo-shop --repo-root . --out out/sast.ndjson \
+  --repo NOURHANE-EHOUARI/sentinelci --commit "$GITHUB_SHA" --context pr
+```
+
+- The pinned Opengrep, verified against `tools.lock.toml` right before it runs. Opengrep publishes no checksum
+  file, so its pin was taken after checking each asset's keyless signature (the lock records the certificate,
+  the signature and the signer identity, for reviewers). `sentinel tools install`/`verify` check only the
+  pinned sha256; the signature fields are not read.
+- SentinelCI's own rules only (`scanners/configs/opengrep/`: Python, JavaScript and TypeScript), each pinned by
+  code it must flag and code it must leave alone (`test_opengrep_rules.py`). The scanned repository cannot add,
+  change or silence a rule: `# nosemgrep` comments, `.semgrepignore`, `.gitignore`, `.semgrep.yml`, the 1 MB size
+  limit and the per-file time-out have no effect. A link that leaves the target, or loops, exits `3`.
+- Files scanned: `.py`, `.pyi`, `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts` and `.tsx`, plus an executable file whose
+  `#!` line names `python` or `node`. Nothing else is (Opengrep chooses files by extension): a script without
+  an extension that is not executable, `.mts`, `.cts`, `.pyw`, notebooks or code inside other files are not
+  scanned. "Cannot be silenced" covers these files only.
+- Findings are category SAST, fingerprinted by rule, path and the normalized matched code (a moved line keeps
+  its id). The same code several times in a file is one finding per place, numbered in line order: the first
+  keeps the id, the n-th gets `sha256(id | n)`, so a copy of a vulnerable line is new in a pull request and a
+  waiver covers only the copy whose id it names. No code is kept: the messages are the rules' fixed text.
+- Exit code `3` (SC-010), and no findings file, when Opengrep fails, reports an error (even as a warning: too
+  many matches in a file, out of memory, ...), names a rule that is not SentinelCI's, or does not match the
+  lock. A file Opengrep could parse only in part exits `3` when more than half of its lines were not analysed
+  (all of them for a file it could not parse at all).
+- Each smaller gap is a finding: rule `sentinel-sast-not-analysed`, SAST HIGH, one per contiguous range of
+  skipped lines, fingerprinted on the skipped text like a match (a gap that moves keeps its id, a new one is
+  new, and the same text twice in a file is two findings). Its message names the lines and quotes no code
+  (`Opengrep did not analyse lines 12-19 of app.py (PartialParsing). ...`). Valid modern syntax Opengrep cannot
+  parse yet (a PEP 695 `def f[T]`, some TypeScript) shows up this way until Opengrep catches up: waive it with
+  a reviewed expiry, never with a scanner flag. The job log still names each file and counts its lines.
