@@ -377,3 +377,26 @@ def test_the_database_keeps_a_decision_as_recorded(
                 (other_run, hashlib.sha256(data).hexdigest(), mislabelled["decision_id"], data),
             )
         assert conn.execute("SELECT count(*), max(verdict) FROM decisions").fetchone() == (1, "BLOCK")
+
+
+def test_the_409_is_documented_with_both_of_its_shapes(client: TestClient, headers: dict[str, str]) -> None:
+    """A recorded decision answers with `decision`, a run without findings with `detail` only: the contract
+    says either, so a generated client never assumes `decision` is there (#79 review)."""
+    from jsonschema import Draft202012Validator
+
+    contract = client.get("/openapi.json").json()
+    schema = contract["paths"]["/api/v1/runs/{run_id}/decision"]["post"]["responses"]["409"]["content"][
+        "application/json"
+    ]["schema"]
+    refs = sorted(option["$ref"].rsplit("/", 1)[1] for option in schema["anyOf"])
+    assert refs == ["DecisionExists", "ErrorOut"]
+    validator = Draft202012Validator({**schema, "components": contract["components"]})
+    run_id = create_run(client, headers)
+    no_findings = post(client, headers, run_id, as_bytes(decision("0" * 64)))
+    assert no_findings.status_code == 409 and list(validator.iter_errors(no_findings.json())) == []
+    run_id, digest = recorded_run(client, headers, commit="b" * 40)
+    document = decision(digest)
+    document["subject"]["commit"] = "b" * 40
+    assert post(client, headers, run_id, as_bytes(document)).status_code == 201
+    again = post(client, headers, run_id, as_bytes(document))
+    assert again.status_code == 409 and list(validator.iter_errors(again.json())) == []
