@@ -13,10 +13,13 @@ base and of the patched commit (exported with `git archive`, never checked out):
     sides: the pod's and every container's `securityContext`, and the pod's host namespaces.
   - A Dockerfile is the same, line for line, once the `USER 10001:10001` lines the patch added are skipped,
     except that an ADD may have become COPY (on the ADD's first line, and only where the fixer makes that
-    edit: COPY's flags only, and every source a plain local file or directory of the base tree, never a URL,
-    an archive or a link) and an `apt-get install` may have gained `--no-install-recommends`. An added USER
-    line is an instruction of its own in the final stage, with no RUN after it: every RUN still runs as the
-    user it ran as.
+    edit: COPY's flags only, and every source a plain local file or directory of the base commit's whole
+    tree, never a URL, an archive or a link) and an `apt-get install` may have gained
+    `--no-install-recommends`. An added USER line is an instruction of its own in the final stage, with no RUN
+    after it: every RUN still runs as the user it ran as. A file the fixer never edits (an `escape` parser
+    directive, a heredoc) fails. These line rules do not see the other findings, so alone they would let an
+    ADD the fixer left alone because another finding sits on it become COPY; the fixer's own proposal, below,
+    does see them.
 
   Whether the new settings are right is the scanners' part: a weaker one is a new finding, which the gate
   counts.
@@ -43,11 +46,17 @@ import yaml
 
 from sentinelci.contracts.finding import Finding
 from sentinelci.contracts.remediation import PatchProposal
-from sentinelci.remediation.dockerfile import NON_ROOT_USER, Instruction, add_only_copies, parse_instructions
+from sentinelci.remediation.dockerfile import (
+    NON_ROOT_USER,
+    Instruction,
+    add_only_copies,
+    check_editable,
+    parse_instructions,
+)
 from sentinelci.remediation.dockerfile import propose as propose_dockerfile
 from sentinelci.remediation.kubernetes import POD_SPEC_PATHS
 from sentinelci.remediation.kubernetes import propose as propose_kubernetes
-from sentinelci.remediation.proposal import FixContext, Plan, RemediationError, lines_of
+from sentinelci.remediation.proposal import FixContext, NotFixable, Plan, RemediationError, lines_of
 from sentinelci.scanners.runner import is_within
 
 KUBERNETES = "deterministic:kubernetes"
@@ -242,7 +251,13 @@ def _check_dockerfile(
 ) -> tuple[list[str], list[str]]:
     before, after = lines_of(before_text), lines_of(after_text)
     build = _dockerfile_build(path, before, after)
-    return build, ([] if build else _dockerfile_tests(path, before, after, base_root))
+    if build:
+        return build, []
+    try:
+        check_editable(before)  # what the fixer never edits: an `escape` directive, a heredoc
+    except NotFixable as exc:
+        return [], [f"{path}: the Dockerfile fixer does not edit this file ({exc})"]
+    return [], _dockerfile_tests(path, before, after, base_root)
 
 
 # ---------------------------------------------------------------- the fixer's own proposal

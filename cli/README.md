@@ -527,8 +527,10 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
     the pod's and every container's `securityContext` and the pod's host namespaces are set aside; a Dockerfile
     is the same line for line once its added `USER 10001:10001` lines are skipped (each an instruction of its
     own after the final stage's last RUN), except ADD → COPY (on an ADD's first line, and only where the fixer
-    makes that edit: the same rule, on the base tree) and an added `--no-install-recommends`. Whether
-    the new settings are right is the scanners' part: a weaker one is a new finding;
+    makes that edit: the same rule, on the base commit's whole tree, except that the check does not see the
+    other findings) and an added `--no-install-recommends`. A file the fixer never edits (an `escape` parser
+    directive, a heredoc) fails. Whether the new settings are right is the scanners' part: a weaker one is a
+    new finding;
   - manifests are read with a safe loader that refuses aliases and duplicate keys;
   - exit `0` when both hold, `1` when one does not (the problems name the file and why), `3` when they cannot
     be checked honestly: a strategy with no build or tests defined here (an LLM code fix, B6), a file that is
