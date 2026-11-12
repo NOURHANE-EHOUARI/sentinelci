@@ -128,7 +128,7 @@ def _image_report(seed: dict[str, Any]) -> dict[str, Any]:
 def _finding(seed: dict[str, Any]) -> dict[str, Any]:
     """The CONTAINER finding the image adapter gives for the seed (A1)."""
     run = Run(repo="NOURHANE-EHOUARI/sentinelci", commit="0" * 40, context="release")
-    image = ImageSubject(digest=IMAGE_DIGEST, ref="kind-registry:5000/demo-shop/shop-api:block")
+    image = ImageSubject(digest=IMAGE_DIGEST, ref="kind-registry:5000/demo-shop/shop-api")
     (finding,) = normalize_grype_image(_image_report(seed), run=run, image=image)
     document: dict[str, Any] = json.loads(finding.model_dump_json(exclude_none=True))
     assert not [e.message for e in FINDING_SCHEMA.iter_errors(document)]
@@ -199,7 +199,7 @@ def test_the_pinned_scanners_detect_the_seed_in_the_built_image(seed: dict[str, 
     scan = scan_image(
         archive,
         image_digest=digest,
-        name="demo-shop/shop-api:block",
+        name="kind-registry:5000/demo-shop/shop-api",
         db_dir=Path(str(GRYPE_DB)),
         lock=load_lock(ROOT / "tools.lock.toml"),
         tools_dir=Path(str(TOOLS_DIR)),
