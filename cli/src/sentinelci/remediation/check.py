@@ -269,10 +269,11 @@ FIXERS: dict[str, Fixer] = {KUBERNETES: propose_kubernetes, DOCKERFILE: propose_
 
 def _replayed(proposal: PatchProposal, base_root: Path, findings: Sequence[Finding]) -> list[str]:
     """The fixer re-run on the base tree and findings: its proposal must be this one, field for field."""
+    fixer = FIXERS.get(proposal.strategy)
+    if fixer is None:  # a strategy checked here before it has a deterministic fixer: nothing can be replayed
+        raise CheckError(f"no deterministic fixer to re-run for {proposal.strategy}")
     try:
-        plan = FIXERS[proposal.strategy](
-            findings, base_root, attempt=proposal.attempt, created_at=proposal.created_at
-        )
+        plan = fixer(findings, base_root, attempt=proposal.attempt, created_at=proposal.created_at)
     except RemediationError as exc:
         raise CheckError(f"the fixer cannot be re-run on the base findings: {exc}") from exc
     own = plan.proposal
