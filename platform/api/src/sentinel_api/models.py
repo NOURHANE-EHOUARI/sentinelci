@@ -17,6 +17,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Text,
+    Uuid,
     func,
     text,
 )
@@ -72,6 +73,8 @@ class Run(Base):
     findings_ndjson: Mapped[bytes | None] = deferred(mapped_column(LargeBinary))
 
     findings: Mapped[list[RunFinding]] = relationship(back_populates="run", cascade="all, delete-orphan")
+    # The gate's decision on this run's findings, once recorded (its document is loaded only when asked for).
+    decision: Mapped[RunDecision | None] = relationship(lazy="selectin", viewonly=True)
 
 
 class RunFinding(Base):
@@ -110,5 +113,30 @@ class Correlation(Base):
     seq: Mapped[int] = mapped_column(BigInteger, Identity(always=True), unique=True)
     correlator_version: Mapped[str] = mapped_column(String(64))
     group_count: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    document: Mapped[bytes] = deferred(mapped_column(LargeBinary, nullable=False))
+
+
+class RunDecision(Base):
+    """A run's gate decision (Decision v1, B4), kept byte for byte: one per run, made on exactly the findings
+    the run recorded and about the run's subject (repo, commit, context, ref). Named by the sha256 of its
+    bytes. `decision_id` and `verdict` are copies of the document's that the database checks against it
+    (trigger `decisions_are_kept`), since they are listed and counted; `evaluated_at` and `engine_version` are
+    copied by the API only, for display: the document stays the reference for both."""
+
+    __tablename__ = "decisions"
+    __table_args__ = (
+        CheckConstraint("sha256 ~ '^[a-f0-9]{64}$'", name="decisions_sha256"),
+        # The bytes are kept only as the bytes the decision's name was taken of.
+        CheckConstraint("encode(sha256(document), 'hex') = sha256", name="decisions_bytes_match"),
+        CheckConstraint("verdict IN ('PASS', 'WARN', 'BLOCK')", name="decisions_verdict"),
+    )
+
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True)
+    sha256: Mapped[str] = mapped_column(String(64))
+    decision_id: Mapped[uuid.UUID] = mapped_column(Uuid, unique=True)
+    verdict: Mapped[str] = mapped_column(String(8))
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    engine_version: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     document: Mapped[bytes] = deferred(mapped_column(LargeBinary, nullable=False))
