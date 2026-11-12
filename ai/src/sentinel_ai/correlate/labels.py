@@ -78,7 +78,8 @@ _SECRETS = [
 # `password = value`, `DB_PASSWORD=value`, `dbPassword: 'value'`: the name stays, the value goes.
 _ASSIGNED = re.compile(
     r"(?i)\b([a-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key"
-    r"|account[_-]?key|credential)[a-z0-9_.-]*)(['\"]?\s*[:=]\s*['\"]?)[^\s\"',;]{4,}"
+    r"|account[_-]?key|credential)[a-z0-9_.-]*)(['\"]?\s*[:=]\s*)"
+    r"(?:(['\"])(?:(?!\3).)+\3?|[^\s\"',;]{4,})"  # a quoted value up to its closing quote, or a bare word
 )
 # A URL's password: `scheme://user:password@host` keeps its user and host.
 _USERINFO = re.compile(r"(://[^/\s:@]+:)[^/\s@]+@")
@@ -108,7 +109,9 @@ def redact(text: str) -> str:
     for pattern in _SECRETS:
         text = pattern.sub(REDACTED, text)
     text = _USERINFO.sub(lambda match: f"{match.group(1)}{REDACTED}@", text)
-    return _ASSIGNED.sub(lambda match: f"{match.group(1)}{match.group(2)}{REDACTED}", text)
+    return _ASSIGNED.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}{match.group(3) or ''}{REDACTED}", text
+    )
 
 
 def _clip(value: object) -> str:

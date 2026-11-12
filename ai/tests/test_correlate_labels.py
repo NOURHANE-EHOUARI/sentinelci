@@ -15,6 +15,7 @@ from referencing import Registry, Resource
 
 from sentinel_ai.correlate import correlate_run
 from sentinel_ai.correlate.labels import (
+    MAX_FIELD,
     MAX_FINDINGS_SENT,
     PROMPT_SHA256,
     SYSTEM_PROMPT,
@@ -342,3 +343,94 @@ def test_a_fix_that_quotes_a_secret_is_refused_too() -> None:
     assert (outcome.status, outcome.reason) == (
         "unavailable", "the answer quotes something that looks like a secret",
     )  # fmt: skip
+
+
+# ---------------------------------------------------------------- review of #99: every field, every block
+
+
+@pytest.mark.parametrize("before", [150, 160, 165])
+def test_a_secret_across_the_template_title_clip_is_not_sent(before: int) -> None:
+    """The template title is clipped at 200 by stage 2a or 2b, before stage 3 sees it: it is redacted first
+    there too."""
+    path = "d" * before + "/" + fake_token("ghp_", 36) + "/x.py"
+    findings = [located("SAST", "python-sql", path, line) for line in (10, 22)]
+    user = prompt(run_of(findings).groups[0], findings)
+    assert "ghp_" not in user and "abcdefghij0" not in user, "not even the start of the token"
+
+
+FIELDS = ["title", "message", "rule_id", "path", "package", "fixed_versions", "cve", "cwe"]
+
+
+def _with(finding: dict[str, Any], field: str, text: str) -> dict[str, Any]:
+    finding = json.loads(json.dumps(finding))
+    if field == "path":
+        finding["location"]["path"] = text
+    elif field in ("package", "fixed_versions"):
+        name, fixed = (text, ["1.0.1"]) if field == "package" else ("lodash", [text])
+        finding["package"] = {"purl": "pkg:npm/lodash@1.0.0", "name": name, "version": "1.0.0",
+                              "fixed_versions": fixed}  # fmt: skip
+    elif field in ("cve", "cwe"):
+        finding[field] = [text]
+    else:
+        finding[field] = text
+    return finding
+
+
+@pytest.mark.parametrize(
+    "padding", ["", "x" * 290 + " ", " " * 995], ids=["alone", "at-the-clip", "after-spaces"]
+)
+@pytest.mark.parametrize("field", FIELDS)
+def test_every_field_sent_is_redacted_then_clipped(field: str, padding: str) -> None:
+    """Every text of a finding goes through the same path: redacted whole, then clipped to MAX_FIELD."""
+    token = fake_token("ghp_", 36)
+    group = run_of(SQL[:2]).groups[0]
+    user = prompt(group, [_with(SQL[0], field, padding + token), SQL[1]])
+    assert "ghp_" not in user and "abcdefghij0" not in user
+    block = user.split("<findings>\n")[1].removesuffix("\n</findings>")
+    for line in block.split("\n"):
+        for value in json.loads(line).values():
+            for text in value if isinstance(value, list) else [value]:
+                assert not isinstance(text, str) or len(text) <= MAX_FIELD
+
+
+def test_the_group_block_is_redacted_too() -> None:
+    """The shared key, the template title and the template fix come from paths and package names."""
+    token = fake_token("ghp_", 36)
+    located_ = [located("SAST", "python-sql", f"app/{token}/db.py", line) for line in (10, 22)]
+    packaged = [package("GHSA-35jh-r3h4-6jhm", token, "4.17.20", "4.17.21"),
+                package("GHSA-29mw-wpgm-hmr9", token, "4.17.20", "4.17.21")]  # fmt: skip
+    for findings in (located_, packaged):
+        group = run_of(findings).groups[0]
+        user = prompt(group, findings)
+        assert "ghp_" not in user and "abcdefghij0" not in user
+
+
+def test_a_private_key_cut_by_its_scanner_is_still_redacted() -> None:
+    cut = "-----BEGIN RSA PRIVATE KEY-----\n" + fake_token("MII", 40)
+    assert redact(f"key: {cut}") == "key: [REDACTED]"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ['DB_PASSWORD="h2h2 h2h2h2"', "DB_PASSWORD='h2,h2h2h2h2'", 'password="h2;h2h2h2h2"'],
+    ids=["space", "comma", "semicolon"],
+)
+def test_a_quoted_value_is_redacted_up_to_its_closing_quote(text: str) -> None:
+    redacted = redact(text)
+    assert "[REDACTED]" in redacted and "h2h2" not in redacted
+
+
+def test_the_embedder_reads_redacted_text() -> None:
+    """Stage 2b's text (title and path) is redacted like every prompt (SPEC 8): the embedder may be remote."""
+    from sentinel_ai.correlate.stages import correlate
+
+    token = fake_token("ghp_", 36)
+    seen: list[str] = []
+
+    def recording(texts: list[str]) -> list[list[float]]:
+        seen.extend(texts)
+        return [[1.0, 0.0] for _ in texts]
+
+    findings = [located("SAST", f"rule-{n}", f"app/{token}/{n}.py", 3) for n in "ab"]
+    correlate(findings, structural=False, embed=recording, threshold=0.9)
+    assert seen and all("ghp_" not in text and token not in text for text in seen), seen
