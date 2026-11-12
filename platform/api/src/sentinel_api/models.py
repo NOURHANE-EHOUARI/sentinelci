@@ -219,3 +219,19 @@ class Remediation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     sha256: Mapped[str] = mapped_column(String(64))
     document: Mapped[bytes] = deferred(mapped_column(LargeBinary, nullable=False))
+
+
+class WaiversFile(Base):
+    """A waivers file the gate read (schemas/waivers.v1.json, SPEC section 6.4), kept byte for byte and named
+    by its sha256: the `inputs.waivers_digest` of the decisions that read it. Kept only when a recorded
+    decision (a run's or a release's) read it, and never changed (trigger `waivers_files_are_kept`)."""
+
+    __tablename__ = "waivers_files"
+    __table_args__ = (
+        CheckConstraint("sha256 ~ '^[a-f0-9]{64}$'", name="waivers_files_sha256"),
+        CheckConstraint("encode(sha256(document), 'hex') = sha256", name="waivers_files_bytes_match"),
+    )
+
+    sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    document: Mapped[bytes] = deferred(mapped_column(LargeBinary, nullable=False))
