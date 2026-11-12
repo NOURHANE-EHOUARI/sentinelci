@@ -236,7 +236,9 @@ export interface paths {
         };
         /**
          * Get Release Evidence
-         * @description The image's latest release (or the release `decision_id`), exactly as it was posted.
+         * @description The image's release recorded last (or the release `decision_id`), exactly as it was posted. "Last"
+         *     is the order of recording, not of the decisions: a late upload of an older decision becomes the one
+         *     served without `decision_id`.
          */
         get: operations["get_release_evidence_api_v1_releases__image_digest__evidence_get"];
         put?: never;
@@ -1916,6 +1918,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorOut"];
                 };
             };
+            /** @description Not a Release evidence v1 document, or one that contradicts itself: a BLOCK with a trust report, a report about another image, repository or decision (the reason is in `msg`). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
             /** @description No database is configured. */
             503: {
                 headers: {
@@ -1930,7 +1941,7 @@ export interface operations {
     get_release_evidence_api_v1_releases__image_digest__evidence_get: {
         parameters: {
             query?: {
-                /** @description One release of the image; the latest without it. */
+                /** @description One release of the image; without it, the one recorded last. */
                 decision_id?: string | null;
             };
             header?: never;
@@ -2098,6 +2109,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Not a Remediation attempt v1 document (values of another JSON type included), or one that contradicts itself: a VERIFIED the gate refuses, a result about another proposal or attempt, verified before it was proposed (the reason is in `msg`). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
             /** @description No database is configured. */

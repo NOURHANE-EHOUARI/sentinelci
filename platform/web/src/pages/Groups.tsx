@@ -29,7 +29,8 @@ export function GroupsPage() {
   );
   const shared = view?.groups.filter((group) => group.members > 1) ?? [];
   const alone = view ? view.groups.length - shared.length : 0;
-  const reduction = view ? alertReduction(view.groups.length, run.data.finding_count) : null;
+  // A group left out would lower the count of groups and raise the reduction: no number then, rather than a wrong one.
+  const reduction = view && view.unread === 0 ? alertReduction(view.groups.length, run.data.finding_count) : null;
   return (
     <section>
       <h1 className="mb-1 text-xl font-semibold">Root-cause groups</h1>
@@ -53,6 +54,11 @@ export function GroupsPage() {
             shared.map((group) => <Group key={group.groupId} group={group} findings={byId} />)
           )}
           {alone > 0 && <p className="mt-4 text-sm text-slate-600">{alone} finding(s) stand alone.</p>}
+          {view.unread > 0 && (
+            <p role="alert" className="mt-4 rounded border border-amber-200 bg-amber-50 p-2 text-sm text-amber-900">
+              {view.unread} group(s) of this correlation could not be read and are not shown.
+            </p>
+          )}
         </>
       )}
     </section>

@@ -70,9 +70,11 @@ def run_decision(
     evaluated_at: str = "2026-11-10T10:05:00+00:00",
     applied: tuple[str, ...] = ("waiver-2026-001",),
     violations: list[dict[str, Any]] | None = None,
+    post: bool = True,
 ) -> dict[str, Any]:
     """A run with one finding and its recorded decision, which read the waivers file of this digest (None: a
-    Decision 1.0, which does not record it). Returns the decision document."""
+    Decision 1.0, which does not record it). Returns the decision document. With post=False, the decision is
+    built but not sent (a test records it another way)."""
     run = {"repo": repo, "commit": COMMIT, "context": context} | ({"ref": ref} if ref else {})
     created = client.post("/api/v1/runs", json=run, headers=headers)
     assert created.status_code == 201, created.text
@@ -111,6 +113,8 @@ def run_decision(
         document.pop("vex_applied")
     else:
         document["inputs"]["waivers_digest"] = waivers_digest
+    if not post:
+        return document | {"_run_id": run_id}
     recorded = client.post(
         f"/api/v1/runs/{run_id}/decision", content=json.dumps(document), headers=headers | JSON
     )
@@ -207,6 +211,77 @@ def test_a_file_the_gate_could_not_have_read_is_refused(
     assert "not a waivers file" in json.dumps(refused.json())
 
 
+ALIASES = b"""version: 1
+waivers:
+  - &a [x, x, x, x, x, x, x, x, x, x]
+  - &b [*a, *a, *a, *a, *a, *a, *a, *a, *a, *a]
+"""
+
+
+def test_a_file_with_a_yaml_alias_is_refused(client: TestClient, headers: dict[str, str]) -> None:
+    """A few hundred bytes of aliases expand to millions of values (#110 review): the gate's own loader
+    refuses them, so the gate fails closed and the platform answers 422."""
+    run_decision(client, headers, f"sha256:{sha(ALIASES)}")
+    refused = put(client, headers, ALIASES)
+    assert refused.status_code == 422, refused.text
+    assert "no YAML alias" in json.dumps(refused.json())
+
+
+def test_a_file_no_decision_read_is_refused_before_it_is_parsed(
+    client: TestClient, headers: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The decision check comes first: a token holder cannot make the API parse a file no gate read."""
+
+    def never(data: bytes) -> list[Any]:
+        raise AssertionError("parsed a file no decision read")
+
+    monkeypatch.setattr("sentinel_api.waivers.load_waivers", never)
+    assert put(client, headers, ALIASES).status_code == 409
+
+
+def test_the_waivers_in_force_are_read_from_what_the_put_parsed(
+    client: TestClient, headers: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file is parsed once, when it is recorded: listing the waivers in force never parses it again (a page
+    view would otherwise cost the parse of every repository's file)."""
+    run_decision(client, headers, f"sha256:{sha(WAIVERS)}")
+    assert put(client, headers, WAIVERS).status_code == 201
+
+    def never(data: bytes) -> list[Any]:
+        raise AssertionError("parsed again")
+
+    monkeypatch.setattr("sentinel_api.waivers.load_waivers", never)
+    (item,) = in_force(client)
+    assert [w["id"] for w in item["waivers"]] == ["waiver-2026-001", "pyyaml-until-the-bump"]
+    assert put(client, headers, WAIVERS).json()["waiver_count"] == 2  # the same file again: no parse either
+
+
+def test_the_decision_in_force_is_the_latest_by_its_document(
+    client: TestClient, headers: dict[str, str], database_url: str
+) -> None:
+    """`evaluated_at` is copied for display only and the database does not check it: the latest decision is
+    chosen by the document's own `evaluated_at` (#110 review)."""
+    later = run_decision(
+        client, headers, f"sha256:{EMPTY_SHA256}", evaluated_at="2026-11-10T00:00:00Z", applied=()
+    )
+    earlier = run_decision(
+        client, headers, f"sha256:{EMPTY_SHA256}", evaluated_at="2026-11-01T00:00:00Z", applied=(), post=False
+    )
+    body = json.dumps({k: v for k, v in earlier.items() if not k.startswith("_")}).encode()
+    with psycopg.connect(
+        database_url, autocommit=True
+    ) as connection:  # a column that disagrees with its document
+        connection.execute(
+            "INSERT INTO decisions (run_id, sha256, decision_id, verdict, evaluated_at, engine_version, "
+            "document) "
+            "VALUES (%s, encode(sha256(%s), 'hex'), %s, %s, '2026-12-31T00:00:00Z', '0.1.0', %s)",
+            (earlier["_run_id"], body, earlier["decision_id"], earlier["verdict"], body),
+        )
+    (item,) = in_force(client)
+    assert item["decision_id"] == later["decision_id"]
+    assert item["evaluated_at"].startswith("2026-11-10")
+
+
 def test_the_empty_file_is_no_waivers(client: TestClient, headers: dict[str, str]) -> None:
     run_decision(client, headers, f"sha256:{EMPTY_SHA256}", applied=())
     created = put(client, headers, b"")
@@ -260,11 +335,13 @@ def test_the_database_keeps_only_files_a_decision_read_and_never_changes_them(
     with psycopg.connect(database_url, autocommit=True) as connection:
         with pytest.raises(psycopg.errors.RaiseException, match="no recorded decision read"):
             connection.execute(
-                "INSERT INTO waivers_files (sha256, document) VALUES (%s, %s)", (sha(other), other)
+                "INSERT INTO waivers_files (sha256, document, entries) VALUES (%s, %s, '[]')",
+                (sha(other), other),
             )
         with pytest.raises(psycopg.errors.CheckViolation):
             connection.execute(
-                "INSERT INTO waivers_files (sha256, document) VALUES (%s, %s)", (sha(WAIVERS), other)
+                "INSERT INTO waivers_files (sha256, document, entries) VALUES (%s, %s, '[]')",
+                (sha(WAIVERS), other),
             )
         with pytest.raises(psycopg.errors.RaiseException, match="kept as recorded"):
             connection.execute("UPDATE waivers_files SET created_at = now()")

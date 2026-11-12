@@ -283,6 +283,10 @@ def claim(session: Session, request_id: uuid.UUID) -> Claimed | None:
     return Claimed(request_id, finding, findings)
 
 
+class NotRunning(RuntimeError):
+    """The request is no longer running: a later ask failed it as stale while its worker ran."""
+
+
 def finish(
     session: Session,
     request_id: uuid.UUID,
@@ -295,7 +299,7 @@ def finish(
     document about the request's own finding; otherwise the request fails, saying why, and nothing is kept."""
     row = session.get(ExplainRequest, request_id)
     if row is None or row.status != "running":
-        raise RuntimeError(f"request {request_id} is not running")
+        raise NotRunning(f"request {request_id} is not running")
     if outcome != "explained":
         _set(session, row, outcome, reason)
         return outcome

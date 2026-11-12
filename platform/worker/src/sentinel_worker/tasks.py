@@ -27,7 +27,7 @@ from sentinel_ai.guardrails import ModelInfo
 from sentinel_ai.providers import LLMProvider
 from sentinel_ai.providers.ollama import GENERATION, OllamaProvider
 from sentinel_api.config import sqlalchemy_url
-from sentinel_api.explanations import TASK, Finished, as_bytes, claim, finish
+from sentinel_api.explanations import TASK, Finished, NotRunning, as_bytes, claim, finish
 
 log = logging.getLogger(__name__)
 
@@ -52,26 +52,40 @@ def run_explain(
     now: datetime,
     model: ModelInfo = PINNED,
 ) -> str:
-    """Explain a request's finding and record the outcome; its status, or "skipped" if it was not queued.
+    """Explain a request's finding and record the outcome; its status, "skipped" if it was not queued, or
+    "stale" if a later ask failed it as stale while the model ran (its outcome is then dropped, never kept).
     An unexpected error fails the request naming only its type: its message could quote anything."""
     with sessions() as session:
         claimed = claim(session, uuid.UUID(request_id))
         if claimed is None:
             log.info("request %s is not queued: skipped", request_id)
             return "skipped"
+        state: Finished
+        reason: str | None = None
+        document: bytes | None = None
         try:
             outcome = explain_finding(
                 claimed.finding, claimed.findings, provider, model=model, created_at=now
             )
         except Exception as exc:
             log.warning("request %s failed: %s", request_id, type(exc).__name__)
-            return finish(
-                session, claimed.request_id, "failed", reason=f"the worker failed: {type(exc).__name__}"
+            state, reason = "failed", f"the worker failed: {type(exc).__name__}"
+        else:
+            if outcome.status == "explained" and outcome.explanation is not None:
+                state, document = "explained", as_bytes(outcome.explanation)
+            else:
+                state = "not_sent" if outcome.status == "not sent" else "unavailable"
+                reason = outcome.reason
+        try:
+            return finish(session, claimed.request_id, state, reason=reason, document=document)
+        except NotRunning:
+            log.warning(
+                "request %s was failed as stale while the model ran (no worker finished it within an hour): "
+                "its outcome (%s) is dropped",
+                request_id,
+                state,
             )
-        if outcome.status == "explained" and outcome.explanation is not None:
-            return finish(session, claimed.request_id, "explained", document=as_bytes(outcome.explanation))
-        state: Finished = "not_sent" if outcome.status == "not sent" else "unavailable"
-        return finish(session, claimed.request_id, state, reason=outcome.reason)
+            return "stale"
 
 
 @cache

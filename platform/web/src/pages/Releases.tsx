@@ -78,7 +78,7 @@ export function ReleasesPage() {
                     <Verdict value={release.verdict} />
                   </td>
                   <td className="p-2">
-                    <Trust trusted={release.trusted} />
+                    <Trust trusted={release.trusted} verdict={release.verdict} />
                   </td>
                   <td className="p-2">{release.repo}</td>
                   <td className="p-2 font-mono text-xs">{release.commit.slice(0, 12)}</td>

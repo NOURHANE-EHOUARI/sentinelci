@@ -11,6 +11,10 @@ The database is the backstop for what the API checks:
   file no gate evaluated;
 - a file never changes and is never deleted (the same trigger).
 
+`entries` is the API's parse of the bytes, and the database cannot check it against them: PL/pgSQL reads no
+YAML. A row written straight into the table could list other waivers than its file holds, the same trust as
+any other column the API derives for display.
+
 Going back below 0009 would drop the only copy of those files, so the downgrade stops, changing nothing, while
 any file is kept.
 
@@ -22,6 +26,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects.postgresql import JSONB
 
 revision = "0009"
 down_revision = "0008"
@@ -35,7 +40,11 @@ def upgrade() -> None:
         sa.Column("sha256", sa.String(64), primary_key=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("document", sa.LargeBinary(), nullable=False),
+        # What the gate's loader read from the bytes (`load_waivers`), parsed once when the file is recorded,
+        # so listing the waivers in force never parses a file again. The bytes stay the record.
+        sa.Column("entries", JSONB(), nullable=False),
         sa.CheckConstraint("sha256 ~ '^[a-f0-9]{64}$'", name="waivers_files_sha256"),
+        sa.CheckConstraint("jsonb_typeof(entries) = 'array'", name="waivers_files_entries"),
         sa.CheckConstraint("encode(sha256(document), 'hex') = sha256", name="waivers_files_bytes_match"),
     )
     op.execute(

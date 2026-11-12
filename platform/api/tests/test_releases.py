@@ -146,14 +146,25 @@ def test_bytes_that_mean_more_than_one_thing_are_refused(
     assert post(client, headers, body).status_code == 422
 
 
-def test_a_trusted_block_is_refused(client: TestClient, headers: dict[str, str]) -> None:
+@pytest.mark.parametrize("trusted", [True, False], ids=["trusted", "not-trusted"])
+def test_a_block_with_a_trust_report_is_refused(
+    client: TestClient, headers: dict[str, str], trusted: bool
+) -> None:
+    """Review of #86, should fix 3: nothing is signed for a BLOCK, so it comes without a report; one that did
+    not trust it was recorded and counted as a verification."""
     document = copy.deepcopy(WARN)
     document["decision"]["verdict"] = "BLOCK"
     document["decision"]["violations"] = [
         {"rule": "SC-002", "effect": "BLOCK", "finding_ids": ["b" * 64], "message": "P0 finding"}
     ]
+    if not trusted:
+        for report in document["trust_reports"]:
+            report["checks"][0] = {**report["checks"][0], "ok": False, "detail": "no matching signature"}
+            report["trusted"] = False
     refused = post(client, headers, raw(document))
-    assert refused.status_code == 422 and "trusts an image the gate blocked" in refused.text
+    assert refused.status_code == 422 and "a BLOCK decision comes without a trust report" in refused.text
+    assert client.get("/metrics").text.count("sentinel_attestation_verifications_total{") in (0, 2)
+    assert 'not_trusted"} 1' not in client.get("/metrics").text
 
 
 def test_recording_needs_the_token_and_json(client: TestClient, headers: dict[str, str]) -> None:
@@ -184,16 +195,57 @@ def test_a_recorded_release_never_changes(
                 conn.execute(statement, (decision_id,))
 
 
-def test_the_database_refuses_a_trusted_block(client: TestClient, database_url: str) -> None:
-    """The backstop of what the API checks: a direct insert cannot record a trusted BLOCK either."""
-    body = raw(BLOCK)
-    with psycopg.connect(database_url, autocommit=True) as conn, pytest.raises(psycopg.errors.CheckViolation):
-        conn.execute(
-            "INSERT INTO releases (decision_id, repo, commit, image_digest, verdict, trusted, evaluated_at, "
-            "sha256, document) VALUES (gen_random_uuid(), 'o/r', repeat('a', 40), %s, 'BLOCK', true, now(), "
-            "%s, %s)",
-            ("sha256:" + "ab" * 32, hashlib.sha256(body).hexdigest(), body),
-        )
+_COLUMNS = ("decision_id", "repo", "commit", "ref", "image_digest", "verdict", "trusted", "evaluated_at",
+            "sha256", "document")  # fmt: skip
+_INSERT = (
+    'INSERT INTO releases (decision_id, repo, "commit", ref, image_digest, verdict, trusted, evaluated_at, \
+sha256, document) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)'
+)
+
+
+def _insert(conn: Any, document: dict[str, Any], **columns: Any) -> None:
+    """A direct insert of `document`'s bytes, with its own columns unless `columns` says otherwise."""
+    body = raw(document)
+    decision, subject = document["decision"], document["decision"]["subject"]
+    reports = document["trust_reports"]
+    values = {
+        "decision_id": decision["decision_id"], "repo": subject["repo"], "commit": subject["commit"],
+        "ref": subject.get("ref"), "image_digest": subject["image_digest"], "verdict": decision["verdict"],
+        "trusted": all(r["trusted"] for r in reports) if reports else None,
+        "evaluated_at": decision["evaluated_at"], "sha256": hashlib.sha256(body).hexdigest(),
+        "document": body,
+    } | columns  # fmt: skip
+    conn.execute(_INSERT, [values[name] for name in _COLUMNS])
+
+
+@pytest.mark.parametrize(
+    ("document", "columns"),
+    [
+        (BLOCK, {"verdict": "PASS", "trusted": True}),
+        (BLOCK, {"trusted": True}),
+        (BLOCK, {"trusted": False}),
+        (WARN, {"trusted": False}),
+        (WARN, {"trusted": None}),
+        (WARN, {"decision_id": "63f0ce64-0000-4000-8000-000000000000"}),
+        (WARN, {"repo": "someone/else"}),
+        (WARN, {"commit": "c" * 40}),
+        (WARN, {"ref": "refs/heads/other"}),
+        (WARN, {"image_digest": "sha256:" + "cd" * 32}),
+    ],
+    ids=["block-as-trusted-pass", "trusted-block", "verified-block", "warn-not-trusted", "warn-not-verified",
+         "another-decision", "another-repo", "another-commit", "another-ref", "another-image"],
+)  # fmt: skip
+def test_the_database_refuses_columns_that_are_not_the_document_s(
+    client: TestClient, database_url: str, document: dict[str, Any], columns: dict[str, Any]
+) -> None:
+    """Review of #86: the listed and counted columns are checked against the bytes, as in 0006. A forged row
+    was listed PASS and trusted while its document said BLOCK."""
+    with psycopg.connect(database_url, autocommit=True) as conn:
+        with pytest.raises((psycopg.errors.RaiseException, psycopg.errors.CheckViolation)):
+            _insert(conn, document, **columns)
+        assert conn.execute("SELECT count(*) FROM releases").fetchone() == (0,)
+        _insert(conn, document)  # the same bytes with their own columns are kept
+    assert client.get("/api/v1/releases").json()["total"] == 1
 
 
 def test_what_sentinel_upload_release_sends_is_recorded_as_sent(
@@ -206,3 +258,72 @@ def test_what_sentinel_upload_release_sends_is_recorded_as_sent(
     data = release_evidence(json.dumps(WARN["decision"]).encode(), reports)
     created = post(client, headers, data)
     assert created.status_code == 201 and created.json()["sha256"] == hashlib.sha256(data).hexdigest()
+
+
+def test_a_release_decision_naming_two_thousand_findings_is_recorded(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    """Review of #86, should fix 1: above 64 KiB, a release was refused (413) before the route ran, as a run's
+    decision was before 1.1.50. A violation can name every finding."""
+    document = copy.deepcopy(WARN)
+    named = [hashlib.sha256(str(n).encode()).hexdigest() for n in range(2000)]
+    document["decision"]["violations"][0]["finding_ids"] = named
+    body = raw(document)
+    assert len(body) > 128 * 1024
+    created = post(client, headers, body)
+    assert created.status_code == 201, created.text
+    digest = document["decision"]["subject"]["image_digest"]
+    assert client.get(f"/api/v1/releases/{digest}/evidence").content == body
+
+
+def test_a_release_one_report_does_not_trust_is_not_trusted(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    """Review of #86 (Hiba's test): kills the stored `trusted` always True, `any` for `all`, and a
+    `not_trusted` count that is always 0."""
+    document = copy.deepcopy(WARN)
+    offline = document["trust_reports"][1]
+    offline["checks"][0] = {**offline["checks"][0], "ok": False, "detail": "no matching signature"}
+    offline["trusted"] = False
+    created = post(client, headers, raw(document))
+    assert created.status_code == 201 and created.json()["trusted"] is False
+    assert client.get("/api/v1/releases").json()["items"][0]["trusted"] is False
+    metrics = client.get("/metrics").text
+    assert 'sentinel_attestation_verifications_total{result="trusted"} 0' in metrics
+    assert 'sentinel_attestation_verifications_total{result="not_trusted"} 1' in metrics
+
+
+def test_a_named_decision_is_served_only_under_its_image(client: TestClient, headers: dict[str, str]) -> None:
+    assert post(client, headers, raw(WARN)).status_code == 201
+    decision_id = WARN["decision"]["decision_id"]
+    named = client.get(f"/api/v1/releases/sha256:{'0' * 64}/evidence", params={"decision_id": decision_id})
+    assert named.status_code == 404
+
+
+def test_a_repeated_key_is_refused_even_in_valid_evidence(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    body = raw(WARN).replace(b'"verdict": "WARN"', b'"verdict": "BLOCK", "verdict": "WARN"', 1)
+    assert post(client, headers, body).status_code == 422
+    assert client.get("/api/v1/releases").json()["total"] == 0
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda d: d["trust_reports"][0].update(decision_id="00000000-0000-4000-8000-000000000002"),
+         "verified decision 00000000-0000-4000-8000-000000000002"),
+        (lambda d: d["trust_reports"][0].update(decision_id=None), "names the decision it verified"),
+    ],
+    ids=["another-decision", "trusted-without-a-decision"],
+)  # fmt: skip
+def test_a_trust_report_of_another_decision_is_refused(
+    client: TestClient, headers: dict[str, str], change: Any, message: str
+) -> None:
+    """Review of #86, should fix 4: a rebuild of the same digest is another release, and its report was listed
+    next to this decision as trusted."""
+    document = copy.deepcopy(WARN)
+    change(document)
+    refused = post(client, headers, raw(document))
+    assert refused.status_code == 422 and message in refused.text, refused.text
+    assert client.get("/api/v1/releases").json()["total"] == 0

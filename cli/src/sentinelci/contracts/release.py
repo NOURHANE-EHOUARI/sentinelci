@@ -7,6 +7,7 @@ refused. `problem()` adds the rules JSON Schema cannot express; a document with 
 producer and by the platform, so the Releases page never shows a report that contradicts itself.
 """
 
+import uuid
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -16,6 +17,7 @@ from sentinelci.contracts.decision import Decision
 
 _BREAKS = "\r\n" + chr(0x2028) + chr(0x2029)  # a line ends at any of them (schemas/README.md)
 _ONE_LINE = f"^[^{_BREAKS}]*$"
+_UUID = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 TrustMode = Literal["registry", "evidence"]
 
 
@@ -40,6 +42,8 @@ class TrustReport(_Contract):
     mode: TrustMode
     repo: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
     builder_id: str = Field(max_length=512, pattern=f"^https://[^\\s{_BREAKS}]+$")
+    # The decision the verified decision attestation holds; None when there was no valid one (review of #86).
+    decision_id: Annotated[str, StringConstraints(pattern=_UUID)] | None
     key_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     verified_at: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
     trusted: bool
@@ -54,6 +58,8 @@ class TrustReport(_Contract):
         failed = [check.name for check in self.checks if not check.ok]
         if self.trusted == bool(failed):
             return f"trusted is {self.trusted}, but {len(failed)} of {len(self.checks)} checks failed"
+        if self.trusted and self.decision_id is None:
+            return "a trusted report names the decision it verified"
         return None
 
 
@@ -91,6 +97,14 @@ class ReleaseEvidence(_Contract):
                 return f"the {report.mode} trust report is about {about}, not {subject.image_digest}"
             if report.repo != subject.repo:
                 return f"the {report.mode} trust report required {report.repo}, not {subject.repo}"
-            if report.trusted and self.decision.verdict == "BLOCK":
-                return f"the {report.mode} trust report trusts an image the gate blocked"
+            # A rebuild of the same digest is another release: its report is not this decision's (#86).
+            if report.decision_id is not None and uuid.UUID(report.decision_id) != uuid.UUID(
+                self.decision.decision_id
+            ):
+                return (
+                    f"the {report.mode} trust report verified decision {report.decision_id}, "
+                    f"not {self.decision.decision_id}"
+                )
+        if self.decision.verdict == "BLOCK" and self.trust_reports:  # nothing was signed (review of #86)
+            return "a BLOCK decision comes without a trust report: nothing was signed"
         return None

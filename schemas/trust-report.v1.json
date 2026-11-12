@@ -11,6 +11,7 @@
     "mode",
     "repo",
     "builder_id",
+    "decision_id",
     "key_sha256",
     "verified_at",
     "trusted",
@@ -58,6 +59,14 @@
       "type": "string",
       "maxLength": 512,
       "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])https://\\S+$"
+    },
+    "decision_id": {
+      "description": "The decision the verified decision attestation holds (Decision v1 `decision_id`), or null when no valid decision attestation was found. A trusted report always names one, and a release records a report only next to the decision it names (review of #86: a report of another release of the same digest is not this decision's).",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
     },
     "key_sha256": {
       "description": "sha256 of the public key every attestation had to be signed by (its DER SubjectPublicKeyInfo, as in the PEM file): which key was trusted.",

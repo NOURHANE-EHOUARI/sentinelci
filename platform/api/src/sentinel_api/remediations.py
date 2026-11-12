@@ -172,13 +172,23 @@ def _store(session: Session, body: bytes) -> RemediationOut | JSONResponse:
     return _out(row)
 
 
+_INVALID: dict[int | str, dict[str, Any]] = {
+    422: {
+        "description": "Not a Remediation attempt v1 document (values of another JSON type included), or one "
+        "that contradicts itself: a VERIFIED the gate refuses, a result about another proposal or attempt, "
+        "verified before it was proposed (the reason is in `msg`).",
+        "content": {JSON_TYPE: {"schema": {"$ref": "#/components/schemas/HTTPValidationError"}}},
+    }
+}
+
+
 @router.post(
     "/remediations",
     status_code=status.HTTP_201_CREATED,
     response_model=RemediationOut,
     dependencies=[Depends(require_writer)],
     tags=["remediations"],
-    responses={**_errors(401, 413, 415, 503), **_EXISTS},
+    responses={**_errors(401, 413, 415, 503), **_EXISTS, **_INVALID},
     openapi_extra={
         "requestBody": {
             "required": True,
