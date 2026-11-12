@@ -12,6 +12,7 @@ import stat
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -30,6 +31,10 @@ OLD = "def find(cur, q):\n    return cur.execute(f\"SELECT * FROM items WHERE na
 NEW = 'def find(cur, q):\n    return cur.execute("SELECT * FROM items WHERE name = ?", (q,))\n'
 IMAGE = "python@sha256:" + "a" * 64
 FINDING = "b" * 64
+RULE = "python-sql-built-from-strings"
+SECURITY = f"{SERVICE}/security_tests/test_python_sql_built_from_strings.py"
+# A pass: the behaviour tests pass on the patch, the security test fails on the base and passes on the patch.
+PASSING = (Ran(0, "behaviour: 1 passed\n"), Ran(1, "base: 1 failed\n"), Ran(0, "patched: 1 passed\n"))
 
 
 def proposal_of(old: str, new: str, path: str = TARGET, strategy: str = "llm:code") -> PatchProposal:
@@ -48,13 +53,16 @@ def proposal_of(old: str, new: str, path: str = TARGET, strategy: str = "llm:cod
     )
 
 
-def trees(tmp_path: Path, new: str = NEW, *, tests: bool = True) -> tuple[Path, Path]:
+def trees(tmp_path: Path, new: str = NEW, *, tests: bool = True, security: bool = True) -> tuple[Path, Path]:
     base = tmp_path / "base"
     (base / TARGET).parent.mkdir(parents=True)
     (base / TARGET).write_text(OLD, encoding="utf-8")
     if tests:
         (base / SERVICE / "tests").mkdir()
         (base / SERVICE / "tests" / "test_db.py").write_text("def test_find():\n    pass\n", encoding="utf-8")
+    if security:
+        (base / SECURITY).parent.mkdir()
+        (base / SECURITY).write_text("def test_no_sql_text():\n    pass\n", encoding="utf-8")
     (base / "tests").mkdir()  # SentinelCI's own tests, at the repository root: never a service's
     (base / "tests" / "test_root.py").write_text("def test_root():\n    pass\n", encoding="utf-8")
     patched = tmp_path / "patched"
@@ -65,7 +73,7 @@ def trees(tmp_path: Path, new: str = NEW, *, tests: bool = True) -> tuple[Path, 
 
 class Recorder:
     def __init__(self, *answers: Ran) -> None:
-        self.answers = list(answers) or [Ran(0, "1 passed in 0.01s\n")]
+        self.answers = list(answers) or list(PASSING)
         self.calls: list[list[str]] = []
 
     def __call__(self, args: Sequence[str], timeout: int) -> Ran:
@@ -83,58 +91,148 @@ def flag(args: list[str], name: str) -> list[str]:
 def test_the_services_tests_run_against_the_patch_in_a_sandbox(tmp_path: Path) -> None:
     base, patched = trees(tmp_path)
     run = Recorder()
-    checked = check_code(proposal_of(OLD, NEW), base, patched, test_image=IMAGE, run=run)
+    checked = check_code(proposal_of(OLD, NEW), base, patched, rule=RULE, test_image=IMAGE, run=run)
     assert (checked.build_ok, checked.tests_ok, checked.problems) == (True, True, [])
-    assert checked.log == "1 passed in 0.01s\n"
-    (args,) = run.calls
-    assert args[:2] == ["run", "--rm"] and flag(args, "--name")[0].startswith("sentinel-tests-")
-    for name, value in [("--network", "none"), ("--cap-drop", "ALL"), ("--user", "65534:65534"),
-                        ("--security-opt", "no-new-privileges:true"), ("--pids-limit", "256"),
-                        ("--memory", "1g"), ("--workdir", "/srv")]:  # fmt: skip
-        assert flag(args, name) == [value], name
-    assert "--read-only" in args and "--privileged" not in args and "-v" not in args
-    assert flag(args, "--mount") == [
-        f"type=bind,source={(patched / SERVICE).resolve()},target=/srv,readonly",
-        f"type=bind,source={(base / SERVICE / 'tests').resolve()},target=/srv/tests,readonly",
-    ], "the patched service, with the base commit's tests over its own"
-    image = args.index(IMAGE)
-    assert args[image + 1 :] == [
-        "timeout", "-s", "KILL", "300", "python", "-m", "pytest", "-q", "-p", "no:cacheprovider",
-        "--no-header", "tests",
-    ]  # fmt: skip
+    behaviour, on_base, on_patch = run.calls
+    for args in run.calls:
+        assert args[:2] == ["run", "--rm"] and flag(args, "--name")[0].startswith("sentinel-tests-")
+        for name, value in [("--network", "none"), ("--cap-drop", "ALL"), ("--user", "65534:65534"),
+                            ("--security-opt", "no-new-privileges:true"), ("--pids-limit", "256"),
+                            ("--memory", "1g"), ("--workdir", "/srv")]:  # fmt: skip
+            assert flag(args, name) == [value], name
+        assert "--read-only" in args and "--privileged" not in args and "-v" not in args
+        assert flag(args, "--mount")[1:] == [
+            f"type=bind,source={(base / SERVICE / 'tests').resolve()},target=/srv/tests,readonly",
+            f"type=bind,source={(base / SERVICE / 'security_tests').resolve()},"
+            "target=/srv/security_tests,readonly",
+        ], "the base commit's tests and security tests, always, over the service's own"
+        image = args.index(IMAGE)
+        assert args[image + 1 : -1] == [
+            "timeout", "-s", "KILL", "300",
+            "python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--no-header",
+        ]  # fmt: skip
+    service = {"patched": f"type=bind,source={(patched / SERVICE).resolve()},target=/srv,readonly",
+               "base": f"type=bind,source={(base / SERVICE).resolve()},target=/srv,readonly"}  # fmt: skip
+    selected = "security_tests/test_python_sql_built_from_strings.py"
+    assert (flag(behaviour, "--mount")[0], behaviour[-1]) == (service["patched"], "tests")
+    assert (flag(on_base, "--mount")[0], on_base[-1]) == (service["base"], selected), "the weakness is real"
+    assert (flag(on_patch, "--mount")[0], on_patch[-1]) == (service["patched"], selected), "and it is gone"
+    assert checked.log == (
+        "$ pytest tests (behaviour tests, patched code)\nbehaviour: 1 passed\n\n"
+        f"$ pytest {selected} ({selected}, base code)\nbase: 1 failed\n\n"
+        f"$ pytest {selected} ({selected}, patched code)\npatched: 1 passed\n"
+    )
 
 
 @pytest.mark.parametrize(
     ("ran", "problem"),
     [
-        (Ran(1, "1 failed\n"), "demo-shop/services/shop-api/tests failed (pytest exit 1)"),
-        (Ran(2, "interrupted\n"), "demo-shop/services/shop-api/tests failed (pytest exit 2)"),
-        (Ran(5, "no tests ran\n"), "demo-shop/services/shop-api/tests failed (pytest exit 5)"),
-        (Ran(124, "x\n"), "did not finish within 300 s, or ran out of memory"),
-        (Ran(137, "x\n"), "did not finish within 300 s, or ran out of memory"),
-        (Ran(-1, "x\n", timed_out=True), "did not finish within 300 s, or ran out of memory"),
+        (Ran(1, "1 failed\n"), f"{SERVICE}/tests failed on the patched code (pytest exit 1)"),
+        (Ran(2, "interrupted\n"), f"{SERVICE}/tests failed on the patched code (pytest exit 2)"),
+        (Ran(5, "no tests ran\n"), f"{SERVICE}/tests failed on the patched code (pytest exit 5)"),
+        (Ran(124, "x\n"), "behaviour tests, patched code: did not finish within 300 s, or ran out of memory"),
+        (Ran(137, "x\n"), "behaviour tests, patched code: did not finish within 300 s, or ran out of memory"),
+        (
+            Ran(-1, "x\n", timed_out=True),
+            "behaviour tests, patched code: did not finish within 300 s, or ran out of memory",
+        ),
     ],
     ids=["failed", "interrupted", "no-tests-collected", "timeout", "killed", "client-timeout"],
 )
 def test_only_pytests_exit_0_is_a_pass(tmp_path: Path, ran: Ran, problem: str) -> None:
     base, patched = trees(tmp_path)
-    checked = check_code(proposal_of(OLD, NEW), base, patched, test_image=IMAGE, run=Recorder(ran))
+    checked = check_code(proposal_of(OLD, NEW), base, patched, rule=RULE, test_image=IMAGE, run=Recorder(ran))
     assert (checked.build_ok, checked.tests_ok, checked.problems) == (True, False, [f"tests: {problem}"])
-    assert checked.log == ran.output, "kept as the feedback for a retry"
+    assert checked.log.endswith(ran.output), "kept as the feedback for a retry"
 
 
 @pytest.mark.parametrize("returncode", [125, 126, 127])
 def test_a_container_that_could_not_run_verifies_nothing(tmp_path: Path, returncode: int) -> None:
     base, patched = trees(tmp_path)
     with pytest.raises(CodeCheckError, match=f"could not run \\(docker exit {returncode}\\)"):
-        check_code(proposal_of(OLD, NEW), base, patched, test_image=IMAGE, run=Recorder(Ran(returncode, "")))
+        check_code(
+            proposal_of(OLD, NEW),
+            base,
+            patched,
+            rule=RULE,
+            test_image=IMAGE,
+            run=Recorder(Ran(returncode, "")),
+        )
 
 
 def test_the_log_kept_is_the_end_of_the_output(tmp_path: Path) -> None:
     base, patched = trees(tmp_path)
     output = "x" * 20_000 + "FAILED tests/test_db.py::test_find\n"
-    checked = check_code(proposal_of(OLD, NEW), base, patched, test_image=IMAGE, run=Recorder(Ran(1, output)))
+    checked = check_code(
+        proposal_of(OLD, NEW), base, patched, rule=RULE, test_image=IMAGE, run=Recorder(Ran(1, output))
+    )
     assert len(checked.log) == code.MAX_LOG_CHARS and checked.log.endswith("test_find\n")
+
+
+# ---------------------------------------------------------------- the target's security test (review of #91)
+
+
+@pytest.mark.parametrize(
+    "ran",
+    [Ran(0, "1 passed\n"), Ran(2, "interrupted\n"), Ran(4, "usage\n"), Ran(5, "no tests ran\n")],
+    ids=["passes-on-the-base", "interrupted", "usage-error", "nothing-collected"],
+)
+def test_a_security_test_that_does_not_fail_on_the_base_proves_nothing(tmp_path: Path, ran: Ran) -> None:
+    """Only a test that ran and failed (pytest exit 1) shows the weakness was there before the patch."""
+    base, patched = trees(tmp_path)
+    run = Recorder(PASSING[0], ran)
+    checked = check_code(proposal_of(OLD, NEW), base, patched, rule=RULE, test_image=IMAGE, run=run)
+    assert (checked.build_ok, checked.tests_ok, len(run.calls)) == (True, False, 2)
+    assert checked.problems == [
+        "tests: the security_tests/test_python_sql_built_from_strings.py of python-sql-built-from-strings "
+        f"does not fail on the base code (pytest exit {ran.returncode}): it proves nothing about this fix"
+    ]
+
+
+@pytest.mark.parametrize("ran", [Ran(1, "1 failed\n"), Ran(5, "no tests ran\n")], ids=["fails", "nothing"])
+def test_a_fix_whose_security_test_still_fails_is_not_verified(tmp_path: Path, ran: Ran) -> None:
+    """The scanner may no longer see a rewritten pattern; the security test still finds the weakness."""
+    base, patched = trees(tmp_path)
+    checked = check_code(
+        proposal_of(OLD, NEW), base, patched, rule=RULE, test_image=IMAGE, run=Recorder(*PASSING[:2], ran)
+    )
+    assert checked.problems == [
+        f"tests: {SECURITY} failed on the patched code (pytest exit {ran.returncode})"
+    ] and checked.log.endswith(ran.output)
+
+
+def test_a_rule_without_a_security_test_is_never_verified(tmp_path: Path) -> None:
+    base, patched = trees(tmp_path, security=False)
+    run = Recorder()
+    checked = check_code(proposal_of(OLD, NEW), base, patched, rule=RULE, test_image=IMAGE, run=run)
+    assert (checked.tests_ok, run.calls) == (False, [])
+    assert checked.problems == [
+        f"tests: no security test {SECURITY} for {RULE}: a fix is never verified without one"
+    ]
+    (base / SECURITY).parent.mkdir()
+    (base / SECURITY).symlink_to(base / SERVICE / "tests" / "test_db.py")
+    checked = check_code(proposal_of(OLD, NEW), base, patched, rule=RULE, test_image=IMAGE, run=run)
+    assert checked.problems[0].startswith("tests: no security test") and run.calls == [], "not a link"
+
+
+def test_a_patch_to_the_security_tests_is_not_verified_by_them(tmp_path: Path) -> None:
+    base, patched = trees(tmp_path)
+    old = (base / SECURITY).read_text(encoding="utf-8")
+    new = "def test_no_sql_text():\n    assert True\n"
+    (patched / SECURITY).write_text(new, encoding="utf-8")
+    run = Recorder()
+    checked = check_code(proposal_of(old, new, SECURITY), base, patched, rule=RULE, test_image=IMAGE, run=run)
+    assert checked.problems == [
+        "tests: the patch edits its service's security_tests, which then prove nothing"
+    ]
+    assert run.calls == []
+
+
+@pytest.mark.parametrize("rule", ["", "Python-SQL", "../../etc", "a/b", "x" * 200, "rule with space"])
+def test_a_rule_a_test_cannot_be_named_after_is_refused(tmp_path: Path, rule: str) -> None:
+    base, patched = trees(tmp_path)
+    with pytest.raises(CodeCheckError, match="is not a rule id a security test can be named after"):
+        check_code(proposal_of(OLD, NEW), base, patched, rule=rule, test_image=IMAGE, run=Recorder())
 
 
 # ---------------------------------------------------------------- build, and what is never run
@@ -144,7 +242,7 @@ def test_a_patch_that_does_not_parse_fails_the_build_and_runs_nothing(tmp_path: 
     broken = NEW.replace("(q,))", "(q,)")
     base, patched = trees(tmp_path, broken)
     run = Recorder()
-    checked = check_code(proposal_of(OLD, broken), base, patched, test_image=IMAGE, run=run)
+    checked = check_code(proposal_of(OLD, broken), base, patched, rule=RULE, test_image=IMAGE, run=run)
     assert (checked.build_ok, checked.tests_ok) == (False, False) and run.calls == []
     assert checked.problems == [
         f"build: {TARGET}: not valid Python any more (line 2)", "tests: not run, the build failed",
@@ -154,7 +252,7 @@ def test_a_patch_that_does_not_parse_fails_the_build_and_runs_nothing(tmp_path: 
 def test_a_patched_file_that_is_not_utf8_fails_the_build(tmp_path: Path) -> None:
     base, patched = trees(tmp_path)
     (patched / TARGET).write_bytes(b"\xff\xfe")
-    checked = check_code(proposal_of(OLD, NEW), base, patched, test_image=IMAGE, run=Recorder())
+    checked = check_code(proposal_of(OLD, NEW), base, patched, rule=RULE, test_image=IMAGE, run=Recorder())
     assert checked.problems[0] == f"build: {TARGET}: not UTF-8 any more"
 
 
@@ -162,7 +260,7 @@ def test_without_tests_next_to_the_code_it_is_never_verified(tmp_path: Path) -> 
     """The repository root's tests/ are SentinelCI's own, never a service's."""
     base, patched = trees(tmp_path, tests=False)
     run = Recorder()
-    checked = check_code(proposal_of(OLD, NEW), base, patched, test_image=IMAGE, run=run)
+    checked = check_code(proposal_of(OLD, NEW), base, patched, rule=RULE, test_image=IMAGE, run=run)
     assert (checked.build_ok, checked.tests_ok, run.calls) == (True, False, [])
     assert checked.problems == [
         f"tests: no tests next to {TARGET}: a code patch is never verified without them"
@@ -179,7 +277,7 @@ def test_a_patch_to_the_tests_is_not_verified_by_them(tmp_path: Path) -> None:
     new = "def test_find():\n    assert True\n"
     (patched / path).write_text(new, encoding="utf-8")
     run = Recorder()
-    checked = check_code(proposal_of(old, new, path), base, patched, test_image=IMAGE, run=run)
+    checked = check_code(proposal_of(old, new, path), base, patched, rule=RULE, test_image=IMAGE, run=run)
     assert checked.problems == ["tests: the patch edits its service's tests, which then prove nothing"]
     assert run.calls == []
 
@@ -191,13 +289,13 @@ def test_a_patch_to_the_tests_is_not_verified_by_them(tmp_path: Path) -> None:
 def test_the_test_image_must_be_pinned_by_digest(tmp_path: Path, image: str) -> None:
     base, patched = trees(tmp_path)
     with pytest.raises(CodeCheckError, match="pinned by digest"):
-        check_code(proposal_of(OLD, NEW), base, patched, test_image=image, run=Recorder())
+        check_code(proposal_of(OLD, NEW), base, patched, rule=RULE, test_image=image, run=Recorder())
 
 
 def test_a_local_image_id_is_pinned_too(tmp_path: Path) -> None:
     base, patched = trees(tmp_path)
     run = Recorder()
-    check_code(proposal_of(OLD, NEW), base, patched, test_image="sha256:" + "c" * 64, run=run)
+    check_code(proposal_of(OLD, NEW), base, patched, rule=RULE, test_image="sha256:" + "c" * 64, run=run)
     assert "sha256:" + "c" * 64 in run.calls[0]
 
 
@@ -206,17 +304,17 @@ def test_what_cannot_be_checked_honestly_is_refused(tmp_path: Path) -> None:
     proposal = proposal_of(OLD, NEW)
     with pytest.raises(CodeCheckError, match="deterministic:kubernetes is not a code strategy"):
         check_code(proposal.model_copy(update={"strategy": "deterministic:kubernetes"}), base, patched,
-                   test_image=IMAGE, run=Recorder())  # fmt: skip
+                   rule=RULE, test_image=IMAGE, run=Recorder())  # fmt: skip
     yaml_file = proposal.model_copy(update={"files": [f"{SERVICE}/config.yaml"]})
     with pytest.raises(CodeCheckError, match="only Python is checked"):
-        check_code(yaml_file, base, patched, test_image=IMAGE, run=Recorder())
+        check_code(yaml_file, base, patched, rule=RULE, test_image=IMAGE, run=Recorder())
     (patched / TARGET).unlink()
     with pytest.raises(CodeCheckError, match="not a regular file of the patched tree"):
-        check_code(proposal, base, patched, test_image=IMAGE, run=Recorder())
+        check_code(proposal, base, patched, rule=RULE, test_image=IMAGE, run=Recorder())
     shutil.move(base / SERVICE / "app", tmp_path / "elsewhere")
     (base / SERVICE / "app").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
     with pytest.raises(CodeCheckError, match="through a symbolic link in the base tree"):
-        check_code(proposal, base, patched, test_image=IMAGE, run=Recorder())
+        check_code(proposal, base, patched, rule=RULE, test_image=IMAGE, run=Recorder())
 
 
 # ---------------------------------------------------------------- the docker runner
@@ -258,26 +356,70 @@ def test_without_docker_nothing_is_verified(monkeypatch: pytest.MonkeyPatch, tmp
 # ---------------------------------------------------------------- the command
 
 
+def sast_findings(tmp_path: Path, *, rule: str = RULE, category: str = "SAST") -> Path:
+    """The base commit's findings, with the proposal's target."""
+    path = tmp_path / "before.ndjson"
+    path.write_text(json.dumps({
+        "schema_version": "1.0", "id": FINDING, "tool": {"name": "opengrep", "version": "1.33.1"},
+        "rule_id": rule, "category": category, "title": "SQL built from strings", "severity": "HIGH",
+        "location": {"path": TARGET, "start_line": 2, "end_line": 2},
+        "run": {"repo": "NOURHANE-EHOUARI/sentinelci", "commit": "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+                "context": "pr"},
+    }) + "\n", encoding="utf-8")  # fmt: skip
+    return path
+
+
 def test_the_command_checks_a_code_proposal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     base, patched = trees(tmp_path)
     path = tmp_path / "proposal.json"
     path.write_text(proposal_of(OLD, NEW).model_dump_json(), encoding="utf-8")
-    run = Recorder(Ran(0, "1 passed\n"), Ran(1, "1 failed\n"))
+    run = Recorder(*PASSING, Ran(0, "1 passed\n"), Ran(1, "1 failed\n"), Ran(1, "still 1 failed\n"))
     monkeypatch.setattr(code, "docker_runner", run)
     command = ["remediate", "check", "--proposal", str(path), "--base-root", str(base),
                "--patched-root", str(patched)]  # fmt: skip
-    done = CliRunner().invoke(app, command)
+    findings = ["--findings", str(sast_findings(tmp_path))]
+    done = CliRunner().invoke(app, [*command, *findings])
     assert done.exit_code == 3 and "needs --test-image" in done.stderr and done.stdout == ""
     done = CliRunner().invoke(app, [*command, "--test-image", IMAGE])
+    assert done.exit_code == 3 and "needs --findings" in done.stderr and run.calls == []
+    done = CliRunner().invoke(app, [*command, *findings, "--test-image", IMAGE])
     assert done.exit_code == 0, done.output
-    assert json.loads(done.stdout) == {
+    result = json.loads(done.stdout)
+    assert result.pop("log").endswith("patched: 1 passed\n")
+    assert result == {
         "proposal_id": proposal_of(OLD, NEW).proposal_id, "strategy": "llm:code", "build_ok": True,
-        "tests_ok": True, "problems": [], "log": "1 passed\n",
+        "tests_ok": True, "problems": [],
     }  # fmt: skip
-    done = CliRunner().invoke(app, [*command, "--test-image", IMAGE])
-    assert done.exit_code == 1 and json.loads(done.stdout)["log"] == "1 failed\n"
-    done = CliRunner().invoke(app, [*command, "--test-image", "python:3.12"])
+    assert run.calls[1][-1] == "security_tests/test_python_sql_built_from_strings.py", "the target's rule"
+    done = CliRunner().invoke(app, [*command, *findings, "--test-image", IMAGE])
+    assert done.exit_code == 1 and json.loads(done.stdout)["log"].endswith("still 1 failed\n")
+    done = CliRunner().invoke(app, [*command, *findings, "--test-image", "python:3.12"])
     assert done.exit_code == 3 and "FAIL CLOSED" in done.stderr
+
+
+@pytest.mark.parametrize(
+    ("findings", "message"),
+    [
+        (lambda tmp: sast_findings(tmp, category="SCA"), "is not a SAST finding of the base commit's scan"),
+        (
+            lambda tmp: (tmp / "empty.ndjson", (tmp / "empty.ndjson").write_text(""))[0],
+            "is not a SAST finding",
+        ),
+    ],
+    ids=["not-sast", "not-found"],
+)
+def test_the_target_must_be_a_sast_finding_of_the_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, findings: Any, message: str
+) -> None:
+    base, patched = trees(tmp_path)
+    path = tmp_path / "proposal.json"
+    path.write_text(proposal_of(OLD, NEW).model_dump_json(), encoding="utf-8")
+    run = Recorder()
+    monkeypatch.setattr(code, "docker_runner", run)
+    done = CliRunner().invoke(app, ["remediate", "check", "--proposal", str(path), "--base-root", str(base),
+                                    "--patched-root", str(patched), "--findings", str(findings(tmp_path)),
+                                    "--test-image", IMAGE])  # fmt: skip
+    assert done.exit_code == 3 and message in done.stderr and run.calls == []
 
 
 def test_an_iac_proposal_still_needs_its_findings(tmp_path: Path) -> None:
@@ -294,19 +436,21 @@ def test_an_iac_proposal_still_needs_its_findings(tmp_path: Path) -> None:
     reason="set SENTINEL_TEST_IMAGE to a pinned image with Python and pytest, with a Docker daemon",
 )
 def test_a_real_container_runs_the_tests(tmp_path: Path) -> None:
-    """On the laptop: the real sandbox passes a good patch and fails one whose tests fail."""
+    """On the laptop: the real sandbox passes a fix whose security test fails on the base and passes on the
+    patch, and fails a patch that leaves the weakness."""
     image = os.environ["SENTINEL_TEST_IMAGE"]
     base, patched = trees(tmp_path)
+    (base / SECURITY).write_text(
+        "import pathlib\n\n\ndef test_no_sql_text():\n"
+        "    assert '?' in pathlib.Path('app/db.py').read_text()\n",
+        encoding="utf-8",
+    )
     for tree in (base, patched):
         for path in [tree, *tree.rglob("*")]:
             path.chmod(0o755 if path.is_dir() else 0o644)  # readable by nobody, never writable
-    (base / SERVICE / "tests" / "test_db.py").write_text(
-        "import ast, pathlib\n\ndef test_find():\n    assert '?' in pathlib.Path('app/db.py').read_text()\n",
-        encoding="utf-8",
-    )
-    good = check_code(proposal_of(OLD, NEW), base, patched, test_image=image)
+    good = check_code(proposal_of(OLD, NEW), base, patched, rule=RULE, test_image=image)
     assert good.tests_ok, good.log
     (patched / TARGET).write_text(OLD, encoding="utf-8")
-    bad = check_code(proposal_of(OLD, NEW), base, patched, test_image=image)
-    assert not bad.tests_ok and "1 failed" in bad.log
+    bad = check_code(proposal_of(OLD, NEW), base, patched, rule=RULE, test_image=image)
+    assert not bad.tests_ok and "1 failed" in bad.log and "patched code" in bad.problems[0]
     subprocess.run(["docker", "ps", "-a", "--filter", "name=sentinel-tests-", "-q"], check=True)

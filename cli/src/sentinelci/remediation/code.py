@@ -5,18 +5,26 @@ of the patched commit (exported, never checked out), and the patched code only e
 
 - **Build**: every edited file is Python and still parses (`ast.parse`, which runs nothing). A file of
   another language has no build defined here, so it cannot be verified (CodeCheckError).
-- **Tests**: the service's own tests. The service is the nearest directory above the edited file that holds
-  a `tests/` directory with a `test_*.py` file, below the repository root (whose `tests/` are SentinelCI's
-  own). They run with `python -m pytest` in a throwaway container from an image pinned by digest: no
-  network, a read-only root file system, no capability, no new privilege, as `nobody`, with memory, process
-  and CPU limits and a time limit. The patched service is mounted read-only, and the base commit's `tests/`
-  directory is mounted over its own: a patch never brings its own tests. A patch that edits the tests, or a
-  service without tests, fails the tests: a code patch is never VERIFIED without them.
+- **Tests**, two of them (ADR-0014 decision 3, review of #91). The service is the nearest directory above the
+  edited file that holds a `tests/` directory with a `test_*.py` file, below the repository root (whose
+  `tests/` are SentinelCI's own).
+  1. Its behaviour tests (`tests/`) pass on the patched code.
+  2. The target finding's own security test, `security_tests/test_<rule>.py` (the rule id with `-` as `_`),
+     fails on the base code and passes on the patched code: the weakness is gone, not only the scanner's
+     sight of it (a scanner can miss a rewritten pattern).
+  Each runs with `python -m pytest` in a throwaway container from an image pinned by digest: no network, a
+  read-only root file system, no capability, no new privilege, as `nobody`, with memory, process and CPU
+  limits and a time limit. The service is mounted read-only, and the base commit's `tests/` and
+  `security_tests/` are mounted over its own: a patch never brings its own tests. A patch that edits either,
+  a service without behaviour tests, or a rule without a security test fails the tests: a code patch is never
+  VERIFIED without them.
 
-Only pytest's own answer counts: exit 0 is a pass; any other exit (failures, errors, no test collected, the
-time limit) is a failure, with the end of the output kept as the feedback for a retry. A container that could
-not run at all (no Docker, an image that is not there) is CodeCheckError: nothing is verified, which is not
-the same as a failed test.
+Only pytest's own answer counts. A behaviour or patched run passes with exit 0 only; the base run "fails"
+with exit 1 only (a test that ran and failed: exit 2 to 5 is a broken or empty test, which proves nothing).
+Any other answer, the time limit included, fails the tests, with the end of the output kept as the feedback
+for a retry.
+A container that could not run at all (no Docker, an image that is not there) is CodeCheckError: nothing is
+verified, which is not the same as a failed test.
 """
 
 import ast
@@ -42,7 +50,11 @@ SANDBOX = (
     "--user", "65534:65534", "--pids-limit", "256", "--memory", "1g", "--cpus", "2", "--tmpfs", SCRATCH,
     "--env", "HOME=/tmp", "--env", "PYTHONDONTWRITEBYTECODE=1",
 )  # fmt: skip
-PYTEST = ("python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--no-header", "tests")
+PYTEST = ("python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--no-header")
+SECURITY_TESTS = "security_tests"
+RULE = re.compile(r"[a-z0-9][a-z0-9-]{0,127}")  # an Opengrep rule id of SentinelCI's (normalize/opengrep.py)
+# pytest's exit when tests ran and some failed (2 to 5: interrupted, internal, usage, nothing collected)
+TESTS_FAILED = 1
 DOCKER_FAILURES = (125, 126, 127)  # docker itself, or the command in the image, could not start
 TIMED_OUT = (124, 137)  # `timeout -s KILL` in the container, or the memory limit
 GRACE_S = 30  # the client waits this much longer than the container's own time limit
@@ -129,21 +141,32 @@ def _tests_failed(why: str, log: str = "") -> CodeChecked:
     return CodeChecked(build_ok=True, tests_ok=False, problems=[f"tests: {why}"], log=log)
 
 
+def security_test_of(rule: str) -> str:
+    """The security test of a rule, relative to its service: `security_tests/test_<rule>.py`."""
+    if not RULE.fullmatch(rule):
+        raise CodeCheckError(f"{rule!r} is not a rule id a security test can be named after")
+    return f"{SECURITY_TESTS}/test_{rule.replace('-', '_')}.py"
+
+
 def check_code(
     proposal: PatchProposal,
     base_root: Path,
     patched_root: Path,
     *,
+    rule: str,
     test_image: str,
     run: Runner | None = None,
     timeout: int = TEST_TIMEOUT_S,
 ) -> CodeChecked:
-    """Build and test an `llm:code` proposal: its edited files parse, and its service's tests pass in a
-    sandboxed container from `test_image`. CodeCheckError when that cannot be done honestly."""
+    """Build and test an `llm:code` proposal for the finding of `rule`: its edited files parse, its service's
+    behaviour tests pass on the patched code, and the rule's security test fails on the base code and passes
+    on the patched code, each in a sandboxed container from `test_image`. CodeCheckError when that cannot be
+    done honestly."""
     if proposal.strategy != LLM_CODE:
         raise CodeCheckError(f"{proposal.strategy} is not a code strategy")
     if not PINNED_IMAGE.match(test_image):
         raise CodeCheckError("the test image must be pinned by digest (name@sha256:..., or a sha256: id)")
+    security_test = security_test_of(rule)
     build: list[str] = []
     for path in sorted(proposal.files):
         if PurePosixPath(path).suffix != ".py":
@@ -165,21 +188,47 @@ def check_code(
     if service is None:
         where = ", ".join(sorted(proposal.files))
         return _tests_failed(f"no tests next to {where}: a code patch is never verified without them")
-    if any(path.startswith(f"{service}/tests/") for path in proposal.files):
-        return _tests_failed("the patch edits its service's tests, which then prove nothing")
-    name = f"sentinel-tests-{uuid.uuid4().hex}"
-    args = [
-        "run", "--rm", "--name", name, *SANDBOX,
-        "--mount", f"type=bind,source={(patched_root / service).resolve()},target=/srv,readonly",
-        "--mount", f"type=bind,source={(base_root / service / 'tests').resolve()},target=/srv/tests,readonly",
-        "--workdir", "/srv", test_image, "timeout", "-s", "KILL", str(timeout), *PYTEST,
-    ]  # fmt: skip
-    ran = (run or docker_runner)(args, timeout)
-    log = _tail(ran.output)
-    if ran.timed_out or ran.returncode in TIMED_OUT:
-        return _tests_failed(f"did not finish within {timeout} s, or ran out of memory", log)
-    if ran.returncode in DOCKER_FAILURES:
-        raise CodeCheckError(f"the test container could not run (docker exit {ran.returncode})")
-    if ran.returncode != 0:
-        return _tests_failed(f"{service}/tests failed (pytest exit {ran.returncode})", log)
-    return CodeChecked(build_ok=True, tests_ok=True, problems=[], log=log)
+    for kept in ("tests", SECURITY_TESTS):
+        if any(path.startswith(f"{service}/{kept}/") for path in proposal.files):
+            return _tests_failed(f"the patch edits its service's {kept}, which then prove nothing")
+    base_security = base_root / service / security_test
+    if (
+        not base_security.is_file()
+        or base_security.resolve() != base_root.resolve() / service / security_test
+    ):
+        return _tests_failed(
+            f"no security test {service}/{security_test} for {rule}: a fix is never verified without one"
+        )
+    runs = (
+        ("behaviour tests, patched code", patched_root, "tests", 0),
+        (f"{security_test}, base code", base_root, security_test, TESTS_FAILED),
+        (f"{security_test}, patched code", patched_root, security_test, 0),
+    )
+    kept_tests = (base_root / service / "tests").resolve()
+    kept_security = (base_root / service / SECURITY_TESTS).resolve()
+    logs: list[str] = []
+    for label, tree, selected, expected in runs:
+        name = f"sentinel-tests-{uuid.uuid4().hex}"
+        args = [
+            "run", "--rm", "--name", name, *SANDBOX,
+            "--mount", f"type=bind,source={(tree / service).resolve()},target=/srv,readonly",
+            "--mount", f"type=bind,source={kept_tests},target=/srv/tests,readonly",
+            "--mount", f"type=bind,source={kept_security},target=/srv/{SECURITY_TESTS},readonly",
+            "--workdir", "/srv", test_image, "timeout", "-s", "KILL", str(timeout), *PYTEST, selected,
+        ]  # fmt: skip
+        ran = (run or docker_runner)(args, timeout)
+        logs.append(f"$ pytest {selected} ({label})\n{ran.output}")
+        log = _tail("\n".join(logs))
+        if ran.timed_out or ran.returncode in TIMED_OUT:
+            return _tests_failed(f"{label}: did not finish within {timeout} s, or ran out of memory", log)
+        if ran.returncode in DOCKER_FAILURES:
+            raise CodeCheckError(f"the test container could not run (docker exit {ran.returncode})")
+        if ran.returncode != expected:
+            why = (
+                f"the {security_test} of {rule} does not fail on the base code "
+                f"(pytest exit {ran.returncode}): it proves nothing about this fix"
+                if expected == TESTS_FAILED
+                else f"{service}/{selected} failed on the patched code (pytest exit {ran.returncode})"
+            )
+            return _tests_failed(why, log)
+    return CodeChecked(build_ok=True, tests_ok=True, problems=[], log=_tail("\n".join(logs)))

@@ -8,13 +8,16 @@ which are origin/main's:
 1. `sentinel remediate apply` commits it on its own `sentinel/fix/...` branch of a bare copy of the
    repository (plumbing only: nothing is checked out, no hook or filter runs);
 2. the patched commit is scanned like a pull request: Gitleaks on its commits, Opengrep and Trivy on its tree;
-3. `sentinel remediate check --test-image` builds it and runs its service's tests in a sandboxed container;
+3. `sentinel remediate check --test-image` builds it, runs its service's behaviour tests on the patched code,
+   and the target's security test on the base code (it must fail) and on the patched code (it must pass), in
+   a sandboxed container;
 4. the gate is evaluated on the patched commit in pr context, the scanned commit as baseline;
 5. `sentinel remediate verify` applies the verification gate: VERIFIED, REJECTED or FAILED.
 
-A REJECTED attempt is proposed again with its diff and what rejected it (attempts 2 and 3, B6 redacts and
-clips both); FAILED, or a fixer that sends nothing or has no usable answer, ends the finding. Every step's
-evidence is kept under out/remediate-code/<commit>/. Nothing leaves the laptop unless asked:
+A REJECTED attempt is proposed again with its diff and what rejected it, the reasons last (attempts 2 and 3,
+B6 redacts and clips both, and keeps the end); FAILED, or a fixer that sends nothing or has no usable answer,
+ends the finding. Every step's evidence is kept under out/remediate-code/<commit>/. Nothing leaves the laptop
+unless asked:
 - `--publish` pushes each VERIFIED branch to origin and opens its pull request with the person's own `gh`
   login, as they would by hand. The bot never merges and never approves: a person reviews it.
 - `--api-url` records every attempt on the platform (`sentinel upload-remediation`, token from
@@ -246,7 +249,8 @@ class RemediateCode:
             )
             checked = self.run(sentinel(
                 "remediate", "check", "--proposal", str(path), "--base-root", str(self.base_tree),
-                "--patched-root", str(patched), "--test-image", self.settings.test_image,
+                "--patched-root", str(patched), "--findings", str(self.before),
+                "--test-image", self.settings.test_image,
             ), check=False)  # fmt: skip
             if checked.returncode not in (0, 1):
                 raise RemediationError("its build and tests could not be checked")
@@ -290,16 +294,18 @@ class RemediateCode:
         return attempt
 
     def _feedback(self, proposal: Any, attempt: Attempt, work: Path) -> Any:
-        """What rejected the attempt, for the next one: the check's problems and test log, and the gate's
-        reasons. B6 redacts and clips it before the model sees it."""
+        """What rejected the attempt, for the next one, redacted and clipped by B6 before the model sees it.
+        B6 keeps the END of this text (where a CI log's failure is), so the reasons come last: the tests' log
+        first, then the check's problems, then the verification's summary (review of #91). With a long log,
+        the model still sees why it was rejected, and as much of the log as fits."""
         make = self.feedback_type
         if make is None:
             from sentinel_ai.patch import Feedback
 
             make = Feedback
         check = json.loads((work / "check.json").read_text(encoding="utf-8"))
-        log = "\n".join([attempt.reason, *check.get("problems", []), check.get("log", "")])
-        return make(previous_diff=proposal.diff, ci_log=log)
+        parts = [check.get("log", ""), *check.get("problems", []), attempt.reason]
+        return make(previous_diff=proposal.diff, ci_log="\n".join(part for part in parts if part))
 
     # ------------------------------------------------------------ the steps
 

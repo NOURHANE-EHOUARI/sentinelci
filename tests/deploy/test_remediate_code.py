@@ -252,7 +252,10 @@ def test_a_verified_first_attempt_runs_every_step_once(repo: Path, tmp_path: Pat
     assert (asked["root"] / TARGET).read_text() == OLD, "the model reads the scanned commit's tree"
     assert (asked["root"] / SERVICE / "tests" / "test_db.py").is_file(), "export-ignore hid nothing"
     (check,) = loop.named("remediate", "check")
-    assert loop.option(check, "--test-image") == IMAGE and "--findings" not in check
+    assert loop.option(check, "--test-image") == IMAGE
+    assert loop.option(check, "--findings").endswith("before.ndjson"), (
+        "the target's rule names its security test"
+    )
     (evaluate,) = loop.named("evaluate")
     assert loop.option(evaluate, "--context") == "pr" and loop.option(evaluate, "--commit") != head
     assert loop.option(evaluate, "--baseline").endswith("before.ndjson")
@@ -290,6 +293,21 @@ def test_a_rejected_attempt_is_retried_with_what_rejected_it(repo: Path, tmp_pat
     assert feedback.previous_diff == proposal_for(1).diff
     assert "pytest exit 1" in feedback.ci_log and "1 failed" in feedback.ci_log
     assert "REJECTED (attempt 1)" in feedback.ci_log
+
+
+def test_the_feedback_ends_with_why_the_attempt_was_rejected(repo: Path, tmp_path: Path) -> None:
+    """Review of #91: B6 keeps the END of ci_log, so a long test log must never push the reasons out."""
+    loop = Loop(repo, tmp_path, Scenario(outcomes=["REJECTED", "VERIFIED"]))
+    loop()
+    lines = loop.asked[1]["feedback"].ci_log.splitlines()
+    log, problem, verdict = (
+        lines.index("1 failed"),
+        lines.index("tests: shop-api/tests failed (pytest exit 1)"),
+        next(i for i, line in enumerate(lines) if "REJECTED (attempt 1)" in line),
+    )
+    assert log < problem < verdict == len(lines) - 1, (
+        "the test log, then the check's problems, then the verdict"
+    )
 
 
 def test_after_three_rejections_the_finding_is_left(repo: Path, tmp_path: Path) -> None:

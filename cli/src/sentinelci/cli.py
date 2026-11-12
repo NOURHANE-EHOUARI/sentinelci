@@ -1741,6 +1741,16 @@ def remediate_apply(
     )  # fmt: skip
 
 
+def _target_rule(proposal: PatchProposal, findings: Path) -> str:
+    """The rule of the one SAST finding an llm:code proposal fixes, as the base commit's scan found it."""
+    if len(proposal.finding_ids) != 1:
+        raise CodeCheckError("an llm:code proposal fixes exactly one finding")
+    target = _read_findings(findings, "base findings").get(proposal.finding_ids[0])
+    if target is None or target.category != "SAST":
+        raise CodeCheckError(f"{proposal.finding_ids[0]} is not a SAST finding of the base commit's scan")
+    return target.rule_id
+
+
 @remediate_app.command("check")
 def remediate_check(
     proposal: Annotated[Path, typer.Option(help="The patch proposal (schemas/patch-proposal.v1.json).")],
@@ -1753,8 +1763,8 @@ def remediate_check(
     findings: Annotated[
         Path | None,
         typer.Option(
-            help="IaC findings NDJSON of the commit the proposal applies to: a deterministic fixer is re-run "
-            "on them (required for the IaC strategies)."
+            help="Findings NDJSON of the commit the proposal applies to (required): for IaC, a deterministic "
+            "fixer is re-run on them; for llm:code, the target finding's rule names its security test."
         ),
     ] = None,
     test_image: Annotated[
@@ -1772,9 +1782,10 @@ def remediate_check(
     documents, a Dockerfile's stages); tests = the patch changes only what its strategy may change, and the
     proposal is the fixer's own: re-run on the base tree (the whole commit) and --findings, it proposes
     exactly this. llm:code (ADR-0014): build = every edited file is Python that still parses; tests = the
-    service's own tests, from the base commit, run against the patched code in a sandboxed container from
-    --test-image (no network, read-only, no capability, as nobody, with a time limit); the JSON then carries
-    the end of their output as `log`.
+    service's behaviour tests pass on the patched code, and the target finding's security test
+    (`security_tests/test_<rule>.py`) fails on the base code and passes on the patched code, all from the base
+    commit, in a sandboxed container from --test-image (no network, read-only, no capability, as nobody, with
+    a time limit); the JSON then carries the end of their output as `log`.
 
     Exit code 0 when both hold, 1 when one does not (the JSON says which file and why), 3 when they cannot
     be checked honestly (a strategy with no build or tests defined here, a file that is not a regular file
@@ -1786,7 +1797,11 @@ def remediate_check(
         if applied.strategy == LLM_CODE:
             if test_image is None:
                 raise CodeCheckError("llm:code needs --test-image: its tests run in that image")
-            code = check_code(applied, base_root, patched_root, test_image=test_image)
+            if findings is None:
+                raise CodeCheckError("llm:code needs --findings: the target's rule names its security test")
+            code = check_code(
+                applied, base_root, patched_root, rule=_target_rule(applied, findings), test_image=test_image
+            )
             build_ok, tests_ok, problems, log = code.build_ok, code.tests_ok, code.problems, code.log
         else:
             if findings is None:
