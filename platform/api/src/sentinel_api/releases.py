@@ -87,6 +87,14 @@ def _errors(*codes: int) -> dict[int | str, dict[str, Any]]:
     return {code: {"model": ErrorOut, "description": _REASONS[code]} for code in codes}
 
 
+_INVALID: dict[int | str, dict[str, Any]] = {
+    422: {
+        "description": "Not a Release evidence v1 document, or one that contradicts itself: a BLOCK with "
+        "a trust report, a report about another image, repository or decision (the reason is in `msg`).",
+        "content": {JSON_TYPE: {"schema": {"$ref": "#/components/schemas/HTTPValidationError"}}},
+    }
+}
+
 _EXISTS: dict[int | str, dict[str, Any]] = {
     409: {
         "model": ReleaseExists,
@@ -176,7 +184,7 @@ def _store(session: Session, body: bytes) -> ReleaseOut | JSONResponse:
     response_model=ReleaseOut,
     dependencies=[Depends(require_writer)],
     tags=["releases"],
-    responses={**_errors(401, 413, 415, 503), **_EXISTS},
+    responses={**_errors(401, 413, 415, 503), **_EXISTS, **_INVALID},
     openapi_extra={
         "requestBody": {
             "required": True,
@@ -231,10 +239,13 @@ def get_release_evidence(
     image_digest: Annotated[str, Path(pattern=DIGEST)],
     session: SessionDep,
     decision_id: Annotated[
-        uuid.UUID | None, Query(description="One release of the image; the latest without it.")
+        uuid.UUID | None,
+        Query(description="One release of the image; without it, the one recorded last."),
     ] = None,
 ) -> Response:
-    """The image's latest release (or the release `decision_id`), exactly as it was posted."""
+    """The image's release recorded last (or the release `decision_id`), exactly as it was posted. "Last"
+    is the order of recording, not of the decisions: a late upload of an older decision becomes the one
+    served without `decision_id`."""
     query = select(Release).where(Release.image_digest == image_digest)
     query = (
         query.where(Release.decision_id == decision_id) if decision_id else query.order_by(Release.seq.desc())

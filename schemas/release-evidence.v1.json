@@ -18,7 +18,7 @@
       ]
     },
     "decision": {
-      "description": "The release decision record, as `sentinel evaluate` wrote it.",
+      "description": "The release decision record: the same JSON value `sentinel evaluate` wrote, not the same bytes (it is re-serialized here), so its sha256 is not the decision file's or the decision attestation's.",
       "$ref": "decision.v1.json"
     },
     "trust_reports": {

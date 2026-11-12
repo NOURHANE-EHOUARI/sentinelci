@@ -173,14 +173,18 @@ def test_going_below_0007_stops_while_a_release_is_kept(postgres_server: str) ->
         conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
     url = f"{postgres_server}/{name}"
     upgrade(url)
-    document = b'{"schema_version": "1.0"}'
+    # A real release's bytes: the database checks the columns against the document (review of #86).
+    block = ROOT / "schemas" / "fixtures" / "release-evidence" / "valid" / "block-without-a-trust-report.json"
+    document = block.read_bytes()
+    decision = json.loads(document)["decision"]
+    subject = decision["subject"]
     with psycopg.connect(url, autocommit=True) as conn:
         conn.execute(
-            "INSERT INTO releases (decision_id, repo, commit, image_digest, verdict, evaluated_at, sha256, "
-            "document) VALUES (gen_random_uuid(), 'o/r', repeat('a', 40), 'sha256:' || repeat('c', 64), "
-            "'BLOCK', now(), encode(sha256(%s), 'hex'), %s)",
-            (document, document),
-        )
+            'INSERT INTO releases (decision_id, repo, "commit", ref, image_digest, verdict, evaluated_at, '
+            "sha256, document) VALUES (%s, %s, %s, %s, %s, 'BLOCK', now(), encode(sha256(%s), 'hex'), %s)",
+            (decision["decision_id"], subject["repo"], subject["commit"], subject.get("ref"),
+             subject["image_digest"], document, document),
+        )  # fmt: skip
     with pytest.raises(RuntimeError, match=r"1 release\(s\) are kept"):
         downgrade(url, "0006")
     with psycopg.connect(url) as conn:
