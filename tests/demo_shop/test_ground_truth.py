@@ -39,6 +39,10 @@ real = pytest.mark.skipif(
 TRUTH: dict[str, Any] = yaml.safe_load(GROUND_TRUTH.read_text(encoding="utf-8"))
 SEEDS: list[dict[str, Any]] = TRUTH["seeds"]
 CONTROLS: list[dict[str, Any]] = TRUTH["controls"]
+CANARIES: list[dict[str, Any]] = TRUTH.get("canaries", [])
+TOKEN = re.compile(r"^CANARY-[A-Z0-9]+(?:-[A-Z0-9]+)+$")
+SHOP_API = DEMO / "services" / "shop-api"
+PIN = re.compile(r"^([a-z0-9][a-z0-9._-]*)==([^\s\\]+) \\$")
 
 
 def _expected(tool: str) -> set[tuple[str, str]]:
@@ -89,6 +93,95 @@ def test_ground_truth_is_well_formed() -> None:
     for control in CONTROLS:
         assert control["id"].startswith("GT-CLEAN-")
         assert control["must_not_detect"], control["id"]
+    assert set(TRUTH) <= {"version", "seeds", "canaries", "controls"}
+
+
+# ---------------------------------------------------------------- prompt-injection canaries (B9)
+
+
+def test_canaries_are_well_formed_and_planted_where_they_say() -> None:
+    """Each canary is a token on its line, beside the seed an AI reads it with; no two share a token."""
+    seed_ids = {seed["id"] for seed in SEEDS}
+    tokens = [canary["token"] for canary in CANARIES]
+    assert len(tokens) == len(set(tokens)) and CANARIES, "one unique token per canary"
+    for canary in CANARIES:
+        assert set(canary) == {"id", "owner", "title", "location", "near", "token"}, canary["id"]
+        assert re.fullmatch(r"GT-CANARY-[0-9]{3}", canary["id"]) and canary["owner"] == "B9", canary["id"]
+        assert TOKEN.fullmatch(canary["token"]), canary["id"]
+        assert canary["near"] in seed_ids, canary["id"]
+        lines = (DEMO / canary["location"]["path"]).read_text(encoding="utf-8").splitlines()
+        assert canary["token"] in lines[canary["location"]["line"] - 1], f"{canary['id']}: not on its line"
+        assert canary["id"] in "\n".join(lines), canary["id"]
+        planted = [
+            path
+            for path in DEMO.rglob("*")
+            if path.is_file()
+            and GROUND_TRUTH.parent not in path.parents
+            and canary["token"] in path.read_text("utf-8", "replace")
+        ]
+        assert planted == [DEMO / canary["location"]["path"]], f"{canary['token']} is planted once"
+
+
+# ---------------------------------------------------------------- the release image's requirements (B9)
+
+
+def _pins(name: str) -> dict[str, list[str]]:
+    """package -> hashes of a hash-pinned requirements file; every requirement must have a hash."""
+    pins: dict[str, list[str]] = {}
+    current = None
+    for line in (SHOP_API / name).read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        if match := PIN.match(line):
+            current = match[1] + "==" + match[2]
+            assert current not in pins, current
+            pins[current] = []
+        else:
+            hashed = re.fullmatch(r"    --hash=sha256:([0-9a-f]{64})(?: \\)?", line)
+            assert hashed is not None and current is not None, f"{name}: {line!r}"
+            pins[current].append(hashed[1])
+    assert pins and all(pins.values()), f"{name}: every requirement is pinned and hashed"
+    return pins
+
+
+def test_the_release_and_block_requirements_differ_only_in_the_seeded_pyyaml() -> None:
+    """ADR-0011 decision 6: the BLOCK image is the release image with pyyaml 5.3.1 (GT-SCA-001), pinned by
+    the hash of its sdist; the release image holds no seeded version."""
+    release, block = _pins("requirements.release.txt"), _pins("requirements.block.txt")
+    pyyaml = [pin for pin in release if pin.startswith("pyyaml==")]
+    assert pyyaml and pyyaml[0] != "pyyaml==5.3.1"
+    assert {k: v for k, v in release.items() if k not in pyyaml} == {
+        k: v for k, v in block.items() if k != "pyyaml==5.3.1"
+    }
+    sdist = "b8eac752c5e14d3eca0e6dd9199cd627518cb5ec06add0de9d32baeee6fe645d"  # PyYAML-5.3.1.tar.gz
+    assert block["pyyaml==5.3.1"] == [sdist]
+    seeded = {
+        line.split()[0]
+        for line in (SHOP_API / "requirements.txt").read_text("utf-8").splitlines()
+        if line and not line.startswith(("#", " "))
+    }
+    vulnerable = {"lxml==4.6.2", "pyyaml==5.3.1", "requests==2.30.0"} & seeded
+    assert vulnerable == {"lxml==4.6.2", "pyyaml==5.3.1", "requests==2.30.0"}
+    assert not vulnerable & set(release), "the release image installs no seeded version"
+
+
+def test_the_application_imports_what_the_ground_truth_says() -> None:
+    """Read, never run (demo-shop code runs only in its container): shop-api imports yaml and requests, which
+    the SCA seeds mark imported, and never lxml (GT-SCA-003, declared and never imported)."""
+    import ast
+
+    imported: set[str] = set()
+    for source in (SHOP_API / "app").glob("*.py"):
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                imported |= {alias.name.split(".")[0] for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                imported.add(node.module.split(".")[0])
+    module = {"pyyaml": "yaml", "requests": "requests", "lxml": "lxml"}
+    for seed in SEEDS:
+        name = seed.get("package", "").removeprefix("pkg:pypi/").split("@")[0]
+        if name in module and "imported" in seed:
+            assert (module[name] in imported) == seed["imported"], seed["id"]
 
 
 @pytest.mark.parametrize("entry", [*SEEDS, *CONTROLS], ids=lambda e: e["id"])
@@ -166,3 +259,23 @@ def test_trivy_finds_every_iac_seed_and_nothing_in_controls() -> None:
             f"{seed['id']} is a known miss, but Trivy now reports {rules} in its file. If a rule flags "
             "the seed, list it in expected.detections and drop known_miss; never edit the seed to hide it"
         )
+
+
+def test_every_requirements_file_that_pins_a_seeded_version_is_listed() -> None:
+    """Syft reads every requirements*.txt: each one that pins an SCA seed's version is the seed's manifest or
+    in its `also_in`, so no place Grype reports for it is unlisted (#74 review). The release image's file pins
+    none."""
+    for seed in SEEDS:
+        purl = seed.get("package", "")
+        if not purl.startswith("pkg:pypi/"):
+            continue
+        name, version = purl.removeprefix("pkg:pypi/").split("@")
+        listed = {seed["location"]["path"], *seed.get("also_in", [])}
+        for manifest in sorted(DEMO.rglob("requirements*.txt")):
+            text = manifest.read_text(encoding="utf-8").lower()
+            if re.search(rf"^{re.escape(name)}=={re.escape(version)}(\s|$)", text, re.MULTILINE):
+                assert manifest.relative_to(DEMO).as_posix() in listed, (
+                    f"{seed['id']}: {manifest} is not listed"
+                )
+        for path in seed.get("also_in", []):
+            assert (DEMO / path).is_file(), f"{seed['id']}: {path} does not exist"
