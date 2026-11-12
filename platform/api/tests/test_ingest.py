@@ -572,7 +572,7 @@ def test_the_contract_version_is_the_apis_own(client: TestClient) -> None:
     from sentinelci import __version__ as engine_version
 
     document = client.app.openapi()  # type: ignore[attr-defined]
-    assert document["info"]["version"] == API_VERSION == "1.4.0"
+    assert document["info"]["version"] == API_VERSION == "1.6.1"
     assert client.get("/healthz").json() == {"status": "ok", "engine_version": engine_version}
 
 
