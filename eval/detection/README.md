@@ -15,8 +15,9 @@ What it reports:
 - **False positives on the clean controls:** a finding by a tool a control names, in the control's file.
 - **Unlisted findings:** real findings that match no seed and no control. They are listed, neither hits nor
   false positives.
-- **Not measured:** a category whose tool did not run (no Grype database, or a CLI without the command) says
-  so and why. It is never scored 0.
+- **Not measured:** a category whose tool did not run a scan of that category (no Grype database, a CLI
+  without the command, or no image scanned for CONTAINER) says so and why. It is never scored 0. A finding
+  detects only seeds of its own category: an SCA finding never detects a CONTAINER seed.
 - **The benchmark's size** against SPEC section 17, and the canaries, which are measured with the AI
   explanations (B5).
 

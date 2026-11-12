@@ -3,8 +3,10 @@ rules, categories never scored when their tool did not run, and the same report 
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -159,3 +161,72 @@ def test_a_failed_scan_reports_the_clis_own_words() -> None:
         "╭─ Error ─╮\n│ No such command 'sast'. │\n╰────╯\n"
     )
     assert run_module.reason(boxed) == "Error No such command 'sast'."
+
+
+# ---------------------------------------------------------------- review of #77
+
+
+CONTAINER_SEED = seed(
+    "GT-CONTAINER-001", "CONTAINER", "services/shop-api/requirements.block.txt", "grype", "GHSA-x",
+    package="pkg:pypi/pyyaml@5.3.1",
+)  # fmt: skip
+SCA_ON_THE_BLOCK_FILE = finding(
+    "grype", "GHSA-x", "services/shop-api/requirements.block.txt", "SCA",
+    package={"purl": "pkg:pypi/pyyaml@5.3.1"},
+)  # fmt: skip
+
+
+def test_a_finding_detects_only_seeds_of_its_own_category() -> None:
+    """With the container seed, an SCA finding of the same package and advisory must not claim it: no image
+    was scanned, so CONTAINER is not measured."""
+    result = score(truth(SCA, CONTAINER_SEED), [SCA_ON_THE_BLOCK_FILE], OK)
+    assert result["categories"]["SCA"]["detected"] == 1
+    assert result["categories"]["CONTAINER"] == {
+        "seeds": 1, "tools": ["grype"], "measured": False, "reason": "not run: grype did not scan CONTAINER",
+    }  # fmt: skip
+
+
+def test_a_container_scan_measures_container_with_its_own_findings() -> None:
+    image_scan = ToolRun("grype", "ok", version="1", categories=("CONTAINER",))
+    in_image = finding("grype", "GHSA-x", "usr/local/lib/python3.12/site-packages/PyYAML-5.3.1.dist-info",
+                       "CONTAINER", package={"purl": "pkg:pypi/pyyaml@5.3.1"})  # fmt: skip
+    measured = score(truth(CONTAINER_SEED), [SCA_ON_THE_BLOCK_FILE], [image_scan])["categories"]["CONTAINER"]
+    assert (measured["measured"], measured["detected"]) == (True, 0), "the SCA finding still does not count"
+    found = score(truth(CONTAINER_SEED), [in_image], [image_scan])["categories"]["CONTAINER"]
+    assert (found["measured"], found["detected"], found["recall"]) == (True, 1, 1.0)
+
+
+def test_a_category_of_known_misses_only_is_measured_at_zero() -> None:
+    result = score(truth(SECRET, MISS | {"category": "PIPELINE"}), [], OK)
+    assert result["categories"]["PIPELINE"] == {
+        "seeds": 1, "tools": [], "measured": True, "detected": 0, "recall": 0.0,
+        "missed": [{"id": "GT-IAC-002", "known_miss": True}],
+    }  # fmt: skip
+
+
+def test_recorded_findings_name_no_tree_and_their_files_digests(tmp_path: Path) -> None:
+    findings = tmp_path / "in"
+    findings.mkdir()
+    body = (json.dumps(finding("gitleaks", "github-pat", "x.yaml", "SECRET", 1), indent=None) + "\n").encode()
+    (findings / "gitleaks.ndjson").write_bytes(body.replace(b", ", b",  "))  # not how json.dumps writes it
+    assert run_module.main(["--findings", str(findings), "--out", str(tmp_path / "out")]) == 0
+    report = json.loads((tmp_path / "out" / "detection.json").read_bytes())
+    assert report["inputs"]["demo_shop_tree"] is None and report["inputs"]["findings_recorded"] is True
+    expected = hashlib.sha256((findings / "gitleaks.ndjson").read_bytes()).hexdigest()
+    assert report["inputs"]["findings_sha256"] == {"gitleaks": expected}, "the file's own bytes"
+    assert "recorded findings (`--findings`)" in (tmp_path / "out" / "detection.md").read_text()
+
+
+def test_an_ignored_file_in_demo_shop_makes_the_tree_unclean(tmp_path: Path, monkeypatch: Any) -> None:
+    """The scanners read ignored files too (a local `*.key`), so the report must not name a clean tree."""
+    git = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    (tmp_path / "demo-shop").mkdir()
+    (tmp_path / "demo-shop" / "app.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / ".gitignore").write_text("*.key\n", encoding="utf-8")
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "base"], check=True)
+    monkeypatch.setattr(run_module, "ROOT", tmp_path)
+    assert run_module.demo_shop_tree() is not None
+    (tmp_path / "demo-shop" / "local.key").write_text("not a real key\n", encoding="utf-8")
+    assert run_module.demo_shop_tree() is None
