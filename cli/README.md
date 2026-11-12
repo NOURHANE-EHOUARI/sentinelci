@@ -297,7 +297,10 @@ uv run sentinel normalize grype grype.json --scan-root demo-shop --out out/sca.n
 - **Report** (`--report`, only on success): what this scan read, the Syft and Grype binaries, the database Grype
   matched against (schema, build time, checksum, as Grype's report names it) and the sha256 of the SBOM it
   matched. A decision can only be explained with its database: two databases give different findings on the same
-  tree. `sentinel-scan.yml` keeps it with the scan evidence (`sca-report.json`).
+  tree. `--report` needs `--sbom-out`, which keeps that SBOM (Syft's JSON): a digest of bytes nobody keeps could
+  be checked against nothing. The same tree gives the same SBOM bytes, since `supplychain/configs/syft.yaml`
+  fixes the two directories Syft records in it. `sentinel-scan.yml` keeps both with the scan evidence
+  (`sca-report.json`, `sca-sbom.syft.json`).
 - **CPE matching is pinned too.** `scanners/configs/grype.yaml` sets the `match` block (which ecosystems Grype
   also matches by CPE, Grype 0.121.0's defaults), and a report whose recorded block differs is refused: turning
   CPE matching off for an ecosystem drops what only a CPE finds.

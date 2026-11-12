@@ -464,7 +464,8 @@ def test_cli_records_a_failure_so_the_gate_blocks_it(
 
 
 def test_cli_writes_no_status_without_a_lock(tmp_path: Path) -> None:
-    # Nothing to vouch for: no status at all, which the gate reports as SC-010 "Tool status missing".
+    # Nothing to vouch for: no status at all, which the gate blocks (SC-010) once required_tools.rego
+    # requires the tool.
     target = _target(tmp_path)
     status = tmp_path / "status.json"
     status.write_text("stale")

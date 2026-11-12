@@ -13,9 +13,14 @@ golang:
   search-local-mod-cache-licenses: false
   search-local-vendor-licenses: false
   use-packages-lib: false
+  # Never read (the search above is off), but Syft records it in the syft-json SBOM, by default under its
+  # private home, a new directory each run: fixed, so the same tree gives the same SBOM bytes (review of #80).
+  local-mod-cache-dir: /nonexistent/go/pkg/mod
 java:
   use-network: false
   use-maven-local-repository: false
+  # Never read either (use-maven-local-repository is off), and recorded the same way.
+  maven-local-repository-dir: /nonexistent/.m2/repository
 javascript:
   search-remote-licenses: false
 python:
