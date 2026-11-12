@@ -25,7 +25,7 @@ base := {
 	"context": "release",
 	"findings": [],
 	"waivers": [],
-	"tool_status": {"schema_version": 1, "lock_sha256": "x", "tools": {"gitleaks": ok_tool, "trivy": ok_tool}},
+	"tool_status": {"schema_version": 1, "lock_sha256": "x", "tools": {"gitleaks": ok_tool, "trivy": ok_tool, "zizmor": ok_tool}},
 	"risk_model_version": "1.0.0",
 }
 
@@ -352,7 +352,7 @@ tools(entries) := object.union(without_tool_status, {"tool_status": {"schema_ver
 ok_tool := {"version": "8.30.1", "binary_sha256": "abc", "status": "ok"}
 
 test_all_tools_ok_pass if {
-	gate.decision.verdict == "PASS" with input as tools({"gitleaks": ok_tool, "trivy": ok_tool, "opa": ok_tool})
+	gate.decision.verdict == "PASS" with input as tools({"gitleaks": ok_tool, "trivy": ok_tool, "zizmor": ok_tool, "opa": ok_tool})
 }
 
 test_each_failed_tool_blocks_with_sc010 if {
@@ -360,6 +360,7 @@ test_each_failed_tool_blocks_with_sc010 if {
 		"gitleaks": ok_tool,
 		"opengrep": {"version": "1.6.0", "status": "timeout", "detail": "opengrep timed out after 900 s"},
 		"trivy": {"version": "0.76.1", "status": "integrity_mismatch", "detail": "binary modified"},
+		"zizmor": ok_tool,
 	})
 	d.verdict == "BLOCK"
 	d.violations == [
@@ -369,7 +370,7 @@ test_each_failed_tool_blocks_with_sc010 if {
 }
 
 test_tool_without_status_is_not_ok if {
-	[v] := gate.decision.violations with input as tools({"gitleaks": {"version": "8.30.1"}, "trivy": ok_tool})
+	[v] := gate.decision.violations with input as tools({"gitleaks": {"version": "8.30.1"}, "trivy": ok_tool, "zizmor": ok_tool})
 	v.message == "Scanner failure: gitleaks unknown"
 }
 
@@ -384,13 +385,13 @@ test_pr_and_release_without_tool_status_block_with_sc010 if {
 			"rule": "SC-010",
 			"effect": "BLOCK",
 			"finding_ids": [],
-			"message": sprintf("Tool status missing: %s requires gitleaks, trivy", [context]),
+			"message": sprintf("Tool status missing: %s requires gitleaks, trivy, zizmor", [context]),
 		}]
 	}
 }
 
 test_required_tool_absent_from_the_status_blocks_with_sc010 if {
-	[v] := gate.decision.violations with input as tools({"opa": ok_tool, "trivy": ok_tool})
+	[v] := gate.decision.violations with input as tools({"opa": ok_tool, "trivy": ok_tool, "zizmor": ok_tool})
 	v == {"rule": "SC-010", "effect": "BLOCK", "finding_ids": [], "message": "Scanner missing: gitleaks (required in release)"}
 }
 
@@ -400,6 +401,7 @@ test_every_required_scanner_is_reported_missing if {
 		d.violations == [
 			{"rule": "SC-010", "effect": "BLOCK", "finding_ids": [], "message": sprintf("Scanner missing: gitleaks (required in %s)", [context])},
 			{"rule": "SC-010", "effect": "BLOCK", "finding_ids": [], "message": sprintf("Scanner missing: trivy (required in %s)", [context])},
+			{"rule": "SC-010", "effect": "BLOCK", "finding_ids": [], "message": sprintf("Scanner missing: zizmor (required in %s)", [context])},
 		]
 	}
 }
@@ -409,7 +411,7 @@ test_local_requires_no_tool if {
 }
 
 test_a_failed_required_tool_is_one_violation_not_two if {
-	[v] := gate.decision.violations with input as tools({"gitleaks": {"version": "8.30.1", "status": "failed", "detail": "exit 2"}, "trivy": ok_tool})
+	[v] := gate.decision.violations with input as tools({"gitleaks": {"version": "8.30.1", "status": "failed", "detail": "exit 2"}, "trivy": ok_tool, "zizmor": ok_tool})
 	v.message == "Scanner failure: gitleaks failed (exit 2)"
 }
 
@@ -877,4 +879,12 @@ test_an_expired_or_disputing_statement_of_another_status_still_disputes if {
 	)
 	d := gate.decision with input as with_vex([critical_sca], [na, old])
 	d.vex_applied == []
+}
+
+# zizmor is required in pr and release (A3, #66): a pull request that deletes the workflow audit step from the
+# workflow it carries loses SC-009 only if the gate does not notice. It does: the status lacks zizmor.
+test_a_pull_request_without_the_workflow_audit_blocks if {
+	d := gate.decision with input as object.union(tools({"gitleaks": ok_tool, "trivy": ok_tool}), {"context": "pr"})
+	d.verdict == "BLOCK"
+	d.violations == [{"rule": "SC-010", "effect": "BLOCK", "finding_ids": [], "message": "Scanner missing: zizmor (required in pr)"}]
 }
