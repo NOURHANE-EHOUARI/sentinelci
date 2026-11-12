@@ -162,6 +162,101 @@ CASES: list[tuple[str, str, bool, str]] = [
      '    list(yaml.load_all(text, Loader=yaml.SafeLoader))\n'
      '    yaml.load(text, yaml.SafeLoader)\n'
      '    return list(yaml.load_all(text, yaml.CSafeLoader))\n'),
+    # #84 review: a case for each pattern, so that removing any of them fails (Hiba's mutants M01, M06, M08).
+    ('python-unsafe-deserialization', 'de-unsafe.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return yaml.unsafe_load(text)\n'),
+    ('python-unsafe-deserialization', 'de-unsafe-kw.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return yaml.load(text, Loader=yaml.UnsafeLoader)\n'),
+    ('python-unsafe-deserialization', 'de-positional-loader.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return yaml.load(text, yaml.Loader)\n'),
+    # A Loader passed to a function that builds no object is not a finding (M12: the load/load_all regex).
+    ('python-unsafe-deserialization', 'de-loader-elsewhere-ok.py', False,
+     'import yaml\n'
+     'def ctor(loader, node):\n'
+     '    return node.value\n'
+     'yaml.add_constructor("!x", ctor, Loader=yaml.Loader)\n'
+     'def f(text):\n'
+     '    return yaml.compose(text, Loader=yaml.FullLoader)\n'),
+    ('python-unsafe-deserialization', 'de-base-ok.py', False,
+     'import yaml\n'
+     'class Strict(yaml.SafeLoader):\n'
+     '    pass\n'
+     'def f(text):\n'
+     '    yaml.load(text, Loader=yaml.BaseLoader)\n'
+     '    yaml.load(text, yaml.loader.BaseLoader)\n'
+     '    return yaml.load(text, Loader=Strict)\n'),
+    # The libyaml loaders are as unsafe as the pure-Python ones.
+    ('python-unsafe-deserialization', 'de-cloader.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return yaml.load(text, Loader=yaml.CLoader)\n'),
+    ('python-unsafe-deserialization', 'de-cfull-all.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return list(yaml.load_all(text, yaml.CFullLoader))\n'),
+    ('python-unsafe-deserialization', 'de-submodule.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return yaml.load(text, Loader=yaml.loader.FullLoader)\n'),
+    ('python-unsafe-deserialization', 'de-submodule-positional.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return list(yaml.load_all(text, yaml.cyaml.CLoader))\n'),
+    # No loader, said another way: the data by keyword, or Loader=None (FullLoader in pyyaml 5.1 to 5.4).
+    ('python-unsafe-deserialization', 'de-stream-kw.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return yaml.load(stream=text)\n'),
+    ('python-unsafe-deserialization', 'de-stream-kw-all.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return list(yaml.load_all(stream=text))\n'),
+    ('python-unsafe-deserialization', 'de-loader-none.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return yaml.load(text, Loader=None)\n'),
+    ('python-unsafe-deserialization', 'de-loader-none-all.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return list(yaml.load_all(text, Loader=None))\n'),
+    # ruamel.yaml's YAML() in a local named yaml is not PyYAML, and our remediation module uses that idiom.
+    ('python-unsafe-deserialization', 'de-ruamel-ok.py', False,
+     'from ruamel.yaml import YAML\n'
+     'def f(text):\n'
+     '    yaml = YAML()\n'
+     '    return yaml.load(text), list(yaml.load_all(text))\n'),
+    # Only a call result excuses the name: an import fallback to None is still PyYAML where the call runs.
+    ('python-unsafe-deserialization', 'de-import-fallback.py', True,
+     'try:\n'
+     '    import yaml\n'
+     'except ImportError:\n'
+     '    yaml = None\n'
+     'def f(text):\n'
+     '    return yaml.load(text)\n'),
+    ('python-unsafe-deserialization', 'de-module-rebound.py', True,
+     'import yaml as pyyaml\n'
+     'yaml = pyyaml\n'
+     'def f(text):\n'
+     '    return yaml.load(text)\n'),
+    # pickle and marshal, from a file as from bytes (M22, M23).
+    ('python-unsafe-deserialization', 'de-pickle-file.py', True,
+     'import pickle\n'
+     'def f(fh):\n'
+     '    return pickle.load(fh)\n'),
+    ('python-unsafe-deserialization', 'de-marshal.py', True,
+     'import marshal\n'
+     'def f(data):\n'
+     '    return marshal.loads(data)\n'),
+    ('python-unsafe-deserialization', 'de-marshal-file.py', True,
+     'import marshal\n'
+     'def f(fh):\n'
+     '    return marshal.load(fh)\n'),
     ('python-tls-verification-disabled', 'tls1.py', True,
      'import requests\n'
      'def f(u):\n'

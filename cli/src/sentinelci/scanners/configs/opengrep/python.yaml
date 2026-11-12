@@ -97,6 +97,7 @@ rules:
       - pattern: pickle.loads(...)
       - pattern: pickle.load(...)
       - pattern: marshal.loads(...)
+      - pattern: marshal.load(...)
       # PyYAML's loaders that can build arbitrary Python objects: the full and unsafe ones, by name, by keyword
       # or as the second argument, for one document or for all of them (FullLoader runs code in pyyaml < 5.4).
       - pattern: yaml.unsafe_load(...)
@@ -105,21 +106,34 @@ rules:
       - pattern: yaml.full_load_all(...)
       - patterns:
           - pattern-either:
-              - pattern: yaml.$LOAD(..., Loader=yaml.Loader, ...)
-              - pattern: yaml.$LOAD(..., Loader=yaml.UnsafeLoader, ...)
-              - pattern: yaml.$LOAD(..., Loader=yaml.FullLoader, ...)
-              - pattern: yaml.$LOAD($DATA, yaml.Loader)
-              - pattern: yaml.$LOAD($DATA, yaml.UnsafeLoader)
-              - pattern: yaml.$LOAD($DATA, yaml.FullLoader)
+              - pattern: yaml.$LOAD(..., Loader=yaml.$LOADER, ...)
+              - pattern: yaml.$LOAD(..., Loader=yaml.$MODULE.$LOADER, ...)
+              - pattern: yaml.$LOAD($DATA, yaml.$LOADER, ...)
+              - pattern: yaml.$LOAD($DATA, yaml.$MODULE.$LOADER, ...)
+          # load and load_all only: add_constructor, compose and parse take a Loader but build no object.
           - metavariable-regex:
               metavariable: $LOAD
               regex: ^load(_all)?$
+          # Loader, FullLoader, UnsafeLoader and their libyaml twins (CLoader, CFullLoader, CUnsafeLoader), from
+          # yaml or from its yaml.loader and yaml.cyaml modules.
+          - metavariable-regex:
+              metavariable: $LOADER
+              regex: ^C?(Full|Unsafe)?Loader$
       - patterns:
           - pattern-either:
+              # No loader: pyyaml < 5.1 builds any object, 5.1 to 5.4 falls back to FullLoader with a warning
+              # (6.0 refuses the call). Loader=None is the same fallback.
               - pattern: yaml.load($DATA)
               - pattern: yaml.load_all($DATA)
-          - pattern-not: yaml.load(..., Loader=..., ...)
-          - pattern-not: yaml.load_all(..., Loader=..., ...)
+              - pattern: yaml.load(stream=$DATA)
+              - pattern: yaml.load_all(stream=$DATA)
+              - pattern: yaml.load(..., Loader=None, ...)
+              - pattern: yaml.load_all(..., Loader=None, ...)
+          # A local named yaml that holds what a call returned is not PyYAML: the ruamel.yaml idiom is
+          # `yaml = YAML()`, safe unless typ="unsafe". `yaml = None` (an import fallback) excludes nothing.
+          - pattern-not-inside: |
+              yaml = $FACTORY(...)
+              ...
 
   - id: python-tls-verification-disabled
     languages: [python]
