@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/NOURHANE-EHOUARI/sentinelci/schemas/explanation.v1.json",
+  "title": "SentinelCI Explanation v1",
+  "description": "Advisory output of the AI analyst (task B5, SPEC section 8): what one finding means and how to fix it, grounded in the finding, its advisory and its code. Never read by the release gate: the verdict never depends on it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "finding_id",
+    "summary",
+    "impact",
+    "exploit_scenario",
+    "fix_guidance",
+    "references",
+    "confidence",
+    "model",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "finding_id": {
+      "description": "The Finding v1 id (fingerprint) explained.",
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "summary": {
+      "description": "One line: what the finding is.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/one_line"
+        }
+      ],
+      "maxLength": 300
+    },
+    "impact": {
+      "description": "One paragraph, no line break: what an attacker gains.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/one_line"
+        }
+      ],
+      "maxLength": 2000
+    },
+    "exploit_scenario": {
+      "description": "One paragraph, no line break: how the weakness would be exploited here.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/one_line"
+        }
+      ],
+      "maxLength": 2000
+    },
+    "fix_guidance": {
+      "description": "One paragraph, no line break: how to fix it in this code.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/one_line"
+        }
+      ],
+      "maxLength": 2000
+    },
+    "references": {
+      "description": "Identifiers and links taken from the context the model was given (the finding's CWE, CVE and advisory ids, and its advisory's links), never invented: CWE-<n>, CVE-<year>-<n>, GHSA-xxxx-xxxx-xxxx or an https URL.",
+      "type": "array",
+      "maxItems": 10,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "maxLength": 500,
+        "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])(CWE-[0-9]{1,5}|CVE-[0-9]{4}-[0-9]{4,7}|GHSA(-[23456789cfghjmpqrvwx]{4}){3}|https://[^\\s]+)$"
+      }
+    },
+    "confidence": {
+      "$ref": "#/$defs/confidence"
+    },
+    "model": {
+      "$ref": "#/$defs/model"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "$defs": {
+    "sha256_hex": {
+      "type": "string",
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[a-f0-9]{64}$"
+    },
+    "one_line": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029]).*\\S"
+    },
+    "model": {
+      "description": "What produced the output (SPEC section 8: provider, model, and the hashes of the prompt and of the input are recorded).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "name",
+        "prompt_sha256",
+        "input_sha256"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[a-z0-9._-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[A-Za-z0-9._:/@-]+$"
+        },
+        "digest": {
+          "description": "The model's digest, when the provider pins one (Ollama, ADR-0009).",
+          "type": "string",
+          "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])sha256:[a-f0-9]{64}$"
+        },
+        "prompt_sha256": {
+          "$ref": "#/$defs/sha256_hex"
+        },
+        "input_sha256": {
+          "$ref": "#/$defs/sha256_hex"
+        }
+      }
+    },
+    "confidence": {
+      "description": "The model's own confidence, 0 to 1: a hint for the reader, not a measured probability.",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  }
+}
