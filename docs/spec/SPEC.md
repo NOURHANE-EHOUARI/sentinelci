@@ -11,7 +11,7 @@
 | Version | Change |
 |---|---|
 | 1.1.66 | Platform API 1.6.1 (B1, #78 and #79 reviews): the 409 of `POST /api/v1/runs/{id}/decision` and of `POST /api/v1/runs/{id}/correlations` is documented with both of its shapes (`DecisionExists` or `CorrelationExists` when one is recorded, `ErrorOut` when the run's findings are not recorded yet), so a generated client never assumes the recorded one is there. `GET /api/v1/runs` says that offset pages are stable for a fixed set of runs only. The decisions table says which copied columns the database checks against the document (`decision_id` and `verdict`, which are listed and counted) and which the API only copies for display (`evaluated_at`, `engine_version`). |
-| 1.1.63 | A8 MTTR and alert reduction (§10): `GET /metrics` adds `sentinel_findings_fixed{priority}` and `sentinel_findings_fix_seconds{priority}` (fixes on each repository's default branch, from its release runs with a recorded decision and no SC-010) and `sentinel_correlated_findings{category}` and `sentinel_root_cause_groups{category}` (each repository's latest correlation). Grafana: MTTR by priority and alert reduction by category. |
+| 1.1.63 | A8 MTTR and alert reduction (§10): `GET /metrics` adds `sentinel_findings_fixed{priority}` and `sentinel_findings_fix_seconds{priority}` (fixes on each repository's default branch, from its release runs with a recorded decision and no SC-010) and `sentinel_correlated_findings{category}` and `sentinel_root_cause_groups{category}` (each repository's latest correlation). One REPEATABLE READ snapshot per scrape, so a scrape never pairs the count of one set of fixes with the seconds of another. Grafana: MTTR by priority and alert reduction by category, both queries pinned by a test. |
 | 1.1.59 | B5a (§8, ADR-0009): `sentinel_ai.providers.OllamaProvider`, the default model backend, on the standard library only. Local only (the loopback or the Compose service `ollama`; another host only when asked), no proxy, no redirect. The pinned digests of ADR-0009 are checked before every request (a missing model or another digest is refused, nothing sent). `complete` asks for JSON of the schema, deterministic (temperature 0, fixed seed), and validates the answer (a `ValidationError` for the repair retry); `embed` returns one finite vector per text, all of one size, in batches of 64 texts. A time limit on each whole request, an 8 MiB answer cap, and errors that never echo the prompt or the answer. `deploy/compose/README.md` says how to pull the pinned models. |
 | 1.1.58 | B6 (§9): the LLM code fixer, `sentinel_ai.patch.propose_code_fix`, turns one SAST finding into an `llm:code` PatchProposal. The model answers with line edits of the lines it was shown, never a diff: the diff is computed from the file on disk, so it edits only the flagged file, and it must pass A6's `check_proposal` and `git apply --check`. A file with a secret is never sent, a line that looks like a secret is sent redacted and cannot be edited, the finding and code travel as escaped data blocks, and an answer that leaves the lines sent, misses the flagged lines, overlaps, adds a scanner suppression or a secret, changes nothing or breaks a Python file's syntax is refused (one repair retry). Retries (attempts 2 and 3) carry the previous diff and the redacted end of the CI log. `sentinel-ai` now depends on `sentinelci` (workspace) for the Finding and PatchProposal contracts and A6's checks. |
 | 1.1.55 | A8 Supply chain page (§7, §10): the 20 latest releases, each with what `sentinel verify` found in the registry (the image's signature, then the decision, SBOM, vulnerability-scan and provenance attestations, each column passing only when all its checks pass), and how many releases the gate let through carry all of them. §10's policy compliance counts running images; the platform does not see the cluster, so the page counts releases, and Kyverno decides what runs. All four Track A pages are in (Releases & evidence, Supply chain, Remediation, Root-cause groups). |
@@ -705,14 +705,17 @@ Prometheus names: `sentinel_gate_decisions_total{verdict,context}`, `sentinel_fi
 `1 - groups / findings`).
 
 MTTR is measured on each repository's release runs of its default branch whose findings and decision are
-recorded: a finding is fixed when a run reports it and the next such run does not, and its time to fix runs from
-the first run of that streak to the run that no longer reports it. A run whose decision holds SC-010 is skipped:
-a failed scanner is no evidence that a finding is gone. Alert reduction counts the findings of each repository's
+recorded: a finding is fixed when a run reports it and the next such run does not (in the order the runs were
+recorded, not the commits' order), and its time to fix runs from the first run of that streak to the run that no
+longer reports it. A run whose decision holds SC-010 is skipped: a failed scanner is no evidence that a finding is
+gone. MTTR covers every fix since the first such run; when an older run's decision is recorded late, that run
+becomes evidence and a fix can move earlier, so MTTR can go down. Alert reduction counts the findings of each repository's
 latest correlated release run against the groups of its latest correlation version (A7), by category.
 
 Implemented (A8a): the platform API's `GET /metrics` (`platform/api/src/sentinel_api/metrics.py`) serves only
-these names, with only these labels, in the Prometheus text format. Values are counted by PostgreSQL in a read-only
-transaction, and no row is loaded. A metric whose data the platform does not store yet is absent, never 0, so
+these names, with only these labels, in the Prometheus text format. Values are counted by PostgreSQL in one
+read-only REPEATABLE READ transaction per scrape (one snapshot, so a ratio's two halves come from the same rows),
+and no row is loaded. A metric whose data the platform does not store yet is absent, never 0, so
 Grafana shows "No data" rather than "0 BLOCK". Exposed so far: `sentinel_gate_decisions_total`, the gate decisions
 recorded (`POST /api/v1/runs/{id}/decision`), by verdict and the run's context; and `sentinel_findings_open`, the findings of each
 repository's latest release run of its default branch whose findings are recorded (`ref` equal to
