@@ -12,6 +12,8 @@ const RemediationDetailPage = lazy(() => import("./pages/RemediationDetail").the
 const SupplyChainPage = lazy(() => import("./pages/SupplyChain").then((m) => ({ default: m.SupplyChainPage })));
 const ReleasesPage = lazy(() => import("./pages/Releases").then((m) => ({ default: m.ReleasesPage })));
 const ReleaseDetailPage = lazy(() => import("./pages/ReleaseDetail").then((m) => ({ default: m.ReleaseDetailPage })));
+const RunsPage = lazy(() => import("./pages/Runs").then((m) => ({ default: m.RunsPage })));
+const RunDetailPage = lazy(() => import("./pages/RunDetail").then((m) => ({ default: m.RunDetailPage })));
 
 const link = ({ isActive }: { isActive: boolean }) =>
   `rounded px-3 py-1.5 text-sm ${isActive ? "bg-slate-900 text-white" : "text-slate-700 hover:bg-slate-200"}`;
@@ -37,6 +39,9 @@ export function App() {
           <NavLink to="/remediations" className={link}>
             Remediation
           </NavLink>
+          <NavLink to="/runs" className={link}>
+            Runs
+          </NavLink>
         </nav>
       </header>
       <main className="mx-auto max-w-6xl px-4 py-6">
@@ -51,6 +56,8 @@ export function App() {
           <Route path="/supply-chain" element={<SupplyChainPage />} />
           <Route path="/remediations" element={<RemediationsPage />} />
           <Route path="/remediations/:proposalId" element={<RemediationDetailPage />} />
+          <Route path="/runs" element={<RunsPage />} />
+          <Route path="/runs/:runId" element={<RunDetailPage />} />
           <Route path="*" element={<p>No such page.</p>} />
         </Routes>
         </Suspense>

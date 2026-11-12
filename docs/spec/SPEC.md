@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.68 | B7 Runs pages (§10): the dashboard's Runs page lists the recorded runs newest first (`GET /api/v1/runs`), filtered by context and repository in the URL, each with the gate's verdict; a run without a decision, or with a value that is not a verdict, reads "No decision", never PASS. A run's page shows what was scanned, a link to its findings (the Findings page now takes `?run_id=`), and its decision as recorded (`GET /api/v1/runs/{id}/decision`): verdict, violations linked to their findings, waivers applied and the digests of its inputs; without one, "No decision recorded", and a decision that cannot be read is an error, not an absence. |
 | 1.1.66 | Platform API 1.6.1 (B1, #78 and #79 reviews): the 409 of `POST /api/v1/runs/{id}/decision` and of `POST /api/v1/runs/{id}/correlations` is documented with both of its shapes (`DecisionExists` or `CorrelationExists` when one is recorded, `ErrorOut` when the run's findings are not recorded yet), so a generated client never assumes the recorded one is there. `GET /api/v1/runs` says that offset pages are stable for a fixed set of runs only. The decisions table says which copied columns the database checks against the document (`decision_id` and `verdict`, which are listed and counted) and which the API only copies for display (`evaluated_at`, `engine_version`). |
 | 1.1.63 | A8 MTTR and alert reduction (§10): `GET /metrics` adds `sentinel_findings_fixed{priority}` and `sentinel_findings_fix_seconds{priority}` (fixes on each repository's default branch, from its release runs with a recorded decision and no SC-010) and `sentinel_correlated_findings{category}` and `sentinel_root_cause_groups{category}` (each repository's latest correlation). Grafana: MTTR by priority and alert reduction by category. |
 | 1.1.59 | B5a (§8, ADR-0009): `sentinel_ai.providers.OllamaProvider`, the default model backend, on the standard library only. Local only (the loopback or the Compose service `ollama`; another host only when asked), no proxy, no redirect. The pinned digests of ADR-0009 are checked before every request (a missing model or another digest is refused, nothing sent). `complete` asks for JSON of the schema, deterministic (temperature 0, fixed seed), and validates the answer (a `ValidationError` for the repair retry); `embed` returns one finite vector per text, all of one size, in batches of 64 texts. A time limit on each whole request, an 8 MiB answer cap, and errors that never echo the prompt or the answer. `deploy/compose/README.md` says how to pull the pinned models. |
@@ -686,7 +687,7 @@ workflow token's pull requests start no workflow by themselves).
 
 ## 10. Dashboard and observability
 
-Pages: Overview, Findings, Finding detail, Policies & waivers (B) · Releases & evidence, Supply chain,
+Pages: Overview, Findings, Finding detail, Runs, Policies & waivers (B) · Releases & evidence, Supply chain,
 Remediation, Root-cause groups (A).
 
 | Metric | Definition |
