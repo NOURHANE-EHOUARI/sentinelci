@@ -75,7 +75,8 @@ def _errors(*codes: int) -> dict[int | str, dict[str, Any]]:
 
 _EXISTS: dict[int | str, dict[str, Any]] = {
     409: {
-        "model": CorrelationExists,
+        # Two shapes, so a generated client never assumes `correlation` is there.
+        "model": CorrelationExists | ErrorOut,
         "description": "These exact bytes are recorded already (`correlation`), or the run's findings are "
         "not recorded yet (`detail` only).",
     }
