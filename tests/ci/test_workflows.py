@@ -197,6 +197,9 @@ def test_grypes_database_is_the_only_download_prepared_once_before_every_depende
     assert '--report "$RUNNER_TEMP/out/sca-report.json"' in head, (
         "the database the scan read, kept as evidence"
     )
+    assert '--sbom-out "$RUNNER_TEMP/out/sca-sbom.syft.json"' in head, (
+        "the SBOM the report's sbom_sha256 names, kept with it (review of #80, should fix 1)"
+    )
     for index in scanning:
         for call in steps[index].split('"$SENTINEL" scan sca')[1:]:
             assert database in call.split("&&")[0], "every dependency scan reads the prepared database"
@@ -220,3 +223,17 @@ def test_the_pr_gate_and_its_baseline_run_the_same_scanners() -> None:
         assert f'--tool-status "$RUNNER_TEMP/scan/{kind}-status.json"' in combine, (
             "a failure must reach the gate"
         )
+
+
+def test_every_head_scan_writes_the_status_combine_reads_and_empties_its_findings_on_failure() -> None:
+    """`scan combine` skips a tool status that does not exist, and the gate only notices a scanner that
+    required_tools.rego requires: each head scan must write the status combine reads, and leave an empty
+    findings file when it fails, so its failure reaches the gate as SC-010 (review of #80, Hiba's test)."""
+    text = SCAN_WORKFLOW.read_text(encoding="utf-8")
+    steps = _steps(_job(text, "scan", "gate"))
+    for kind in SCAN_KINDS:
+        (step,) = [
+            s for s in steps if f'"$SENTINEL" scan {kind} ' in s and not s.startswith("Scan the base commit")
+        ]
+        assert f'--tool-status-out "$RUNNER_TEMP/scan/{kind}-status.json"' in step, kind
+        assert "|| status=$?" in step and f': > "$RUNNER_TEMP/scan/{kind}.ndjson"' in step, kind

@@ -25,8 +25,9 @@ name: sentinel-scan
 # - push / workflow_dispatch: release mode. The working tree at the pushed commit is scanned in full by the same
 #   scanners, without a baseline.
 # - Grype's vulnerability database is the only download of a scan: `sentinel tools grype-db` fetches it once,
-#   checked by Grype, before any scan; the scans themselves are offline. Its evidence (schema, build time,
-#   checksum) is kept with the scan outputs.
+#   checked against the checksum of the listing Grype fetched over TLS, then by Grype's validity check, before
+#   any scan; the scans themselves are offline. Its evidence (schema, build time, checksum) is kept with the
+#   scan outputs, and so are the SCA scan's report and the SBOM it matched.
 
 on:
   workflow_call:
@@ -118,7 +119,7 @@ jobs:
           --lock pipeline/tools.lock.toml
           --dest "$RUNNER_TEMP/sentinel-tools"
 
-      - name: Prepare Grype's vulnerability database (the only download, checked by Grype)
+      - name: Prepare Grype's vulnerability database (the only download, checked against its listing's checksum)
         env:
           SENTINEL: ${{ github.workspace }}/pipeline/.venv/bin/sentinel
         # A failure does not stop the job: without a valid database, the dependency scans below fail and record
@@ -160,8 +161,8 @@ jobs:
           SCAN_PATH: ${{ inputs.path }}
         # A failed scan does not stop the job: the CLI records the failure in its tool status (written last on
         # success, so an `ok` status always comes with its findings), and the gate turns it into SC-010. The
-        # empty findings file it leaves behind never passes alone: the gate requires the tool status in `pr` and
-        # `release`, and blocks when it is missing or not `ok`.
+        # empty findings file it leaves behind never passes alone: the gate blocks when a required tool's status
+        # is missing or not `ok` (policies/required_tools.rego, in `pr` and `release`).
         run: |
           set -uo pipefail
           mkdir -p "$RUNNER_TEMP/scan"
@@ -249,7 +250,8 @@ jobs:
           status=0
           "$SENTINEL" scan sca "target/$SCAN_PATH" --repo-root target --db-dir "$RUNNER_TEMP/grype-db" \
             --out "$RUNNER_TEMP/scan/sca.ndjson" --tool-status-out "$RUNNER_TEMP/scan/sca-status.json" \
-            --report "$RUNNER_TEMP/out/sca-report.json" --timeout "$SCANNER_TIMEOUT_S" \
+            --report "$RUNNER_TEMP/out/sca-report.json" --sbom-out "$RUNNER_TEMP/out/sca-sbom.syft.json" \
+            --timeout "$SCANNER_TIMEOUT_S" \
             --repo "$REPO" --commit "$HEAD_SHA" --context "$CONTEXT" --ref "$REF" --run-id "$RUN_ID" \
             --lock pipeline/tools.lock.toml --tools-dir "$RUNNER_TEMP/sentinel-tools" || status=$?
           if [ "$status" -ne 0 ]; then

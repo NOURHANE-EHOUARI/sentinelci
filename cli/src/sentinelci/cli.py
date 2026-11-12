@@ -1138,7 +1138,7 @@ def _scan_and_record(
         tool_lock = load_lock(lock)
         findings, tool_run = scan(tool_lock)
     except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
-        if tool_status_out is not None and tool_lock is not None:  # no lock: no status, the gate blocks
+        if tool_status_out is not None and tool_lock is not None:  # no lock: no status (SC-010 once required)
             outcome = outcome_from_error(tool, exc, lock=tool_lock)
             _write_status(tool_status_out, lock, platform or _host_platform(), {tool: outcome})
         raise _fail_closed(exc) from exc
@@ -1338,7 +1338,15 @@ def scan_sca_cmd(
         typer.Option(
             "--report",
             help="Also write what this scan read (JSON): the Syft and Grype binaries, the database Grype "
-            "matched against and the sha256 of the SBOM it matched. Only on success.",
+            "matched against and the sha256 of the SBOM it matched (kept with --sbom-out). Only on success.",
+        ),
+    ] = None,
+    sbom_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--sbom-out",
+            help="Also keep the SBOM Grype matched (Syft's own JSON), the bytes the report's sbom_sha256 "
+            "names. Needed with --report. Only on success.",
         ),
     ] = None,
 ) -> None:
@@ -1350,8 +1358,11 @@ def scan_sca_cmd(
     Syft failed, and a report that cannot be trusted is Grype's failure.
     """
     _clear(out, tool_status_out)
-    if report is not None:
-        report.unlink(missing_ok=True)  # an older report must never describe this scan
+    for older in (report, sbom_out):
+        if older is not None:
+            older.unlink(missing_ok=True)  # an older report or SBOM must never describe this scan
+    if report is not None and sbom_out is None:  # the digest of bytes nobody keeps proves nothing (#80)
+        raise typer.BadParameter("--report needs --sbom-out: the SBOM its sbom_sha256 names is kept with it")
     root = repo_root or target
     host = platform or _host_platform()
     tool_lock: ToolLock | None = None
@@ -1390,6 +1401,9 @@ def scan_sca_cmd(
     out.parent.mkdir(parents=True, exist_ok=True)
     write_ndjson(findings, out)
     database = scan.database
+    if sbom_out is not None:  # before the report: it never names bytes not yet kept
+        sbom_out.parent.mkdir(parents=True, exist_ok=True)
+        sbom_out.write_bytes(scan.sbom.syft_json or b"")
     if report is not None:  # the database the scan read, not the one a `tools grype-db` run prepared
         evidence = {
             "schema_version": 1,
