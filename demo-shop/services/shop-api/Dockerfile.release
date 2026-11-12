@@ -1,0 +1,30 @@
+# The release image of shop-api (ADR-0011, decision 6; task A9). NOT a seed: this is the hardened image that
+# `make release` builds, decides on, signs and deploys. The seeded `Dockerfile` next to it is a scan target only.
+#
+# - The base is pinned by digest: a tag moved upstream cannot change what is built.
+# - Dependencies come from a hash-pinned requirements file (`--require-hashes`), with `--no-deps` so nothing
+#   unlisted is installed. The demo's BLOCK image is this file with
+#   `--build-arg REQUIREMENTS=requirements.block.txt`: the same pins with the seeded pyyaml 5.3.1 (GT-SCA-001).
+# - The final stage runs no RUN, as UID 10001 (no shell step runs as root in it), listens on 8080, and writes
+#   only to /tmp, so a read-only root file system with all capabilities dropped holds.
+# - No HEALTHCHECK and no curl: the cluster checks GET /healthz through its probes.
+# - No `# syntax=` line: the builder's own Dockerfile frontend, never one pulled from a registry at build time.
+# - The build context is the allow-list in Dockerfile.release.dockerignore: the application and the two
+#   requirements files, never the seeded configuration with its fake secrets.
+ARG PYTHON=python:3.12.16-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+
+FROM ${PYTHON} AS dependencies
+ARG REQUIREMENTS=requirements.release.txt
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1 PYTHONDONTWRITEBYTECODE=1
+COPY ${REQUIREMENTS} /tmp/requirements.txt
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --require-hashes --no-deps --requirement /tmp/requirements.txt
+
+FROM ${PYTHON}
+ENV PATH=/opt/venv/bin:/usr/local/bin:/usr/bin:/bin PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+COPY --from=dependencies /opt/venv /opt/venv
+WORKDIR /app
+COPY app/ ./app/
+USER 10001:10001
+EXPOSE 8080
+CMD ["python", "-m", "app"]

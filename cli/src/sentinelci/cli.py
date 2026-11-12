@@ -51,6 +51,7 @@ from sentinelci.normalize.errors import NormalizationError
 from sentinelci.normalize.gitleaks import load_gitleaks_report, normalize_gitleaks
 from sentinelci.normalize.grype import load_grype_report, normalize_grype
 from sentinelci.normalize.ndjson import dumps_ndjson, write_ndjson
+from sentinelci.normalize.opengrep import normalize_opengrep
 from sentinelci.normalize.trivy import normalize_trivy_config
 from sentinelci.normalize.zizmor import normalize_zizmor
 from sentinelci.policy.bundle import BundleError, PolicyBundle
@@ -90,6 +91,7 @@ from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
 from sentinelci.scanners.grype import scan_sca, update_database
 from sentinelci.scanners.installer import VerificationReport, detect_platform, install_tools, verify_tools
 from sentinelci.scanners.lock import LOCK_FILE_NAME, ToolLock, load_lock
+from sentinelci.scanners.opengrep import rule_ids, scan_sast_with_run
 from sentinelci.scanners.runner import DEFAULT_TIMEOUT_S as SCAN_TIMEOUT_DEFAULT_S
 from sentinelci.scanners.runner import ToolRun
 from sentinelci.scanners.status import (
@@ -1158,6 +1160,53 @@ def _write_status(
 ) -> None:
     write_tool_status(tool_status_document(lock.read_bytes(), platform, outcomes), destination)
     typer.echo(f"tool status written to {destination}", err=True)
+
+
+@scan_app.command("sast")
+def scan_sast_cmd(
+    target: Annotated[Path, typer.Argument(help="Directory to scan with SentinelCI's SAST rules.")],
+    out: Annotated[Path, typer.Option(help="Destination NDJSON file.")],
+    repo: Annotated[str, typer.Option(help="Repository as owner/name.")],
+    commit: Annotated[str, typer.Option(help="Commit SHA that was scanned.")],
+    context: Annotated[RunContext, typer.Option(help="Run context.")],
+    ref: Annotated[str | None, typer.Option(help="Git ref that was scanned.")] = None,
+    run_id: Annotated[str | None, typer.Option(help="CI run identifier.")] = None,
+    repo_root: Annotated[
+        Path | None, typer.Option(help="Repository root (default: the target itself).")
+    ] = None,
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    tools_dir: Annotated[
+        Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
+    ] = (DEFAULT_TOOLS_DIR),
+    platform: PlatformOption = None,
+) -> None:
+    """Static analysis with the verified Opengrep binary and SentinelCI's own rules (offline, never configured
+    or silenced by the scanned repository): findings of category SAST."""
+    out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
+    root = repo_root or target
+    try:
+        scan = scan_sast_with_run(
+            target, lock=load_lock(lock), tools_dir=tools_dir, repo_root=root, platform=platform
+        )
+        findings = normalize_opengrep(
+            scan.results,
+            run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
+            tool=Tool(name="opengrep", version=scan.run.version),
+            rules=rule_ids(),
+            scan_target=scan.target,
+            scan_root=scan.target.relative_to(root.resolve()).as_posix(),
+            gaps=scan.gaps,
+        )
+    except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
+        raise _fail_closed(exc) from exc
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_ndjson(findings, out)
+    if scan.warnings:  # analysed only in part: say where, in the job log
+        typer.echo(
+            f"warning: opengrep reported {len(scan.warnings)} problem(s): {'; '.join(scan.warnings)}",
+            err=True,
+        )
+    typer.echo(f"opengrep {scan.run.version}: {len(findings)} finding(s) written to {out}")
 
 
 @scan_app.command("pipelines")

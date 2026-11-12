@@ -303,3 +303,14 @@ def test_the_database_keeps_a_version_as_recorded(
                 (run_id, hashlib.sha256(other).hexdigest(), other),
             )
         assert conn.execute("SELECT count(*), max(group_count) FROM correlations").fetchone() == (1, 3)
+
+
+def test_the_409_is_documented_with_both_of_its_shapes(client: TestClient) -> None:
+    """The same bytes again answer with `correlation`, a run without findings with `detail` only."""
+    schema = client.get("/openapi.json").json()["paths"]["/api/v1/runs/{run_id}/correlations"]["post"][
+        "responses"
+    ]["409"]["content"]["application/json"]["schema"]
+    assert sorted(option["$ref"].rsplit("/", 1)[1] for option in schema["anyOf"]) == [
+        "CorrelationExists",
+        "ErrorOut",
+    ]
