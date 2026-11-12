@@ -12,11 +12,27 @@
   resolves**: the twelve Trivy findings of shop-api's missing security context are one root cause (one
   block), the four of its missing resources another. A root cause can join a seed when the same edit fixes
   both (the hostPath volume of GT-IAC-005, the public access block of GT-IAC-001).
+- An SCA finding about a package that a seed detects in the same manifest has that seed's root cause too: one
+  upgrade fixes every advisory of the package. Grype reports several advisories per seeded package, and
+  `root-causes.yaml`'s matchers (tool, file, rule) cannot tell lodash from lodash-es in one lock file, so this
+  rule is in `run.py`. lodash and lodash-es stay two root causes (two upgrades).
 - A finding no label covers stays in the run but out of the ARI, and is counted (`labelled` in the report).
-  Today that is the SCA findings beyond the seeds, which need the Grype database to exist at all.
 
 The labels were written from each finding's tool, file and rule, before the embedding stage ever ran on
-them, and are never changed to improve a score.
+them, and are never changed to improve a score. **One exception, said here:** the SCA package rule and
+RC-DOCKER-002 (the release Dockerfile's missing HEALTHCHECK, which had been missed) were added in the review
+of #90, after the dedup and structural scores had been seen and before any embedding score. Without them,
+the structural stage's right merges (one package's advisories) were all unlabelled, so its ARI could only
+see its wrong ones.
+
+## What each number can see
+
+The report gives, next to each ARI, how many findings are labelled, with how many root causes, and how many
+pairs of findings share one: with few same-root pairs, an ARI mostly measures whether those few merge. It
+also gives the ARI without SCA, where the truth ("one upgrade") is stage 2a's own package key, so that SCA
+does not hide the other categories. And it measures the stages that have no parameter to tune (dedup,
+structural) on the **whole run**: the test half holds every unlabelled finding and only half of the others, so
+its alert reduction is not demo-shop's (SPEC section 3's 40 % is read on the whole run).
 
 ## No tuning on the test set
 

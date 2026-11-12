@@ -2,9 +2,12 @@
 
 What it measures, on the findings of a `make eval` run (`out/eval/findings/<tool>.ndjson`, or `--findings`):
 - **ARI** of the root-cause groups against the true root causes. A finding that detects a seed
-  (`eval/detection/score.py`, `detects`) has the seed's root cause; another finding has the root cause
-  `root-causes.yaml` labels it with (what one fix resolves). A finding neither labels is unlabelled: it stays
-  in the run, out of the ARI, and is counted.
+  (`eval/detection/score.py`, `detects`) has the seed's root cause; an SCA finding about the same package of
+  the same manifest as one a seed detects has that seed's root cause too (one upgrade fixes every advisory of
+  the package); another finding has the root cause `root-causes.yaml` labels it with (what one fix resolves).
+  A finding none labels is unlabelled: it stays in the run, out of the ARI, and is counted. The ARI is also
+  given without SCA, where the truth ("one upgrade") is stage 2a's own package key, so that SCA does not
+  hide the other categories.
 - **Alert reduction**: what a reviewer no longer sees, from the places the tools reported (a finding and
   each of its `other_locations`, the tools' own reports that the normalizer merged) to the groups.
 - **Ablation**: each configuration of the stages (`sentinel_ai.correlate.evaluation`).
@@ -35,6 +38,7 @@ import hashlib
 import importlib.util
 import json
 import sys
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -43,7 +47,7 @@ from typing import Any
 import yaml
 
 from sentinel_ai.correlate.evaluation import CONFIGURATIONS, Score, ablation, cached, calibrate, grid, sweep
-from sentinel_ai.correlate.stages import CorrelationError, Embedder, EmbedderError
+from sentinel_ai.correlate.stages import CorrelationError, Embedder, EmbedderError, purl_base
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
@@ -190,24 +194,45 @@ def _file(finding: Finding) -> str | None:
     return path.removeprefix(SCAN_ROOT) if isinstance(path, str) else None
 
 
+def _package(finding: Finding) -> tuple[str, str] | None:
+    """An SCA finding's manifest and package (without version): what one upgrade fixes."""
+    package = finding.get("package")
+    purl = package.get("purl") if isinstance(package, Mapping) else None
+    path = _file(finding)
+    if finding.get("category") != "SCA" or not isinstance(purl, str) or path is None:
+        return None
+    return path, purl_base(purl)
+
+
 def labels(
     findings: Sequence[Finding],
     seeds: Sequence[Mapping[str, Any]],
     split: Mapping[str, str],
     causes: Sequence[RootCause],
 ) -> dict[str, Label]:
-    """finding id -> its true root cause and half, for every finding a seed or a root cause labels. A finding
-    two labels disagree on cannot be labelled honestly: EvalError."""
+    """finding id -> its true root cause and half, for every finding a seed, a seeded package or a root cause
+    labels. A finding two labels disagree on cannot be labelled honestly: EvalError."""
     joined = {seed: cause.id for cause in causes for seed in cause.seeds}
-    found: dict[str, Label] = {}
+    seeded: dict[str, set[Label]] = {}
     for finding in findings:
-        candidates: set[Label] = set()
         for seed in seeds:
             if detects(seed, finding):
                 seed_id = str(seed["id"])
-                candidates.add(
-                    Label(joined.get(seed_id) or str(seed.get("group") or seed_id), split[seed_id])
-                )
+                label = Label(joined.get(seed_id) or str(seed.get("group") or seed_id), split[seed_id])
+                seeded.setdefault(str(finding["id"]), set()).add(label)
+    # One upgrade fixes every advisory of a package: an SCA finding about a package of a manifest that a seed
+    # detects in that manifest has the seed's root cause (review of #90; the matchers cannot say "package").
+    packages: dict[tuple[str, str], set[Label]] = {}
+    for finding in findings:
+        key = _package(finding)
+        if key is not None and str(finding["id"]) in seeded:
+            packages.setdefault(key, set()).update(seeded[str(finding["id"])])
+    found: dict[str, Label] = {}
+    for finding in findings:
+        candidates: set[Label] = set(seeded.get(str(finding["id"]), set()))
+        package = _package(finding)
+        if package is not None:
+            candidates |= packages.get(package, set())
         key = (_tool(finding), _file(finding), str(finding.get("rule_id")))
         for cause in causes:
             if any(
@@ -263,15 +288,18 @@ def model_embedder() -> tuple[Embedder | None, Model | None, str | None]:
 
 def read_threshold(text: str, model: Model | None) -> float:
     """The committed threshold, if it was calibrated with the model the provider serves."""
-    data = json.loads(text)
-    named = Model(**data["embedding_model"])
+    try:
+        data = json.loads(text)
+        named = Model(**data["embedding_model"])
+        threshold = data["threshold"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise EvalError(f"threshold.json cannot be read: {type(exc).__name__}: {exc}") from exc
     if model is not None and named != model:
         raise EvalError(
             f"threshold.json was calibrated with {named.name} ({named.digest}), not the pinned "
             f"{model.name} ({model.digest}): calibrate again (`make eval-correlation-calibrate`)"
         )
-    threshold = data["threshold"]
-    if not isinstance(threshold, int | float) or not -1 <= threshold <= 1:
+    if isinstance(threshold, bool) or not isinstance(threshold, int | float) or not -1 <= threshold <= 1:
         raise EvalError("threshold.json holds no similarity threshold")
     return float(threshold)
 
@@ -285,6 +313,38 @@ def _score(score: Score) -> dict[str, Any]:
     return out
 
 
+def what_the_ari_sees(truth: Mapping[str, str]) -> dict[str, int]:
+    """How much an ARI can say: the labelled findings, their root causes, and the pairs of findings that share
+    one (with few same-root pairs, the ARI mostly measures whether those few merge)."""
+    sizes = Counter(truth.values())
+    return {
+        "labelled": len(truth),
+        "root_causes": len(sizes),
+        "same_root_pairs": sum(n * (n - 1) // 2 for n in sizes.values()),
+    }
+
+
+def without_sca(
+    findings: Sequence[Finding], truth: Mapping[str, str]
+) -> tuple[list[Finding], dict[str, str]]:
+    kept = [f for f in findings if f.get("category") != "SCA"]
+    ids = {str(f["id"]) for f in kept}
+    return kept, {i: root for i, root in truth.items() if i in ids}
+
+
+def _without_sca_scores(
+    findings: Sequence[Finding], truth: Mapping[str, str], **kwargs: Any
+) -> dict[str, dict[str, Any]]:
+    kept, kept_truth = without_sca(findings, truth)
+    try:
+        scores = ablation(kept, kept_truth, raw_alerts=reported_places(kept), **kwargs)
+    except CorrelationError as exc:  # fewer than two labelled findings outside SCA
+        return {"_": {"measured": False, "reason": str(exc)}}
+    return {
+        s.configuration: {"ari": s.ari, "groups": s.groups, **what_the_ari_sees(kept_truth)} for s in scores
+    }
+
+
 def calibration_document(
     findings: Sequence[Finding],
     truth: Mapping[str, str],
@@ -295,12 +355,13 @@ def calibration_document(
     """threshold.json: the threshold with the best ARI on the calibration half, and the curve it came from."""
     thresholds = grid()
     embed = cached(embed)
-    best = calibrate(findings, truth, embed, thresholds)
-    curve = sweep(findings, truth, embed, thresholds)
+    places = reported_places(findings)
+    best = calibrate(findings, truth, embed, thresholds, raw_alerts=places)
+    curve = sweep(findings, truth, embed, thresholds, raw_alerts=places)
     return {
         "embedding_model": asdict(model),
         "threshold": best.threshold,
-        "calibration": {"ari": best.ari, "alert_reduction": best.alert_reduction, "labelled": len(truth)},
+        "calibration": {"ari": best.ari, "alert_reduction": best.alert_reduction, **what_the_ari_sees(truth)},
         "curve": [{"threshold": s.threshold, "ari": s.ari, "groups": s.groups} for s in curve],
         "inputs": dict(inputs),
     }
@@ -315,21 +376,22 @@ def measurement(
     why_not: str | None,
 ) -> dict[str, Any]:
     """The test half: every configuration of the stages (stage 2b only with a model and a committed
-    threshold), and the ARI-vs-threshold curve as sensitivity."""
+    threshold), with and without SCA, and the ARI-vs-threshold curve as sensitivity."""
     places = reported_places(findings)
     measured = embed is not None and threshold is not None
-    scores = ablation(
-        findings, truth, embed=embed if measured else None, threshold=threshold or 0.0, raw_alerts=places
-    )
+    stage_2b: dict[str, Any] = {"embed": embed, "threshold": threshold} if measured else {}
+    scores = ablation(findings, truth, raw_alerts=places, **stage_2b)
     out: dict[str, Any] = {name: _score(score) for score in scores for name in [score.configuration]}
+    reason = why_not if embed is None else "no calibrated threshold"
     for name, (_, embedding) in CONFIGURATIONS.items():
         if embedding and name not in out:
-            out[name] = {"measured": False, "reason": why_not or "no calibrated threshold"}
+            out[name] = {"measured": False, "reason": reason or "no calibrated threshold"}
     result: dict[str, Any] = {
         "findings": len(findings),
         "reported_places": places,
-        "labelled": len(truth),
+        **what_the_ari_sees(truth),
         "configurations": {name: out[name] for name in CONFIGURATIONS},
+        "without_sca": _without_sca_scores(findings, truth, **stage_2b),
     }
     if measured and embed is not None:
         result["sensitivity"] = [
@@ -339,29 +401,67 @@ def measurement(
     return result
 
 
+def whole_run(findings: Sequence[Finding], truth: Mapping[str, str]) -> dict[str, Any]:
+    """The stages that have no parameter to tune (dedup, structural), on the whole run: neither half is
+    demo-shop, and these need no threshold, so no split is needed to measure them honestly."""
+    places = reported_places(findings)
+    scores = ablation(findings, truth, raw_alerts=places)
+    return {
+        "findings": len(findings),
+        "reported_places": places,
+        **what_the_ari_sees(truth),
+        "configurations": {s.configuration: _score(s) for s in scores},
+        "without_sca": _without_sca_scores(findings, truth),
+    }
+
+
 # ---------------------------------------------------------------- the report
 
 
-def markdown(report: Mapping[str, Any]) -> str:
-    test = report["test"]
-    lines = [
-        "# Correlation on demo-shop",
-        "",
-        f"Test half: {test['findings']} findings ({test['reported_places']} places the tools reported), "
-        f"{test['labelled']} of them labelled with their root cause. "
-        f"Threshold: {report['threshold']['value']} ({report['threshold']['source']}). "
-        f"Embedding model: {report['embedding_model']}.",
-        "",
-        "| Configuration | Groups | ARI | Alert reduction |",
-        "|---|---|---|---|",
-    ]
-    for name, score in test["configurations"].items():
+def _table(configurations: Mapping[str, Any]) -> list[str]:
+    lines = ["| Configuration | Groups | ARI | Alert reduction |", "|---|---|---|---|"]
+    for name, score in configurations.items():
         if score.get("measured") is False:
             lines.append(f"| {name} | not measured: {score['reason']} | | |")
         else:
             lines.append(
                 f"| {name} | {score['groups']} | {score['ari']:.3f} | {score['alert_reduction']:.1%} |"
             )
+    return lines
+
+
+def _sees(part: Mapping[str, Any]) -> str:
+    return (
+        f"{part['findings']} findings ({part['reported_places']} places the tools reported), "
+        f"{part['labelled']} labelled with {part['root_causes']} root causes "
+        f"({part['same_root_pairs']} same-root pairs)"
+    )
+
+
+def _without_sca(part: Mapping[str, Any]) -> str:
+    rows = part["without_sca"]
+    if "_" in rows:
+        return f"Without SCA: not measured ({rows['_']['reason']})."
+    shown = ", ".join(
+        f"{name} ARI {row['ari']:.3f} ({row['same_root_pairs']} same-root pairs)"
+        for name, row in rows.items()
+    )
+    return f"Without SCA (where one upgrade is stage 2a's own package key): {shown}."
+
+
+def markdown(report: Mapping[str, Any]) -> str:
+    test, whole, threshold = report["test"], report["whole_run"], report["threshold"]
+    value = "not calibrated" if threshold["value"] is None else threshold["value"]
+    lines = [
+        "# Correlation on demo-shop",
+        "",
+        f"Test half: {_sees(test)}. Threshold: {value} ({threshold['source']}). "
+        f"Embedding model: {report['embedding_model']}.",
+        "",
+        *_table(test["configurations"]),
+        "",
+        _without_sca(test),
+    ]
     if "sensitivity" in test:
         lines += [
             "",
@@ -373,6 +473,15 @@ def markdown(report: Mapping[str, Any]) -> str:
         lines += [
             f"| {s['threshold']} | {s['ari']:.3f} | {s['alert_reduction']:.1%} |" for s in test["sensitivity"]
         ]
+    lines += [
+        "",
+        f"Whole run, the stages with no parameter to tune: {_sees(whole)}. The test half holds every finding "
+        "no label places and half of the others, so its alert reduction is not demo-shop's: this one is.",
+        "",
+        *_table(whole["configurations"]),
+        "",
+        _without_sca(whole),
+    ]
     lines += ["", f"Inputs: `{json.dumps(report['inputs'], sort_keys=True)}`", ""]
     return "\n".join(lines)
 
@@ -416,10 +525,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         test = measurement(*half("test"), embed=embed, threshold=threshold, why_not=why_not)
     except EmbedderError as exc:  # the model failed mid-run: the stages without it are still measured
         test = measurement(*half("test"), embed=None, threshold=None, why_not=f"the embedder failed: {exc}")
+    truth = {str(f["id"]): label.root for f in findings if (label := label_of.get(str(f["id"]))) is not None}
+    embedding = test["configurations"]["dedup+embedding"]
+    if model is None:
+        used = f"none ({why_not})"
+    elif embedding.get("measured") is False:
+        used = f"{model.name} ({model.digest}), not used: {embedding['reason']}"
+    else:
+        used = f"{model.name} ({model.digest})"
     return {
-        "embedding_model": f"{model.name} ({model.digest})" if model else "none",
+        "embedding_model": used,
         "threshold": {"value": threshold, "source": source},
         "test": test,
+        "whole_run": whole_run(findings, truth),
         "inputs": inputs,
     }
 

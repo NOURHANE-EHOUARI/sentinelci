@@ -20,8 +20,9 @@ resolves every member (each a package with known fixed versions). Stage 3 (`labe
 labels the groups it is given; it never forms them) runs on the document `correlate_run` writes. Everything
 here is advisory: the release gate never reads it, and the same findings in any order give the same groups.
 
-`DEFAULT_THRESHOLD` is provisional: it is calibrated on a labelled set other than demo-shop (SPEC section 17),
-then committed with the embedding model's digest before the demo-shop run.
+`DEFAULT_THRESHOLD` is provisional: it is calibrated on a labelled set other than the one it is tested on (the
+calibration half of demo-shop's seeds, split before any score, SPEC section 17), then committed with the
+embedding model's digest before the test half is measured.
 """
 
 import hashlib

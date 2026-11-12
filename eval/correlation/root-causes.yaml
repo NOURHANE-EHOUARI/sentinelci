@@ -133,3 +133,10 @@ root_causes:
     fix: Add a HEALTHCHECK to shop-api's image.
     findings:
       - {tool: trivy, file: services/shop-api/Dockerfile, rules: [DS-0026]}
+  # ---- services/shop-api/Dockerfile.release (added in the review of #90: it had been missed; it is last in
+  # file order, so it takes the next half and no other root cause changes half)
+  - id: RC-DOCKER-002
+    half: test
+    fix: Add a HEALTHCHECK to shop-api's release image (or accept that the cluster's probes check it).
+    findings:
+      - {tool: trivy, file: services/shop-api/Dockerfile.release, rules: [DS-0026]}
