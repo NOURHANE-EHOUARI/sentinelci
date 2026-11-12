@@ -14,10 +14,12 @@ which are origin/main's:
 4. the gate is evaluated on the patched commit in pr context, the scanned commit as baseline;
 5. `sentinel remediate verify` applies the verification gate: VERIFIED, REJECTED or FAILED.
 
-A REJECTED attempt is proposed again with its diff and what rejected it, the reasons last (attempts 2 and 3,
-B6 redacts and clips both, and keeps the end); FAILED, or a fixer that sends nothing or has no usable answer,
-ends the finding. Every step's evidence is kept under out/remediate-code/<commit>/. Nothing leaves the laptop
-unless asked:
+A REJECTED attempt is proposed again with its diff and what rejected it, the reasons last, each new finding
+named (attempts 2 and 3, B6 redacts and clips both, and keeps the end); FAILED, or a fixer that sends nothing
+or has no usable answer, ends the finding. A finding no patch could verify (no behaviour tests next to its
+file, no security test for its rule) is never sent to the model. The bare copy's attributes come from the
+empty tree (`attr.tree`), as in the bot's verify job. Every step's evidence is kept under
+out/remediate-code/<commit>/. Nothing leaves the laptop unless asked:
 - `--publish` pushes each VERIFIED branch to origin and opens its pull request with the person's own `gh`
   login, as they would by hand. The bot never merges and never approves: a person reviews it.
 - `--api-url` records every attempt on the platform (`sentinel upload-remediation`, token from
@@ -192,6 +194,9 @@ class RemediateCode:
         self.base = base
         self.repo = self.work / "repo.git"
         self.run(["git", "init", "--quiet", "--bare", str(self.repo)])
+        # Attributes come from no tree, whatever HEAD becomes (as in the bot's verify job, #98 review).
+        empty = self.run(["git", "hash-object", "-t", "tree", "/dev/null"]).stdout.strip()
+        self.run(["git", "-C", str(self.repo), "config", "attr.tree", empty])
         source = ["fetch", "--quiet", "--no-tags", str(self.root), "+HEAD:refs/sentinel/base"]
         self.run(["git", "-C", str(self.repo), *source])
         if self.run(["git", "-C", str(self.repo), "rev-parse", "refs/sentinel/base"]).stdout.strip() != base:
@@ -216,7 +221,29 @@ class RemediateCode:
         (self.work / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
         return summary
 
+    def _unverifiable(self, target: Any) -> str | None:
+        """Why no patch of this finding can ever be verified, or None: no behaviour tests next to its file, or
+        no security test for its rule. Neither depends on the patch, so the model is not asked at all (#100
+        review); `remediate check` still decides on every patch."""
+        from sentinelci.remediation.code import CodeCheckError, security_test_of, service_of
+
+        path = target.location.path
+        service = service_of(self.base_tree, path)
+        if service is None:
+            return f"no tests next to {path}: a code patch is never verified without them"
+        try:
+            test = security_test_of(target.rule_id)
+        except CodeCheckError as exc:
+            return str(exc)
+        if not (self.base_tree / service / test).is_file():
+            rule = target.rule_id
+            return f"no security test {service}/{test} for {rule}: a fix is never verified without one"
+        return None
+
     def _remediate(self, target: Any, findings: list[Any]) -> list[Attempt]:
+        why = self._unverifiable(target)
+        if why is not None:
+            return [Attempt(1, "not verifiable", why)]
         attempts: list[Attempt] = []
         feedback = None
         for number in range(1, MAX_ATTEMPTS + 1):
@@ -311,8 +338,28 @@ class RemediateCode:
 
             make = Feedback
         check = json.loads((work / "check.json").read_text(encoding="utf-8"))
-        parts = [check.get("log", ""), *check.get("problems", []), attempt.reason]
+        parts = [check.get("log", ""), *check.get("problems", []), *self._new_findings(work), attempt.reason]
         return make(previous_diff=proposal.diff, ci_log="\n".join(part for part in parts if part))
+
+    def _new_findings(self, work: Path) -> list[str]:
+        """Which findings the patch brought, not only how many (#100 review): tool, rule, severity and place,
+        never a finding's text or evidence."""
+        result, scored = work / "result.json", work / "scored.ndjson"
+        if not (result.is_file() and scored.is_file()):
+            return []
+        new = json.loads(result.read_text(encoding="utf-8")).get("new_findings", [])
+        found = {finding.id: finding for finding in self._findings(scored)}
+        lines = []
+        for finding_id in new:
+            finding = found.get(finding_id)
+            if finding is None:
+                continue
+            place = finding.location
+            line = f":{place.start_line}" if place and place.start_line else ""
+            where = f"{place.path}{line}" if place else "-"
+            tool = finding.tool.name
+            lines.append(f"new finding: {tool} {finding.rule_id} ({finding.severity}) at {where}")
+        return lines
 
     # ------------------------------------------------------------ the steps
 
@@ -416,6 +463,7 @@ class RemediateCode:
             f"**Proposal:** `{proposal.proposal_id}`, model `{proposal.model.name}`",
             "**The model's rationale:**\n" + fence(proposal.rationale),
             "**The patch:**\n" + fence(proposal.diff),
+            "**Tests (`sentinel remediate check`):**\n" + "\n".join(_test_summaries(work / "check.json")),
             f"**Gate on the patched commit:** {decision.get('verdict')}",
         ])  # fmt: skip
         (work / "pull-request.md").write_text(body + "\n", encoding="utf-8")
@@ -423,6 +471,23 @@ class RemediateCode:
         opened = self.run(["gh", "pr", "create", "--repo", REPO, "--base", "main", "--head", branch,
                            "--title", title[:200], "--body-file", str(work / "pull-request.md")])  # fmt: skip
         return opened.stdout.strip().splitlines()[-1] if opened.stdout.strip() else branch
+
+
+def _test_summaries(check: Path) -> list[str]:
+    """Each test run of the check and what pytest's summary says (#100 review): the evidence a reviewer
+    wants, as `- $ pytest <selection> (<what>): <summary>`."""
+    from sentinelci.remediation.code import summary_of
+
+    log = json.loads(check.read_text(encoding="utf-8")).get("log", "")
+    runs = [block for block in log.split("\n$ pytest ") if block]
+    lines = []
+    for number, block in enumerate(runs):
+        header, _, output = block.partition("\n")
+        if number == 0 and not header.startswith("$ pytest "):
+            continue  # the start of a log clipped to its end
+        said, _ = summary_of(output)
+        lines.append(f"- `$ pytest {header.removeprefix('$ pytest ')}`: {said or 'no summary'}")
+    return lines or ["- (no test log kept)"]
 
 
 def main(argv: Sequence[str] | None = None) -> int:

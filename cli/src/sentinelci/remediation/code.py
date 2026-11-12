@@ -19,10 +19,14 @@ of the patched commit (exported, never checked out), and the patched code only e
   a service without behaviour tests, or a rule without a security test fails the tests: a code patch is never
   VERIFIED without them.
 
-Only pytest's own answer counts. A behaviour or patched run passes with exit 0 only; the base run "fails"
-with exit 1 only (a test that ran and failed: exit 2 to 5 is a broken or empty test, which proves nothing).
-Any other answer, the time limit included, fails the tests, with the end of the output kept as the feedback
-for a retry.
+Only pytest's own answer counts, and only when its summary line agrees with its exit code (review of #100):
+the patched code runs inside the pytest process, so it can end that process with exit 0 before any test ran,
+or skip a test. A behaviour or patched run passes with exit 0 and a summary of passed tests and nothing else
+(no skip, xfail, deselection or error); the base run "fails" with exit 1 and a summary with failed tests (a
+test that ran and failed: exit 2 to 5 is a broken or empty test, which proves nothing). Any other answer, the
+time limit included, fails the tests, with the end of the output kept as the feedback for a retry. This raises
+the bar, it is not tamper-proof: code that prints a summary line of its own before it exits still passes, and
+a person reads every diff.
 A container that could not run at all (no Docker, an image that is not there) is CodeCheckError: nothing is
 verified, which is not the same as a failed test.
 """
@@ -47,7 +51,8 @@ PINNED_IMAGE = re.compile(r"^(?:[a-z0-9][a-z0-9._/:-]*@)?sha256:[a-f0-9]{64}$")
 SCRATCH = "/tmp:rw,noexec,nosuid,size=64m"  # noqa: S108 (a tmpfs inside the container, not a host path)
 SANDBOX = (
     "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
-    "--user", "65534:65534", "--pids-limit", "256", "--memory", "1g", "--cpus", "2", "--tmpfs", SCRATCH,
+    "--user", "65534:65534", "--pids-limit", "256", "--memory", "1g", "--memory-swap", "1g",
+    "--cpus", "2", "--tmpfs", SCRATCH,
     "--env", "HOME=/tmp", "--env", "PYTHONDONTWRITEBYTECODE=1",
 )  # fmt: skip
 PYTEST = ("python", "-m", "pytest", "-q", "-p", "no:cacheprovider", "--no-header")
@@ -55,6 +60,9 @@ SECURITY_TESTS = "security_tests"
 RULE = re.compile(r"[a-z0-9][a-z0-9-]{0,127}")  # an Opengrep rule id of SentinelCI's (normalize/opengrep.py)
 # pytest's exit when tests ran and some failed (2 to 5: interrupted, internal, usage, nothing collected)
 TESTS_FAILED = 1
+# pytest's last summary line under -q: "3 passed in 0.04s", "1 failed, 2 passed, 1 warning in 0.31s (0:00:01)"
+SUMMARY = re.compile(r"(?:=+ )?((?:\d+ [a-z]+, )*\d+ [a-z]+) in \d+(?:\.\d+)?s(?: \([0-9:]+\))?(?: =+)?")
+ONLY_PASSED = frozenset({"passed", "warning", "warnings"})
 DOCKER_FAILURES = (125, 126, 127)  # docker itself, or the command in the image, could not start
 TIMED_OUT = (124, 137)  # `timeout -s KILL` in the container, or the memory limit
 GRACE_S = 30  # the client waits this much longer than the container's own time limit
@@ -91,8 +99,9 @@ def docker_runner(args: Sequence[str], timeout: int) -> Ran:
     name = args[list(args).index("--name") + 1]
     try:
         done = subprocess.run(  # noqa: S603 (an argument list, no shell)
-            [docker, *args], capture_output=True, text=True, timeout=timeout + GRACE_S, check=False
-        )
+            [docker, *args], capture_output=True, encoding="utf-8", errors="replace",
+            timeout=timeout + GRACE_S, check=False,
+        )  # fmt: skip
     except subprocess.TimeoutExpired as exc:
         output = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode("utf-8", "replace")
         return Ran(returncode=-1, output=output, timed_out=True)
@@ -135,6 +144,24 @@ def _not_python(text: str, path: str) -> str | None:
 
 def _tail(text: str) -> str:
     return text if len(text) <= MAX_LOG_CHARS else "..." + text[-(MAX_LOG_CHARS - 3) :]
+
+
+def summary_of(output: str) -> tuple[str, dict[str, int]]:
+    """pytest's last summary line in `output` and its counts by word; ("", {}) when there is none (the
+    process ended before pytest could say what ran)."""
+    for line in reversed(output.splitlines()):
+        found = SUMMARY.fullmatch(line.strip())
+        if found:
+            parts = (part.split(" ", 1) for part in found.group(1).split(", "))
+            return found.group(1), {word: int(count) for count, word in parts}
+    return "", {}
+
+
+def _answered(counts: dict[str, int], expected: int) -> bool:
+    """The summary says what the exit code says: tests failed (the base run), or passed and nothing else."""
+    if expected == TESTS_FAILED:
+        return counts.get("failed", 0) > 0
+    return counts.get("passed", 0) > 0 and counts.keys() <= ONLY_PASSED
 
 
 def _tests_failed(why: str, log: str = "") -> CodeChecked:
@@ -201,7 +228,8 @@ def check_code(
         )
     runs = (
         ("behaviour tests, patched code", patched_root, "tests", 0),
-        (f"{security_test}, base code", base_root, security_test, TESTS_FAILED),
+        # Labelled so a retry's model does not chase a failure that is not its own (#100 review).
+        (f"{security_test}, base code, expected to fail", base_root, security_test, TESTS_FAILED),
         (f"{security_test}, patched code", patched_root, security_test, 0),
     )
     kept_tests = (base_root / service / "tests").resolve()
@@ -231,4 +259,12 @@ def check_code(
                 else f"{service}/{selected} failed on the patched code (pytest exit {ran.returncode})"
             )
             return _tests_failed(why, log)
+        said, counts = summary_of(ran.output)
+        if not _answered(counts, expected):
+            shown = f"its summary says {said}" if said else "it printed no summary"
+            return _tests_failed(
+                f"{label}: pytest's summary does not show that (exit {ran.returncode}, {shown}): an early "
+                "exit, a skip or a deselection proves nothing",
+                log,
+            )
     return CodeChecked(build_ok=True, tests_ok=True, problems=[], log=_tail("\n".join(logs)))

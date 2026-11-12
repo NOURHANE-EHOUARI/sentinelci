@@ -16,7 +16,8 @@ you ask for it.
    the release image's base by digest and its wheels with hashes, plus pytest and its HTTP client, without
    the application. `docker build -f demo-shop/services/shop-api/Dockerfile.test -q demo-shop/services/shop-api`
    prints its local id (`TEST_IMAGE=sha256:...`; `name@sha256:...` works too). The patched code only ever runs
-   there: no network, read-only, no capability, as `nobody`, with limits and a time limit.
+   there: no network, read-only, no capability, as `nobody`, with limits (1 GiB of memory and no swap
+   beyond it, 256 processes, 2 CPUs) and a time limit.
 4. Check out `main` as it is on GitHub, with a clean working tree. The run refuses anything else.
 
 ## Run
@@ -29,14 +30,18 @@ make remediate-code TEST_IMAGE=<pinned image> API_URL=http://localhost:8000   # 
 ```
 
 For each finding, up to three attempts: a REJECTED patch is proposed again with its diff and what rejected
-it, redacted and clipped by the fixer, which keeps the end: the tests' log first, then the check's problems,
-then the verification's summary, so the reasons are never cut. The evidence of each step is in
+it, redacted and clipped by the fixer, which keeps the end: the tests' log first (the base run is labelled
+"expected to fail"), then the check's problems, then each new finding the patch brought (tool, rule,
+severity and place), then the verification's summary, so the reasons are never cut. A finding that no patch
+could ever verify (no behaviour tests next to its file, no security test for its rule) is not sent to the
+model at all: it is recorded as `not verifiable`. The evidence of each step is in
 `out/remediate-code/<commit>/`: `proposal.json`, the scans, `check.json` (with the end of the test output),
 `decision.json`, `result.json`, and `summary.json` for the whole run.
 
 `PUBLISH=1` pushes only VERIFIED branches, with your own git credentials, and opens each pull request with your
-own `gh` login. The pull request says that it was verified by the tests and the scanners, not by a person: you
-or your reviewer still read it. The bot never merges and never approves.
+own `gh` login. The pull request says that it was verified by the tests and the scanners, not by a person, and
+shows each test run with pytest's summary (the behaviour tests, the security test on the base and on the
+patch): you or your reviewer still read it. The bot never merges and never approves.
 
 `API_URL` sends every attempt to the platform's Remediation page; the token comes only from
 `SENTINEL_API_TOKEN`.
@@ -46,6 +51,10 @@ or your reviewer still read it. The bot never merges and never approves.
 - a service with no `tests/` directory next to its code, or a finding whose rule has no
   `security_tests/test_<rule>.py` (shop-api has one per SAST seed, B9);
 - a security test that does not fail on the base code (it proves nothing about the fix);
+- a run whose pytest summary does not show the tests passing (an early exit, a skip, a deselection, an
+  xfail) or, on the base code, failing. The patched code runs inside pytest, so this raises the bar without
+  making the run tamper-proof: code that prints a summary line of its own before it exits would still pass,
+  which is one more reason a person reads every diff;
 - a patch that edits `tests/` or `security_tests/` (both always come from the base commit);
 - a file that is not Python;
 - anything the test container could not run (no Docker, an image that is not there): nothing is verified

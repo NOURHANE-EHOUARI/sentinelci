@@ -20,7 +20,7 @@ from typer.testing import CliRunner
 from sentinelci.cli import app
 from sentinelci.contracts.remediation import Model, PatchProposal
 from sentinelci.remediation import code
-from sentinelci.remediation.code import CodeCheckError, Ran, check_code, docker_runner, service_of
+from sentinelci.remediation.code import CodeCheckError, Ran, check_code, docker_runner, service_of, summary_of
 from sentinelci.remediation.proposal import proposal_id_of, unified_diff
 
 from .conftest import NOW
@@ -34,7 +34,8 @@ FINDING = "b" * 64
 RULE = "python-sql-built-from-strings"
 SECURITY = f"{SERVICE}/security_tests/test_python_sql_built_from_strings.py"
 # A pass: the behaviour tests pass on the patch, the security test fails on the base and passes on the patch.
-PASSING = (Ran(0, "behaviour: 1 passed\n"), Ran(1, "base: 1 failed\n"), Ran(0, "patched: 1 passed\n"))
+# pytest -q ends with its summary line: only a run whose summary agrees with its exit code counts.
+PASSING = (Ran(0, "12 passed in 0.31s\n"), Ran(1, "3 failed in 0.11s\n"), Ran(0, "3 passed in 0.09s\n"))
 
 
 def proposal_of(old: str, new: str, path: str = TARGET, strategy: str = "llm:code") -> PatchProposal:
@@ -98,7 +99,8 @@ def test_the_services_tests_run_against_the_patch_in_a_sandbox(tmp_path: Path) -
         assert args[:2] == ["run", "--rm"] and flag(args, "--name")[0].startswith("sentinel-tests-")
         for name, value in [("--network", "none"), ("--cap-drop", "ALL"), ("--user", "65534:65534"),
                             ("--security-opt", "no-new-privileges:true"), ("--pids-limit", "256"),
-                            ("--memory", "1g"), ("--workdir", "/srv")]:  # fmt: skip
+                            ("--memory", "1g"), ("--memory-swap", "1g"), ("--cpus", "2"),
+                            ("--tmpfs", SCRATCH), ("--workdir", "/srv")]:  # fmt: skip
             assert flag(args, name) == [value], name
         assert "--read-only" in args and "--privileged" not in args and "-v" not in args
         assert flag(args, "--mount")[1:] == [
@@ -118,16 +120,16 @@ def test_the_services_tests_run_against_the_patch_in_a_sandbox(tmp_path: Path) -
     assert (flag(on_base, "--mount")[0], on_base[-1]) == (service["base"], selected), "the weakness is real"
     assert (flag(on_patch, "--mount")[0], on_patch[-1]) == (service["patched"], selected), "and it is gone"
     assert checked.log == (
-        "$ pytest tests (behaviour tests, patched code)\nbehaviour: 1 passed\n\n"
-        f"$ pytest {selected} ({selected}, base code)\nbase: 1 failed\n\n"
-        f"$ pytest {selected} ({selected}, patched code)\npatched: 1 passed\n"
+        "$ pytest tests (behaviour tests, patched code)\n12 passed in 0.31s\n\n"
+        f"$ pytest {selected} ({selected}, base code, expected to fail)\n3 failed in 0.11s\n\n"
+        f"$ pytest {selected} ({selected}, patched code)\n3 passed in 0.09s\n"
     )
 
 
 @pytest.mark.parametrize(
     ("ran", "problem"),
     [
-        (Ran(1, "1 failed\n"), f"{SERVICE}/tests failed on the patched code (pytest exit 1)"),
+        (Ran(1, "1 failed in 0.01s\n"), f"{SERVICE}/tests failed on the patched code (pytest exit 1)"),
         (Ran(2, "interrupted\n"), f"{SERVICE}/tests failed on the patched code (pytest exit 2)"),
         (Ran(5, "no tests ran\n"), f"{SERVICE}/tests failed on the patched code (pytest exit 5)"),
         (Ran(124, "x\n"), "behaviour tests, patched code: did not finish within 300 s, or ran out of memory"),
@@ -174,7 +176,12 @@ def test_the_log_kept_is_the_end_of_the_output(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "ran",
-    [Ran(0, "1 passed\n"), Ran(2, "interrupted\n"), Ran(4, "usage\n"), Ran(5, "no tests ran\n")],
+    [
+        Ran(0, "1 passed in 0.01s\n"),
+        Ran(2, "interrupted\n"),
+        Ran(4, "usage\n"),
+        Ran(5, "no tests ran in 0.01s\n"),
+    ],
     ids=["passes-on-the-base", "interrupted", "usage-error", "nothing-collected"],
 )
 def test_a_security_test_that_does_not_fail_on_the_base_proves_nothing(tmp_path: Path, ran: Ran) -> None:
@@ -189,7 +196,9 @@ def test_a_security_test_that_does_not_fail_on_the_base_proves_nothing(tmp_path:
     ]
 
 
-@pytest.mark.parametrize("ran", [Ran(1, "1 failed\n"), Ran(5, "no tests ran\n")], ids=["fails", "nothing"])
+@pytest.mark.parametrize(
+    "ran", [Ran(1, "1 failed in 0.01s\n"), Ran(5, "no tests ran in 0.01s\n")], ids=["fails", "nothing"]
+)
 def test_a_fix_whose_security_test_still_fails_is_not_verified(tmp_path: Path, ran: Ran) -> None:
     """The scanner may no longer see a rewritten pattern; the security test still finds the weakness."""
     base, patched = trees(tmp_path)
@@ -199,6 +208,78 @@ def test_a_fix_whose_security_test_still_fails_is_not_verified(tmp_path: Path, r
     assert checked.problems == [
         f"tests: {SECURITY} failed on the patched code (pytest exit {ran.returncode})"
     ] and checked.log.endswith(ran.output)
+    assert checked.log.startswith("$ pytest tests (behaviour tests, patched code)\n12 passed in 0.31s\n"), (
+        "every run so far, in order, not only the one that failed (#100 review, C10)"
+    )
+
+
+SECURITY_RUN = "security_tests/test_python_sql_built_from_strings.py"
+SCRATCH = "/tmp:rw,noexec,nosuid,size=64m"  # noqa: S108 (the container's tmpfs, written out: C19)
+
+
+@pytest.mark.parametrize(
+    ("ran", "at", "shown"),
+    [
+        (Ran(0, ""), 0, "it printed no summary"),
+        (Ran(0, "9 passed, 3 skipped in 0.50s\n"), 0, "its summary says 9 passed, 3 skipped"),
+        (Ran(0, "11 passed, 1 deselected in 0.40s\n"), 0, "its summary says 11 passed, 1 deselected"),
+        (Ran(1, ""), 1, "it printed no summary"),
+        (Ran(1, "1 error in 0.20s\n"), 1, "its summary says 1 error"),
+        (Ran(0, ""), 2, "it printed no summary"),
+        (Ran(0, "2 passed, 1 xfailed in 0.10s\n"), 2, "its summary says 2 passed, 1 xfailed"),
+    ],
+    ids=[
+        "early-exit",
+        "skipped",
+        "deselected",
+        "base-early-exit",
+        "base-error",
+        "patched-early-exit",
+        "xfailed",
+    ],
+)
+def test_a_run_counts_only_when_pytests_summary_agrees(tmp_path: Path, ran: Ran, at: int, shown: str) -> None:
+    """#100 review, should-fix 1: the patched code runs inside pytest, so it can end the process with the
+    expected exit code before any test ran (`os._exit(0)`), or skip a test."""
+    base, patched = trees(tmp_path)
+    run = Recorder(*PASSING[:at], ran)
+    checked = check_code(proposal_of(OLD, NEW), base, patched, rule=RULE, test_image=IMAGE, run=run)
+    label = (
+        "behaviour tests, patched code",
+        f"{SECURITY_RUN}, base code, expected to fail",
+        f"{SECURITY_RUN}, patched code",
+    )[at]
+    assert (checked.build_ok, checked.tests_ok, len(run.calls)) == (True, False, at + 1)
+    assert checked.problems == [
+        f"tests: {label}: pytest's summary does not show that (exit {ran.returncode}, {shown}): an early "
+        "exit, a skip or a deselection proves nothing"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("output", "said", "counts"),
+    [
+        ("3 passed in 0.04s\n", "3 passed", {"passed": 3}),
+        (
+            "F..\n1 failed, 2 passed, 1 warning in 0.31s (0:00:01)\n",
+            "1 failed, 2 passed, 1 warning",
+            {"failed": 1, "passed": 2, "warning": 1},
+        ),
+        ("== 12 passed, 2 warnings in 1.20s ==\n", "12 passed, 2 warnings", {"passed": 12, "warnings": 2}),
+        ("1 passed in 0.01s\nprinted after the summary\n", "1 passed", {"passed": 1}),
+        ("no tests ran in 0.01s\n", "", {}),
+        ("passed\n", "", {}),
+    ],
+)
+def test_the_summary_is_pytests_last_summary_line(output: str, said: str, counts: dict[str, int]) -> None:
+    assert summary_of(output) == (said, counts)
+
+
+def test_warnings_do_not_stop_a_run_from_counting(tmp_path: Path) -> None:
+    base, patched = trees(tmp_path)
+    run = Recorder(Ran(0, "12 passed, 1 warning in 0.31s\n"), PASSING[1], PASSING[2])
+    checked = check_code(proposal_of(OLD, NEW), base, patched, rule=RULE, test_image=IMAGE, run=run)
+    assert (checked.build_ok, checked.tests_ok, checked.problems) == (True, True, [])
 
 
 def test_a_rule_without_a_security_test_is_never_verified(tmp_path: Path) -> None:
@@ -336,6 +417,13 @@ def test_the_runner_removes_the_named_container(tmp_path: Path, monkeypatch: pyt
     assert (tmp_path / "calls").read_text().splitlines()[-1] == "rm -f sentinel-tests-x"
 
 
+def test_output_that_is_not_utf8_is_read_not_a_crash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#100 review, should-fix 2: a byte that is not UTF-8 (the patched code can write any) is replaced."""
+    monkeypatch.setenv("PATH", str(fake_docker(tmp_path, "printf '3 passed\\377\\376 in 0.01s\\n'; exit 0")))
+    ran = docker_runner(["run", "--rm", "--name", "sentinel-tests-z", IMAGE], 300)
+    assert (ran.returncode, ran.output) == (0, "3 passed\ufffd\ufffd in 0.01s\n")
+
+
 def test_the_runner_removes_the_container_after_a_time_out_too(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -373,7 +461,9 @@ def test_the_command_checks_a_code_proposal(tmp_path: Path, monkeypatch: pytest.
     base, patched = trees(tmp_path)
     path = tmp_path / "proposal.json"
     path.write_text(proposal_of(OLD, NEW).model_dump_json(), encoding="utf-8")
-    run = Recorder(*PASSING, Ran(0, "1 passed\n"), Ran(1, "1 failed\n"), Ran(1, "still 1 failed\n"))
+    run = Recorder(
+        *PASSING, Ran(0, "1 passed in 0.01s\n"), Ran(1, "1 failed in 0.01s\n"), Ran(1, "1 failed in 0.02s\n")
+    )
     monkeypatch.setattr(code, "docker_runner", run)
     command = ["remediate", "check", "--proposal", str(path), "--base-root", str(base),
                "--patched-root", str(patched)]  # fmt: skip
@@ -385,14 +475,14 @@ def test_the_command_checks_a_code_proposal(tmp_path: Path, monkeypatch: pytest.
     done = CliRunner().invoke(app, [*command, *findings, "--test-image", IMAGE])
     assert done.exit_code == 0, done.output
     result = json.loads(done.stdout)
-    assert result.pop("log").endswith("patched: 1 passed\n")
+    assert result.pop("log").endswith("3 passed in 0.09s\n")
     assert result == {
         "proposal_id": proposal_of(OLD, NEW).proposal_id, "strategy": "llm:code", "build_ok": True,
         "tests_ok": True, "problems": [],
     }  # fmt: skip
     assert run.calls[1][-1] == "security_tests/test_python_sql_built_from_strings.py", "the target's rule"
     done = CliRunner().invoke(app, [*command, *findings, "--test-image", IMAGE])
-    assert done.exit_code == 1 and json.loads(done.stdout)["log"].endswith("still 1 failed\n")
+    assert done.exit_code == 1 and json.loads(done.stdout)["log"].endswith("1 failed in 0.02s\n")
     done = CliRunner().invoke(app, [*command, *findings, "--test-image", "python:3.12"])
     assert done.exit_code == 3 and "FAIL CLOSED" in done.stderr
 
