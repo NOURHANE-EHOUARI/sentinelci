@@ -43,7 +43,10 @@ export function VerdictBadge({ value }: { value: unknown }) {
   return <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${VERDICT_STYLE[verdict]}`}>{verdict}</span>;
 }
 
-/** A timestamp as UTC, to the minute. */
-export function utc(value: string): string {
-  return `${new Date(value).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+/** A timestamp as UTC, to the minute; "—" when there is none or it cannot be read (never a blank page). The same
+ * as A8's (#86), so the two merge as one. */
+export function utc(value: string | null): string {
+  if (value === null) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "—" : `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
