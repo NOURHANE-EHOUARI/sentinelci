@@ -355,6 +355,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/findings/{finding_id}/explain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request Explanation
+         * @description Queue an explanation of the finding as a run recorded it. Advisory: it never changes a verdict.
+         */
+        post: operations["request_explanation_api_v1_findings__finding_id__explain_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/explain-requests/{request_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Explain Request
+         * @description Where a request for an explanation stands.
+         */
+        get: operations["get_explain_request_api_v1_explain_requests__request_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/findings/{finding_id}/explanation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Explanation
+         * @description The finding's latest explanation, exactly as the worker recorded it.
+         */
+        get: operations["get_explanation_api_v1_findings__finding_id__explanation_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/metrics": {
         parameters: {
             query?: never;
@@ -460,6 +520,54 @@ export interface components {
         ErrorOut: {
             /** Detail */
             detail: string;
+        };
+        /** ExplainIn */
+        ExplainIn: {
+            /** Run Id */
+            run_id?: string | null;
+        };
+        /**
+         * ExplainRequestFailed
+         * @description 503: the queue did not take the job; the request is recorded as failed.
+         */
+        ExplainRequestFailed: {
+            /** Detail */
+            detail: string;
+            request: components["schemas"]["ExplainRequestOut"];
+        };
+        /** ExplainRequestOut */
+        ExplainRequestOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Finding Id */
+            finding_id: string;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "running" | "explained" | "unavailable" | "not_sent" | "failed";
+            /** Reason */
+            reason: string | null;
+            /** Explanation Sha256 */
+            explanation_sha256: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
         };
         /** FindingDetail */
         FindingDetail: {
@@ -2261,6 +2369,177 @@ export interface operations {
                 };
             };
             /** @description No database is configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    request_explanation_api_v1_findings__finding_id__explain_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The finding's id (fingerprint). */
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ExplainIn"] | null;
+            };
+        };
+        responses: {
+            /** @description A request for this finding and run is open: it. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExplainRequestOut"];
+                };
+            };
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExplainRequestOut"];
+                };
+            };
+            /** @description No valid ingestion token (`Authorization: Bearer <token>`). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description No such finding (in that run), request or explanation. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description No database or no job queue is configured (`detail` only), or the queue did not take the job (`request`: the request, failed). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExplainRequestFailed"] | components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_explain_request_api_v1_explain_requests__request_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExplainRequestOut"];
+                };
+            };
+            /** @description No such finding (in that run), request or explanation. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description No database or no job queue is configured, or the queue did not take the job. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_explanation_api_v1_findings__finding_id__explanation_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The finding's id (fingerprint). */
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The finding's latest explanation (Explanation v1) byte for byte: its sha256 is the ETag. Advisory: never read by the gate. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description No such finding (in that run), request or explanation. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description No database or no job queue is configured, or the queue did not take the job. */
             503: {
                 headers: {
                     [name: string]: unknown;

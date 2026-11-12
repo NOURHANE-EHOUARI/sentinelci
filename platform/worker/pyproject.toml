@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "SentinelCI background workers: GitHub sync, enrichment refresh, AI and remediation jobs."
 requires-python = ">=3.12"
 dependencies = [
+    "celery[redis]>=5.5",
+    "sentinel-ai",
+    "sentinel-api",
     "sentinelci",
 ]
 
@@ -13,3 +16,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sentinel_worker"]
+
+[tool.uv.sources]
+sentinel-api = { workspace = true }
+sentinel-ai = { workspace = true }

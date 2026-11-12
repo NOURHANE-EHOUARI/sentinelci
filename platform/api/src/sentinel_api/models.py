@@ -12,6 +12,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Identity,
     Index,
     Integer,
@@ -233,5 +234,68 @@ class WaiversFile(Base):
     )
 
     sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    document: Mapped[bytes] = deferred(mapped_column(LargeBinary, nullable=False))
+
+
+EXPLAIN_STATUSES = ("queued", "running", "explained", "unavailable", "not_sent", "failed")
+
+
+class ExplainRequest(Base):
+    """A request for an explanation of a finding as one run recorded it (B5c): queued by the API, claimed and
+    finished by the worker. Only a queue's state: the explanation is the record."""
+
+    __tablename__ = "explain_requests"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["run_id", "finding_id"], ["findings.run_id", "findings.finding_id"], ondelete="CASCADE"
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'explained', 'unavailable', 'not_sent', 'failed')",
+            name="explain_requests_status",
+        ),
+        CheckConstraint(
+            "(status = 'explained') = (explanation_sha256 IS NOT NULL)", name="explain_requests_explained"
+        ),
+        Index(
+            "explain_requests_one_open",
+            "finding_id",
+            "run_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    finding_id: Mapped[str] = mapped_column(String(64))
+    run_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    status: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str | None] = mapped_column(Text)
+    explanation_sha256: Mapped[str | None] = mapped_column(
+        String(64),  # Added after both tables (use_alter): the two tables refer to each other.
+        ForeignKey("explanations.sha256", name="explain_requests_explanation", use_alter=True),
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Explanation(Base):
+    """An explanation of a finding (Explanation v1, B5c), kept byte for byte and named by its sha256.
+    Advisory: the gate never reads it. About its own finding and its request's, never changed (trigger
+    `explanations_are_kept`). The latest of a finding is the one recorded last (`seq`)."""
+
+    __tablename__ = "explanations"
+    __table_args__ = (
+        CheckConstraint("sha256 ~ '^[a-f0-9]{64}$'", name="explanations_sha256"),
+        CheckConstraint("encode(sha256(document), 'hex') = sha256", name="explanations_bytes_match"),
+    )
+
+    sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(always=True), unique=True)
+    finding_id: Mapped[str] = mapped_column(String(64), index=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"))
+    request_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("explain_requests.id", ondelete="CASCADE"), unique=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     document: Mapped[bytes] = deferred(mapped_column(LargeBinary, nullable=False))

@@ -4,7 +4,7 @@ The SentinelCI control plane on your machine (SPEC §4.4). **Local only**: every
 
 ```bash
 make up                                      # postgres + pgvector, redis, seaweedfs (S3), api
-COMPOSE_PROFILES=ai make up                  # + ollama
+COMPOSE_PROFILES=ai make up                  # + ollama and the worker
 COMPOSE_PROFILES=ai,observability make up    # + prometheus, grafana
 make down                                    # stop; data volumes are kept
 ```
@@ -21,6 +21,7 @@ there is no default password anywhere.
 | redis | `127.0.0.1:6379` (password) | default | Celery broker (B1) |
 | seaweedfs | http://127.0.0.1:8333 (S3, signed requests only) | default | evidence store, ADR-0007 |
 | ollama | http://127.0.0.1:11434 | `ai` | local LLM (B5); pull the pinned models (below) |
+| worker | (none) | `ai` | the AI analyst's jobs (B5c): explanations asked with `POST /api/v1/findings/{id}/explain`; the API's image, with the database, Redis and Ollama only |
 | prometheus | http://127.0.0.1:9090 | `observability` | metrics (A8) |
 | grafana | http://127.0.0.1:3000, user `admin` | `observability` | dashboards as code (A8) |
 
