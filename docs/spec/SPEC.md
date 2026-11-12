@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.69 | B7 Policies & waivers (§6.4, §10), platform API 1.9.0 (B1, migration 0009): `PUT /api/v1/waivers/{sha256}` keeps a waivers file as the gate read it, named by its sha256, only when a recorded decision (a run's or a release's) names it as `inputs.waivers_digest` and only if the gate could have read it; `GET /api/v1/waivers/{sha256}` serves it byte for byte. `GET /api/v1/waivers` gives, for each repository, its latest release decision of the default branch (a run's or a release's, by `evaluated_at`) with the waivers of the file it read, as written: whether one applied is the decision's `waivers_applied`, why one is invalid its SC-005 message, and a file not uploaded is unknown (`null`), never an empty list. `GET /api/v1/rules` counts the recorded decisions each rule fired in, by effect and context (a decision recorded twice counts once). The dashboard's Policies & waivers page shows both, with each waiver's expiry against the viewer's clock (expired, or expiring within 14 days) and the rule catalogue of §6.3; it changes nothing: waivers stay pull requests. |
 | 1.1.68 | B7 Runs pages (§10): the dashboard's Runs page lists the recorded runs newest first (`GET /api/v1/runs`), filtered by context and repository in the URL, each with the gate's verdict; a run without a decision, or with a value that is not a verdict, reads "No decision", never PASS. A run's page shows what was scanned, a link to its findings (the Findings page now takes `?run_id=`), and its decision as recorded (`GET /api/v1/runs/{id}/decision`): verdict, violations linked to their findings, waivers applied and the digests of its inputs; without one, "No decision recorded", and a decision that cannot be read is an error, not an absence. |
 | 1.1.66 | Platform API 1.6.1 (B1, #78 and #79 reviews): the 409 of `POST /api/v1/runs/{id}/decision` and of `POST /api/v1/runs/{id}/correlations` is documented with both of its shapes (`DecisionExists` or `CorrelationExists` when one is recorded, `ErrorOut` when the run's findings are not recorded yet), so a generated client never assumes the recorded one is there. `GET /api/v1/runs` says that offset pages are stable for a fixed set of runs only. The decisions table says which copied columns the database checks against the document (`decision_id` and `verdict`, which are listed and counted) and which the API only copies for display (`evaluated_at`, `engine_version`). |
 | 1.1.63 | A8 MTTR and alert reduction (§10): `GET /metrics` adds `sentinel_findings_fixed{priority}` and `sentinel_findings_fix_seconds{priority}` (fixes on each repository's default branch, from its release runs with a recorded decision and no SC-010) and `sentinel_correlated_findings{category}` and `sentinel_root_cause_groups{category}` (each repository's latest correlation). Grafana: MTTR by priority and alert reduction by category. |
@@ -726,6 +727,11 @@ Implemented (B7a): the dashboard (`platform/web`) has its core pages, Overview (
 and Finding detail (with the finding's root-cause group, advisory); Track A's pages use the same layout and the
 client generated from `schemas/openapi.yaml`.
 
+Implemented (B7b): Runs and a run (its verdict and decision as recorded, "No decision" never shown as PASS), and
+Policies & waivers: for each repository, the waivers its latest release decision of the default branch read (owner,
+justification, target, expiry, whether the decision applied it, and the decision's SC-005 reasons), and the rule
+catalogue of §6.3 with how many recorded decisions each rule fired in. The page reads; waivers stay pull requests.
+
 ## 11. Technology stack
 
 | Layer | Choice |
@@ -847,6 +853,7 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
 `POST /api/v1/sync/github` · `GET /api/v1/findings[/{id}]` · `POST /api/v1/findings/{id}/explain` ·
 `POST /api/v1/runs/{id}/correlations`, `GET /api/v1/runs/{id}/correlations[?sha256=]` and `GET /api/v1/runs/{id}/correlations/versions` (Correlation v1 documents, scoped by run, kept byte for byte, advisory) ·
 `POST|GET /api/v1/runs/{id}/decision` (the run's Decision v1, one per run, made on the run's recorded findings and about its subject, kept byte for byte) ·
+`PUT|GET /api/v1/waivers/{sha256}` (a waivers file a recorded decision read, kept byte for byte), `GET /api/v1/waivers[?repo=]` (the waivers each repository's latest default-branch release decision read) and `GET /api/v1/rules` (how many recorded decisions each rule fired in) ·
 `POST /api/v1/remediations` (Remediation attempt v1, once per proposal, kept byte for byte), `GET /api/v1/remediations[?repo=&strategy=&outcome=]` and `GET /api/v1/remediations/{proposal_id}` (A) · `POST /api/v1/releases` (Release evidence v1, once per decision, kept byte for byte), `GET /api/v1/releases[?repo=&verdict=]` and `GET /api/v1/releases/{digest}/evidence[?decision_id=]` (A) ·
 `GET /metrics` · `GET /healthz`.
 

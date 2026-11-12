@@ -9,6 +9,10 @@ export type ReleaseSummary = components["schemas"]["ReleaseOut"];
 export type RemediationPage = components["schemas"]["RemediationPage"];
 export type RemediationSummary = components["schemas"]["RemediationOut"];
 export type RunPage = components["schemas"]["RunPage"];
+export type WaiversPage = components["schemas"]["WaiversPage"];
+export type WaiversInForce = components["schemas"]["WaiversInForce"];
+export type Waiver = components["schemas"]["WaiverOut"];
+export type RuleCounts = components["schemas"]["RulesOut"];
 export type Run = components["schemas"]["RunOut"];
 /** The same type, under the name the A8 pages use. */
 export type RunSummary = Run;
@@ -85,6 +89,16 @@ export async function getDecision(runId: string): Promise<unknown> {
     if (error instanceof ApiError && error.status === 404) return null;
     throw error;
   }
+}
+
+/** For each repository, its latest release decision of the default branch and the waivers it read. */
+export async function listWaiversInForce(repo?: string): Promise<WaiversPage> {
+  return (await get("/api/v1/waivers", { repo })).json() as Promise<WaiversPage>;
+}
+
+/** How many recorded decisions each rule fired in, by effect and context. */
+export async function getRuleCounts(): Promise<RuleCounts> {
+  return (await get("/api/v1/rules")).json() as Promise<RuleCounts>;
 }
 
 /** The run's latest correlation document, or null when none is recorded (404). */

@@ -16,6 +16,7 @@ it never writes, and it holds no token.
 | Root-cause groups (A7, A8): a run's groups of more than one finding (title, root cause, the one fix, members), the alert reduction of SPEC §10 and the correlator; advisory, and marked when a model wrote a label. Reached from a finding's group | `GET /api/v1/runs/{id}`, `GET /api/v1/runs/{id}/correlations`, `GET /api/v1/findings?run_id=` |
 | Runs: newest first, the context and the repository in the URL, 50 per page, each with the gate's verdict. A run without a decision reads "No decision", never PASS | `GET /api/v1/runs` |
 | Run detail: the run, its findings (a link to the Findings page), and its decision as recorded: verdict, violations linked to their findings, waivers applied, the digests of its inputs. Without a decision: "No decision recorded", which is not a PASS | `GET /api/v1/runs/{id}`, `GET /api/v1/runs/{id}/decision` |
+| Policies & waivers: for each repository, the waivers its latest release decision of the default branch read (as written: target, owner, justification, expiry against your clock, applied or not, and the decision's SC-005 reasons), and the rule catalogue of SPEC 6.3 with how often each rule fired. A waivers file not uploaded is unknown, never "no waivers". Read only: waivers are added by pull request | `GET /api/v1/waivers`, `GET /api/v1/rules` |
 
 Track A's pages use the same layout and client. The release pages
 show a record: the platform verifies nothing itself, and Kyverno verifies again at admission. A Release
@@ -43,5 +44,5 @@ Rules:
   when it was.
 
 Still to come: serving the built app in Compose behind the API, with a Content-Security-Policy header (the Vite
-dev server injects an inline script, so the policy goes on the served build); the Policies & waivers page; the
-read token, when the API's reads need one.
+dev server injects an inline script, so the policy goes on the served build); the read token, when the API's reads
+need one.
