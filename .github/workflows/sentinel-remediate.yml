@@ -358,13 +358,18 @@ jobs:
           # The scanned commit, fetched from the checkout into a bare repository: nothing is ever checked out.
           repo="$WORK/repo.git"
           git init --quiet --bare "$repo"
+          # Attributes come from no tree, whatever HEAD becomes: the commit never configures git archive or
+          # Gitleaks' git log (export-ignore, export-subst, ident, eol, -diff). git reads a bare repository's
+          # HEAD:.gitattributes once HEAD resolves; attr.tree names the empty tree instead.
+          git -C "$repo" config attr.tree "$(git hash-object -t tree /dev/null)"
           git -C "$repo" fetch --quiet --no-tags "$CHECKOUT" "+HEAD:refs/sentinel/base" \
             && [ "$(git -C "$repo" rev-parse refs/sentinel/base)" = "$BASE_SHA" ] \
             || { echo "::error::the checkout is not the scanned commit $BASE_SHA"; exit 1; }
           # Its whole tree (the fixers look for an ADD source at the repository root too) and its findings: the
           # before side of every proposal, and the baseline of every decision. Every tree is exported with
-          # --worktree-attributes from this bare repository, which has no worktree: the commit's own
-          # .gitattributes cannot drop (export-ignore) or rewrite (export-subst) what is scanned and checked.
+          # --worktree-attributes (without it, git archive reads the archived tree's own attributes) from this
+          # bare repository, whose attr.tree is empty: the commit's .gitattributes cannot drop (export-ignore)
+          # or rewrite (export-subst, ident, eol) what is scanned and checked.
           if ! { git -C "$repo" archive --worktree-attributes --format=tar "$BASE_SHA" | tar -x -C "$WORK/base"; } \
             || ! "$SENTINEL" scan secrets "$WORK/base/$SCAN_PATH" --mode dir --repo-root "$WORK/base" \
               --commit "$BASE_SHA" --ref "$BASE_REF" --out "$WORK/base-secrets.ndjson" \
@@ -413,6 +418,10 @@ jobs:
             "$SENTINEL" remediate check --proposal "$proposal" --base-root "$WORK/base" \
               --patched-root "$out/patched" --findings "$WORK/base-iac.ndjson" > "$out/check.json" || code=$?
             [ "$code" -le 1 ] || refuse "$name" "its build and tests could not be checked" || return 1
+            # A crash also exits 1: only a whole result is one (else FAILED, never REJECTED).
+            jq -e '(.build_ok | type == "boolean") and (.tests_ok | type == "boolean")
+              and (.problems | type == "array")' "$out/check.json" > /dev/null 2>&1 \
+              || refuse "$name" "its build and tests could not be checked" || return 1
             jq -r '.problems[]' "$out/check.json" | sed "s/^/$name: /"
             build=--build-ok; [ "$(jq -r .build_ok "$out/check.json")" = true ] || build=--build-failed
             tests=--tests-ok; [ "$(jq -r .tests_ok "$out/check.json")" = true ] || tests=--tests-failed

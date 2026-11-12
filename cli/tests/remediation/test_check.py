@@ -22,6 +22,7 @@ from sentinelci.cli import app
 from sentinelci.contracts.finding import Finding
 from sentinelci.contracts.remediation import PatchProposal
 from sentinelci.normalize.ndjson import dumps_ndjson
+from sentinelci.remediation import check
 from sentinelci.remediation.check import CheckError, check_iac
 from sentinelci.remediation.dockerfile import propose as propose_dockerfile
 from sentinelci.remediation.gate import check_proposal
@@ -273,6 +274,30 @@ def test_every_field_but_the_time_is_the_fixers(tmp_path: Path) -> None:
     ]
 
 
+def test_a_proposal_that_claims_other_findings_is_not_the_fixers(tmp_path: Path) -> None:
+    """#98 review, should-fix 2: an under-claim with a recomputed id passes the gate's own check of the
+    proposal and the line rules; only the replay sees it."""
+    proposal, base, patched, findings = kubernetes(tmp_path)
+    assert len(proposal.finding_ids) > 1
+    fewer = proposal.finding_ids[:1]
+    identity = proposal_id_of(proposal.strategy, 1, fewer, proposal.diff)
+    forged = proposal.model_copy(update={"finding_ids": fewer, "proposal_id": identity})
+    assert check_iac(forged, base, patched, findings).problems == [
+        "tests: not the fixer's own proposal: on the base tree and findings it proposes "
+        f"{proposal.proposal_id} (proposal_id, finding_ids differ)"
+    ]
+
+
+def test_a_strategy_with_no_fixer_to_re_run_cannot_be_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#98 review, nit 3: a CheckError (exit 3, FAILED), never a KeyError that reads as REJECTED."""
+    proposal, base, patched, findings = dockerfile(tmp_path)
+    monkeypatch.delitem(check.FIXERS, proposal.strategy)
+    with pytest.raises(CheckError, match=r"^no deterministic fixer to re-run for deterministic:dockerfile$"):
+        check_iac(proposal, base, patched, findings)
+
+
 @pytest.mark.parametrize(
     ("source", "prepare"),
     [
@@ -312,6 +337,85 @@ def test_add_becomes_copy_only_where_the_fixer_would_make_it_copy(
     assert checked.problems[0] == f"tests: {DOCKERFILE_PATH}: line 5 {NOT_THE_FIXERS}"
     assert checked.problems[1].startswith("tests: not the fixer's own proposal")
     assert len(checked.problems) == 2
+
+
+SPACED = "svc/my app.tgz"  # one name, as BuildKit reads it
+
+
+@pytest.mark.parametrize(
+    ("line", "files"),
+    [
+        ("ADD ../app.py /app/\n", {"app.py": "plain", "svc/app.py": "tar"}),
+        ('ADD ["my app.tgz", "/app/"]\n', {"svc/my": "plain", "svc/app.tgz": "plain", SPACED: "tar"}),
+        ("ADD deploy@example.invalid:repo.git /app/\n", {"svc/deploy@example.invalid:repo.git": "plain"}),
+        ('ADD "my app.tgz" /app/\n', {"svc/my": "plain", "svc/app.tgz": "plain", SPACED: "tar"}),
+    ],
+    ids=["dotdot", "json-space", "ssh-git", "shell-quoted"],
+)
+def test_add_stays_where_buildkit_reads_the_source_otherwise(
+    tmp_path: Path, line: str, files: dict[str, str]
+) -> None:
+    """#85 review, should-fix 3: BuildKit cleans `..` into the context, reads a JSON name with a space as one
+    name and any `user@host:path` as a git source over SSH: the places checked are not the ones it reads. The
+    fixer keeps each of these ADDs, and a proposal forged to make it COPY fails both checks."""
+    extra = {name: (_tar_gz() if kind == "tar" else b"plain\n") for name, kind in files.items()}
+    case = dockerfile(tmp_path, DOCKERFILE.replace("ADD app.py /app/\n", line), extra)
+    assert line in case[2].joinpath(DOCKERFILE_PATH).read_text(), "the fixer keeps this ADD"
+    proposal, base, patched, findings = forged(case, line, line.replace("ADD", "COPY", 1))
+    checked = check_iac(proposal, base, patched, findings)
+    assert (checked.build_ok, checked.tests_ok) == (True, False)
+    assert checked.problems[0] == f"tests: {DOCKERFILE_PATH}: line 5 {NOT_THE_FIXERS}"
+    assert checked.problems[1].startswith("tests: not the fixer's own proposal")
+    assert len(checked.problems) == 2
+
+
+@pytest.mark.parametrize(
+    ("first", "block", "patched_block"),
+    [
+        ("# escape=`\n", "RUN cd /src && git `\n    add app.py docs/\n",
+         "RUN cd /src && git `\n    COPY app.py docs/\n"),
+        ("# syntax=docker/dockerfile:1\n", "RUN <<CMD\nadd app.py docs/\nCMD\n",
+         "RUN <<CMD\nCOPY app.py docs/\nCMD\n"),
+    ],
+    ids=["escape-directive", "heredoc"],
+)  # fmt: skip
+def test_a_file_the_fixer_does_not_edit_fails_the_tests(
+    tmp_path: Path, first: str, block: str, patched_block: str
+) -> None:
+    """#85 review, should-fix 2: the edited line is inside a RUN for Docker, whatever this parser reads. The
+    fixer refuses such a file, so the replay proposes nothing either."""
+    proposal, base, patched, findings = dockerfile(tmp_path)
+    for root, text, before in ((base, block, "CMD"), (patched, patched_block, "USER")):
+        edit(root, DOCKERFILE_PATH, "# syntax=docker/dockerfile:1\n", first)
+        edit(root, DOCKERFILE_PATH, before, text + before)
+    diff = unified_diff(
+        DOCKERFILE_PATH, (base / DOCKERFILE_PATH).read_text(), (patched / DOCKERFILE_PATH).read_text()
+    )
+    identity = proposal_id_of(proposal.strategy, proposal.attempt, proposal.finding_ids, diff)
+    proposal = proposal.model_copy(update={"diff": diff, "proposal_id": identity})
+    checked = check_iac(proposal, base, patched, findings)
+    assert (checked.build_ok, checked.tests_ok) == (True, False)
+    reason = (
+        "an `escape` parser directive changes how lines continue" if "escape" in first
+        else "a heredoc: its lines cannot be told apart from instructions safely"
+    )  # fmt: skip
+    assert checked.problems[0] == (
+        f"tests: {DOCKERFILE_PATH}: the Dockerfile fixer does not edit this file ({reason})"
+    )
+    assert checked.problems[1].startswith("tests: not the fixer's own proposal")
+
+
+@pytest.mark.parametrize(
+    "line",
+    ['ADD ["app.py", "/app/"]\n', "ADD --chown=10001 \\\n    app.py /app/\n"],
+    ids=["json", "continued"],
+)
+def test_a_plain_add_in_json_form_or_continued_may_become_copy(tmp_path: Path, line: str) -> None:
+    """#85 review, nit 1: the JSON form is read as JSON, and a continued ADD as one instruction."""
+    proposal, base, patched, findings = dockerfile(tmp_path, DOCKERFILE.replace("ADD app.py /app/\n", line))
+    assert line.replace("ADD", "COPY", 1) in (patched / DOCKERFILE_PATH).read_text()
+    checked = check_iac(proposal, base, patched, findings)
+    assert (checked.build_ok, checked.tests_ok, checked.problems) == (True, True, [])
 
 
 def test_add_of_a_plain_directory_may_become_copy(tmp_path: Path) -> None:
