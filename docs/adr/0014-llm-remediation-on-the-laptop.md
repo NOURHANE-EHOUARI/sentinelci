@@ -1,6 +1,7 @@
 # ADR-0014: The LLM code fixer runs on the laptop, and its patches are verified by tests in a container
 
-- Status: proposed
+- Status: accepted (2026-11-12, review of #91 by Hiba: the laptop path, with the target's security test failing
+  on the base and passing on the patch)
 - Date: 2026-11-11
 - Builds on: ADR-0009 (local models), ADR-0011 (the laptop as the private phase's trusted machine), ADR-0013 (the
   remediation bot); B6's `sentinel_ai.patch.propose_code_fix` (#81) and B5's `OllamaProvider` (#83)
