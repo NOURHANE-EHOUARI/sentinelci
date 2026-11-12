@@ -24,7 +24,16 @@ export const RULE_CATALOGUE: readonly Rule[] = [
 export const EXPIRES_SOON_DAYS = 14;
 const DAY_MS = 24 * 60 * 60 * 1000;
 // RFC 3339 date-time, as schemas/waivers.v1.json requires (`format: date-time`): a date alone is not one.
-const RFC3339 = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/;
+const RFC3339 = /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(\.\d+)?([Zz]|[+-](\d{2}):(\d{2}))$/;
+
+/** Each field in its range: a date JavaScript would roll over (30 February is 2 March) is not one, as OPA's
+ * `time.parse_rfc3339_ns` refuses it and SC-005 calls the waiver invalid. */
+function realDateTime(match: RegExpExecArray): boolean {
+  const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number) as [number, number, number, number, number, number];
+  const days = new Date(Date.UTC(year, month, 0)).getUTCDate(); // the last day of that month
+  const offset = match[9] === undefined || (Number(match[9]) <= 23 && Number(match[10]) <= 59);
+  return month >= 1 && month <= 12 && day >= 1 && day <= days && hour <= 23 && minute <= 59 && second <= 59 && offset;
+}
 
 export type Expiry =
   | { kind: "unreadable" }
@@ -34,7 +43,8 @@ export type Expiry =
  * `evaluated_at`). `days` is whole days left, or whole days since it expired. Text that is not an RFC 3339
  * date-time is "unreadable", never a date guessed from it. */
 export function expiry(expiresAt: string | null, now: number): Expiry {
-  if (expiresAt === null || !RFC3339.test(expiresAt)) return { kind: "unreadable" };
+  const match = expiresAt === null ? null : RFC3339.exec(expiresAt);
+  if (expiresAt === null || match === null || !realDateTime(match)) return { kind: "unreadable" };
   const at = new Date(expiresAt);
   const time = at.getTime();
   if (Number.isNaN(time)) return { kind: "unreadable" };

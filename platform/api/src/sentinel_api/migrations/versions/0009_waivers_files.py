@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects.postgresql import JSONB
 
 revision = "0009"
 down_revision = "0008"
@@ -35,7 +36,11 @@ def upgrade() -> None:
         sa.Column("sha256", sa.String(64), primary_key=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("document", sa.LargeBinary(), nullable=False),
+        # What the gate's loader read from the bytes (`load_waivers`), parsed once when the file is recorded,
+        # so listing the waivers in force never parses a file again. The bytes stay the record.
+        sa.Column("entries", JSONB(), nullable=False),
         sa.CheckConstraint("sha256 ~ '^[a-f0-9]{64}$'", name="waivers_files_sha256"),
+        sa.CheckConstraint("jsonb_typeof(entries) = 'array'", name="waivers_files_entries"),
         sa.CheckConstraint("encode(sha256(document), 'hex') = sha256", name="waivers_files_bytes_match"),
     )
     op.execute(
