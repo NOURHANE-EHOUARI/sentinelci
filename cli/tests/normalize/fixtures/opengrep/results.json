@@ -1,0 +1,318 @@
+[
+  {
+    "check_id": "python-shell-command-from-data",
+    "path": "/scan/target/app/dup.py",
+    "start": {
+      "line": 5,
+      "col": 5,
+      "offset": 43
+    },
+    "end": {
+      "line": 5,
+      "col": 45,
+      "offset": 83
+    },
+    "extra": {
+      "metavars": {
+        "$1": {
+          "start": {
+            "line": 1,
+            "col": 1,
+            "offset": 0
+          },
+          "end": {
+            "line": 1,
+            "col": 4,
+            "offset": 3
+          },
+          "abstract_content": "run"
+        },
+        "$FUNC": {
+          "start": {
+            "line": 5,
+            "col": 16,
+            "offset": 54
+          },
+          "end": {
+            "line": 5,
+            "col": 19,
+            "offset": 57
+          },
+          "abstract_content": "run"
+        },
+        "$CMD": {
+          "start": {
+            "line": 5,
+            "col": 20,
+            "offset": 58
+          },
+          "end": {
+            "line": 5,
+            "col": 32,
+            "offset": 70
+          },
+          "abstract_content": "\"ls \"+name"
+        }
+      },
+      "message": "A command that is not a constant string runs through a shell; data in it can run other commands.",
+      "metadata": {
+        "title": "OS command built from data runs through a shell",
+        "cwe": [
+          "CWE-78"
+        ],
+        "confidence": "HIGH"
+      },
+      "severity": "ERROR",
+      "fingerprint": "915c04c2cc19f4752f5853292d559b950318e5d345d646d09807eaa89c3d3abe5252347ee1e01de4b71ccd2e265f9dbbe525393161391397c26a03dd1cc3a97b_0",
+      "lines": "    subprocess.run(\"ls \" + name, shell=True)",
+      "is_ignored": false,
+      "validation_state": "NO_VALIDATOR",
+      "engine_kind": "OSS"
+    }
+  },
+  {
+    "check_id": "python-shell-command-from-data",
+    "path": "/scan/target/app/dup.py",
+    "start": {
+      "line": 9,
+      "col": 5,
+      "offset": 107
+    },
+    "end": {
+      "line": 9,
+      "col": 45,
+      "offset": 147
+    },
+    "extra": {
+      "metavars": {
+        "$1": {
+          "start": {
+            "line": 1,
+            "col": 1,
+            "offset": 0
+          },
+          "end": {
+            "line": 1,
+            "col": 4,
+            "offset": 3
+          },
+          "abstract_content": "run"
+        },
+        "$FUNC": {
+          "start": {
+            "line": 9,
+            "col": 16,
+            "offset": 118
+          },
+          "end": {
+            "line": 9,
+            "col": 19,
+            "offset": 121
+          },
+          "abstract_content": "run"
+        },
+        "$CMD": {
+          "start": {
+            "line": 9,
+            "col": 20,
+            "offset": 122
+          },
+          "end": {
+            "line": 9,
+            "col": 32,
+            "offset": 134
+          },
+          "abstract_content": "\"ls \"+name"
+        }
+      },
+      "message": "A command that is not a constant string runs through a shell; data in it can run other commands.",
+      "metadata": {
+        "title": "OS command built from data runs through a shell",
+        "cwe": [
+          "CWE-78"
+        ],
+        "confidence": "HIGH"
+      },
+      "severity": "ERROR",
+      "fingerprint": "915c04c2cc19f4752f5853292d559b950318e5d345d646d09807eaa89c3d3abe5252347ee1e01de4b71ccd2e265f9dbbe525393161391397c26a03dd1cc3a97b_1",
+      "lines": "    subprocess.run(\"ls \" + name, shell=True)",
+      "is_ignored": false,
+      "validation_state": "NO_VALIDATOR",
+      "engine_kind": "OSS"
+    }
+  },
+  {
+    "check_id": "python-sql-built-from-strings",
+    "path": "/scan/target/app/sql.py",
+    "start": {
+      "line": 2,
+      "col": 5,
+      "offset": 24
+    },
+    "end": {
+      "line": 2,
+      "col": 57,
+      "offset": 76
+    },
+    "extra": {
+      "metavars": {
+        "$1": {
+          "start": {
+            "line": 1,
+            "col": 1,
+            "offset": 0
+          },
+          "end": {
+            "line": 1,
+            "col": 8,
+            "offset": 7
+          },
+          "abstract_content": "execute"
+        },
+        "$DB": {
+          "start": {
+            "line": 2,
+            "col": 5,
+            "offset": 24
+          },
+          "end": {
+            "line": 2,
+            "col": 8,
+            "offset": 27
+          },
+          "abstract_content": "cur"
+        },
+        "$EXEC": {
+          "start": {
+            "line": 2,
+            "col": 9,
+            "offset": 28
+          },
+          "end": {
+            "line": 2,
+            "col": 16,
+            "offset": 35
+          },
+          "abstract_content": "execute"
+        }
+      },
+      "message": "A SQL statement is built by formatting or concatenating strings; pass values as query parameters.",
+      "metadata": {
+        "title": "SQL statement built from strings",
+        "cwe": [
+          "CWE-89"
+        ],
+        "confidence": "HIGH"
+      },
+      "severity": "ERROR",
+      "fingerprint": "4184333f734fadd727e5db6fb2dfcd5b20e02ad675f6e9f592d3792273251b5270b27256c90deb6646a0f7ae6ac86c35864d5beefdbad109cd13d951b3500796_0",
+      "lines": "    cur.execute(f\"SELECT * FROM users WHERE id = {uid}\")",
+      "is_ignored": false,
+      "validation_state": "NO_VALIDATOR",
+      "engine_kind": "OSS"
+    }
+  },
+  {
+    "check_id": "python-tls-verification-disabled",
+    "path": "/scan/target/app/tls.py",
+    "start": {
+      "line": 5,
+      "col": 12,
+      "offset": 45
+    },
+    "end": {
+      "line": 5,
+      "col": 43,
+      "offset": 76
+    },
+    "extra": {
+      "metavars": {
+        "$METHOD": {
+          "start": {
+            "line": 5,
+            "col": 21,
+            "offset": 54
+          },
+          "end": {
+            "line": 5,
+            "col": 24,
+            "offset": 57
+          },
+          "abstract_content": "get"
+        }
+      },
+      "message": "TLS certificate verification is turned off; anyone on the network path can read or change the traffic.",
+      "metadata": {
+        "title": "TLS certificate verification disabled",
+        "cwe": [
+          "CWE-295"
+        ],
+        "confidence": "HIGH"
+      },
+      "severity": "WARNING",
+      "fingerprint": "dd0f3a7d6bc9da9fdb6ba54aacc1409662ddb1cdfd1aa2a60e69ba1cec502ba1613901de22b74dd371b34e2623bc945574cfad9c7a82ff160206b7d568628230_0",
+      "lines": "    return requests.get(url, verify=False)  # nosemgrep",
+      "is_ignored": true,
+      "validation_state": "NO_VALIDATOR",
+      "engine_kind": "OSS"
+    }
+  },
+  {
+    "check_id": "js-html-from-data",
+    "path": "/scan/target/web/greet.js",
+    "start": {
+      "line": 2,
+      "col": 3,
+      "offset": 36
+    },
+    "end": {
+      "line": 2,
+      "col": 39,
+      "offset": 72
+    },
+    "extra": {
+      "metavars": {
+        "$EL": {
+          "start": {
+            "line": 2,
+            "col": 3,
+            "offset": 36
+          },
+          "end": {
+            "line": 2,
+            "col": 5,
+            "offset": 38
+          },
+          "abstract_content": "el"
+        },
+        "$HTML": {
+          "start": {
+            "line": 2,
+            "col": 18,
+            "offset": 51
+          },
+          "end": {
+            "line": 2,
+            "col": 39,
+            "offset": 72
+          },
+          "abstract_content": "\"<b>\"+name+\"</b>\""
+        }
+      },
+      "message": "HTML built from data that is not a constant string is inserted into the page (cross-site scripting).",
+      "metadata": {
+        "title": "HTML inserted from data",
+        "cwe": [
+          "CWE-79"
+        ],
+        "confidence": "MEDIUM"
+      },
+      "severity": "ERROR",
+      "fingerprint": "47831224358c69370129a3f22a3b8c2787de5b2f32a700fa08467c04512fb7a75479d94141708fed48b079a3c4edee89a3113d3dcb920097106f120716a29617_0",
+      "lines": "  el.innerHTML = \"<b>\" + name + \"</b>\";",
+      "is_ignored": false,
+      "validation_state": "NO_VALIDATOR",
+      "engine_kind": "OSS"
+    }
+  }
+]

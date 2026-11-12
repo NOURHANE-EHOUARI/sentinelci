@@ -126,3 +126,150 @@ def test_missing_or_malformed_file_is_rejected(tmp_path: Path) -> None:
     broken.write_text("schema_version = [", encoding="utf-8")
     with pytest.raises(ToolIntegrityError):
         load_lock(broken)
+
+
+def _signed_lock(binary_sha: str) -> str:
+    """A tool with no checksum file whose assets are signed keyless (like Opengrep)."""
+    return (
+        raw_tool_lock(binary_sha)
+        .replace(
+            'archive = "none"',
+            'archive = "none"\n'
+            'signer_identity = "https://github.com/example/rawtool/.github/workflows/release.yml@refs/tags/v1.0.0"\n'
+            'signer_issuer = "https://token.actions.githubusercontent.com"',
+        )
+        .replace(
+            'checksums_url = "https://github.com/example/rawtool/releases/download/v1.0.0/rawtool-linux-amd64.sha256"',
+            'certificate_url = "https://github.com/example/rawtool/releases/download/v1.0.0/rawtool-linux-amd64.cert"\n'
+            'signature_url = "https://github.com/example/rawtool/releases/download/v1.0.0/rawtool-linux-amd64.sig"',
+        )
+    )
+
+
+def test_opengrep_is_pinned_by_its_signed_assets() -> None:
+    opengrep = load_lock(REPO_LOCK).tools["opengrep"]
+    assert opengrep.checksums_url is None and opengrep.signer_identity == (
+        "https://github.com/opengrep/opengrep/.github/workflows/rolling-release.yml@refs/heads/release-v1.33.1"
+    )
+    for artifact in opengrep.artifacts.values():
+        assert (artifact.certificate_url, artifact.signature_url) == (
+            f"{artifact.url}.cert",
+            f"{artifact.url}.sig",
+        )
+
+
+def test_a_signed_entry_loads(write_lock: Callable[[str], Path]) -> None:
+    tool = load_lock(write_lock(_signed_lock(GOOD_SHA))).tools["rawtool"]
+    assert tool.signer_issuer == "https://token.actions.githubusercontent.com"
+    assert all(artifact.signed for artifact in tool.artifacts.values())
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "reason"),
+    [
+        ('signer_identity = "https://github.com/example/rawtool/', 'signer_identity = "https://github.com/evil/rawtool/',
+         "a workflow of another repository"),
+        ("token.actions.githubusercontent.com", "accounts.google.com", "another OIDC issuer"),
+        ('signer_issuer = "https://token.actions.githubusercontent.com"\n', "",
+         "an identity without its issuer"),
+        ('signature_url = "https://github.com/example/rawtool/releases/download/v1.0.0/rawtool-linux-amd64.sig"',
+         "", "a certificate without its signature"),
+        ("v1.0.0/rawtool-linux-amd64.cert", "v0.9.0/rawtool-linux-amd64.cert",
+         "a certificate of another release"),
+        ('signer_identity = "https://github.com/example/rawtool/.github/workflows/release.yml@refs/tags/v1.0.0"\n'
+         'signer_issuer = "https://token.actions.githubusercontent.com"', "", "signed assets but no signer"),
+    ],
+)  # fmt: skip
+def test_an_invalid_signed_entry_is_rejected(
+    write_lock: Callable[[str], Path], old: str, new: str, reason: str
+) -> None:
+    content = _signed_lock(GOOD_SHA)
+    assert old in content, reason
+    with pytest.raises(ToolIntegrityError):
+        load_lock(write_lock(content.replace(old, new, 1)))
+
+
+OPENGREP_IDENTITY = (
+    "https://github.com/opengrep/opengrep/.github/workflows/rolling-release.yml@refs/heads/release-v1.33.1"
+)
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        "https://github.com/opengrep/opengrep/.github/workflows/",
+        "https://github.com/opengrep/opengrep/.github/workflows/evil.yml@refs/heads/attacker-branch",
+        "https://github.com/opengrep/opengrep/.github/workflows/../../../evil/x/.github/workflows/r.yml",
+        "https://github.com/opengrep/opengrep/.github/workflows/../../../evil/x/.github/workflows/r.yml"
+        "@refs/heads/release-v1.33.1",
+        "https://github.com/opengrep/opengrep/.github/workflows/rolling-release.yml@refs/heads/release-v1.33.0",
+        "https://github.com/opengrep/opengrep/.github/workflows/rolling-release.yml@refs/heads/release-v1.33.10",
+        "https://github.com/opengrep/opengrep/.github/workflows/rolling-release.yml@refs/tags/v11.33.1",
+        "https://github.com/opengrep/opengrep/.github/workflows/rolling-release.yml@refs/pull/1/release-v1.33.1",
+        "https://github.com/opengrep/opengrep/.github/workflows/rolling-release.sh@refs/heads/release-v1.33.1",
+        f"{OPENGREP_IDENTITY} ",
+        f"{OPENGREP_IDENTITY}\n",
+        OPENGREP_IDENTITY.replace("opengrep/opengrep", "opengrep/opengrep-fork"),
+    ],
+    ids=["no-file-no-ref", "attacker-branch", "dot-dot-no-ref", "dot-dot", "older-version", "longer-version",
+         "version-ending-like-this-one", "pull-request-ref", "not-a-workflow-file", "trailing-space",
+         "trailing-newline", "other-repository"],
+)  # fmt: skip
+def test_a_signer_identity_that_is_not_this_releases_workflow_is_refused(
+    tmp_path: Path, identity: str
+) -> None:
+    lock = REPO_LOCK.read_text(encoding="utf-8")
+    assert f'signer_identity = "{OPENGREP_IDENTITY}"' in lock
+    changed = tmp_path / "tools.lock.toml"
+    changed.write_text(lock.replace(OPENGREP_IDENTITY, identity.replace("\n", "\\n"), 1), encoding="utf-8")
+    with pytest.raises(ToolIntegrityError, match="signer_identity must be a workflow file"):
+        load_lock(changed)
+
+
+@pytest.mark.parametrize(
+    "ref",
+    ["refs/tags/v1.0.0", "refs/tags/1.0.0", "refs/heads/release-v1.0.0", "refs/heads/release/v1.0.0",
+     "refs/heads/release_2.x-v1.0.0"],
+)  # fmt: skip
+def test_a_release_workflow_at_a_ref_named_after_the_version_loads(
+    write_lock: Callable[[str], Path], ref: str
+) -> None:
+    content = _signed_lock(GOOD_SHA).replace("release.yml@refs/tags/v1.0.0", f"release.yaml@{ref}")
+    tool = load_lock(write_lock(content)).tools["rawtool"]
+    assert tool.signer_identity == f"https://github.com/example/rawtool/.github/workflows/release.yaml@{ref}"
+
+
+PYTHON_TOOL = """
+[python_tools.zizmor]
+version = "1.31.1"
+binary = "zizmor"
+
+[[python_tools.zizmor.wheels]]
+file = "zizmor-1.31.1-py3-none-manylinux_2_28_x86_64.whl"
+sha256 = "{wheel}"
+binary_sha256 = "{binary}"
+"""
+
+
+def test_the_repository_pins_its_python_tools() -> None:
+    zizmor = load_lock(REPO_LOCK).python_tools["zizmor"]
+    hashes = [hash_ for wheel in zizmor.wheels for hash_ in (wheel.sha256, wheel.binary_sha256)]
+    assert len(hashes) == len(set(hashes)), "two wheels or binaries share a hash: copy-paste mistake"
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ('file = "zizmor-1.31.1-', 'file = "zizmor-1.30.0-'),  # a wheel of another version
+        ('file = "zizmor-1.31.1-', 'file = "evil-1.31.1-'),  # a wheel of another project
+        ('binary = "zizmor"', 'binary = "../zizmor"'),
+        ('binary_sha256 = "', 'binary_sha256 = "F'),
+        ("[[python_tools.zizmor.wheels]]", "[[python_tools.zizmor.wheel]]"),
+    ],
+    ids=["other-version", "other-project", "binary-path", "bad-hash", "unknown-field"],
+)
+def test_an_invalid_python_tool_is_rejected(write_lock: Callable[[str], Path], old: str, new: str) -> None:
+    good = archive_tool_lock(GOOD_SHA) + PYTHON_TOOL.format(wheel=GOOD_SHA, binary=sha256(b"y"))
+    assert load_lock(write_lock(good)).python_tools["zizmor"].wheels[0].binary_sha256 == sha256(b"y")
+    with pytest.raises(ToolIntegrityError):
+        load_lock(write_lock(good.replace(old, new, 1)))

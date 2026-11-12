@@ -6,12 +6,11 @@
 #
 # Hashes were copied from each project's published checksum file for that exact release (linked below) on
 # 2026-10-28. To upgrade a tool: open a PR that changes the version, URLs and hashes together, and link the
-# upstream checksum file in the PR description so the reviewer can check every value.
+# upstream checksum file in the PR description so the reviewer can check every value. A Trivy upgrade must
+# keep SentinelCI's own check SENTINEL-AWS-0001 compiling and detecting GT-IAC-004 (demo-shop ground truth).
 #
-# Not pinned here yet:
-# - opengrep: publishes keyless Cosign signatures but no checksum file; it will be pinned once
-#   `sentinel tools pin` verifies the signature and records the digest (follow-up of task A1).
-# - checkov (PyPI) and zizmor (PyPI): installed through uv with hash-locked versions.
+# Opengrep publishes no checksum file: each asset is signed keyless (Sigstore) by its release workflow. Its
+# hashes were taken from the assets after verifying each signature (see the opengrep entry).
 
 schema_version = 1
 
@@ -93,6 +92,9 @@ sha256 = "7be39d3a0428c664ce0183e4aba31ed9accffce9eda7e7f6fa84e9c512285f27"
 
 # Second container-scanning engine (stage 7). Pinned by hash on purpose: in March 2026 the trivy-action
 # tags were force-pushed to malware (CVE-2026-33634); a moved tag cannot change what this lock accepts.
+# A Trivy bump must re-run cli/tests/scanners/test_trivy_exposing.py with SENTINEL_TOOLS_DIR set and put the
+# result in the PR: rule SC-011 matches Trivy rule ids (policies/exposing.rego), and a renamed check would turn
+# it off silently. That file's test without Trivy fails until its VERIFIED_WITH names the new version.
 [tools.trivy]
 version = "0.76.1"
 homepage = "https://github.com/aquasecurity/trivy"
@@ -168,6 +170,44 @@ sha256 = "8802bd39bc14b58a705e6b3d4f4dd14f7f24ee657f0362c737338be243190c7e"
 url = "https://github.com/open-policy-agent/opa/releases/download/v1.21.4/opa_darwin_arm64_static"
 checksums_url = "https://github.com/open-policy-agent/opa/releases/download/v1.21.4/opa_darwin_arm64_static.sha256"
 sha256 = "4c105208a9282f590385bccbe600875c011f0894ccf9431782dfe855e1f99aa6"
+
+# SAST (stage 2). No checksum file: every asset is signed keyless by the release workflow below. On 2026-11-01
+# each signature was checked against its certificate, and each certificate against Sigstore's Fulcio CA (from
+# sigstore/root-signing's trusted_root.json) at signing time, with this SAN and the GitHub Actions issuer. A
+# reviewer re-checks each asset with the transparency log too:
+#   cosign verify-blob --cert <asset>.cert --signature <asset>.sig \
+#     --certificate-identity <signer_identity> --certificate-oidc-issuer <signer_issuer> <asset>
+[tools.opengrep]
+version = "1.33.1"
+homepage = "https://github.com/opengrep/opengrep"
+binary = "opengrep"
+archive = "none"
+signer_identity = "https://github.com/opengrep/opengrep/.github/workflows/rolling-release.yml@refs/heads/release-v1.33.1"
+signer_issuer = "https://token.actions.githubusercontent.com"
+
+[tools.opengrep.artifacts.linux-amd64]
+url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_manylinux_x86"
+certificate_url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_manylinux_x86.cert"
+signature_url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_manylinux_x86.sig"
+sha256 = "46e8133cc490f9f50518061590ce2f6be5a08afaeda034471c0ceda4b3899808"
+
+[tools.opengrep.artifacts.linux-arm64]
+url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_manylinux_aarch64"
+certificate_url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_manylinux_aarch64.cert"
+signature_url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_manylinux_aarch64.sig"
+sha256 = "d1433f63a90b8bc0b6ad4b498a13b372b856ce9a754a43484ba4920fe2d76dcf"
+
+[tools.opengrep.artifacts.darwin-amd64]
+url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_osx_x86"
+certificate_url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_osx_x86.cert"
+signature_url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_osx_x86.sig"
+sha256 = "c3bd18e0d898d44e28419d95dad57c8928bb46ab32889a0ee1f72a87ad9627af"
+
+[tools.opengrep.artifacts.darwin-arm64]
+url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_osx_arm64"
+certificate_url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_osx_arm64.cert"
+signature_url = "https://github.com/opengrep/opengrep/releases/download/v1.33.1/opengrep_osx_arm64.sig"
+sha256 = "a17c1881bb40e3214266a7a291cf4f2ae3bc56c1715628b5712d2ec816bc3e2d"
 
 
 # OCI registry client and a local registry for the registry-mode tests (`crane registry serve`, `crane append`)
@@ -249,3 +289,46 @@ sha256 = "5a99f26f57246dc9319dd294803313197a0f34d33c525b3ea8b655db5916ece0"
 url = "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-darwin-arm64"
 checksums_url = "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-darwin-arm64.sha256sum"
 sha256 = "0c8c7dbe5e23594a198b786c4bc13dacc101fa6196b0cb0b23a1ca44e61f4b4f"
+
+
+# Python tools (SPEC §5): installed by `uv sync --locked` from PyPI, where the project publishes no checksum file
+# for its binaries. uv checks each wheel against uv.lock at install time; the CLI checks the installed binary
+# against `binary_sha256` right before every run, so a binary replaced or reinstalled later never runs.
+# `sha256` must equal the wheel's hash in uv.lock (a test checks it), and `binary_sha256` was read from the
+# RECORD inside that wheel (`zizmor-<version>.data/scripts/zizmor`) on 2026-11-01. To upgrade: bump the
+# sentinelci dependency with `uv add`, then update the version and every wheel here in the same PR.
+
+# CI workflow analysis (stage 4).
+[python_tools.zizmor]
+version = "1.31.1"
+binary = "zizmor"
+
+[[python_tools.zizmor.wheels]]
+file = "zizmor-1.31.1-py3-none-manylinux_2_28_x86_64.whl"
+sha256 = "58e878eb2dbd2c6183c105e1ac28c14f7dd1eca44a783f1fe2a69647d012c410"
+binary_sha256 = "5c7ded5347e2f3c96046457668405dffbceda2ad065a26abd59717252c51686f"
+
+[[python_tools.zizmor.wheels]]
+file = "zizmor-1.31.1-py3-none-musllinux_1_2_x86_64.whl"
+sha256 = "e7fdf82d31cc67eb1d5030bf2372b25ee2a1c3ad05017e18da70ed138c4accd6"
+binary_sha256 = "1531663bb46f0e48370ce46277df632d49d79b29c795e7aae820c90e5e633aaf"
+
+[[python_tools.zizmor.wheels]]
+file = "zizmor-1.31.1-py3-none-manylinux_2_24_aarch64.whl"
+sha256 = "d9b36840c560a8abe39d9ef3d077239aabf6d572c5c2b629c970592a617dbf6f"
+binary_sha256 = "3739db83f215bf243ebf162af1627188164582eb76bb8c46aaaab3558e967c65"
+
+[[python_tools.zizmor.wheels]]
+file = "zizmor-1.31.1-py3-none-musllinux_1_2_aarch64.whl"
+sha256 = "c5ccb17fd820bb1ddc63cc9a715e97c063025487e585f640389a86d9dfc97cda"
+binary_sha256 = "8bad31a558322de5de0a3ba78d6443fe60c8f680ced2c19c479e213f6971a0b6"
+
+[[python_tools.zizmor.wheels]]
+file = "zizmor-1.31.1-py3-none-macosx_10_12_x86_64.whl"
+sha256 = "9696d3c10919a3a2eb086c102f1bc10717f53ef3700a0d6c55a709c274995476"
+binary_sha256 = "171595997a5d0542f787779cadc2ef7321f54fc50a2e3ed3261d07406cdf1525"
+
+[[python_tools.zizmor.wheels]]
+file = "zizmor-1.31.1-py3-none-macosx_11_0_arm64.whl"
+sha256 = "4a70ee3c2721122aff04d5bbad5e448d15384f45de2ecb3c9493fe9dac2bc95f"
+binary_sha256 = "6308a392298bd5161bc78ec6a8e5d54d20fb84284bd845088fa52eaa341fbe83"

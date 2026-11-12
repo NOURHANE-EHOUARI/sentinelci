@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "findings_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+  "correlator": {
+    "version": "0.1.0",
+    "stages": [
+      "dedup",
+      "structural",
+      "embedding"
+    ],
+    "threshold": 0.8
+  },
+  "groups": [
+    {
+      "schema_version": "1.0",
+      "group_id": "1da020eea6ebbb50500da00b67cfe5e74d14f3a86ff846ef7ea97a29b41c6f50",
+      "finding_ids": [
+        "5555555555555555555555555555555555555555555555555555555555555555",
+        "6666666666666666666666666666666666666666666666666666666666666666"
+      ],
+      "stage": "embedding",
+      "labelled_by": "template",
+      "similarity": 0.87,
+      "title": "2 similar findings: SQL built from strings",
+      "root_cause": "Their descriptions are close (embedding similarity); a model labels them in stage 3.",
+      "single_fix": null
+    }
+  ]
+}

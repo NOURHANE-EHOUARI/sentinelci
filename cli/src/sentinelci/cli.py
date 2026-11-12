@@ -16,14 +16,19 @@ import json
 import os
 import re
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
 import typer
+from pydantic import ValidationError
 
 from sentinelci import __version__
+from sentinelci.contracts.decision import Decision
 from sentinelci.contracts.finding import Finding, Run, RunContext, Tool
+from sentinelci.contracts.remediation import PatchProposal
 from sentinelci.enrich import (
     EMPTY_SNAPSHOT,
     EnrichmentError,
@@ -44,7 +49,11 @@ from sentinelci.enrich.transport import (
 )
 from sentinelci.normalize.errors import NormalizationError
 from sentinelci.normalize.gitleaks import load_gitleaks_report, normalize_gitleaks
+from sentinelci.normalize.grype import load_grype_report, normalize_grype
 from sentinelci.normalize.ndjson import dumps_ndjson, write_ndjson
+from sentinelci.normalize.opengrep import normalize_opengrep
+from sentinelci.normalize.trivy import normalize_trivy_config
+from sentinelci.normalize.zizmor import normalize_zizmor
 from sentinelci.policy.bundle import BundleError, PolicyBundle
 from sentinelci.policy.decision import (
     CONTEXTS,
@@ -59,20 +68,40 @@ from sentinelci.policy.errors import EvaluationError
 from sentinelci.policy.opa import OpaError, OpaRunner
 from sentinelci.policy.replay import ReplayResult, check_identity, replay, skip_reason
 from sentinelci.policy.store import EvidenceStore, StoreError
+from sentinelci.policy.tool_status import load_tool_status
+from sentinelci.policy.vex import DEFAULT_VEX_PATH
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
-from sentinelci.report.pr_comment import ReportError, load_inputs, render_no_decision, render_pr_comment
+from sentinelci.remediation.apply import apply_proposal
+from sentinelci.remediation.dockerfile import propose as propose_dockerfile
+from sentinelci.remediation.gate import check_proposal, verify_proposal
+from sentinelci.remediation.kubernetes import propose as propose_kubernetes
+from sentinelci.remediation.proposal import RemediationError
+from sentinelci.report.pr_comment import (
+    ReportError,
+    load_inputs,
+    parse_findings,
+    render_no_decision,
+    render_pr_comment,
+)
+from sentinelci.report.upload import TOKEN_VARIABLE, RunInfo, UploadError, platform_from, upload
 from sentinelci.risk import RiskModel, RiskModelError, score_finding
+from sentinelci.scanners.combine import CombineError, combine_findings, combine_tool_statuses
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
+from sentinelci.scanners.grype import scan_sca, update_database
 from sentinelci.scanners.installer import VerificationReport, detect_platform, install_tools, verify_tools
 from sentinelci.scanners.lock import LOCK_FILE_NAME, ToolLock, load_lock
+from sentinelci.scanners.opengrep import rule_ids, scan_sast_with_run
 from sentinelci.scanners.runner import DEFAULT_TIMEOUT_S as SCAN_TIMEOUT_DEFAULT_S
+from sentinelci.scanners.runner import ToolRun
 from sentinelci.scanners.status import (
     outcome_from_error,
     outcome_from_run,
     tool_status_document,
     write_tool_status,
 )
+from sentinelci.scanners.trivy import remote_modules, scan_iac_with_run
+from sentinelci.scanners.zizmor import scan_pipelines_with_run
 from sentinelci.supplychain.admission import render_policy
 from sentinelci.supplychain.attestations import KINDS, AttestationError, parse_image, release_predicates
 from sentinelci.supplychain.cosign import (
@@ -107,6 +136,11 @@ app.add_typer(policy_app, name="policy")
 app.add_typer(tools_app, name="tools")
 app.add_typer(scan_app, name="scan")
 app.add_typer(report_app, name="report")
+remediate_app = typer.Typer(
+    help="Verified remediation loop (SPEC §9): deterministic fixers propose, the gate verifies.",
+    no_args_is_help=True,
+)
+app.add_typer(remediate_app, name="remediate")
 
 LockOption = Annotated[Path, typer.Option("--lock", help="Path to the tool lock file.")]
 DestOption = Annotated[Path, typer.Option("--dest", help="Installation directory (bin/ and cache/).")]
@@ -138,6 +172,7 @@ def _fail_closed(exc: Exception) -> typer.Exit:
 EXIT_BLOCK = 1
 EXIT_REPLAY_DIFFERS = 1
 EXIT_NO_DECISION = 3
+EXIT_NOT_VERIFIED = 1
 DEFAULT_STORE = Path("out/evidence")
 
 
@@ -399,6 +434,13 @@ def evaluate_command(
             "digest (Decision 1.3)."
         ),
     ] = None,
+    vex: Annotated[
+        Path | None,
+        typer.Option(
+            help="OpenVEX statements (schemas/vex.v1.json), from the base branch. "
+            f"Default: {DEFAULT_VEX_PATH} if present."
+        ),
+    ] = None,
     sbom: Annotated[Path | None, typer.Option(help="SBOM file to record by digest.")] = None,
     opa: Annotated[
         Path | None, typer.Option(help="OPA binary. Default: $SENTINEL_OPA, then opa on PATH.")
@@ -415,7 +457,9 @@ def evaluate_command(
     """
     if waivers is None and Path(DEFAULT_WAIVERS_PATH).is_file():
         waivers = Path(DEFAULT_WAIVERS_PATH)
-    inputs = [findings, waivers, baseline, tool_status, enrichment_snapshot, service_context, sbom, opa]
+    if vex is None and Path(DEFAULT_VEX_PATH).is_file():
+        vex = Path(DEFAULT_VEX_PATH)
+    inputs = [findings, waivers, baseline, tool_status, enrichment_snapshot, service_context, sbom, vex, opa]
     dirs = {"--policy-dir": policy_dir, "--store": store}
     _refuse_output(output, inputs, "sentinel evaluate", "--output", dirs)
     # A stale decision from an earlier run must never be mistaken for this run's result.
@@ -430,6 +474,7 @@ def evaluate_command(
             enrichment_snapshot=enrichment_snapshot.read_bytes() if enrichment_snapshot else None,
             sbom=sbom.read_bytes() if sbom else None,
             service_context=service_context.read_bytes() if service_context else None,
+            vex=vex.read_bytes() if vex else None,
         )
         bundle = PolicyBundle.load(policy_dir)
         decision = evaluate(
@@ -445,6 +490,7 @@ def evaluate_command(
             enrichment_snapshot=data.enrichment_snapshot,
             sbom=data.sbom,
             service_context=data.service_context,
+            vex_data=data.vex,
         )
         if store is not None:
             _store_evidence(EvidenceStore(store), decision, bundle, data)
@@ -463,6 +509,8 @@ def evaluate_command(
         typer.echo(f"  {rule}  {effect:<5}  {message}  ({count} {noun})")
     if decision["waivers_applied"]:
         typer.echo(f"Waivers applied: {', '.join(decision['waivers_applied'])}")
+    if decision.get("vex_applied"):
+        typer.echo(f"VEX not_affected: {', '.join(decision['vex_applied'])}")
     typer.echo(f"Decision written to {output}")
     if decision["verdict"] == "BLOCK":
         raise typer.Exit(EXIT_BLOCK)
@@ -477,6 +525,7 @@ class _Inputs:
     enrichment_snapshot: bytes | None
     sbom: bytes | None
     service_context: bytes | None
+    vex: bytes | None
 
 
 def _store_evidence(
@@ -494,6 +543,7 @@ def _store_evidence(
         ),
         "sbom_digest": data.sbom,
         "service_context_digest": data.service_context,
+        "vex_digest": data.vex,
     }
     for key, blob in stored.items():
         if blob is not None and store.put(blob) != inputs[key]:
@@ -527,6 +577,68 @@ def _load_record(path: Path, decision_id: str | None = None) -> dict[str, Any]:
 def _replay_record(recorded: dict[str, Any], evidence: EvidenceStore, runner: OpaRunner) -> ReplayResult:
     with tempfile.TemporaryDirectory(prefix="sentinel-replay-") as work:
         return replay(recorded, store=evidence, opa=runner, work_dir=Path(work))
+
+
+EXIT_UPLOAD_FAILED = 4  # never 1 or 3: an upload is a report, its failure says nothing about the verdict
+
+
+@app.command("upload")
+def upload_command(
+    findings: Annotated[Path, typer.Option(help="The findings NDJSON of one run (as the scan wrote it).")],
+    api_url: Annotated[
+        str, typer.Option(help="The platform, https:// (or http://localhost for a local platform).")
+    ],
+    repo: Annotated[str, typer.Option(help="Repository as owner/name.")],
+    commit: Annotated[str, typer.Option(help="Commit SHA that was scanned.")],
+    context: Annotated[RunContext, typer.Option(help="Run context.")],
+    ref: Annotated[str | None, typer.Option(help="Git ref that was scanned.")] = None,
+    run_id: Annotated[
+        str | None,
+        typer.Option(help="CI run identifier, as the findings carry it (GitHub: <run id>/<run attempt>)."),
+    ] = None,
+    resume: Annotated[
+        str | None, typer.Option(help="Finish the upload of a run the platform already created (its id).")
+    ] = None,
+) -> None:
+    """Send one run's findings to the SentinelCI platform (B1 ingestion API), after the decision.
+
+    The token comes only from the SENTINEL_API_TOKEN environment variable. Exit code 0 when the platform
+    recorded exactly these findings (with --resume, also when it already had them), 4 when it did not, for
+    whatever reason: an upload never changes the verdict, which was decided before. With --run-id, the same
+    command again resumes the platform's run of that CI run; without it, a re-run records a new run.
+    """
+    run = RunInfo(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id)
+    try:
+        platform = platform_from(api_url)
+        uploaded = upload(findings.read_bytes(), run, platform, resume=resume)
+    except (OSError, UploadError) as exc:
+        # The platform's own words are quoted in some messages: one that echoes the request (a gateway quoting
+        # the Authorization header) must not make the CLI print the token.
+        said, token = str(exc), os.environ.get(TOKEN_VARIABLE, "").strip()
+        said = said.replace(token, f"<{TOKEN_VARIABLE}>") if token else said
+        typer.echo(
+            f"sentinel upload: {said}\nthe findings were not uploaded (the verdict is unchanged)", err=True
+        )
+        raise typer.Exit(EXIT_UPLOAD_FAILED) from exc
+    except Exception as exc:
+        # Last resort: an upload never ends with 1 or a traceback. Only the type is printed: an unexpected
+        # error's text could hold anything, the token included.
+        typer.echo(
+            f"sentinel upload: unexpected {type(exc).__name__}\nthe findings were not uploaded "
+            "(the verdict is unchanged)",
+            err=True,
+        )
+        raise typer.Exit(EXIT_UPLOAD_FAILED) from None
+    typer.echo(
+        json.dumps(
+            {
+                "run_id": uploaded.run_id,
+                "finding_count": uploaded.finding_count,
+                "findings_sha256": uploaded.findings_sha256,
+                "already_recorded": uploaded.already_recorded,
+            }
+        )
+    )
 
 
 @app.command("replay")
@@ -669,6 +781,30 @@ def normalize_gitleaks_cmd(
     typer.echo(f"{len(findings)} finding(s) written to {out}")
 
 
+@normalize_app.command("grype")
+def normalize_grype_cmd(
+    report: Annotated[Path, typer.Argument(help="Grype JSON report (-o json) of a source tree's SBOM.")],
+    out: Annotated[Path, typer.Option(help="Destination NDJSON file.")],
+    repo: Annotated[str, typer.Option(help="Repository as owner/name.")],
+    commit: Annotated[str, typer.Option(help="Commit SHA that was scanned.")],
+    context: Annotated[RunContext, typer.Option(help="Run context.")],
+    ref: Annotated[str | None, typer.Option(help="Git ref that was scanned.")] = None,
+    run_id: Annotated[str | None, typer.Option(help="CI run identifier.")] = None,
+    scan_root: Annotated[
+        str, typer.Option(help="The scanned directory, relative to the repository root.")
+    ] = ".",
+) -> None:
+    """Normalize a Grype report into SCA findings. A report that shows a silenced match fails closed."""
+    out.unlink(missing_ok=True)  # a failed run must never leave an older findings file behind
+    try:
+        run = Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id)
+        findings = normalize_grype(load_grype_report(report), run=run, scan_root=scan_root)
+    except NormalizationError as exc:
+        raise _fail_closed(exc) from exc
+    write_ndjson(findings, out)
+    typer.echo(f"{len(findings)} finding(s) written to {out}")
+
+
 # ---------------------------------------------------------------- tools
 
 
@@ -743,6 +879,71 @@ def tools_verify(
         typer.echo(f"verified {entry.name} {entry.version} sha256={entry.binary_sha256}")
 
 
+@tools_app.command("grype-db")
+def tools_grype_db(
+    db_dir: Annotated[
+        Path, typer.Option("--db-dir", help="Directory to fill: what `sentinel scan sca --db-dir` reads.")
+    ],
+    archive: Annotated[
+        str | None,
+        typer.Option(
+            "--archive",
+            help="Import this database instead of downloading the latest: a local archive, or an https URL "
+            "ending in ?checksum=sha256:<hex>.",
+        ),
+    ] = None,
+    report: Annotated[
+        Path | None, typer.Option("--report", help="Write the prepared database's evidence (JSON) here.")
+    ] = None,
+    allow_stale_db: Annotated[
+        bool,
+        typer.Option("--allow-stale-db", help="Accept a database built over 5 days ago (replays and tests)."),
+    ] = False,
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    tools_dir: Annotated[
+        Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
+    ] = DEFAULT_TOOLS_DIR,
+    platform: PlatformOption = None,
+) -> None:
+    """Prepare Grype's vulnerability database with the verified Grype and SentinelCI's configuration.
+
+    The only step of an SCA scan that uses the network (through the job's proxy, if any). Exit code 3, with no
+    report written, unless Grype's own status check then calls the database valid.
+    """
+    if report is not None:
+        report.unlink(missing_ok=True)  # an older report must never vouch for a failed update
+    try:
+        prepared = update_database(
+            db_dir,
+            lock=load_lock(lock),
+            tools_dir=tools_dir,
+            platform=platform,
+            archive=archive,
+            allow_stale_db=allow_stale_db,
+        )
+    except (ToolIntegrityError, ScannerError) as exc:
+        raise _fail_closed(exc) from exc
+    database = prepared.database
+    if report is not None:
+        evidence = {
+            "schema_version": 1,
+            "grype": {"version": prepared.grype.version, "binary_sha256": prepared.grype.binary_sha256},
+            "database": {
+                "schema_version": database.schema_version,
+                "built": database.built,
+                "checksum": database.checksum,
+            },
+            "archive_sha256": prepared.archive_sha256,
+        }
+        report.parent.mkdir(parents=True, exist_ok=True)
+        text = json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+        report.write_text(text, encoding="utf-8", newline="\n")
+    typer.echo(
+        f"grype {prepared.grype.version}: database {database.schema_version} built {database.built} "
+        f"(checksum {database.checksum or 'not reported'}) ready in {db_dir}"
+    )
+
+
 @policy_app.command("capabilities")
 def policy_capabilities(
     out: Annotated[Path, typer.Option("--out", "-o", help="Where to write the capabilities document.")],
@@ -795,16 +996,13 @@ def scan_secrets_cmd(
     ] = None,
 ) -> None:
     """Scan for secrets with the verified Gitleaks binary; raw secrets never leave memory."""
-    out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
-    if tool_status_out is not None:
-        tool_status_out.unlink(missing_ok=True)  # nor an older status vouching for it
+    _clear(out, tool_status_out)
     if mode not in ("dir", "git"):
         raise typer.BadParameter("mode must be 'dir' or 'git'")
     scan_mode: GitleaksMode = "git" if mode == "git" else "dir"
     root = repo_root or target
-    tool_lock: ToolLock | None = None
-    try:
-        tool_lock = load_lock(lock)
+
+    def scan(tool_lock: ToolLock) -> tuple[list[Finding], ToolRun]:
         raw, tool_run = scan_secrets_with_run(
             target,
             lock=tool_lock,
@@ -821,18 +1019,133 @@ def scan_secrets_cmd(
             tool=Tool(name="gitleaks", version=tool_run.version),
             repo_root=root,
         )
+        return findings, tool_run
+
+    _scan_and_record("gitleaks", scan, out=out, tool_status_out=tool_status_out, lock=lock, platform=platform)
+
+
+@scan_app.command("iac")
+def scan_iac_cmd(
+    target: Annotated[
+        Path, typer.Argument(help="Directory to scan (Terraform, Kubernetes, Dockerfiles, ...).")
+    ],
+    out: Annotated[Path, typer.Option(help="Destination NDJSON file.")],
+    repo: Annotated[str, typer.Option(help="Repository as owner/name.")],
+    commit: Annotated[str, typer.Option(help="Commit SHA that was scanned.")],
+    context: Annotated[RunContext, typer.Option(help="Run context.")],
+    ref: Annotated[str | None, typer.Option(help="Git ref that was scanned.")] = None,
+    run_id: Annotated[str | None, typer.Option(help="CI run identifier.")] = None,
+    repo_root: Annotated[
+        Path | None, typer.Option(help="Repository root (default: the target itself).")
+    ] = None,
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    tools_dir: Annotated[
+        Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
+    ] = (DEFAULT_TOOLS_DIR),
+    platform: PlatformOption = None,
+    timeout: ScanTimeoutOption = SCAN_TIMEOUT_DEFAULT_S,
+    tool_status_out: Annotated[
+        Path | None,
+        typer.Option(
+            help="Also write a tool status (schemas/tool-status.v1.json), on success and on failure, so the "
+            "gate can record a failed scan as SC-010."
+        ),
+    ] = None,
+) -> None:
+    """Scan infrastructure as code with the verified Trivy binary (`trivy config`), offline."""
+    _clear(out, tool_status_out)
+    root = repo_root or target
+
+    def scan(tool_lock: ToolLock) -> tuple[list[Finding], ToolRun]:
+        results, tool_run = scan_iac_with_run(
+            target, lock=tool_lock, tools_dir=tools_dir, repo_root=root, platform=platform, timeout_s=timeout
+        )
+        # Listed once the tree passed the checks (no link leaving it): not fetched, so not evaluated.
+        remote = remote_modules(target, root) if target.is_dir() else []
+        if remote:
+            typer.echo(
+                f"warning: {len(remote)} remote Terraform module(s) not fetched or evaluated: "
+                + ", ".join(remote),
+                err=True,
+            )
+        findings = normalize_trivy_config(
+            results,
+            run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
+            tool=Tool(name="trivy", version=tool_run.version),
+            scan_root=target.resolve().relative_to(root.resolve()).as_posix(),
+        )
+        return findings, tool_run
+
+    _scan_and_record("trivy", scan, out=out, tool_status_out=tool_status_out, lock=lock, platform=platform)
+
+
+@scan_app.command("combine")
+def scan_combine_cmd(
+    findings: Annotated[
+        list[Path], typer.Option("--findings", help="Findings NDJSON of one scanner (repeatable).")
+    ],
+    out: Annotated[Path, typer.Option(help="Combined findings NDJSON for the gate.")],
+    tool_status: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--tool-status", help="Tool status of one scanner (repeatable); missing ones are skipped."
+        ),
+    ] = None,
+    tool_status_out: Annotated[Path | None, typer.Option(help="Combined tool status for the gate.")] = None,
+) -> None:
+    """Merge per-scanner findings and tool statuses into the gate's inputs; refuse anything inconsistent.
+
+    A tool status file that does not exist is left out (that scanner wrote none, so the gate reports it as
+    missing, SC-010). Exit code 3 when the outputs cannot be combined; nothing is written then.
+    """
+    _clear(out, tool_status_out)
+    statuses = [path for path in tool_status or [] if path.exists()]
+    try:
+        combined = combine_findings(findings)
+        document = combine_tool_statuses(statuses) if tool_status_out is not None and statuses else None
+    except CombineError as exc:
+        raise _fail_closed(exc) from exc
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_ndjson(combined, out)
+    message = f"{len(combined)} finding(s) from {len(findings)} file(s) written to {out}"
+    if document is not None and tool_status_out is not None:
+        write_tool_status(document, tool_status_out)
+        message += f"; tool status for {', '.join(document['tools'])} written to {tool_status_out}"
+    typer.echo(message)
+
+
+def _clear(out: Path, tool_status_out: Path | None) -> None:
+    out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
+    if tool_status_out is not None:
+        tool_status_out.unlink(missing_ok=True)  # nor an older status vouching for it
+
+
+def _scan_and_record(
+    tool: str,
+    scan: Callable[[ToolLock], tuple[list[Finding], ToolRun]],
+    *,
+    out: Path,
+    tool_status_out: Path | None,
+    lock: Path,
+    platform: str | None,
+) -> None:
+    """Run one scanner, write its findings, then its tool status; record a failure before failing closed."""
+    tool_lock: ToolLock | None = None
+    try:
+        tool_lock = load_lock(lock)
+        findings, tool_run = scan(tool_lock)
     except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
         if tool_status_out is not None and tool_lock is not None:  # no lock: no status, the gate blocks
-            outcome = outcome_from_error("gitleaks", exc, lock=tool_lock)
-            _write_status(tool_status_out, lock, platform or _host_platform(), {"gitleaks": outcome})
+            outcome = outcome_from_error(tool, exc, lock=tool_lock)
+            _write_status(tool_status_out, lock, platform or _host_platform(), {tool: outcome})
         raise _fail_closed(exc) from exc
     out.parent.mkdir(parents=True, exist_ok=True)
     write_ndjson(findings, out)
     if tool_status_out is not None:  # last: an `ok` status never vouches for a findings file not yet written
         host = platform or _host_platform()
         outcome = outcome_from_run(tool_run, lock=tool_lock, platform=host)
-        _write_status(tool_status_out, lock, host, {"gitleaks": outcome})
-    typer.echo(f"gitleaks {tool_run.version}: {len(findings)} finding(s) written to {out}")
+        _write_status(tool_status_out, lock, host, {tool: outcome})
+    typer.echo(f"{tool} {tool_run.version}: {len(findings)} finding(s) written to {out}")
 
 
 def _host_platform() -> str | None:
@@ -847,6 +1160,186 @@ def _write_status(
 ) -> None:
     write_tool_status(tool_status_document(lock.read_bytes(), platform, outcomes), destination)
     typer.echo(f"tool status written to {destination}", err=True)
+
+
+@scan_app.command("sast")
+def scan_sast_cmd(
+    target: Annotated[Path, typer.Argument(help="Directory to scan with SentinelCI's SAST rules.")],
+    out: Annotated[Path, typer.Option(help="Destination NDJSON file.")],
+    repo: Annotated[str, typer.Option(help="Repository as owner/name.")],
+    commit: Annotated[str, typer.Option(help="Commit SHA that was scanned.")],
+    context: Annotated[RunContext, typer.Option(help="Run context.")],
+    ref: Annotated[str | None, typer.Option(help="Git ref that was scanned.")] = None,
+    run_id: Annotated[str | None, typer.Option(help="CI run identifier.")] = None,
+    repo_root: Annotated[
+        Path | None, typer.Option(help="Repository root (default: the target itself).")
+    ] = None,
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    tools_dir: Annotated[
+        Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
+    ] = (DEFAULT_TOOLS_DIR),
+    platform: PlatformOption = None,
+) -> None:
+    """Static analysis with the verified Opengrep binary and SentinelCI's own rules (offline, never configured
+    or silenced by the scanned repository): findings of category SAST."""
+    out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
+    root = repo_root or target
+    try:
+        scan = scan_sast_with_run(
+            target, lock=load_lock(lock), tools_dir=tools_dir, repo_root=root, platform=platform
+        )
+        findings = normalize_opengrep(
+            scan.results,
+            run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
+            tool=Tool(name="opengrep", version=scan.run.version),
+            rules=rule_ids(),
+            scan_target=scan.target,
+            scan_root=scan.target.relative_to(root.resolve()).as_posix(),
+            gaps=scan.gaps,
+        )
+    except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
+        raise _fail_closed(exc) from exc
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_ndjson(findings, out)
+    if scan.warnings:  # analysed only in part: say where, in the job log
+        typer.echo(
+            f"warning: opengrep reported {len(scan.warnings)} problem(s): {'; '.join(scan.warnings)}",
+            err=True,
+        )
+    typer.echo(f"opengrep {scan.run.version}: {len(findings)} finding(s) written to {out}")
+
+
+@scan_app.command("pipelines")
+def scan_pipelines_cmd(
+    target: Annotated[Path, typer.Argument(help="Directory whose GitHub workflows and actions to audit.")],
+    out: Annotated[Path, typer.Option(help="Destination NDJSON file.")],
+    repo: Annotated[str, typer.Option(help="Repository as owner/name.")],
+    commit: Annotated[str, typer.Option(help="Commit SHA that was scanned.")],
+    context: Annotated[RunContext, typer.Option(help="Run context.")],
+    ref: Annotated[str | None, typer.Option(help="Git ref that was scanned.")] = None,
+    run_id: Annotated[str | None, typer.Option(help="CI run identifier.")] = None,
+    repo_root: Annotated[
+        Path | None, typer.Option(help="Repository root (default: the target itself).")
+    ] = None,
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    timeout: ScanTimeoutOption = SCAN_TIMEOUT_DEFAULT_S,
+    tool_status_out: Annotated[
+        Path | None,
+        typer.Option(
+            help="Also write a tool status (schemas/tool-status.v1.json), on success and on failure, so the "
+            "gate can record a failed scan as SC-010."
+        ),
+    ] = None,
+) -> None:
+    """Audit CI workflows with the zizmor of this environment, checked against tools.lock.toml (offline, never
+    configured by the scanned repository): findings of category PIPELINE, for rule SC-009."""
+    _clear(out, tool_status_out)
+    root = repo_root or target
+
+    def scan(tool_lock: ToolLock) -> tuple[list[Finding], ToolRun]:
+        if not target.is_dir():
+            raise ScannerError(f"{target} is not a directory")
+        try:
+            scan_root = target.resolve().relative_to(root.resolve()).as_posix()
+        except ValueError as exc:
+            raise ScannerError(f"{target} is outside the repository root {root}") from exc
+        scan = scan_pipelines_with_run(target, lock=tool_lock, timeout_s=timeout)
+        findings = normalize_zizmor(
+            scan.results,
+            run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
+            tool=Tool(name="zizmor", version=scan.version),
+            scan_root=scan_root,
+        )
+        if scan.skipped:  # never counted as audited: say which ones, in the job log
+            typer.echo(
+                f"warning: {len(scan.skipped)} file(s) with a `jobs:` key are not GitHub workflows zizmor "
+                f"can load, not audited: {', '.join(scan.skipped)}",
+                err=True,
+            )
+        skipped = f", {len(scan.skipped)} skipped" if scan.skipped else ""
+        typer.echo(
+            f"zizmor {scan.version}: {len(scan.audited)} file(s) audited{skipped}, {len(findings)} finding(s)"
+        )
+        # Nothing to audit: the binary was still verified, so its status is `ok` with no finding.
+        tool_run = scan.run or ToolRun(
+            tool="zizmor", version=scan.version, binary_sha256=scan.binary_sha256, args=(), returncode=0,
+            stdout="", stderr="", duration_s=0.0,
+        )  # fmt: skip
+        return findings, tool_run
+
+    _scan_and_record(
+        "zizmor", scan, out=out, tool_status_out=tool_status_out, lock=lock, platform=_host_platform()
+    )
+
+
+@scan_app.command("sca")
+def scan_sca_cmd(
+    target: Annotated[
+        Path, typer.Argument(help="Source tree to scan (the repository or a directory in it).")
+    ],
+    out: Annotated[Path, typer.Option(help="Destination NDJSON file.")],
+    repo: Annotated[str, typer.Option(help="Repository as owner/name.")],
+    commit: Annotated[str, typer.Option(help="Commit SHA that was scanned.")],
+    context: Annotated[RunContext, typer.Option(help="Run context.")],
+    db_dir: Annotated[
+        Path,
+        typer.Option(
+            "--db-dir",
+            help="Grype's vulnerability database directory, prepared before the scan (never fetched).",
+        ),
+    ],
+    ref: Annotated[str | None, typer.Option(help="Git ref that was scanned.")] = None,
+    run_id: Annotated[str | None, typer.Option(help="CI run identifier.")] = None,
+    repo_root: Annotated[
+        Path | None, typer.Option(help="Repository root (default: the target itself).")
+    ] = None,
+    allow_stale_db: Annotated[
+        bool,
+        typer.Option(
+            "--allow-stale-db",
+            help="Accept a database built over 5 days ago (replays and tests: it misses new advisories).",
+        ),
+    ] = False,
+    lock: LockOption = Path(LOCK_FILE_NAME),
+    tools_dir: Annotated[
+        Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
+    ] = (DEFAULT_TOOLS_DIR),
+    platform: PlatformOption = None,
+) -> None:
+    """Vulnerable dependencies: the verified Syft's SBOM of the tree, matched by the verified Grype, offline.
+
+    The scan never downloads: the database is the directory given in --db-dir. Exit code 3, with no findings
+    file written, when a tool fails or is tampered with, the database is missing, invalid or stale, or the
+    report shows a silenced match.
+    """
+    out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
+    root = repo_root or target
+    try:
+        scan = scan_sca(
+            target,
+            repo_root=root,
+            name=repo,
+            db_dir=db_dir,
+            lock=load_lock(lock),
+            tools_dir=tools_dir,
+            platform=platform,
+            allow_stale_db=allow_stale_db,
+        )
+        findings = normalize_grype(
+            scan.report,
+            run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
+            scan_root=scan.scan_root,
+        )
+    except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
+        raise _fail_closed(exc) from exc
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_ndjson(findings, out)
+    database = scan.database
+    typer.echo(
+        f"grype {scan.grype.version} on the SBOM of syft {scan.sbom.run.version} ({scan.sbom.packages} "
+        f"package(s)), database {database.schema_version} built {database.built} "
+        f"(checksum {database.checksum or 'not reported'}): {len(findings)} finding(s) written to {out}"
+    )
 
 
 # ---------------------------------------------------------------- report
@@ -1119,6 +1612,222 @@ def admission_policy_command(
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(policy, encoding="utf-8", newline="\n")
     typer.echo(f"admission policy for {image_glob} -> {out}")
+
+
+# ---------------------------------------------------------------- remediate
+
+
+def _now() -> datetime:
+    return datetime.now(UTC).replace(microsecond=0)
+
+
+def _refuse_input_as_output(out: Path, inputs: list[Path], command: str) -> None:
+    """Exit 3, before anything is deleted, when `out` is an input: clearing it would lose the evidence."""
+    if any(out.resolve() == path.resolve() for path in inputs):
+        typer.echo(f"{command}: --out is one of the inputs; nothing was written", err=True)
+        raise typer.Exit(EXIT_NO_DECISION)
+
+
+def _read_findings(path: Path, what: str) -> dict[str, Finding]:
+    try:
+        return parse_findings(path.read_bytes(), source=what)
+    except (OSError, ReportError, UnicodeDecodeError) as exc:
+        raise RemediationError(f"{what} {path}: {exc}") from exc
+
+
+FindingsOption = Annotated[
+    Path, typer.Option(help="Findings NDJSON (the scanner's IAC findings are the input).")
+]
+ProposalOut = Annotated[
+    Path, typer.Option(help="Destination of the patch proposal (schemas/patch-proposal.v1.json).")
+]
+RepoRootOption = Annotated[Path, typer.Option(help="Repository root the finding paths are relative to.")]
+AttemptOption = Annotated[int, typer.Option(min=1, max=3, help="Attempt number (1, then up to two retries).")]
+
+
+def _propose(command: str, fixer: Any, findings: Path, out: Path, repo_root: Path, attempt: int) -> None:
+    _refuse_input_as_output(out, [findings], f"sentinel remediate {command}")
+    out.unlink(missing_ok=True)
+    try:
+        plan = fixer(
+            list(_read_findings(findings, "findings").values()), repo_root, attempt=attempt, created_at=_now()
+        )
+    except RemediationError as exc:
+        typer.echo(f"sentinel remediate {command}: {exc}", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    for path, reason in plan.skipped.items():
+        typer.echo(f"warning: {path} left alone: {reason}", err=True)
+    if plan.proposal is None:
+        typer.echo("nothing to propose: no finding this fixer resolves")
+        return
+    _write_atomically(out, plan.proposal.model_dump_json(indent=2, exclude_none=True) + "\n")
+    typer.echo(
+        f"proposal {plan.proposal.proposal_id}: {len(plan.proposal.finding_ids)} finding(s) in "
+        f"{len(plan.proposal.files)} file(s) -> {out}"
+    )
+
+
+@remediate_app.command("kubernetes")
+def remediate_kubernetes(
+    findings: FindingsOption,
+    out: ProposalOut,
+    repo_root: RepoRootOption = Path("."),
+    attempt: AttemptOption = 1,
+) -> None:
+    """Propose hardening for the Kubernetes findings the deterministic fixer resolves (it never applies it).
+
+    Exit code 0 with a proposal, or with nothing to propose (no file written); 3 when the input is unusable.
+    """
+    _propose("kubernetes", propose_kubernetes, findings, out, repo_root, attempt)
+
+
+@remediate_app.command("dockerfile")
+def remediate_dockerfile(
+    findings: FindingsOption,
+    out: ProposalOut,
+    repo_root: RepoRootOption = Path("."),
+    attempt: AttemptOption = 1,
+) -> None:
+    """Propose fixes for the Dockerfile findings the deterministic fixer resolves (it never applies them):
+    a non-root USER, COPY instead of ADD for local files, apt-get --no-install-recommends.
+
+    Exit code 0 with a proposal, or with nothing to propose (no file written); 3 when the input is unusable.
+    """
+    _propose("dockerfile", propose_dockerfile, findings, out, repo_root, attempt)
+
+
+@remediate_app.command("apply")
+def remediate_apply(
+    proposal: Annotated[
+        Path, typer.Option(help="The patch proposal to commit (schemas/patch-proposal.v1.json).")
+    ],
+    findings: Annotated[
+        Path,
+        typer.Option(help="Findings NDJSON of the base commit: the proposal may claim and edit only those."),
+    ],
+    repo_root: Annotated[Path, typer.Option(help="A local clone of the repository.")] = Path("."),
+    base: Annotated[str, typer.Option(help="The commit the proposal was made against.")] = "HEAD",
+    branch: Annotated[
+        str | None, typer.Option(help="New branch name, under sentinel/fix/ (default: from the proposal id).")
+    ] = None,
+) -> None:
+    """Commit a proposal on a new sentinel/fix/ branch of a local clone, and print it as JSON. It never
+    pushes, never changes the working tree, the index or the current branch, and runs no hook, filter or
+    fsmonitor the clone configures (nothing is checked out).
+
+    Exit code 0 when committed; 3, with nothing created, when the proposal id does not match its content, it
+    claims a finding the base scan does not have or edits a file none of its findings is in, or the diff does
+    anything the proposal does not list (another file, a new, deleted, renamed or executable file) or does not
+    apply to the base.
+    """
+    try:
+        applied = apply_proposal(
+            PatchProposal.model_validate_json(proposal.read_bytes()),
+            repo_root,
+            findings=list(_read_findings(findings, "base findings").values()),
+            base=base,
+            branch=branch,
+        )
+    except (OSError, ValidationError, RemediationError) as exc:
+        typer.echo(f"sentinel remediate apply: {exc}\nnothing was committed", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    typer.echo(
+        json.dumps({
+            "branch": applied.branch, "commit": applied.commit, "base": applied.base,
+            "diff_sha256": applied.diff_sha256,
+        })
+    )  # fmt: skip
+
+
+@remediate_app.command("verify")
+def remediate_verify(
+    proposal: Annotated[Path, typer.Option(help="The patch proposal that was applied.")],
+    before: Annotated[Path, typer.Option(help="Findings NDJSON of the commit the patch applies to.")],
+    after: Annotated[Path, typer.Option(help="Findings NDJSON of the patched commit (same scanners).")],
+    decision: Annotated[Path, typer.Option(help="Decision v1 record of the patched commit.")],
+    tool_status: Annotated[
+        Path,
+        typer.Option(
+            "--tool-status",
+            help="The tool status that decision recorded: every target's scanner must be in it, ok.",
+        ),
+    ],
+    build: Annotated[bool, typer.Option("--build-ok/--build-failed", help="Did the patched commit build?")],
+    tests: Annotated[bool, typer.Option("--tests-ok/--tests-failed", help="Did its tests pass?")],
+    out: Annotated[
+        Path, typer.Option(help="Destination of the result (schemas/verification-result.v1.json).")
+    ],
+    pull_request: Annotated[int | None, typer.Option(min=1, help="The bot's pull request number.")] = None,
+) -> None:
+    """Apply the verification gate: VERIFIED only if it builds, its tests pass, the target fingerprints are
+    gone, no new finding of severity MEDIUM or higher appeared, and the decision is not BLOCK.
+
+    Exit code 0 when VERIFIED, 1 when REJECTED or FAILED (the result is written either way), 3 when the inputs
+    cannot be trusted (nothing is written): a proposal whose id does not match its content, that claims
+    findings the base scan does not have or edits anything but where they are; a decision that was not made in
+    pr context, on the patched findings, with this tool status; a tool status that does not show the scanner
+    of every target ok (a scanner that never ran finds nothing, and nothing must not vouch for the patch).
+    """
+    _refuse_input_as_output(
+        out, [proposal, before, after, decision, tool_status], "sentinel remediate verify"
+    )
+    out.unlink(missing_ok=True)
+    try:
+        applied = PatchProposal.model_validate_json(proposal.read_bytes())
+        record = Decision.model_validate_json(decision.read_bytes())
+        after_data = after.read_bytes()
+        if record.inputs.findings_digest != "sha256:" + hashlib.sha256(after_data).hexdigest():
+            raise RemediationError("the decision was not made on the patched findings (--after)")
+        if record.subject.context != "pr" or record.inputs.tool_status_digest is None:
+            raise RemediationError(
+                "the decision must be a pr-context decision that saw the tool status (a scan that failed "
+                "must not vouch for the patch)"
+            )
+        status_data = tool_status.read_bytes()
+        if record.inputs.tool_status_digest != "sha256:" + hashlib.sha256(status_data).hexdigest():
+            raise RemediationError("the tool status is not the one the decision recorded (--tool-status)")
+        statuses = load_tool_status(status_data)["tools"]
+        base_findings = _read_findings(before, "base findings")
+        check_proposal(applied, base_findings)
+        for scanner in sorted({base_findings[finding_id].tool.name for finding_id in applied.finding_ids}):
+            if statuses.get(scanner, {}).get("status") != "ok":
+                raise RemediationError(
+                    f"the tool status does not show {scanner} ok: the patched scan's silence about its "
+                    "targets proves nothing"
+                )
+        result = verify_proposal(
+            applied,
+            before=base_findings,
+            after=_read_findings(after, "patched findings"),
+            build_ok=build,
+            tests_ok=tests,
+            verdict=record.verdict,
+            verified_at=_now(),
+            pull_request=pull_request,
+        )
+    except (OSError, ValidationError, RemediationError, EvaluationError) as exc:
+        typer.echo(f"sentinel remediate verify: {exc}\nFAIL CLOSED: nothing is verified.", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    _write_atomically(out, result.model_dump_json(indent=2, exclude_none=True) + "\n")
+    reasons = [
+        name
+        for name, ok in (
+            ("the build failed", result.build_ok),
+            ("tests failed", result.tests_ok),
+            ("a target finding is still reported", result.target_resolved),
+            (
+                f"{len(result.new_findings)} new finding(s) of severity MEDIUM or higher",
+                not result.new_findings,
+            ),
+            ("the decision is BLOCK", result.verdict != "BLOCK"),
+        )
+        if not ok
+    ]
+    typer.echo(
+        f"{result.outcome} (attempt {result.attempt})" + (f": {'; '.join(reasons)}" if reasons else "")
+    )
+    if result.outcome != "VERIFIED":
+        raise typer.Exit(EXIT_NOT_VERIFIED)
 
 
 if __name__ == "__main__":

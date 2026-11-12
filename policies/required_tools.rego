@@ -7,7 +7,7 @@ package sentinel.config
 import rego.v1
 
 required_tools := {
-	"pr": {"gitleaks"},
-	"release": {"gitleaks"},
+	"pr": {"gitleaks", "trivy", "zizmor"},
+	"release": {"gitleaks", "trivy", "zizmor"},
 	"local": set(),
 }

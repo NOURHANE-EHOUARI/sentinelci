@@ -161,6 +161,25 @@ def test_the_version_table_is_the_schema_one() -> None:
         assert {field for field, since in model._SINCE.items() if number < since} == forbidden, version
 
 
+def _v14(**changes: object) -> dict[str, object]:
+    data = _load(FIXTURES / "valid" / "pass-pr-v1.4-with-vex.json")
+    data.update(changes)
+    return data
+
+
+def test_decision_1_4_records_the_service_context_only_when_given() -> None:
+    data = _v14()
+    inputs = dict(data["inputs"])  # type: ignore[call-overload]
+    del inputs["service_context_digest"]
+    decision = Decision.model_validate_json(json.dumps(_v14(inputs=inputs)))
+    assert decision.inputs.service_context_digest is None
+    assert decision.vex_applied == ("c" * 64,)
+
+
+def test_decision_1_4_may_cover_no_finding() -> None:
+    assert Decision.model_validate_json(json.dumps(_v14(vex_applied=[]))).vex_applied == ()
+
+
 def test_later_versions_keep_the_1_2_inputs() -> None:
     """The 1.2 rule used to be `version == 1.2`: a 1.3 decision with a baseline must stay readable."""
     decision = Decision.model_validate_json(
@@ -170,6 +189,21 @@ def test_later_versions_keep_the_1_2_inputs() -> None:
         )
     )  # fmt: skip
     assert decision.inputs.baseline_digest == decision.inputs.service_context_digest == DIGEST
+
+
+@pytest.mark.parametrize(
+    ("data", "message"),
+    [
+        (_v14(vex_applied=["c" * 64, "c" * 64]), "unique finding ids"),
+        (_v14(vex_applied=["C" * 64]), "sha256 fingerprints"),
+        (_v14(vex_applied=None), "not null"),
+        (_v14(schema_version="1.3"), "exists only from schema 1.4"),
+    ],
+    ids=["duplicate", "uppercase", "null", "older-version"],
+)
+def test_vex_applied_rules(data: dict[str, object], message: str) -> None:
+    with pytest.raises(ValidationError, match=message):
+        Decision.model_validate_json(json.dumps(data))
 
 
 @pytest.mark.parametrize(
@@ -183,7 +217,7 @@ def test_later_versions_keep_the_1_2_inputs() -> None:
     ids=lambda p: ".".join(p),
 )
 def test_an_optional_field_is_absent_never_null(path: tuple[str, str]) -> None:
-    data = _load(FIXTURES / "valid" / "pass-pr-v1.3-with-service-context.json")
+    data = _load(FIXTURES / "valid" / "pass-pr-v1.4-with-vex.json")
     parent = dict(data[path[0]])  # type: ignore[call-overload]
     parent[path[1]] = None
     data[path[0]] = parent

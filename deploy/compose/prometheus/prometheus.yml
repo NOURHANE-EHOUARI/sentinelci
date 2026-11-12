@@ -1,4 +1,4 @@
-# Scrape targets of the local platform. SentinelCI metrics (SPEC §10) are added with task A8.
+# Scrape targets of the local platform (SPEC section 10, task A8).
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
@@ -7,3 +7,11 @@ scrape_configs:
   - job_name: prometheus
     static_configs:
       - targets: ["127.0.0.1:9090"]
+
+  # The platform API's read-only aggregates (`GET /metrics`, platform/api/src/sentinel_api/metrics.py): only the
+  # SPEC section 10 names, with bounded labels. A metric whose data is not stored yet is absent, not 0.
+  - job_name: sentinel-api
+    metrics_path: /metrics
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["api:8000"]
