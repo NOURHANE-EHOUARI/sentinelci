@@ -2,7 +2,9 @@
 
 - Only the metric names of SPEC §10, with bounded labels (an enumerated value each): never a repository, a
   commit, an id or free text.
-- Every value is counted by PostgreSQL (`GROUP BY` / `count`), in a read-only transaction; no row is loaded.
+- Every value is counted by PostgreSQL (`GROUP BY` / `count`), in one read-only REPEATABLE READ transaction:
+  every metric of a scrape comes from the same snapshot, so a ratio (MTTR, alert reduction) never pairs one
+  set of rows with another. No row is loaded.
 - A metric whose data the platform does not store yet is absent, not 0: Grafana shows "No data" rather than a
   false "0 BLOCK".
 - The text exposition format (version 0.0.4) is written here, with no client library: a few lines, all of
@@ -32,8 +34,10 @@ Exposed now:
   recorded, a finding is fixed when a run reports it and the next such run does not; its time to fix runs from
   the first run of that streak to the run that no longer reports it (the runs' recording times). A run whose
   decision holds SC-010 is not evidence that anything is gone (a scanner failed), so it is skipped. Priority
-  is the finding's in the last run that reported it. Every priority is present once such a run exists, at 0
-  when none was fixed; absent before.
+  is the finding's in the last run that reported it. "Next" is the order the runs were recorded in, not the
+  commits' order. Both cover every recorded fix since the first evidence run: when an older run's decision is
+  recorded late, that run becomes evidence and a fix can move earlier, so the ratio can go down. Every
+  priority is present once such a run exists, at 0 when none was fixed; absent before.
 - `sentinel_correlated_findings{category}` and `sentinel_root_cause_groups{category}` (gauges): alert
   reduction (SPEC §10) is `1 - groups / findings`. For each repository's latest release run of its default
   branch that has a correlation (A7), its findings and the groups of its latest correlation version, by
@@ -49,7 +53,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Literal, get_args
+from typing import Any, Literal, cast, get_args
 
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
@@ -261,14 +265,27 @@ GROUP BY 1
 """
 
 
+def _once[T](session: Session, key: str, compute: Callable[[], T]) -> T:
+    """`compute()` once per scrape: the session is the request's, and its transaction one snapshot, so two
+    metrics computed from one query (a ratio's two halves) read the same result."""
+    cache: dict[str, Any] = session.info.setdefault("sentinel_metrics", {})
+    if key not in cache:
+        cache[key] = compute()
+    return cast(T, cache[key])
+
+
 def _fixes(session: Session, default_ref: str) -> dict[str, tuple[int, float]] | None:
     """priority -> (findings fixed, seconds to fix them), or None before any evidence run."""
-    rows = {bucket: (int(fixed), float(seconds)) for bucket, fixed, seconds in session.execute(
-        text(_FIXES), {"ref": default_ref}
-    )}  # fmt: skip
-    if not rows.pop("#evidence_runs")[0]:
-        return None
-    return rows
+
+    def compute() -> dict[str, tuple[int, float]] | None:
+        rows = {bucket: (int(fixed), float(seconds)) for bucket, fixed, seconds in session.execute(
+            text(_FIXES), {"ref": default_ref}
+        )}  # fmt: skip
+        if not rows.pop("#evidence_runs")[0]:
+            return None
+        return rows
+
+    return _once(session, f"fixes {default_ref}", compute)
 
 
 def findings_fixed(session: Session, default_ref: str) -> Family | None:
@@ -330,9 +347,13 @@ GROUP BY f.category
 
 def _correlated(session: Session, default_ref: str, kind: str) -> dict[str, int] | None:
     """category -> findings or groups, or None before any correlation of a release run."""
-    rows = {(category, what): int(n) for category, what, n in session.execute(
-        text(_CORRELATED), {"ref": default_ref}
-    )}  # fmt: skip
+
+    def compute() -> dict[tuple[str, str], int]:
+        return {(category, what): int(n) for category, what, n in session.execute(
+            text(_CORRELATED), {"ref": default_ref}
+        )}  # fmt: skip
+
+    rows = _once(session, f"correlated {default_ref}", compute)
     if not rows[("#runs", "runs")]:
         return None
     return {category: n for (category, what), n in rows.items() if what == kind}
@@ -388,7 +409,7 @@ METRICS: tuple[Callable[[Session, str], Family | None], ...] = (
 )
 def metrics(request: Request, session: SessionDep) -> Response:
     """Prometheus metrics (SPEC section 10): read-only aggregates, bounded labels, absent until stored."""
-    session.execute(text("SET TRANSACTION READ ONLY"))
+    session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
     default_ref: str = request.app.state.settings.default_ref
     families = [family for metric in METRICS if (family := metric(session, default_ref)) is not None]
     return Response(content=render(families), media_type=CONTENT_TYPE)

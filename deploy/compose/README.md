@@ -56,7 +56,7 @@ findings only if `findings_sha256` is null. In GitHub Actions the run id is `<ru
 of the job is a new run. A run without `run_id` (a local run) is always new. `GET /api/v1/runs/<run id>/findings` gives the upload back
 byte for byte (its sha256 is `findings_sha256`), for the correlator or a replay. Bodies are capped before
 authentication: 64 KiB for JSON, `SENTINEL_API_MAX_UPLOAD_BYTES` (32 MiB by default) for a findings upload, a
-correlation or a decision. To rotate the token, delete both `SENTINEL_API_TOKEN` lines from `.env` and run `make compose-env`.
+correlation, a decision, a release's evidence or a remediation attempt. To rotate the token, delete both `SENTINEL_API_TOKEN` lines from `.env` and run `make compose-env`.
 
 A run's correlations (the correlator's root-cause groups, advisory: the gate never reads them) are posted after
 its findings, as one Correlation v1 document:

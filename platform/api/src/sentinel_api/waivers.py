@@ -4,13 +4,16 @@ Policies & waivers page. Read-only aggregates of what was recorded; the platform
 - `PUT /api/v1/waivers/{sha256}`: one waivers file (schemas/waivers.v1.json, `.sentinel/waivers.yaml`), as the
   gate read it. A decision records only its digest (`inputs.waivers_digest`); the file is kept, named by its
   sha256, only when a recorded decision (a run's or a release's) read it, so the page never shows a file no
-  gate evaluated. It must be a file the gate could have read (`sentinelci.policy.waivers.load_waivers`). The
-  same file again is answered 200 with the record (a re-run of the upload step).
+  gate evaluated; that is checked before the file is parsed. It must be a file the gate could have read
+  (`sentinelci.policy.waivers.load_waivers`, which refuses YAML aliases), and what it read is kept with the
+  bytes, so no file is parsed again. The same file again is answered 200 with the record (a re-run of the
+  upload step).
 - `GET /api/v1/waivers/{sha256}`: the file byte for byte, its sha256 as the ETag.
 - `GET /api/v1/waivers`: the waivers in force: for each repository, its latest release decision of the default
-  branch (`SENTINEL_DEFAULT_REF`), a run's or a release's, by `evaluated_at`, with the waivers of the file it
-  read. Each waiver is shown as written (a field that is not text is absent, and `expires_at` is the
-  reviewer's text, never a parsed date); whether it applied is the decision's `waivers_applied`, and why one
+  branch (`SENTINEL_DEFAULT_REF`), a run's or a release's, by the document's own `evaluated_at` (the copied
+  column is for display, and the database does not check it), with the waivers of the file it read. Each
+  waiver is shown as written (a field that is not text is absent, and `expires_at` is the reviewer's text,
+  never a parsed date); whether it applied is the decision's `waivers_applied`, and why one
   is invalid is the decision's SC-005 message. A file not uploaded is `null` (unknown), never an empty list,
   except the empty file, whose digest says it holds no waiver.
 - `GET /api/v1/rules`: how many recorded decisions each rule fired in, by effect and context (a decision
@@ -127,8 +130,8 @@ def _invalid(message: str) -> RequestValidationError:
     )
 
 
-def _out(row: WaiversFile, count: int) -> WaiversFileOut:
-    return WaiversFileOut(sha256=row.sha256, waiver_count=count, created_at=row.created_at)
+def _out(row: WaiversFile) -> WaiversFileOut:
+    return WaiversFileOut(sha256=row.sha256, waiver_count=len(row.entries), created_at=row.created_at)
 
 
 def _entries(data: bytes) -> list[Any]:
@@ -154,18 +157,16 @@ _READ_BY_A_DECISION = text(
 def _store(session: Session, digest: str, body: bytes) -> WaiversFileOut | JSONResponse:
     if hashlib.sha256(body).hexdigest() != digest:
         raise _invalid(f"these bytes are not waivers file {digest}: their sha256 is another")
-    entries = _entries(body)
     recorded = session.get(WaiversFile, digest)
-    if recorded is not None:
-        return JSONResponse(
-            _out(recorded, len(entries)).model_dump(mode="json"), status_code=status.HTTP_200_OK
-        )
+    if recorded is not None:  # the same bytes: the record, without parsing them again
+        return JSONResponse(_out(recorded).model_dump(mode="json"), status_code=status.HTTP_200_OK)
+    # Before any parse: the API never parses a file no gate read (#110 review).
     if not session.scalar(_READ_BY_A_DECISION, {"digest": f"sha256:{digest}"}):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             f"no recorded decision read waivers file {digest}: record the decision that read it first",
         )
-    row = WaiversFile(sha256=digest, document=body)
+    row = WaiversFile(sha256=digest, document=body, entries=_entries(body))
     session.add(row)
     try:
         session.commit()
@@ -174,11 +175,9 @@ def _store(session: Session, digest: str, body: bytes) -> WaiversFileOut | JSONR
         recorded = session.get(WaiversFile, digest)
         if recorded is None:
             raise
-        return JSONResponse(
-            _out(recorded, len(entries)).model_dump(mode="json"), status_code=status.HTTP_200_OK
-        )
+        return JSONResponse(_out(recorded).model_dump(mode="json"), status_code=status.HTTP_200_OK)
     session.refresh(row)
-    return _out(row, len(entries))
+    return _out(row)
 
 
 _DIGEST = Annotated[str, Path(pattern=_SHA256, description="The file's sha256, lowercase hex.")]
@@ -243,19 +242,21 @@ _LATEST = text(
     """
     WITH candidates AS (
         SELECT r.repo, r.commit, r.ref, 'run' AS source, r.id AS run_id, NULL::text AS image_digest,
-               d.decision_id, d.evaluated_at, convert_from(d.document, 'UTF8')::jsonb AS decision
+               d.decision_id, convert_from(d.document, 'UTF8')::jsonb AS decision
         FROM decisions d JOIN runs r ON r.id = d.run_id
         WHERE r.context = 'release' AND r.ref = :ref AND (CAST(:repo AS text) IS NULL OR r.repo = :repo)
         UNION ALL
         SELECT rel.repo, rel.commit, rel.ref, 'release', NULL::uuid, rel.image_digest,
-               rel.decision_id, rel.evaluated_at, convert_from(rel.document, 'UTF8')::jsonb -> 'decision'
+               rel.decision_id, convert_from(rel.document, 'UTF8')::jsonb -> 'decision'
         FROM releases rel
         WHERE rel.ref = :ref AND (CAST(:repo AS text) IS NULL OR rel.repo = :repo)
     )
+    -- The document's own evaluated_at: the copied column is for display, and the database does not check it.
     SELECT DISTINCT ON (repo)
-        repo, commit, ref, source, run_id, image_digest, decision_id, evaluated_at, decision
+        repo, commit, ref, source, run_id, image_digest, decision_id,
+        (decision ->> 'evaluated_at')::timestamptz AS evaluated_at, decision
     FROM candidates
-    ORDER BY repo, evaluated_at DESC, source DESC, decision_id
+    ORDER BY repo, (decision ->> 'evaluated_at')::timestamptz DESC, source DESC, decision_id
     """
 )
 
@@ -283,8 +284,8 @@ def _in_force(session: Session, default_ref: str, repo: str | None) -> WaiversPa
         for row in rows
         if isinstance(digest := (row["decision"].get("inputs") or {}).get("waivers_digest"), str)
     }
-    files = {
-        file.sha256: file.document
+    files = {  # what each file's PUT parsed: no file is parsed here
+        file.sha256: file.entries
         for file in session.scalars(select(WaiversFile).where(WaiversFile.sha256.in_(digests)))
     }
     items = []
@@ -298,7 +299,7 @@ def _in_force(session: Session, default_ref: str, repo: str | None) -> WaiversPa
         if name == EMPTY_SHA256:
             waivers = []
         elif name is not None and name in files:
-            waivers = _waivers(load_waivers(files[name]), set(applied))
+            waivers = _waivers(files[name], set(applied))
         items.append(
             WaiversInForce(
                 repo=row["repo"], commit=row["commit"], ref=row["ref"], source=row["source"],

@@ -6,9 +6,18 @@ describe("expiry", () => {
   const day = 24 * 60 * 60 * 1000;
 
   it("reads only an RFC 3339 date-time, never guesses a date", () => {
-    for (const text of [null, "2026-12-31", "31/12/2026", "2026-12-31 00:00:00Z", "2026-12-31T00:00:00", "soon"]) {
+    for (const text of [
+      null, "2026-12-31", "31/12/2026", "2026-12-31 00:00:00Z", "2026-12-31T00:00:00", "soon",
+      // Not real dates: V8 would roll them over (30 February is 2 March), OPA refuses them (SC-005).
+      "2027-02-30T00:00:00Z", "2026-11-31T00:00:00Z", "2027-02-29T00:00:00Z", "2026-13-01T00:00:00Z",
+      "2026-12-01T24:00:00Z", "2026-12-01T23:60:00Z", "2026-12-01T23:59:60Z", "2026-12-01T00:00:00+24:00",
+    ]) {
       expect(expiry(text, now)).toEqual({ kind: "unreadable" });
     }
+  });
+
+  it("reads 29 February of a leap year", () => {
+    expect(expiry("2028-02-29T00:00:00Z", now).kind).toBe("later");
   });
 
   it("is expired at the instant itself and after it, in whole days", () => {

@@ -19,8 +19,12 @@ export interface DecisionView {
   engineVersion: string | null;
   violations: ViolationView[];
   waiversApplied: string[];
-  inputs: [string, string][]; // (name, digest or version), sorted by name
+  // (name, digest or version), sorted by name; tool_versions as one row per tool (`tool_versions.<tool>`), and a
+  // value of another type as "unreadable": every input is evidence, so none is dropped.
+  inputs: [string, string][];
 }
+
+const UNREADABLE = "unreadable";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -55,7 +59,11 @@ export function asDecision(document: unknown): DecisionView {
     })),
     waiversApplied: texts(decision.waivers_applied),
     inputs: Object.entries(inputs)
-      .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+      .flatMap(([name, value]): [string, string][] =>
+        name === "tool_versions" && isRecord(value)
+          ? Object.entries(value).map(([tool, version]) => [`${name}.${tool}`, text(version) ?? UNREADABLE])
+          : [[name, text(value) ?? UNREADABLE]],
+      )
       .sort(([a], [b]) => a.localeCompare(b)),
   };
 }

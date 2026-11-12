@@ -13,6 +13,7 @@ const SUMMARY = {
 };
 const BLOCK_SUMMARY = { ...SUMMARY, decision_id: "0193f2c4-7a1e-7b3c-9d2e-4f5a6b7c8da0", image_digest: BLOCKED,
   verdict: "BLOCK", trusted: null };
+const UNVERIFIED = { ...SUMMARY, decision_id: "0193f2c4-7a1e-7b3c-9d2e-4f5a6b7c8da1", verdict: "PASS", trusted: null };
 const check = (name: string, ok = true, detail = "signed by the key") => ({ name, ok, detail });
 const REPORT = {
   schema_version: "1.0", image: { name: "127.0.0.1:5001/demo-shop/shop-api", digest: DIGEST }, mode: "registry",
@@ -36,10 +37,14 @@ const EVIDENCE = {
 
 describe("Releases", () => {
   it("lists each release with its verdict and what verify found", async () => {
-    fakeApi({ "/api/v1/releases?limit=50&offset=0": { body: { items: [SUMMARY, BLOCK_SUMMARY], total: 2, limit: 50, offset: 0 } } });
+    fakeApi({ "/api/v1/releases?limit=50&offset=0": {
+      body: { items: [SUMMARY, BLOCK_SUMMARY, UNVERIFIED], total: 3, limit: 50, offset: 0 } } });
     renderAt("/releases");
     const rows = await screen.findAllByRole("row");
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(4);
+    // Review of #86: nobody verified the PASS, which does not mean it was not signed.
+    expect(within(rows[3]!).getByText("not verified")).toBeTruthy();
+    expect(within(rows[3]!).queryByText("not signed")).toBeNull();
     expect(within(rows[1]!).getByText("WARN")).toBeTruthy();
     expect(within(rows[1]!).getByText("✓ trusted")).toBeTruthy();
     expect(within(rows[2]!).getByText("BLOCK")).toBeTruthy();
@@ -80,6 +85,33 @@ describe("Release detail", () => {
     expect(await screen.findByText(/the gate blocked this image, so nothing was signed/)).toBeTruthy();
   });
 
+  it("says a PASS without a report was not verified, never that it was not signed", async () => {
+    const unverified = { ...EVIDENCE, decision: { ...EVIDENCE.decision, verdict: "PASS", violations: [] }, trust_reports: [] };
+    fakeApi({ [`/api/v1/releases/${encodeURIComponent(DIGEST)}/evidence`]: { body: unverified } });
+    renderAt(`/releases/${encodeURIComponent(DIGEST)}`);
+    expect(await screen.findByText(/No trust report: none was recorded/)).toBeTruthy();
+    expect(screen.getByText("not verified")).toBeTruthy();
+    expect(screen.queryByText(/nothing was signed/)).toBeNull();
+    expect(screen.queryByText("not signed")).toBeNull();
+  });
+
+  it("never trusts a release one of whose reports could not be read", async () => {
+    const odd = { ...EVIDENCE, trust_reports: [{ ...REPORT, mode: "evidence", trusted: "false" }, REPORT] };
+    fakeApi({ [`/api/v1/releases/${encodeURIComponent(DIGEST)}/evidence`]: { body: odd } });
+    renderAt(`/releases/${encodeURIComponent(DIGEST)}`);
+    expect(await screen.findByText(/1 trust report\(s\) could not be read/)).toBeTruthy();
+    // The heading is unknown; only the readable report says trusted.
+    expect(screen.getAllByText("✓ trusted")).toHaveLength(1);
+    expect(screen.getByText("not verified")).toBeTruthy();
+  });
+
+  it("shows the whole key sha256 on hover", async () => {
+    fakeApi({ [`/api/v1/releases/${encodeURIComponent(DIGEST)}/evidence?decision_id=${DECISION}`]: { body: EVIDENCE } });
+    renderAt(`/releases/${encodeURIComponent(DIGEST)}?decision=${DECISION}`);
+    const key = (await screen.findAllByTitle("9f86d081".repeat(8)))[0]!;
+    expect(key.textContent).toBe(`${"9f86d081".repeat(2)}…`);
+  });
+
   it("says when the image has no release", async () => {
     fakeApi({});
     renderAt(`/releases/${encodeURIComponent(DIGEST)}`);
@@ -96,5 +128,6 @@ describe("asRelease", () => {
     expect(view.violations).toEqual([{ rule: "SC-010", effect: "", message: "", findings: 0 }]);
     expect(view.reports).toHaveLength(1);
     expect(view.reports[0]!.checks).toEqual([]);
+    expect(view.unreadableReports).toBe(1);
   });
 });

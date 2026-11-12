@@ -55,6 +55,11 @@ export function RunsPage() {
             {filters.repo} ✕
           </button>
         )}
+        {filters.ref && (
+          <button className="rounded border bg-white px-2 py-1 font-mono text-xs" onClick={() => set("ref", "")}>
+            {filters.ref} ✕
+          </button>
+        )}
       </div>
       {page.isPending ? (
         <Loading />

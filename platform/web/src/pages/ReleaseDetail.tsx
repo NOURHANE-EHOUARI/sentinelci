@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "react-router";
 import { getReleaseEvidence } from "../api/client";
-import { asRelease, type TrustReportView } from "../api/release";
+import { asRelease, releaseTrust, type TrustReportView } from "../api/release";
 import { Failure, Loading, Trust, utc, Verdict } from "./common";
 
 const MODE: Record<string, string> = {
@@ -21,7 +21,7 @@ export function ReleaseDetailPage() {
   if (evidence.isPending) return <Loading />;
   if (evidence.isError) return <Failure error={evidence.error} />;
   const release = asRelease(evidence.data);
-  const trusted = release.reports.length ? release.reports.every((report) => report.trusted) : null;
+  const trusted = releaseTrust(release);
   return (
     <section>
       <Link to="/releases" className="text-sm text-sky-700 hover:underline">
@@ -30,7 +30,7 @@ export function ReleaseDetailPage() {
       <h1 className="mt-2 break-all font-mono text-base font-semibold">{release.imageDigest}</h1>
       <div className="mt-1 flex flex-wrap items-center gap-3 text-sm text-slate-600">
         <Verdict value={release.verdict} />
-        <Trust trusted={trusted} />
+        <Trust trusted={trusted} verdict={release.verdict} />
         <span>{release.repo}</span>
         <span className="font-mono text-xs">{release.commit}</span>
         {release.ref && <span className="font-mono text-xs">{release.ref}</span>}
@@ -68,6 +68,11 @@ export function ReleaseDetailPage() {
       </dl>
 
       <h2 className="mb-2 mt-6 font-medium">Verification</h2>
+      {release.unreadableReports > 0 && (
+        <p className="mb-2 text-sm text-red-700">
+          {release.unreadableReports} trust report(s) could not be read: the release is not shown as trusted.
+        </p>
+      )}
       {release.reports.length === 0 ? (
         <p className="text-sm text-slate-600">
           No trust report: {release.verdict === "BLOCK" ? "the gate blocked this image, so nothing was signed." : "none was recorded."}
@@ -91,7 +96,11 @@ function Report({ report }: { report: TrustReportView }) {
         </span>
       </div>
       <div className="mb-2 text-xs text-slate-500">
-        Key <span className="font-mono">{report.keySha256.slice(0, 16)}…</span> · builder{" "}
+        Key{" "}
+        <span className="font-mono" title={report.keySha256}>
+          {report.keySha256.slice(0, 16)}…
+        </span>{" "}
+        · builder{" "}
         <span className="break-all font-mono">{report.builderId}</span>
       </div>
       <table className="w-full border-collapse text-sm">

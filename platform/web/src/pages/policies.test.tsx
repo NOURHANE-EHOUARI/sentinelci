@@ -103,7 +103,9 @@ describe("Policies & waivers", () => {
     renderAt("/policies");
     const card = await screen.findByRole("article", { name: "acme/shop" });
     expect(within(card).getByRole("alert").textContent).toBe("SC-005: Invalid waiver w-9: owner must be a non-empty string");
-    expect(within(card).getByRole("link", { name: "release" }).getAttribute("href")).toBe(`/releases/${encodeURIComponent(IMAGE)}`);
+    expect(within(card).getByRole("link", { name: "release" }).getAttribute("href")).toBe(
+      `/releases/${encodeURIComponent(IMAGE)}?decision=${encodeURIComponent(release.decision_id)}`,
+    ); // a rebuild can record a second release of the same image: name the decision
     expect(within(card).getByText("BLOCK")).toBeTruthy();
   });
 

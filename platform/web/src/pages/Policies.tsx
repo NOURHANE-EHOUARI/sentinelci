@@ -54,7 +54,11 @@ function RepositoryWaivers({ item }: { item: WaiversInForce }) {
         run
       </Link>
     ) : item.image_digest !== null ? (
-      <Link className="text-sky-700 hover:underline" to={`/releases/${encodeURIComponent(item.image_digest)}`}>
+      <Link
+        className="text-sky-700 hover:underline"
+        // A rebuild can record a second release of the same image: the link names this decision.
+        to={`/releases/${encodeURIComponent(item.image_digest)}?decision=${encodeURIComponent(item.decision_id)}`}
+      >
         release
       </Link>
     ) : (

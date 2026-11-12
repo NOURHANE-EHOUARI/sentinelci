@@ -157,7 +157,7 @@ class Release(Base):
         CheckConstraint("image_digest ~ '^sha256:[a-f0-9]{64}$'", name="releases_image_digest"),
         CheckConstraint("verdict IN ('PASS', 'WARN', 'BLOCK')", name="releases_verdict"),
         # The gate blocked it: nothing was signed, so nothing can have been verified as trusted.
-        CheckConstraint("verdict <> 'BLOCK' OR trusted IS NOT TRUE", name="releases_block_never_trusted"),
+        CheckConstraint("verdict <> 'BLOCK' OR trusted IS NULL", name="releases_block_never_trusted"),
     )
 
     decision_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
@@ -231,11 +231,15 @@ class WaiversFile(Base):
     __table_args__ = (
         CheckConstraint("sha256 ~ '^[a-f0-9]{64}$'", name="waivers_files_sha256"),
         CheckConstraint("encode(sha256(document), 'hex') = sha256", name="waivers_files_bytes_match"),
+        CheckConstraint("jsonb_typeof(entries) = 'array'", name="waivers_files_entries"),
     )
 
     sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     document: Mapped[bytes] = deferred(mapped_column(LargeBinary, nullable=False))
+    # The entries the gate's loader read from the bytes, parsed once when the file is recorded (the bytes stay
+    # the record): listing the waivers in force never parses a file again.
+    entries: Mapped[list[Any]] = mapped_column(JSONB, nullable=False)
 
 
 EXPLAIN_STATUSES = ("queued", "running", "explained", "unavailable", "not_sent", "failed")
