@@ -1,4 +1,5 @@
 import { ApiError } from "../api/client";
+import { asVerdict } from "../api/decision";
 
 const SEVERITY_STYLE: Record<string, string> = {
   CRITICAL: "bg-red-700 text-white",
@@ -24,4 +25,25 @@ export function Failure({ error }: { error: unknown }) {
 
 export function Loading() {
   return <p className="text-sm text-slate-500">Loading…</p>;
+}
+
+const VERDICT_STYLE: Record<string, string> = {
+  PASS: "bg-emerald-100 text-emerald-800",
+  WARN: "bg-amber-100 text-amber-800",
+  BLOCK: "bg-red-700 text-white",
+};
+
+/** The gate's verdict. A run without a decision, or a value that is not a verdict, reads "No decision":
+ * never a PASS by default. */
+export function VerdictBadge({ value }: { value: unknown }) {
+  const verdict = asVerdict(value);
+  if (verdict === null) {
+    return <span className="rounded border border-dashed border-slate-300 px-1.5 py-0.5 text-xs text-slate-600">No decision</span>;
+  }
+  return <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${VERDICT_STYLE[verdict]}`}>{verdict}</span>;
+}
+
+/** A timestamp as UTC, to the minute. */
+export function utc(value: string): string {
+  return `${new Date(value).toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }

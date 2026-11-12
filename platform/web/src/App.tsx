@@ -6,6 +6,8 @@ import { Loading } from "./pages/common";
 const OverviewPage = lazy(() => import("./pages/Overview").then((m) => ({ default: m.OverviewPage })));
 const FindingsPage = lazy(() => import("./pages/Findings").then((m) => ({ default: m.FindingsPage })));
 const FindingDetailPage = lazy(() => import("./pages/FindingDetail").then((m) => ({ default: m.FindingDetailPage })));
+const RunsPage = lazy(() => import("./pages/Runs").then((m) => ({ default: m.RunsPage })));
+const RunDetailPage = lazy(() => import("./pages/RunDetail").then((m) => ({ default: m.RunDetailPage })));
 
 const link = ({ isActive }: { isActive: boolean }) =>
   `rounded px-3 py-1.5 text-sm ${isActive ? "bg-slate-900 text-white" : "text-slate-700 hover:bg-slate-200"}`;
@@ -22,6 +24,9 @@ export function App() {
           <NavLink to="/findings" className={link}>
             Findings
           </NavLink>
+          <NavLink to="/runs" className={link}>
+            Runs
+          </NavLink>
         </nav>
       </header>
       <main className="mx-auto max-w-6xl px-4 py-6">
@@ -30,6 +35,8 @@ export function App() {
           <Route path="/" element={<OverviewPage />} />
           <Route path="/findings" element={<FindingsPage />} />
           <Route path="/findings/:findingId" element={<FindingDetailPage />} />
+          <Route path="/runs" element={<RunsPage />} />
+          <Route path="/runs/:runId" element={<RunDetailPage />} />
           <Route path="*" element={<p>No such page.</p>} />
         </Routes>
         </Suspense>

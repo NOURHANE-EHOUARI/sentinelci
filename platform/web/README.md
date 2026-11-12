@@ -6,8 +6,10 @@ it never writes, and it holds no token.
 | Page | Reads |
 |---|---|
 | Overview: open findings by priority and category | `GET /metrics` (`sentinel_findings_open`, the default branch's latest release runs). No data yet is said, never shown as zeros |
-| Findings: filters in the URL, 50 per page | `GET /api/v1/findings` |
+| Findings: filters in the URL (also a run's, `?run_id=`), 50 per page | `GET /api/v1/findings` |
 | Finding detail: the finding, the runs that saw it, and its root-cause group (advisory, and marked when a model wrote it) | `GET /api/v1/findings/{id}`, `GET /api/v1/runs/{id}/correlations` |
+| Runs: newest first, the context and the repository in the URL, 50 per page, each with the gate's verdict. A run without a decision reads "No decision", never PASS | `GET /api/v1/runs` |
+| Run detail: the run, its findings (a link to the Findings page), and its decision as recorded: verdict, violations linked to their findings, waivers applied, the digests of its inputs. Without a decision: "No decision recorded", which is not a PASS | `GET /api/v1/runs/{id}`, `GET /api/v1/runs/{id}/decision` |
 
 Track A adds its pages (Releases & evidence, Supply chain, Remediation) on the same layout and client.
 
