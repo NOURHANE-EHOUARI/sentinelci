@@ -20,6 +20,7 @@ from starlette.concurrency import run_in_threadpool
 
 from sentinel_api.auth import require_writer
 from sentinel_api.models import Run, RunFinding
+from sentinelci.contracts.decision import Verdict
 from sentinelci.contracts.finding import Category, RunContext, Severity
 from sentinelci.policy.decision import load_findings
 from sentinelci.policy.errors import EvaluationError
@@ -75,6 +76,7 @@ class RunOut(BaseModel):
     finding_count: int
     findings_sha256: str | None
     findings_uploaded_at: datetime | None
+    verdict: Verdict | None = None  # the gate's, once its decision is recorded (API 1.6.0)
 
 
 class RunExists(BaseModel):
@@ -94,6 +96,13 @@ class UploadResult(BaseModel):
 class FindingItem(BaseModel):
     run_id: uuid.UUID
     finding: dict[str, Any]
+
+
+class RunPage(BaseModel):
+    items: list[RunOut]  # newest first
+    total: int
+    limit: int
+    offset: int
 
 
 class FindingPage(BaseModel):
@@ -133,6 +142,7 @@ def _run_out(run: Run) -> RunOut:
         id=run.id, repo=run.repo, commit=run.commit, context=run.context,  # type: ignore[arg-type]
         ref=run.ref, run_id=run.ci_run_id, created_at=run.created_at, finding_count=run.finding_count,
         findings_sha256=run.findings_sha256, findings_uploaded_at=run.findings_uploaded_at,
+        verdict=run.decision.verdict if run.decision is not None else None,  # type: ignore[arg-type]
     )  # fmt: skip
 
 
@@ -192,6 +202,34 @@ def create_run(body: RunCreate, session: SessionDep) -> RunOut | JSONResponse:
         return _run_exists(existing)
     session.refresh(run)
     return _run_out(run)
+
+
+@router.get("/runs", tags=["runs"], responses=_errors(413, 503))
+def list_runs(
+    session: SessionDep,
+    repo: Annotated[str | None, Query(pattern=_REPO, max_length=200)] = None,
+    context: RunContext | None = None,
+    ref: Annotated[str | None, Query(pattern=_LINE, min_length=1, max_length=255)] = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    offset: Annotated[int, Query(ge=0, le=MAX_OFFSET)] = 0,
+) -> RunPage:
+    """Recorded runs, newest first (the run id breaks ties). For a fixed set of runs, walking the pages never
+    repeats or skips one; while runs are being recorded, a new run at the top shifts later pages by one, and a
+    run's `created_at` is the start of its transaction, so a run committed later can sort as older.
+
+    `ref` is matched exactly (`refs/heads/main`), like `repo`. A run whose findings are not uploaded yet is
+    listed too: its `findings_sha256` is null.
+    """
+    query = select(Run)
+    if repo is not None:
+        query = query.where(Run.repo == repo)
+    if context is not None:
+        query = query.where(Run.context == context)
+    if ref is not None:
+        query = query.where(Run.ref == ref)
+    total = session.scalar(select(func.count()).select_from(query.subquery())) or 0
+    runs = session.scalars(query.order_by(Run.created_at.desc(), Run.id).limit(limit).offset(offset))
+    return RunPage(items=[_run_out(run) for run in runs], total=total, limit=limit, offset=offset)
 
 
 @router.get("/runs/{run_id}", tags=["runs"], responses=_errors(404, 413, 503))
