@@ -39,6 +39,8 @@ export interface ReleaseView {
   toolVersions: [string, string][];
   waiversApplied: string[];
   reports: TrustReportView[];
+  // Reports that could not be read (a field of another type): the release is then of unknown trust.
+  unreadableReports: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -107,5 +109,13 @@ export function asRelease(document: unknown): ReleaseView {
       const parsed = report(value);
       return parsed ? [parsed] : [];
     }),
+    unreadableReports: list(evidence.trust_reports).filter((value) => report(value) === null).length,
   };
+}
+
+/** Every report trusts the image: true; one does not: false; no report, or one that could not be read: null
+ * (unknown, never trusted by default). */
+export function releaseTrust(release: ReleaseView): boolean | null {
+  if (release.reports.length === 0 || release.unreadableReports > 0) return null;
+  return release.reports.every((one) => one.trusted);
 }

@@ -252,9 +252,11 @@ uv run sentinel verify registry.local/demo-shop/shop-api@sha256:<digest> --evide
   are all it needs.
 - `--report-json <file>` also writes the report as `schemas/trust-report.v1.json`, trusted or not: the mode
   (`registry` or `evidence`), the repository and builder id required, the sha256 of the public key (its DER
-  bytes, so a key file's line endings do not change it), the time, and every check in order with a one-line
-  detail. An older file at that path is removed first, and nothing is written when the verification cannot run
-  (exit `3`). It is what `sentinel upload-release` sends to the platform.
+  bytes, so a key file's line endings do not change it), the time, the `decision_id` of the decision it
+  verified (null without a valid decision attestation: the platform records a report only next to that
+  decision), and every check in order with a one-line detail. An older file at that path is removed first,
+  nothing is written when the verification cannot run (exit `3`), and a `--report-json` that is the public key
+  itself is refused before anything is removed. It is what `sentinel upload-release` sends to the platform.
 
 ## `sentinel scan sca` (dependency vulnerabilities, A1)
 

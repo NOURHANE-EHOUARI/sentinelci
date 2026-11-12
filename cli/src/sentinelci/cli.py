@@ -1610,11 +1610,12 @@ def verify_command(
     Exit code 0 when every check passes, 1 when any fails (not trusted), 3 when the verification could not run
     (for example a Cosign binary that does not match tools.lock.toml). Both non-zero codes refuse the image.
     """
-    if report_json is not None:
-        report_json.unlink(missing_ok=True)  # an older report must never stand for this verification
     try:
-        if report_json is not None and report_json.resolve() == key.resolve():
-            raise AttestationError("--report-json cannot be the public key")
+        if report_json is not None:
+            # Refused before anything is removed: the key must survive a wrong option (review of #86).
+            if report_json.resolve() == key.resolve():
+                raise AttestationError("--report-json cannot be the public key")
+            report_json.unlink(missing_ok=True)  # an older report must never stand for this verification
         target = parse_image(image)
         check_public_key(key)  # a broken setup is "could not run" (3), not "this image is bad" (1)
         key_sha256 = public_key_sha256(key)

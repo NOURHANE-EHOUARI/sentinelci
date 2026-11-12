@@ -24,7 +24,13 @@ from sentinelci.scanners.lock import load_lock
 from sentinelci.scanners.runner import run_verified_tool
 from sentinelci.supplychain.attestations import KINDS, AttestationError, parse_image, release_predicates
 from sentinelci.supplychain.cosign import Signer, Verified
-from sentinelci.supplychain.verify import TrustReport, public_key_sha256, report_document, trust_checks
+from sentinelci.supplychain.verify import (
+    TrustReport,
+    public_key_sha256,
+    report_document,
+    trust_checks,
+    verified_decision_id,
+)
 
 from .conftest import (
     BUILDER,
@@ -472,7 +478,8 @@ def report_of(
     outcomes: dict[str, Verified], mode: Literal["registry", "evidence"] = "evidence"
 ) -> dict[str, Any]:
     image = parse_image(IMAGE)
-    report = TrustReport(image, trust_checks(image, outcomes, repo=REPO, builder_id=BUILDER))
+    checks = trust_checks(image, outcomes, repo=REPO, builder_id=BUILDER)
+    report = TrustReport(image, checks, verified_decision_id(outcomes))
     return report_document(
         report, mode=mode, repo=REPO, builder_id=BUILDER, key_sha256="a" * 64, verified_at=VERIFIED_AT
     )
@@ -488,6 +495,19 @@ def test_the_json_report_is_a_trust_report_v1_with_every_check_in_order() -> Non
     ]
     assert len(parsed.checks) == 15 and parsed.verified_at == "2026-11-11T17:30:05Z"
     assert parsed.image.digest == f"sha256:{IMAGE_HEX}" and parsed.mode == "evidence"
+    assert parsed.decision_id == json.loads(decision_bytes())["decision_id"], "the decision it verified"
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [Verified(None, "no matching attestation"), Verified({"schema_version": "1.0"}, None)],
+    ids=["unsigned", "not-a-decision"],
+)
+def test_a_report_without_a_valid_decision_names_none(decision: Verified) -> None:
+    """Review of #86: the platform ties a report to the decision it names; without one, it names none."""
+    document = report_of(verified(decision=decision))
+    parsed = TrustReportContract.model_validate_json(json.dumps(document))
+    assert parsed.decision_id is None and not parsed.trusted and parsed.problem() is None
 
 
 def test_a_failed_check_is_reported_on_one_line() -> None:
@@ -533,11 +553,24 @@ def test_the_json_report_says_what_the_printed_one_says(
     assert verify_json(keys["release.pub"], evidence, report).exit_code == 0
     trusted = TrustReportContract.model_validate_json(report.read_bytes())
     assert trusted.trusted and trusted.key_sha256 == public_key_sha256(keys["release.pub"])
+    assert trusted.mode == "evidence", "an offline check never reads as what Kyverno checks (review of #86)"
+    assert trusted.decision_id == json.loads(decision_bytes())["decision_id"]
     assert verify_json(keys["other.pub"], evidence, report).exit_code == 1
     refused = TrustReportContract.model_validate_json(report.read_bytes())
     assert not refused.trusted and refused.problem() is None
     assert sum(not check.ok for check in refused.checks) >= 4
     assert refused.key_sha256 == public_key_sha256(keys["other.pub"])
+
+
+def test_the_json_report_is_never_written_over_the_public_key(tmp_path: Path) -> None:
+    """Review of #86, should fix 5: the older report was removed before the guard, so the key went with it."""
+    key = tmp_path / "release.pub"
+    key.write_text("-----BEGIN PUBLIC KEY-----\nnever read: refused first\n-----END PUBLIC KEY-----\n")
+    before = key.read_bytes()
+    for report in (key, tmp_path / "." / "release.pub"):
+        result = verify_json(key, tmp_path / "evidence", report)
+        assert result.exit_code == 3 and "cannot be the public key" in result.output
+        assert key.read_bytes() == before, "the key is still there"
 
 
 def test_no_json_report_when_the_verification_cannot_run(tmp_path: Path) -> None:

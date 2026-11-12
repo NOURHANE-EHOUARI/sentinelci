@@ -39,8 +39,12 @@ export function Verdict({ value }: { value: string }) {
 }
 
 /** What `sentinel verify` found on the release laptop: trusted, not trusted, or nothing signed (a BLOCK). */
-export function Trust({ trusted }: { trusted: boolean | null }) {
-  if (trusted === null) return <span className="text-xs text-slate-500">not signed</span>;
+/** What verify found. Unknown (null) is never trusted: for a BLOCK nothing was signed; otherwise nobody sent a
+ * verification, which does not mean the image was not signed (review of #86). */
+export function Trust({ trusted, verdict }: { trusted: boolean | null; verdict?: string }) {
+  if (trusted === null) {
+    return <span className="text-xs text-slate-500">{verdict === "BLOCK" ? "not signed" : "not verified"}</span>;
+  }
   return trusted ? (
     <span className="text-xs font-medium text-emerald-700">✓ trusted</span>
   ) : (
