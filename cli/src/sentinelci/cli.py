@@ -72,6 +72,7 @@ from sentinelci.policy.tool_status import load_tool_status
 from sentinelci.policy.vex import DEFAULT_VEX_PATH
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
 from sentinelci.remediation.apply import apply_proposal
+from sentinelci.remediation.check import CheckError, check_iac
 from sentinelci.remediation.dockerfile import propose as propose_dockerfile
 from sentinelci.remediation.gate import check_proposal, verify_proposal
 from sentinelci.remediation.kubernetes import propose as propose_kubernetes
@@ -1737,6 +1738,41 @@ def remediate_apply(
             "diff_sha256": applied.diff_sha256,
         })
     )  # fmt: skip
+
+
+@remediate_app.command("check")
+def remediate_check(
+    proposal: Annotated[Path, typer.Option(help="The patch proposal (schemas/patch-proposal.v1.json).")],
+    base_root: Annotated[
+        Path, typer.Option(help="The tree of the commit the proposal applies to (exported, not checked out).")
+    ],
+    patched_root: Annotated[
+        Path, typer.Option(help="The tree of the patched commit (exported the same way).")
+    ],
+) -> None:
+    """Build and test an infrastructure-as-code proposal for the verification gate, and print the result
+    as JSON. Build: every edited file still parses into the same resources (a manifest's documents, a
+    Dockerfile's stages). Tests: the patch changes only what its strategy may change. Their results are what
+    `sentinel remediate verify` takes as --build-ok/--build-failed and --tests-ok/--tests-failed.
+
+    Exit code 0 when both hold, 1 when one does not (the JSON says which file and why), 3 when they cannot
+    be checked honestly (a strategy with no build or tests defined here, a file that is not a regular file
+    of both trees, a base file this check cannot read): nothing is verified then.
+    """
+    try:
+        applied = PatchProposal.model_validate_json(proposal.read_bytes())
+        checked = check_iac(applied, base_root, patched_root)
+    except (OSError, ValidationError, CheckError) as exc:
+        typer.echo(f"sentinel remediate check: {exc}\nFAIL CLOSED: nothing is verified.", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    typer.echo(
+        json.dumps({
+            "proposal_id": applied.proposal_id, "strategy": applied.strategy, "build_ok": checked.build_ok,
+            "tests_ok": checked.tests_ok, "problems": checked.problems,
+        })
+    )  # fmt: skip
+    if not (checked.build_ok and checked.tests_ok):
+        raise typer.Exit(EXIT_NOT_VERIFIED)
 
 
 @remediate_app.command("verify")
