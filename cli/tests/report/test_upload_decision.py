@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from sentinelci.report.upload import RunInfo, UploadError, check_decision
+from sentinelci.report.upload import Platform, RunInfo, UploadError, check_decision
 
 from .test_upload import COMMIT, REPO, ROOT, TOKEN, Fake, _serve, findings, run_upload
 
@@ -223,8 +223,11 @@ def test_a_decision_id_recorded_for_another_run_is_an_upload_failure(
     record = as_bytes(decision(data))
     assert upload_with(tmp_path, platform, data, record).exit_code == 0  # a local run: a re-run is a new run
     result = upload_with(tmp_path, platform, data, record)
+    first, second = fake.runs
     assert result.exit_code == 4
-    assert "is recorded for another run" in result.output
+    # The message names the run that holds the decision (review of #87), and says this run's findings are in.
+    assert f"decision {decision(data)['decision_id']} is recorded for run {first}" in result.output
+    assert f"the decision was not recorded (the findings are, in run {second})" in result.output
 
 
 def test_the_platform_must_record_the_bytes_sent(tmp_path: Path, platform: str, fake: Fake) -> None:
@@ -246,12 +249,47 @@ def test_a_failed_decision_names_the_run_and_resume_finishes_it(
     (run_id,) = fake.runs
     assert f"recording the decision of run {run_id} failed: HTTP 503" in failed.output
     assert f"--resume {run_id}" in failed.output
+    # The findings are recorded: only the decision is missing, and the message says so (review of #87).
+    assert f"the decision was not recorded (the findings are, in run {run_id})" in failed.output
+    assert "the findings or the decision" not in failed.output
     fake.decision_status = None
     resumed = upload_with(tmp_path, platform, data, record, "--resume", run_id)
     assert resumed.exit_code == 0, resumed.output
     printed = json.loads(resumed.output)
     assert printed["already_recorded"] and not printed["decision_already_recorded"]
     assert fake.decisions[run_id]["sha256"] == hashlib.sha256(record).hexdigest()
+
+
+def test_a_409_that_holds_no_decision_records_nothing(tmp_path: Path, platform: str, fake: Fake) -> None:
+    """API 1.6.1: the 409's other shape (ErrorOut, the run's findings not recorded yet) is not "recorded"."""
+    fake.decision_status = 409
+    data = findings()
+    result = upload_with(tmp_path, platform, data, as_bytes(decision(data)))
+    (run_id,) = fake.runs
+    assert result.exit_code == 4
+    assert f"recording the decision of run {run_id} failed: HTTP 409" in result.output
+    assert f"--resume {run_id}" in result.output
+
+
+def test_a_lost_answer_to_the_decision_names_the_run_and_the_same_command_confirms_it(
+    tmp_path: Path, platform: str, fake: Fake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sent = Platform.post_decision
+
+    def lost(self: Platform, run_id: str, data: bytes) -> tuple[int, object]:
+        sent(self, run_id, data)  # recorded, then the answer is lost
+        raise UploadError("the platform could not be reached: ConnectionResetError: reset")
+
+    monkeypatch.setattr(Platform, "post_decision", lost)
+    data = findings(run_id="7/1")
+    record = as_bytes(decision(data))
+    failed = upload_with(tmp_path, platform, data, record, "--run-id", "7/1")
+    (run_id,) = fake.runs
+    assert failed.exit_code == 4 and f"--resume {run_id}" in failed.output
+    monkeypatch.setattr(Platform, "post_decision", sent)
+    again = upload_with(tmp_path, platform, data, record, "--run-id", "7/1")
+    assert again.exit_code == 0, again.output
+    assert json.loads(again.output)["decision_already_recorded"] is True
 
 
 @pytest.mark.parametrize("status", [413, 422])

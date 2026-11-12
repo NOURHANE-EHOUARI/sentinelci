@@ -83,7 +83,14 @@ from sentinelci.report.pr_comment import (
     render_no_decision,
     render_pr_comment,
 )
-from sentinelci.report.upload import TOKEN_VARIABLE, RunInfo, UploadError, platform_from, upload
+from sentinelci.report.upload import (
+    TOKEN_VARIABLE,
+    DecisionNotRecorded,
+    RunInfo,
+    UploadError,
+    platform_from,
+    upload,
+)
 from sentinelci.risk import RiskModel, RiskModelError, score_finding
 from sentinelci.scanners.combine import CombineError, combine_findings, combine_tool_statuses
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
@@ -627,6 +634,8 @@ def upload_command(
         # the Authorization header) must not make the CLI print the token.
         said, token = str(exc), os.environ.get(TOKEN_VARIABLE, "").strip()
         said = said.replace(token, f"<{TOKEN_VARIABLE}>") if token else said
+        if isinstance(exc, DecisionNotRecorded):
+            what = f"the decision was not recorded (the findings are, in run {exc.run_id})"
         typer.echo(f"sentinel upload: {said}\n{what} (the verdict is unchanged)", err=True)
         raise typer.Exit(EXIT_UPLOAD_FAILED) from exc
     except Exception as exc:

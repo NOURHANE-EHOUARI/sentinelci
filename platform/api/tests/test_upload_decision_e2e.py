@@ -138,4 +138,11 @@ def test_the_gates_decision_is_recorded_with_the_scored_findings_and_refused_wit
     printed_again = json.loads(again.output)
     assert printed_again["run_id"] == printed["run_id"]
     assert printed_again["already_recorded"] and printed_again["decision_already_recorded"]
-    assert TOKEN not in uploaded.output + again.output + refused.output
+
+    # --resume confirms it too, without creating a run (what a local run, with no --run-id, is finished with).
+    resumed = sentinel("upload", "--findings", str(scored), "--decision", str(decision), *run_args,
+                       "--resume", printed["run_id"])  # fmt: skip
+    assert resumed.exit_code == 0, resumed.output
+    assert json.loads(resumed.output)["decision_already_recorded"] is True
+    assert json.loads(get(f"{platform}/api/v1/runs")[2])["total"] == 1
+    assert TOKEN not in uploaded.output + again.output + refused.output + resumed.output

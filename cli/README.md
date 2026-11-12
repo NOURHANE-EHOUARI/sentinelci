@@ -415,12 +415,19 @@ SENTINEL_API_TOKEN=... uv run sentinel upload --findings out/findings.ndjson --a
   decision for the run is refused (a new decision, after a new waiver for example, is a new run), and so is a
   `decision_id` another run recorded. The output adds `decision_sha256` and `verdict`.
 
+In the gate job of `sentinel-scan.yml`, after `sentinel evaluate`, with the values that step gives the gate
+(`REPO`, `HEAD_SHA`, `CONTEXT`, `REF`: the pull request's head and `refs/pull/<n>/head`, not the merge commit)
+and the scan's run id:
+
 ```bash
 SENTINEL_API_TOKEN=... uv run sentinel upload --findings "$RUNNER_TEMP/decision/findings.ndjson" \
   --decision "$RUNNER_TEMP/decision/decision.v1.json" --api-url https://sentinel.example \
-  --repo "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" --context pr --ref "$GITHUB_REF" \
+  --repo "$REPO" --commit "$HEAD_SHA" --context "$CONTEXT" --ref "$REF" \
   --run-id "$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT"
 ```
+
+A local run (no `--run-id`) that failed after its run was created is finished with `--resume <run id>`, never
+with the same command again: that would create another run, which the platform then refuses the decision for.
 
 
 ## `sentinel scan pipelines` (CI workflows, A1)

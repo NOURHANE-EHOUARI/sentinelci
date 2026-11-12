@@ -64,6 +64,14 @@ class UploadError(Exception):
     """The findings were not recorded by the platform (the verdict is unaffected)."""
 
 
+class DecisionNotRecorded(UploadError):
+    """The findings are recorded, in `run_id`, but the decision is not (the verdict is unaffected)."""
+
+    def __init__(self, message: str, run_id: str) -> None:
+        super().__init__(message)
+        self.run_id = run_id
+
+
 @dataclass(frozen=True)
 class RunInfo:
     repo: str
@@ -366,29 +374,39 @@ def _upload_findings(
 
 def _record_decision(uploaded: Uploaded, data: bytes, record: Decision, platform: Platform) -> Uploaded:
     """POST the decision to the run whose findings are recorded: recorded now (201), or recorded already with
-    these bytes (409 naming this run and their sha256). Anything else is UploadError naming the run."""
+    these bytes (409 naming this run and their sha256). Anything else is DecisionNotRecorded, naming the
+    run."""
     run_id, digest = uploaded.run_id, hashlib.sha256(data).hexdigest()
+
+    def refused(message: str) -> DecisionNotRecorded:
+        return DecisionNotRecorded(message, run_id)
+
     try:
         status, body = platform.post_decision(run_id, data)
     except UploadError as exc:
-        _name_the_run(run_id, exc)
+        try:
+            _name_the_run(run_id, exc)
+        except UploadError as named:
+            raise refused(str(named)) from exc
     done = replace(uploaded, decision_sha256=digest, verdict=record.verdict)
     if status == 201 and isinstance(body, dict):
         if body.get("sha256") != digest or str(body.get("run_id")) != run_id:
-            raise UploadError(f"run {run_id}: the platform recorded another decision than the one sent")
+            raise refused(f"run {run_id}: the platform recorded another decision than the one sent")
         return done
     recorded = body.get("decision") if status == 409 and isinstance(body, dict) else None
     if isinstance(recorded, dict):
         if str(recorded.get("run_id")) != run_id:
-            raise UploadError(f"run {run_id}: decision {record.decision_id} is recorded for another run")
+            other = recorded.get("run_id")
+            where = f"run {other}" if isinstance(other, str) and _UUID.fullmatch(other) else "another run"
+            raise refused(f"run {run_id}: decision {record.decision_id} is recorded for {where}")
         if recorded.get("sha256") != digest:
-            raise UploadError(
+            raise refused(
                 f"run {run_id} already holds another decision: a run has one decision (a new decision, after "
                 "a new waiver for example, is a new run)"
             )
         return replace(done, decision_already_recorded=True)
     hint = "" if status in (413, 422) else f" (--resume {run_id} finishes it)"
-    raise UploadError(f"recording the decision of run {run_id} failed: {_why(status, body)}{hint}")
+    raise refused(f"recording the decision of run {run_id} failed: {_why(status, body)}{hint}")
 
 
 def _same_run(run_id: str, recorded: Mapping[str, Any], run: RunInfo) -> None:
