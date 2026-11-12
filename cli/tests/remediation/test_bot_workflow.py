@@ -34,9 +34,13 @@ REPO = "NOURHANE-EHOUARI/sentinelci"
 PUBLISH_STEP = "Push each verified branch and open its pull request"
 VERIFY_STEP = "Verify each pull request the bot opened"
 REPORT_STEP = "Comment each result and set its commit status"
+GRYPE_DB_STEP = (
+    "Prepare Grype's vulnerability database (the only download, checked against its listing's checksum)"
+)
 FAKE_TOKEN = "fake-token-for-the-recording-gh"  # noqa: S105 (not a credential: the local gh records it)
 SCAN_PATH = "demo-shop"
 TOOLS_DIR = os.environ.get("SENTINEL_TOOLS_DIR")
+GRYPE_DB = os.environ.get("SENTINEL_GRYPE_DB_DIR")
 # Where a command starts (a line, after ; & | or in $( )), it is never one that runs repository code.
 RUNS_CODE = re.compile(
     r"(?:^|[;&|(])\s*(uv|python3?|pip|make|sentinel|npm|node|bash|sh|source|\.|\./\S*)(?=\s|$)", re.MULTILINE
@@ -102,12 +106,24 @@ def test_verify_judges_with_the_scanned_commits_pipeline_and_the_scanners_the_pr
     required = re.search(r'"pr": \{([^}]*)\}', (ROOT / "policies" / "required_tools.rego").read_text())
     assert required is not None
     tools = set(re.findall(r'"(\w+)"', required[1]))
-    kinds = {"gitleaks": "scan secrets", "trivy": "scan iac", "zizmor": "scan pipelines"}
+    kinds = {
+        "gitleaks": "scan secrets", "opengrep": "scan sast", "syft": "scan sca", "grype": "scan sca",
+        "trivy": "scan iac", "zizmor": "scan pipelines",
+    }  # fmt: skip
     assert tools <= kinds.keys(), (
         f"a scanner the pr gate requires is not run by verify: {tools - kinds.keys()}"
     )
-    for tool in tools:
-        assert run.count(kinds[tool]) == 2, f"{tool}: the scanned commit and the patched commit"
+    # Verify runs every scanner the pr gate may require, whatever this tree's policy lists (#114 adds
+    # Opengrep, Syft and Grype): the policy that judges a bot pull request is the scanned commit's.
+    for tool, kind in kinds.items():
+        assert run.count(kind) == 2, f"{tool}: the scanned commit and the patched commit"
+        name = kind.split()[1]
+        assert f'--tool-status "$out/{name}-status.json"' in run, f"{tool}: its status reaches the gate"
+    install = step("verify", "Install the SentinelCI CLI, the pinned scanners and OPA")["run"]
+    installed = set(re.search(r"tools install ([a-z ]+) --lock", install)[1].split())  # type: ignore[index]
+    assert kinds.keys() - {"zizmor"} <= installed, "zizmor is the CLI's own, the others come from the lock"
+    database = step("verify", GRYPE_DB_STEP)["run"]
+    assert '--db-dir "$RUNNER_TEMP/grype-db"' in database and run.count('--db-dir "$GRYPE_DB"') == 2
     assert "--context pr" in run and '--baseline "$WORK/before.ndjson"' in run
     assert '(cd "$PIPELINE" && "$SENTINEL" evaluate' in run, "waivers from the pipeline checkout"
 
@@ -117,13 +133,20 @@ def test_the_verify_job_outlives_every_scanner_run() -> None:
     per_run = int(re.search(r'^  SCANNER_TIMEOUT_S: "(\d+)"$', text, re.MULTILINE)[1])  # type: ignore[index]
     strategies = len(re.search(r"for strategy in ([a-z ]+); do", text)[1].split())  # type: ignore[index]
     run = step("verify", VERIFY_STEP)["run"]
-    assert run.count('"${common[@]}"') == 4 and run.count('"${audit[@]}"') == 3
+    assert run.count('"${common[@]}"') == 8 and run.count('"${audit[@]}"') == 3
     assert '--timeout "$SCANNER_TIMEOUT_S"' in run
-    # The scanned commit: Gitleaks on its tree, Trivy, zizmor. Each proposal: Gitleaks in git mode (two
-    # passes), Trivy, zizmor.
+    database = step("verify", GRYPE_DB_STEP)["run"]
+    assert '--timeout "$SCANNER_TIMEOUT_S"' in database
+    # Grype's database: the update, then Grype's own status check. The scanned commit: Gitleaks on its tree,
+    # Trivy, Opengrep, Syft then Grype, zizmor. Each proposal: Gitleaks in git mode (two passes), Trivy,
+    # Opengrep, Syft then Grype, zizmor.
     trivy = per_run + 60  # the runner's own limit on top of Trivy's --timeout (scanners/trivy.py)
     setup = 300  # setup, installs, OPA, uploads
-    worst = setup + 2 * per_run + trivy + strategies * (3 * per_run + trivy)
+    sast, sca = per_run, 2 * per_run
+    worst = (
+        setup + 2 * per_run + (2 * per_run + trivy + sast + sca)
+        + strategies * (3 * per_run + trivy + sast + sca)
+    )  # fmt: skip
     assert worst <= workflow()["jobs"]["verify"]["timeout-minutes"] * 60
 
 
@@ -486,12 +509,18 @@ def test_each_result_is_commented_and_set_as_the_commit_status(
 # ---------------------------------------------------------------- one run, end to end, with the real tools
 
 
+# Every scanner verify runs (the pr gate's), and OPA; Grype also needs its database, built within 5 days.
+VERIFY_TOOLS = ("gitleaks", "opengrep", "syft", "grype", "trivy", "opa")
+
+
 def tools_with_opa() -> Path:
     if not TOOLS_DIR:
         pytest.skip("set SENTINEL_TOOLS_DIR to a `sentinel tools install` directory")
     tools = Path(TOOLS_DIR)
-    if not all((tools / "bin" / tool).exists() for tool in ("gitleaks", "trivy", "opa")):
-        pytest.skip("SENTINEL_TOOLS_DIR needs gitleaks, trivy and opa")
+    if not all((tools / "bin" / tool).exists() for tool in VERIFY_TOOLS):
+        pytest.skip(f"SENTINEL_TOOLS_DIR needs {', '.join(VERIFY_TOOLS)}")
+    if not GRYPE_DB:
+        pytest.skip("set SENTINEL_GRYPE_DB_DIR to a fresh `sentinel tools grype-db` directory")
     return tools
 
 
@@ -524,7 +553,7 @@ def test_one_run_proposes_publishes_verifies_and_reports(bot: Bot) -> None:
     def verify(entries: list[dict[str, Any]], work: str) -> subprocess.CompletedProcess[str]:
         return bot.run(
             "verify", VERIFY_STEP, SENTINEL=sentinel, PIPELINE=str(ROOT), CHECKOUT=str(bot.clone),
-            TOOLS=str(tools), OPA_MANIFEST=str(manifest), OPENED=json.dumps(entries),
+            TOOLS=str(tools), GRYPE_DB=str(GRYPE_DB), OPA_MANIFEST=str(manifest), OPENED=json.dumps(entries),
             PROPOSALS=str(bot.artifact), WORK=str(bot.tmp / work), RESULTS=str(bot.tmp / work / "results"),
             BASE_SHA=bot.base, BASE_REF="refs/heads/main", RUN_ID="1", SCANNER_TIMEOUT_S="300",
         )  # fmt: skip
