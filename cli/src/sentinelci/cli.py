@@ -1426,14 +1426,17 @@ def scan_image_cmd(
     image_digest: Annotated[
         str,
         typer.Option(
-            "--image-digest", help="Its manifest digest (sha256:...), from the layout's index.json."
+            "--image-digest",
+            help="Its manifest digest (sha256:...), as the build recorded it (`docker buildx build "
+            "--metadata-file`: containerimage.digest), not as the layout claims it.",
         ),
     ],
     image_ref: Annotated[
         str,
         typer.Option(
             "--image-ref",
-            help="Where it is released, without tag or digest (e.g. kind-registry:5000/demo/api).",
+            help="Where it is released, without tag or digest (e.g. kind-registry:5000/demo/api): "
+            "a reference with either is refused.",
         ),
     ],
     out: Annotated[Path, typer.Option(help="Destination NDJSON file.")],
@@ -1480,6 +1483,10 @@ def scan_image_cmd(
     out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
     if tool_status_out is not None:
         tool_status_out.unlink(missing_ok=True)  # nor an older status vouching for it
+    try:  # before any tool runs: a reference with its own tag or digest is never scanned
+        image = ImageSubject(digest=image_digest, ref=image_ref)
+    except NormalizationError as exc:
+        raise _fail_closed(exc) from exc
     host = platform or _host_platform()
     tool_lock: ToolLock | None = None
     outcomes: dict[str, dict[str, Any]] = {}
@@ -1501,7 +1508,7 @@ def scan_image_cmd(
         findings = normalize_grype_image(
             scan.report,
             run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
-            image=ImageSubject(digest=image_digest, ref=image_ref),
+            image=image,
         )
     except SbomScanFailure as failure:
         if tool_status_out is not None and tool_lock is not None:
