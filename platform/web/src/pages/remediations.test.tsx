@@ -53,6 +53,17 @@ describe("Remediation", () => {
     expect(screen.getByLabelText("Diff").textContent).toContain('<script>alert("diff")</script>');
     expect(container.querySelector("script")).toBeNull();
     expect(screen.getByText("pull request #43")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("says a VERIFIED attempt with a condition it can't read contradicts itself", async () => {
+    const verified = { ...ATTEMPT, result: { ...ATTEMPT.result, tests_ok: 1, outcome: "VERIFIED" } };
+    fakeApi({ [`/api/v1/remediations/${ID}`]: { body: verified } });
+    renderAt(`/remediations/${ID}`);
+    const gate = await screen.findByRole("list", { name: "Verification gate" });
+    expect(within(gate).getByText("Its tests pass").firstChild?.textContent).toBe("unknown");
+    expect(screen.getByRole("alert").textContent).toMatch(/^This document contradicts itself/);
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("VERIFIED?llm:code");
   });
 });
 
@@ -64,11 +75,20 @@ describe("remediation readers", () => {
       "deterministic:kubernetes": { verified: 3, attempted: 4 },
     });
     expect(remediationAttempts("")).toBeNull();
+    expect(remediationAttempts('sentinel_remediation_attempts_total{strategy="s",outcome="VERIFIED"} NaN')).toBeNull();
   });
 
   it("read nothing as passed that is not a boolean true", () => {
     const view = asAttempt({ proposal: { strategy: 4 }, result: { build_ok: "true", new_findings: "none", verdict: "BLOCK" } });
     expect(view.strategy).toBe("unknown");
-    expect(view.conditions.every((condition) => !condition.ok)).toBe(true);
+    expect(view.conditions.map((condition) => condition.ok)).toEqual([null, null, null, null, false]);
+  });
+
+  it("read a condition of another type, or an unknown verdict, as unknown", () => {
+    const view = asAttempt({ result: { build_ok: true, tests_ok: false, target_resolved: 1, new_findings: [], verdict: "MAYBE",
+      outcome: "VERIFIED" } });
+    expect(view.conditions.map((condition) => condition.ok)).toEqual([true, false, null, true, null]);
+    expect(view.contradicts).toBe(true);
+    expect(asAttempt(ATTEMPT).contradicts).toBe(false); // REJECTED with a failed test says what it is
   });
 });

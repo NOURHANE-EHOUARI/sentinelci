@@ -156,7 +156,7 @@ class Release(Base):
         CheckConstraint("image_digest ~ '^sha256:[a-f0-9]{64}$'", name="releases_image_digest"),
         CheckConstraint("verdict IN ('PASS', 'WARN', 'BLOCK')", name="releases_verdict"),
         # The gate blocked it: nothing was signed, so nothing can have been verified as trusted.
-        CheckConstraint("verdict <> 'BLOCK' OR trusted IS NOT TRUE", name="releases_block_never_trusted"),
+        CheckConstraint("verdict <> 'BLOCK' OR trusted IS NULL", name="releases_block_never_trusted"),
     )
 
     decision_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)

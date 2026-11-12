@@ -6,8 +6,12 @@ that were sent, named by their sha256, and served back unchanged for the Release
 
 The database is the backstop for what the API checks:
 - the bytes hash to their name (`releases_bytes_match`);
-- a BLOCK release is never recorded as trusted (`releases_block_never_trusted`);
-- a release never changes and is never deleted (trigger `releases_are_kept`).
+- a BLOCK release carries no trust report, so it is never trusted nor counted as verified
+  (`releases_block_never_trusted`);
+- the columns that are listed and counted are the document's own: the decision id, its verdict, repository,
+  commit, ref and image digest, and `trusted` (every report trusts the image; NULL with no report), as in 0006
+  (trigger `releases_are_kept`, review of #86: a forged row was listed PASS and trusted);
+- a release never changes and is never deleted (the same trigger).
 
 Going back below 0007 would drop the only copy of those documents, so the downgrade stops, changing nothing,
 while any release is kept (like 0005 with the correlations and 0006 with the decisions).
@@ -47,21 +51,38 @@ def upgrade() -> None:
         sa.CheckConstraint("commit ~ '^[a-f0-9]{40}$'", name="releases_commit"),
         sa.CheckConstraint("image_digest ~ '^sha256:[a-f0-9]{64}$'", name="releases_image_digest"),
         sa.CheckConstraint("verdict IN ('PASS', 'WARN', 'BLOCK')", name="releases_verdict"),
-        sa.CheckConstraint("verdict <> 'BLOCK' OR trusted IS NOT TRUE", name="releases_block_never_trusted"),
+        sa.CheckConstraint("verdict <> 'BLOCK' OR trusted IS NULL", name="releases_block_never_trusted"),
     )
     op.create_index("ix_releases_repo", "releases", ["repo"])
     op.create_index("ix_releases_image_digest", "releases", ["image_digest"])
     op.execute(
         """
         CREATE FUNCTION releases_are_kept() RETURNS trigger LANGUAGE plpgsql AS $$
+        DECLARE
+            doc jsonb;
         BEGIN
-            RAISE EXCEPTION 'release % is kept as recorded: it cannot change or be deleted', OLD.decision_id;
+            IF TG_OP <> 'INSERT' THEN
+                RAISE EXCEPTION 'release % is kept as recorded: it cannot change or be deleted',
+                    OLD.decision_id;
+            END IF;
+            doc := convert_from(NEW.document, 'UTF8')::jsonb;
+            IF (doc #>> '{decision,decision_id}')::uuid IS DISTINCT FROM NEW.decision_id
+               OR doc #>> '{decision,verdict}' IS DISTINCT FROM NEW.verdict
+               OR doc #>> '{decision,subject,repo}' IS DISTINCT FROM NEW.repo
+               OR doc #>> '{decision,subject,commit}' IS DISTINCT FROM NEW.commit
+               OR doc #>> '{decision,subject,ref}' IS DISTINCT FROM NEW.ref
+               OR doc #>> '{decision,subject,image_digest}' IS DISTINCT FROM NEW.image_digest
+               OR (SELECT bool_and((r ->> 'trusted')::boolean)
+                   FROM jsonb_array_elements(doc -> 'trust_reports') r) IS DISTINCT FROM NEW.trusted THEN
+                RAISE EXCEPTION 'release %: the columns are the document''s', NEW.decision_id;
+            END IF;
+            RETURN NEW;
         END
         $$
         """
     )
     op.execute(
-        "CREATE TRIGGER releases_are_kept BEFORE UPDATE OR DELETE ON releases "
+        "CREATE TRIGGER releases_are_kept BEFORE INSERT OR UPDATE OR DELETE ON releases "
         "FOR EACH ROW EXECUTE FUNCTION releases_are_kept()"
     )
 

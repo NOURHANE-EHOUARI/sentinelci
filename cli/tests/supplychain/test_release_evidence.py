@@ -58,6 +58,21 @@ def test_a_release_is_trusted_when_every_report_trusts_it() -> None:
     assert ReleaseEvidence.model_validate_json(block.read_bytes()).trusted is None
 
 
+OTHER_DECISION = "00000000-0000-0000-0000-000000000002"
+
+
+def block_with_a_report_that_does_not_trust_it(document: dict[str, Any]) -> None:
+    """Review of #86: a BLOCK was recorded with a not-trusted report, and counted as a verification."""
+    document["decision"].update(
+        verdict="BLOCK",
+        violations=[{"rule": "SC-002", "effect": "BLOCK", "finding_ids": [HEX], "message": "P0"}],
+    )
+    report = document["trust_reports"][0]
+    report["checks"][2] = {**report["checks"][2], "ok": False}
+    report["trusted"] = False
+    del document["trust_reports"][1]
+
+
 def changed(change: Any) -> dict[str, Any]:
     document = copy.deepcopy(evidence())
     change(document)
@@ -80,8 +95,11 @@ def changed(change: Any) -> dict[str, Any]:
                 verdict="BLOCK",
                 violations=[{"rule": "SC-002", "effect": "BLOCK", "finding_ids": [HEX], "message": "P0"}],
             ),
-            "trusts an image the gate blocked",
+            "a BLOCK decision comes without a trust report: nothing was signed",
         ),
+        (lambda d: d["trust_reports"][0].update(decision_id=OTHER_DECISION), "verified decision 00000000-"),
+        (lambda d: d["trust_reports"][0].update(decision_id=None), "names the decision it verified"),
+        (block_with_a_report_that_does_not_trust_it, "a BLOCK decision comes without a trust report"),
     ],
 )  # fmt: skip
 def test_evidence_that_contradicts_itself_has_a_problem(change: Any, message: str) -> None:
