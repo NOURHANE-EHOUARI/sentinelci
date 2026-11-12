@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import uuid
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
@@ -24,6 +25,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from sentinel_api.config import sqlalchemy_url
 from sentinel_api.explanations import claim, finish
+from sentinel_worker import tasks
 from sentinel_worker.tasks import run_explain
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -307,6 +309,39 @@ def test_an_unexpected_error_fails_the_request_naming_only_its_type(
     assert worker(sessions, request["id"]) == "failed"
     done = client.get(f"/api/v1/explain-requests/{request['id']}").json()
     assert (done["status"], done["reason"]) == ("failed", "the worker failed: KeyError")
+
+
+def test_a_request_failed_as_stale_while_the_model_ran_drops_its_outcome_and_says_so(
+    client: TestClient,
+    headers: dict[str, str],
+    queue: Queue,
+    sessions: Callable[[], Session],
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    recorded_run(client, headers, SCA)
+    request = ask(client, headers, SCA["id"]).json()
+    real = tasks.explain_finding
+
+    def slow(*args: Any, **kwargs: Any) -> Any:
+        # A later ask fails the request as stale while the model is still answering.
+        with psycopg.connect(database_url, autocommit=True) as connection:
+            connection.execute(
+                "UPDATE explain_requests SET status = 'failed', "
+                "reason = 'no worker finished it within an hour' WHERE id = %s",
+                (request["id"],),
+            )
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(tasks, "explain_finding", slow)
+    with caplog.at_level(logging.WARNING, logger="sentinel_worker.tasks"):
+        assert worker(sessions, request["id"], ANSWER) == "stale"
+    assert f"request {request['id']} was failed as stale while the model ran" in caplog.text
+    assert "(explained) is dropped" in caplog.text
+    done = client.get(f"/api/v1/explain-requests/{request['id']}").json()
+    assert (done["status"], done["reason"]) == ("failed", "no worker finished it within an hour")
+    assert client.get(f"/api/v1/findings/{SCA['id']}/explanation").status_code == 404
 
 
 def test_an_explanation_that_breaks_the_contract_or_is_about_another_finding_is_not_kept(
