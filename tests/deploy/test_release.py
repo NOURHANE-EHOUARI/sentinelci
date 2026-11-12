@@ -434,6 +434,7 @@ def test_the_build_reads_the_staged_context_not_the_working_tree(repo: Path, tmp
     (build,) = recorder.named("docker buildx build")
     assert build.args[-1] == str(repo / "out" / "release" / "work" / "source" / SERVICE)
     assert "REQUIREMENTS=requirements.release.txt" in build.args
+    assert "ONLY_BINARY=:all:" in build.args, "a release installs wheels only"
 
 
 def test_a_block_signs_nothing_and_keeps_the_image_for_the_attack_demo(repo: Path, tmp_path: Path) -> None:
@@ -457,6 +458,7 @@ def test_the_demo_block_image_is_never_asked_a_password(repo: Path, tmp_path: Pa
     assert made() == release.EXIT_RELEASED
     assert made.asked == [] and recorder.named("cosign") == []
     assert "REQUIREMENTS=requirements.block.txt" in recorder.named("docker")[0].args
+    assert "ONLY_BINARY=:none:" in recorder.named("docker")[0].args, "pyyaml 5.3.1 has no cp312 wheel"
 
 
 def test_an_expected_block_that_passes_signs_nothing(repo: Path, tmp_path: Path) -> None:

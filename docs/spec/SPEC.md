@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.83 | A4 release image, wheels only (Hiba's review of #69): shop-api's release Dockerfile installs its hash-pinned requirements with `--only-binary=:all:`, so no setup.py runs and every byte installed is covered by a hash (pip does not check the hashes of an sdist's build dependencies). `make release` passes `ONLY_BINARY=:all:`; only `make release-block` passes `:none:`, since the seeded pyyaml 5.3.1 has no wheel for Python 3.12, and that image is never signed. |
 | 1.1.66 | Platform API 1.6.1 (B1, #78 and #79 reviews): the 409 of `POST /api/v1/runs/{id}/decision` and of `POST /api/v1/runs/{id}/correlations` is documented with both of its shapes (`DecisionExists` or `CorrelationExists` when one is recorded, `ErrorOut` when the run's findings are not recorded yet), so a generated client never assumes the recorded one is there. `GET /api/v1/runs` says that offset pages are stable for a fixed set of runs only. The decisions table says which copied columns the database checks against the document (`decision_id` and `verdict`, which are listed and counted) and which the API only copies for display (`evaluated_at`, `engine_version`). |
 | 1.1.64 | A10 self-gate and SentinelCI's signed release (P4): `make release-sentinelci VERSION=X.Y.Z` (`release.py sentinelci`) runs the self-gate, builds both packages and the policy bundle twice from the exported tree (SOURCE_DATE_EPOCH = the commit's time) and refuses a build that is not byte for byte reproducible, signs each artifact and SHA256SUMS with the release key, attests each one (SLSA provenance v1 and the decision), verifies everything with the committed public key offline, then keeps it and tags `vX.Y.Z` locally; a version is released once. Self-gate: `make self-gate` (`release.py self-gate`) runs the release gate on SentinelCI's own tree at `main`: the laptop release's preconditions, the commit's files without demo-shop (exported and checked blob by blob against the commit, so no export attribute hides or rewrites one; links and submodules refused), the gate's five scanners (Grype on the lockfiles' SBOM), the commit's `.sentinel/waivers.yaml`, then `sentinel evaluate --context release`; nothing is signed. Its first run found four `CREATE DATABASE` statements built with f-strings in the API tests and a PEP 695 test helper Opengrep cannot parse (fixed), and three fake values in test fixtures (waived). |
 | 1.1.59 | B5a (§8, ADR-0009): `sentinel_ai.providers.OllamaProvider`, the default model backend, on the standard library only. Local only (the loopback or the Compose service `ollama`; another host only when asked), no proxy, no redirect. The pinned digests of ADR-0009 are checked before every request (a missing model or another digest is refused, nothing sent). `complete` asks for JSON of the schema, deterministic (temperature 0, fixed seed), and validates the answer (a `ValidationError` for the repair retry); `embed` returns one finite vector per text, all of one size, in batches of 64 texts. A time limit on each whole request, an 8 MiB answer cap, and errors that never echo the prompt or the answer. `deploy/compose/README.md` says how to pull the pinned models. |
@@ -272,6 +273,7 @@ exclusions, `only-fixed`, `only-notfixed`, `ignore-wontfix`, a distro override, 
 exceptions go through waivers (§6.4).
 
 
+
 Stage 7, the image: `sentinel scan image` runs the same Syft on the image's OCI layout archive
 (what `docker buildx build --output type=oci` writes, no registry), checks that it is the image of the given
 manifest digest, and matches its SBOM with the same Grype and database. Its findings are CONTAINER findings, each
@@ -302,6 +304,13 @@ match on the skipped text with the same occurrence numbering (§13.1), with a me
 quotes no code. Valid modern syntax Opengrep cannot parse yet (a PEP 695 `def f[T]`, some TypeScript constructs)
 shows up this way until Opengrep catches up: the way out is a reviewed waiver with an expiry, never a scanner
 flag.
+
+Stage 7, the image: `sentinel scan image` runs the same Syft on the image's OCI layout archive
+(what `docker buildx build --output type=oci` writes, no registry), checks that it is the image of the given
+manifest digest, and matches its SBOM with the same Grype and database. Its findings are CONTAINER findings, each
+with the image's digest and reference and the layer the package is in (its first place by path); a report about
+another image is refused. The tool status names Syft and Grype separately: Grype is `not_run` when Syft failed.
+
 
 
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
