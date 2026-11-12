@@ -18,7 +18,6 @@ dev = [
     "jsonschema[format-nongpl]>=4.23",
     "import-linter>=2.3",
     "httpx2>=2.16",
-    "zizmor>=1.30",
     "pre-commit>=4.0",
     "types-pyyaml>=6.0.12",
 ]

@@ -11,8 +11,13 @@
 #   findings      array of Finding v1 objects (schemas/finding.v1.json)
 #   waivers       entries of .sentinel/waivers.yaml (schemas/waivers.v1.json), unvalidated:
 #                 checking them is this policy's job (SC-005)
+#   policy_profile optional: `policy_profile` of the base-branch sentinel.yaml (policies/profiles.rego);
+#                 absent: default. An unknown profile is malformed input (SC-010).
+#   vex           optional: every statement of .sentinel/vex.json (schemas/vex.v1.json), checked and normalized
+#                 by `sentinel evaluate`: {status, vulnerabilities, products: [{base, version}], justification,
+#                 made, document_updated} (UTC RFC 3339; a date after evaluated_at is malformed input, SC-010)
 #
-# Output: data.sentinel.gate.decision = {verdict, violations, waivers_applied}, in the shape of
+# Output: data.sentinel.gate.decision = {verdict, violations, waivers_applied, vex_applied}, in the shape of
 # schemas/decision.v1.json. One violation per rule, listing every finding id that triggered it.
 #
 # Fail closed: anything that cannot be evaluated (malformed input, invalid waiver) blocks.
@@ -245,12 +250,81 @@ block contains v if {
 	v := {"rule": "SC-001", "effect": "BLOCK", "finding_ids": sort(secret_ids), "message": "Hard-coded secret"}
 }
 
+# ---------------------------------------------------------------- VEX (SPEC section 6.4)
+
+# A not_affected statement covers a package finding when one of its vulnerability ids is one of the finding's ids
+# and one of its products is the finding's package: same purl base (canonical: PyPI names folded as PEP 503),
+# and the same version when the statement names one.
+canonical_base(p) := concat("", ["pkg:pypi/", regex.replace(lower(trim_prefix(base, "pkg:pypi/")), `[-_.]+`, "-")]) if {
+	base := purl_base(p)
+	startswith(base, "pkg:pypi/")
+}
+
+canonical_base(p) := purl_base(p) if not startswith(purl_base(p), "pkg:pypi/")
+
+purl_version(p) := m[0][1] if {
+	m := regex.find_all_string_submatch_n(`@([^/@]+)$`, regex.replace(p, `[?#].*$`, ""), 1)
+	count(m) == 1
+}
+
+finding_ids(f) := {upper(i) |
+	some i in array.concat(array.concat([object.get(f, "rule_id", "")], object.get(f, "cve", [])), object.get(f, "aliases", []))
+	is_string(i)
+}
+
+vex_product(p, f) if {
+	canonical_base(f.package.purl) == p.base
+	p.version == null
+}
+
+vex_product(p, f) if {
+	canonical_base(f.package.purl) == p.base
+	purl_version(f.package.purl) == p.version
+}
+
+vex_about(s, f) if {
+	f.category in {"SCA", "CONTAINER"}
+	ids := finding_ids(f)
+	some v in s.vulnerabilities
+	upper(v) in ids
+	some p in s.products
+	vex_product(p, f)
+}
+
+# OpenVEX statements are a sequence, each overriding the earlier ones. The gate does not order them: a statement
+# of any other status (affected, fixed, under_investigation) about the finding disputes not_affected (fail closed),
+# so a document must not keep an earlier statement of another status once it says not_affected.
+not_affected(f) if {
+	some s in object.get(input, "vex", [])
+	s.status == "not_affected"
+	vex_current(s)
+	vex_about(s, f)
+	not vex_disputed(f)
+}
+
+vex_disputed(f) if {
+	some s in object.get(input, "vex", [])
+	s.status != "not_affected"
+	vex_about(s, f)
+}
+
+# A not_affected statement is a claim about code that every change may alter: like a waiver, it applies for
+# 90 days after it was made (its last_updated or timestamp, else the document's), then must be re-made.
+vex_current(s) if now - time.parse_rfc3339_ns(s.made) <= max_waiver_ns
+
+vex_applied contains f.id if {
+	some f in input.findings
+	not_affected(f)
+}
+
 # ---------------------------------------------------------------- rule catalogue (SPEC section 6.3)
 
-# A finding counts for a rule when the change introduces it (any finding outside PR mode) and no waiver covers it.
+# A finding counts for a rule when the change introduces it (any finding outside PR mode), and no waiver and no
+# not_affected VEX statement covers it.
 counts(f) if {
 	introduced(f)
 	not waived(f)
+	not not_affected(f)
 }
 
 # The priority the risk engine (B3) recorded, or the worst case for an unscored finding. risk = 100 x S x E x X x R
@@ -367,9 +441,30 @@ block contains v if {
 	}
 }
 
+# SC-006 is a WARN, or a BLOCK in a profile that sets p1_block_above (strict: any P1 blocks).
+profile_name := object.get(input, "policy_profile", "default")
+
+profile := config.profiles[profile_name]
+
+input_errors contains sprintf("unknown policy profile %v", [profile_name]) if not config.profiles[profile_name]
+
+p1_blocks if count(priority_ids.P1) > profile.p1_block_above
+
 warn contains v if {
+	not p1_blocks
 	found := priority_ids.P1
 	v := {"rule": "SC-006", "effect": "WARN", "finding_ids": sort(found), "message": sprintf("P1 finding%s", [unscored_note(found)])}
+}
+
+block contains v if {
+	p1_blocks
+	found := priority_ids.P1
+	v := {
+		"rule": "SC-006",
+		"effect": "BLOCK",
+		"finding_ids": sort(found),
+		"message": sprintf("P1 finding, %s profile%s", [profile_name, unscored_note(found)]),
+	}
 }
 
 # SC-010: a scanner failed, timed out, did not match its pin or did not run. Its silence is not a pass.
@@ -423,6 +518,13 @@ detail_suffix(tool) := sprintf(" (%s)", [tool.detail]) if {
 # SC-010: the gate cannot evaluate what it was given. Silence is never a pass.
 input_errors contains "findings must be an array" if not is_array(object.get(input, "findings", null))
 
+# A VEX date after the evaluation would outlive any review (and win any ordering by date): refuse the document.
+input_errors contains "a VEX statement or document is dated after evaluated_at" if {
+	some s in object.get(input, "vex", [])
+	some field in ["made", "document_updated"]
+	time.parse_rfc3339_ns(s[field]) > now
+}
+
 input_errors contains "waivers must be an array" if not is_array(object.get(input, "waivers", null))
 
 input_errors contains "evaluated_at must be an RFC 3339 timestamp" if not now
@@ -467,4 +569,5 @@ decision := {
 	"verdict": verdict,
 	"violations": array.concat(sort(block), sort(warn)),
 	"waivers_applied": sort(waivers_applied),
+	"vex_applied": sort(vex_applied),
 }

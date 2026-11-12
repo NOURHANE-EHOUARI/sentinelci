@@ -1,6 +1,7 @@
 """Running a verified tool: verify before exec, minimal environment, timeouts, exit codes (task A1b)."""
 
 import json
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -9,7 +10,7 @@ import pytest
 from sentinelci.scanners.errors import ScannerError, ScannerTimeout, ToolIntegrityError
 from sentinelci.scanners.installer import install_tools
 from sentinelci.scanners.lock import ToolLock, load_lock
-from sentinelci.scanners.runner import run_verified_tool
+from sentinelci.scanners.runner import is_within, run_verified_tool
 
 from .conftest import BASE, FakeReleases, raw_tool_lock, sha256
 
@@ -116,3 +117,13 @@ def test_run_metadata_is_serializable(
     assert data["tool"] == "rawtool"
     assert data["binary_sha256"] == sha256(b"#!/bin/sh\nexit 0\n")
     assert data["args"] == ["--flag"]
+
+
+def test_a_path_that_cannot_be_resolved_is_not_within(tmp_path: Path) -> None:
+    # Third review of #26: a link loop made Path.resolve() raise RuntimeError on Python 3.12.
+    (tmp_path / "a").symlink_to("b")
+    (tmp_path / "b").symlink_to("a")
+    assert is_within(tmp_path / "plain", tmp_path)
+    assert not is_within(tmp_path / "x", tmp_path / "elsewhere")
+    if sys.version_info < (3, 13):
+        assert not is_within(tmp_path / "a", tmp_path)

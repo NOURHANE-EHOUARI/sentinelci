@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "group_id": "523c1ad961f704479b5a4f86242f0f59e84671d75e24bf73222c687e32a2e628",
+  "finding_ids": [
+    "1111111111111111111111111111111111111111111111111111111111111111",
+    "2222222222222222222222222222222222222222222222222222222222222222",
+    "3333333333333333333333333333333333333333333333333333333333333333"
+  ],
+  "stage": "structural",
+  "labelled_by": "llm",
+  "title": "SQL built from strings in the data layer",
+  "root_cause": "Three queries format user input into SQL text instead of passing parameters.",
+  "single_fix": "Use parameterized queries in app/db.py.",
+  "model": {
+    "provider": "ollama",
+    "name": "gemma4:12b-it-qat",
+    "prompt_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+    "input_sha256": "5555555555555555555555555555555555555555555555555555555555555555"
+  }
+}
