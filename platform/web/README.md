@@ -7,7 +7,7 @@ it never writes, and it holds no token.
 |---|---|
 | Overview: open findings by priority and category | `GET /metrics` (`sentinel_findings_open`, the default branch's latest release runs). No data yet is said, never shown as zeros |
 | Findings: filters in the URL (also a run's, `?run_id=`), 50 per page | `GET /api/v1/findings` |
-| Finding detail: the finding, the runs that saw it, and its root-cause group (advisory, and marked when a model wrote it) | `GET /api/v1/findings/{id}`, `GET /api/v1/runs/{id}/correlations` |
+| Finding detail: the finding, the runs that saw it, its root-cause group (advisory, and marked when a model wrote it), and its latest explanation (advisory, naming its model; only the canonical CWE, NVD, GitHub advisory and OSV pages are links; none recorded, or a secret's finding, is said so) | `GET /api/v1/findings/{id}`, `GET /api/v1/runs/{id}/correlations`, `GET /api/v1/findings/{id}/explanation` |
 | Releases (A8): each release `make release` recorded, its verdict, and whether `sentinel verify` trusted the signed image (a BLOCK: not signed) | `GET /api/v1/releases` |
 | Release (A8): the decision (rules that fired, recorded input digests, scanner versions, waivers) and each trust report check by check (registry mode, what Kyverno checks; evidence mode) | `GET /api/v1/releases/{digest}/evidence` |
 | Supply chain (A8): the latest releases, each with its signed image and four attestations as `sentinel verify` found them in the registry, and how many releases the gate let through carry all of them | `GET /api/v1/releases`, `GET /api/v1/releases/{digest}/evidence` |
