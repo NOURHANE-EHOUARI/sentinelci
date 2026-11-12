@@ -20,7 +20,7 @@ there is no default password anywhere.
 | postgres | `127.0.0.1:5432`, user and database `sentinel` | default | PostgreSQL 18 + pgvector |
 | redis | `127.0.0.1:6379` (password) | default | Celery broker (B1) |
 | seaweedfs | http://127.0.0.1:8333 (S3, signed requests only) | default | evidence store, ADR-0007 |
-| ollama | http://127.0.0.1:11434 | `ai` | local LLM (B5); no model pulled yet |
+| ollama | http://127.0.0.1:11434 | `ai` | local LLM (B5); pull the pinned models (below) |
 | prometheus | http://127.0.0.1:9090 | `observability` | metrics (A8) |
 | grafana | http://127.0.0.1:3000, user `admin` | `observability` | dashboards as code (A8) |
 
@@ -54,8 +54,55 @@ again, for example after a lost answer) is answered 409 with the existing run in
 findings only if `findings_sha256` is null. In GitHub Actions the run id is `<run id>/<run attempt>`, so a re-run
 of the job is a new run. A run without `run_id` (a local run) is always new. `GET /api/v1/runs/<run id>/findings` gives the upload back
 byte for byte (its sha256 is `findings_sha256`), for the correlator or a replay. Bodies are capped before
-authentication: 64 KiB for JSON, `SENTINEL_API_MAX_UPLOAD_BYTES` (32 MiB by default) for a findings upload. To
-rotate the token, delete both `SENTINEL_API_TOKEN` lines from `.env` and run `make compose-env`.
+authentication: 64 KiB for JSON, `SENTINEL_API_MAX_UPLOAD_BYTES` (32 MiB by default) for a findings upload, a
+correlation or a decision. To rotate the token, delete both `SENTINEL_API_TOKEN` lines from `.env` and run `make compose-env`.
+
+A run's correlations (the correlator's root-cause groups, advisory: the gate never reads them) are posted after
+its findings, as one Correlation v1 document:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/v1/runs/<run id>/correlations -H "Authorization: Bearer $SENTINEL_API_TOKEN" \
+  -H 'Content-Type: application/json' --data-binary @correlation.json
+curl -s http://127.0.0.1:8000/api/v1/runs/<run id>/correlations            # the latest version, byte for byte
+curl -s http://127.0.0.1:8000/api/v1/runs/<run id>/correlations/versions   # every version, newest first
+```
+
+The API records it only if its `findings_sha256` is the run's and its groups hold each of the run's findings
+exactly once. A version is named by the sha256 of its bytes (the same bytes again: 409 with that version), and is
+never changed or deleted.
+
+A run's gate decision (the Decision v1 document `sentinel evaluate` wrote) is posted after its findings too:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/v1/runs/<run id>/decision -H "Authorization: Bearer $SENTINEL_API_TOKEN" \
+  -H 'Content-Type: application/json' --data-binary @out/decision.v1.json
+curl -s http://127.0.0.1:8000/api/v1/runs/<run id>/decision   # byte for byte, its sha256 as the ETag
+```
+
+The API records it only if it was made on the findings the run recorded (`inputs.findings_digest` is `sha256:`
+and the run's `findings_sha256`: upload the scored findings the gate evaluated), is about the run (repo, commit,
+context, and the ref when it names one) and names only the run's findings. A run has one decision, never changed
+or deleted: the same bytes again get 409 with it, another decision is refused with 409. The platform records the
+verdict; it never decides.
+
+`GET /metrics` counts the release runs of the default branch only: set `SENTINEL_DEFAULT_REF` (default
+`refs/heads/main`) if yours is another.
+
+## Observability (A8)
+
+`COMPOSE_PROFILES=observability make up`, then open Grafana (http://127.0.0.1:3000, user `admin`, password
+`GRAFANA_ADMIN_PASSWORD` in `.env`): the read-only **SentinelCI overview** dashboard is provisioned from
+`grafana/provisioning/dashboards/`, and Prometheus scrapes the API's `GET /metrics` every 30 s.
+
+```bash
+curl -s http://127.0.0.1:8000/metrics      # SPEC section 10 names only, bounded labels, no token needed
+```
+
+The API counts in PostgreSQL, in a read-only transaction, and labels a value only with an enumerated value (never a
+repository, a commit or an id). A metric whose data the platform does not store yet is absent: its panel says "No
+data", never 0. Today only `sentinel_findings_open` has data, once a release run's findings are uploaded; the gate's
+decisions follow when the platform stores them. Change a dashboard in its JSON file, not in Grafana: the UI cannot
+save over a provisioned dashboard (`tests/deploy/test_observability.py` checks the files against SPEC section 10).
 
 ## Security rules (tested in `tests/deploy/test_compose.py`)
 
@@ -76,6 +123,27 @@ docker compose -f deploy/compose/compose.yaml down --volumes     # wipe all loca
 ```
 
 S3 with the AWS CLI: `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` from `.env`, `--endpoint-url http://127.0.0.1:8333`.
+
+## Local models (B5, ADR-0009)
+
+The `ai` profile starts Ollama with no model. Pull the two pinned models once (about 8 GB, kept in the
+`ollama-models` volume):
+
+```bash
+docker compose -f deploy/compose/compose.yaml exec ollama ollama pull gemma4:12b-it-qat
+docker compose -f deploy/compose/compose.yaml exec ollama ollama pull qwen3-embedding:0.6b
+```
+
+`sentinel_ai.providers.OllamaProvider` (`SENTINEL_OLLAMA_URL`, default `http://127.0.0.1:11434`) checks each
+model's digest against ADR-0009 before every request: a missing model, or one with another digest, is refused
+and nothing is sent. It talks only to the loopback or the Compose service `ollama`, never through a proxy. The name `ollama`
+is meant for the Compose network only: elsewhere, a DNS search domain could resolve it to another machine, so
+use `127.0.0.1` outside Compose. The
+opt-in test runs it against your server (minutes on a CPU):
+
+```bash
+SENTINEL_OLLAMA_URL=http://127.0.0.1:11434 uv run pytest ai/tests/test_ollama.py -k real
+```
 
 ## Troubleshooting
 

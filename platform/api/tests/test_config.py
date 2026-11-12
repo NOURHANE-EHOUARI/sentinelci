@@ -7,7 +7,7 @@ import hashlib
 import pytest
 
 from sentinel_api import migrate
-from sentinel_api.config import DEFAULT_MAX_UPLOAD_BYTES, ConfigError, Settings
+from sentinel_api.config import DEFAULT_MAX_UPLOAD_BYTES, DEFAULT_REF, ConfigError, Settings
 
 GOOD = hashlib.sha256(b"token").hexdigest()
 OTHER = hashlib.sha256(b"other").hexdigest()
@@ -23,11 +23,31 @@ def test_hashes_and_limits_are_read(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_defaults_refuse_every_write(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("SENTINEL_API_TOKEN_SHA256", "SENTINEL_API_MAX_UPLOAD_BYTES", "SENTINEL_DATABASE_URL"):
+    for name in (
+        "SENTINEL_API_TOKEN_SHA256",
+        "SENTINEL_API_MAX_UPLOAD_BYTES",
+        "SENTINEL_DATABASE_URL",
+        "SENTINEL_DEFAULT_REF",
+    ):
         monkeypatch.delenv(name, raising=False)
     settings = Settings.from_env()
     assert (settings.token_sha256, settings.database_url) == (frozenset(), None)
     assert settings.max_upload_bytes == DEFAULT_MAX_UPLOAD_BYTES
+    assert settings.default_ref == DEFAULT_REF == "refs/heads/main"
+
+
+def test_the_default_branch_is_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SENTINEL_DEFAULT_REF", "refs/heads/trunk")
+    assert Settings.from_env().default_ref == "refs/heads/trunk"
+
+
+@pytest.mark.parametrize("value", ["main", "refs/heads/a b", "refs/heads/x\n", "refs/" + "x" * 241])
+def test_a_default_branch_that_is_not_a_full_ref_is_refused(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("SENTINEL_DEFAULT_REF", value)
+    with pytest.raises(ConfigError, match="SENTINEL_DEFAULT_REF must be a full git ref"):
+        Settings.from_env()
 
 
 @pytest.mark.parametrize(
