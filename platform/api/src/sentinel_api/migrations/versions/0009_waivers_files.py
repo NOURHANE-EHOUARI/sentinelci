@@ -11,6 +11,10 @@ The database is the backstop for what the API checks:
   file no gate evaluated;
 - a file never changes and is never deleted (the same trigger).
 
+`entries` is the API's parse of the bytes, and the database cannot check it against them: PL/pgSQL reads no
+YAML. A row written straight into the table could list other waivers than its file holds, the same trust as
+any other column the API derives for display.
+
 Going back below 0009 would drop the only copy of those files, so the downgrade stops, changing nothing, while
 any file is kept.
 
