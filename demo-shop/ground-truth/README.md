@@ -39,9 +39,10 @@ controls:
 
 Matching rules for the harness:
 
-- A seed is **detected** when any listed `(tool, rule)` reports it in the seed's file. Secrets also match on
-  the line, because Gitleaks reports exact lines. Other tools point at different lines for the same resource:
-  Trivy at the attribute.
+- A seed is **detected** only by a finding of its own category, when any listed `(tool, rule)` reports it in
+  the seed's file. An SCA finding never detects a CONTAINER seed: that needs an image scanned. Secrets also
+  match on the line, because Gitleaks reports exact lines. Other tools point at different lines for the same
+  resource: Trivy at the attribute.
 - Other findings in a seeded file are real but unlisted issues. They count neither as hits nor as false
   positives. Only controls measure false positives.
 - Every seeded file names its ground-truth id in a comment, so a reader of the file knows it is deliberate.
@@ -49,6 +50,8 @@ Matching rules for the harness:
 - An SCA seed is detected when the tool reports its `vulnerability` on its `package` (the purl), wherever the
   tool locates it: Grype points at the lockfile (`package-lock.json`), the seed at the manifest line that
   declares the dependency, where a developer would fix it.
+- A CONTAINER seed is matched the same way, by package, in a CONTAINER finding: in an image the tool locates
+  the package in the image's own file system.
 - A seed with `known_miss` can't be detected. The evaluation counts it as a false negative in its category's
   recall: it stays in the denominator, and the report lists it with its reason. It is never excluded or
   reweighted.
