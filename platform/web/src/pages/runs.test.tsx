@@ -38,6 +38,17 @@ describe("Runs", () => {
     expect(link.getAttribute("href")).toBe(`/runs/${RUN}`);
   });
 
+  it("shows the ref filter of the URL as a chip that clears it", async () => {
+    const calls = fakeApi({
+      "/api/v1/runs?ref=refs%2Fheads%2Fmain&limit=50&offset=0": { body: { ...PAGE, items: [BLOCKED], total: 1 } },
+      "/api/v1/runs?limit=50&offset=0": { body: PAGE },
+    });
+    renderAt("/runs?ref=refs%2Fheads%2Fmain");
+    fireEvent.click(await screen.findByRole("button", { name: "refs/heads/main ✕" }));
+    await screen.findByText("refs/pull/7/head");
+    expect(calls).toEqual(["/api/v1/runs?ref=refs%2Fheads%2Fmain&limit=50&offset=0", "/api/v1/runs?limit=50&offset=0"]);
+  });
+
   it("filters by context through the URL", async () => {
     const calls = fakeApi({
       "/api/v1/runs?limit=50&offset=0": { body: PAGE },
@@ -107,8 +118,28 @@ describe("Run detail", () => {
       `/findings/${FINDING}`,
     );
     expect(within(decision).getByText(`sha256:${"c".repeat(64)}`)).toBeTruthy();
+    expect(within(decision).getByText("tool_versions.gitleaks")).toBeTruthy(); // the scanner versions are evidence too
     const findings = screen.getByRole("link", { name: "2 finding(s)" });
     expect(findings.getAttribute("href")).toBe(`/findings?run_id=${RUN}`);
+  });
+
+  it("shows a violation's effect as written: an unknown one is not 'No decision'", async () => {
+    const odd = { ...DECISION, violations: [{ rule: "SC-099", effect: "MAYBE", finding_ids: [], message: "m" }] };
+    fakeApi({ [`/api/v1/runs/${RUN}`]: { body: BLOCKED }, [`/api/v1/runs/${RUN}/decision`]: { body: odd } });
+    renderAt(`/runs/${RUN}`);
+    const decision = await screen.findByRole("region", { name: "Decision" });
+    const violation = within(decision).getByText("SC-099").closest("li")!;
+    expect(within(violation).getByText("MAYBE")).toBeTruthy();
+    expect(within(violation).queryByText("No decision")).toBeNull();
+  });
+
+  it("a date it cannot read is shown as unknown, not a blank page", async () => {
+    const odd = { ...DECISION, evaluated_at: "not a date" };
+    fakeApi({ [`/api/v1/runs/${RUN}`]: { body: { ...BLOCKED, created_at: "x" } }, [`/api/v1/runs/${RUN}/decision`]: { body: odd } });
+    renderAt(`/runs/${RUN}`);
+    const decision = await screen.findByRole("region", { name: "Decision" });
+    expect(within(decision).getByText("SC-001")).toBeTruthy();
+    expect(screen.getAllByText(/—/).length).toBeGreaterThan(0);
   });
 
   it("says no decision is recorded, never a PASS, when the API has none (404)", async () => {

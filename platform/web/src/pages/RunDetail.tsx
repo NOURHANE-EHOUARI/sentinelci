@@ -88,7 +88,8 @@ function Decision({ runId }: { runId: string }) {
           {view.violations.map((violation, index) => (
             <li key={`${violation.rule}-${index}`} className="rounded bg-white p-2">
               <span className="font-mono text-xs">{violation.rule}</span>{" "}
-              <VerdictBadge value={violation.effect} /> {violation.message}
+              <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-medium">{violation.effect || "—"}</span>{" "}
+              {violation.message}
               {violation.findingIds.length > 0 && (
                 <div className="mt-1 flex flex-wrap gap-2">
                   {violation.findingIds.map((id) => (
