@@ -126,14 +126,19 @@ def _finding(session: Session, finding_id: str, run_id: uuid.UUID | None) -> Run
     return row
 
 
-def _open(session: Session, finding_id: str, run_id: uuid.UUID) -> ExplainRequest | None:
-    return session.scalars(
-        select(ExplainRequest).where(
-            ExplainRequest.finding_id == finding_id,
-            ExplainRequest.run_id == run_id,
-            ExplainRequest.status.in_(OPEN),
-        )
-    ).first()
+def _open(
+    session: Session, finding_id: str, run_id: uuid.UUID, *, lock: bool = False
+) -> ExplainRequest | None:
+    """The open request of a finding in a run. With `lock`, its row is held until the commit, and a worker
+    that finished it meanwhile is waited for: the row is then no longer open, and None is returned."""
+    query = select(ExplainRequest).where(
+        ExplainRequest.finding_id == finding_id,
+        ExplainRequest.run_id == run_id,
+        ExplainRequest.status.in_(OPEN),
+    )
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    return session.scalars(query).first()
 
 
 def _set(session: Session, row: ExplainRequest, state: Status, reason: str | None) -> None:
@@ -157,11 +162,13 @@ def _request(
             [{"type": "secret", "loc": ("path", "finding_id"), "input": None,
               "msg": "a secret's finding is never sent to a model: rotate the secret"}]
         )  # fmt: skip
-    current = _open(session, finding_id, recorded.run_id)
+    current = _open(session, finding_id, recorded.run_id, lock=True)  # never fail one a worker is finishing
     if current is not None:
         stale = session.scalar(select(func.now() - current.updated_at > STALE_AFTER))
         if not stale:
-            return JSONResponse(_out(current).model_dump(mode="json"), status_code=status.HTTP_200_OK)
+            body = _out(current).model_dump(mode="json")
+            session.rollback()  # releases the row
+            return JSONResponse(body, status_code=status.HTTP_200_OK)
         _set(session, current, "failed", "no worker finished it within an hour")
     row = ExplainRequest(finding_id=finding_id, run_id=recorded.run_id, status="queued")
     session.add(row)
@@ -297,7 +304,9 @@ def finish(
 ) -> Status:
     """Record a running request's outcome. An explanation is kept only if it is a valid Explanation v1
     document about the request's own finding; otherwise the request fails, saying why, and nothing is kept."""
-    row = session.get(ExplainRequest, request_id)
+    # Locked until the outcome is committed: a stale ask in between either waits and sees it finished, or
+    # failed it first, and then this one is NotRunning.
+    row = session.get(ExplainRequest, request_id, with_for_update=True, populate_existing=True)
     if row is None or row.status != "running":
         raise NotRunning(f"request {request_id} is not running")
     if outcome != "explained":
