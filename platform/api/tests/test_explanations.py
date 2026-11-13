@@ -11,6 +11,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
@@ -24,7 +26,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from sentinel_api.config import sqlalchemy_url
-from sentinel_api.explanations import claim, finish
+from sentinel_api.explanations import NotRunning, claim, finish
 from sentinel_worker import tasks
 from sentinel_worker.tasks import run_explain
 
@@ -342,6 +344,78 @@ def test_a_request_failed_as_stale_while_the_model_ran_drops_its_outcome_and_say
     done = client.get(f"/api/v1/explain-requests/{request['id']}").json()
     assert (done["status"], done["reason"]) == ("failed", "no worker finished it within an hour")
     assert client.get(f"/api/v1/findings/{SCA['id']}/explanation").status_code == 404
+
+
+def test_a_stale_ask_that_lands_while_the_worker_records_waits_for_it(
+    client: TestClient, headers: dict[str, str], queue: Queue, database_url: str
+) -> None:
+    """The worker holds the row while it records an outcome: a stale ask in between waits, then sees the
+    request finished, leaves it as recorded and opens a new one (#111 review)."""
+    recorded_run(client, headers, SCA)
+    request = ask(client, headers, SCA["id"]).json()
+    with psycopg.connect(database_url) as worker:  # the worker, in the middle of `finish`
+        worker.execute(
+            "UPDATE explain_requests SET status = 'running', updated_at = now() - interval '61 minutes' "
+            "WHERE id = %s",
+            (request["id"],),
+        )
+        worker.commit()
+        worker.execute("SELECT 1 FROM explain_requests WHERE id = %s FOR UPDATE", (request["id"],))
+        worker.execute(
+            "UPDATE explain_requests SET status = 'unavailable', reason = 'the provider failed' "
+            "WHERE id = %s",
+            (request["id"],),
+        )
+        answers: list[Any] = []
+        stale_ask = threading.Thread(target=lambda: answers.append(ask(client, headers, SCA["id"])))
+        stale_ask.start()
+        time.sleep(0.5)
+        assert stale_ask.is_alive(), "the ask waits for the worker's row"
+        worker.commit()
+    stale_ask.join(10)
+    assert answers[0].status_code == 202 and answers[0].json()["id"] != request["id"]
+    old = client.get(f"/api/v1/explain-requests/{request['id']}").json()
+    assert (old["status"], old["reason"]) == ("unavailable", "the provider failed"), "not failed over it"
+
+
+def test_a_worker_that_records_while_a_stale_ask_fails_the_request_waits_and_keeps_nothing(
+    client: TestClient,
+    headers: dict[str, str],
+    queue: Queue,
+    sessions: Callable[[], Session],
+    database_url: str,
+) -> None:
+    """A stale ask holds the row while it fails the request: the worker's `finish` waits, then finds the
+    request no longer running (#111 review)."""
+    recorded_run(client, headers, SCA)
+    request = ask(client, headers, SCA["id"]).json()
+    with sessions() as session:
+        assert claim(session, uuid.UUID(request["id"])) is not None
+    raised: list[BaseException] = []
+
+    def record() -> None:
+        with sessions() as session:
+            try:
+                finish(session, uuid.UUID(request["id"]), "unavailable", reason="the provider failed")
+            except NotRunning as exc:
+                raised.append(exc)
+
+    with psycopg.connect(database_url) as stale_ask:
+        stale_ask.execute("SELECT 1 FROM explain_requests WHERE id = %s FOR UPDATE", (request["id"],))
+        stale_ask.execute(
+            "UPDATE explain_requests SET status = 'failed', "
+            "reason = 'no worker finished it within an hour' WHERE id = %s",
+            (request["id"],),
+        )
+        worker = threading.Thread(target=record)
+        worker.start()
+        time.sleep(0.5)
+        assert worker.is_alive(), "finish waits for the stale ask's row"
+        stale_ask.commit()
+    worker.join(10)
+    assert len(raised) == 1
+    done = client.get(f"/api/v1/explain-requests/{request['id']}").json()
+    assert (done["status"], done["reason"]) == ("failed", "no worker finished it within an hour")
 
 
 def test_an_explanation_that_breaks_the_contract_or_is_about_another_finding_is_not_kept(
