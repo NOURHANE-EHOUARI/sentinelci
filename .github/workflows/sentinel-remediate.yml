@@ -95,19 +95,35 @@ jobs:
           set -euo pipefail
           out="$RUNNER_TEMP/remediation"
           mkdir -p "$out/proposals" "$out/bundles"
+          # The scanned commit as it is committed, not as the checkout wrote it: a bare copy whose attributes
+          # come from no tree (attr.tree), exported with --worktree-attributes. Its .gitattributes (eol, ident,
+          # export-ignore, filters) cannot change what is scanned and fixed, so a proposal's diff always applies
+          # to the commit's own blobs, as verify reads them. The CLI still runs from the checkout.
+          work="$RUNNER_TEMP/propose"
+          repo="$work/repo.git"
+          tree="$work/tree"
+          mkdir -p "$tree"
+          if [ "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" != "$SHA" ]; then
+            echo "::error::the checkout is not $SHA"; exit 1
+          fi
+          git init --quiet --bare "$repo"
+          git -C "$repo" config attr.tree "$(git hash-object -t tree /dev/null)"
+          git -C "$repo" fetch --quiet "$GITHUB_WORKSPACE" "+HEAD:refs/sentinel/base"
+          [ "$(git -C "$repo" rev-parse refs/sentinel/base)" = "$SHA" ]
+          git -C "$repo" archive --worktree-attributes --format=tar "$SHA" | tar -x -C "$tree"
           # A scan that fails proposes nothing: the job fails, and nothing is published.
-          uv run sentinel scan iac "$SCAN_PATH" --repo-root . --out "$RUNNER_TEMP/findings.ndjson" \
+          uv run sentinel scan iac "$tree/$SCAN_PATH" --repo-root "$tree" --out "$RUNNER_TEMP/findings.ndjson" \
             --repo "$REPO" --commit "$SHA" --ref "$REF" --run-id "$RUN_ID" --context release \
             --tools-dir "$RUNNER_TEMP/sentinel-tools" --tool-status-out "$RUNNER_TEMP/tool-status.json"
           for strategy in kubernetes dockerfile; do
             uv run sentinel remediate "$strategy" --findings "$RUNNER_TEMP/findings.ndjson" \
-              --out "$out/proposals/$strategy.json" --repo-root .
+              --out "$out/proposals/$strategy.json" --repo-root "$tree"
             [ -f "$out/proposals/$strategy.json" ] || { echo "$strategy: nothing to propose"; continue; }
             uv run sentinel remediate apply --proposal "$out/proposals/$strategy.json" \
-              --findings "$RUNNER_TEMP/findings.ndjson" --repo-root . --base "$SHA" \
+              --findings "$RUNNER_TEMP/findings.ndjson" --repo-root "$repo" --base "$SHA" \
               > "$out/proposals/$strategy.applied.json"
             branch="$(jq -r .branch "$out/proposals/$strategy.applied.json")"
-            git bundle create "$out/bundles/$strategy.bundle" "refs/heads/$branch" "^$SHA"
+            git -C "$repo" bundle create "$out/bundles/$strategy.bundle" "refs/heads/$branch" "^$SHA"
             echo "$strategy: $branch"
           done
           # Always written, so the artifact exists and `publish` downloads it even when nothing was proposed.

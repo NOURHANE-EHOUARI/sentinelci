@@ -25,10 +25,12 @@ VERIFYING → VERIFIED | REJECTED | FAILED, "never merges", "verification jobs g
 ## Decision
 
 1. **Two jobs** (`.github/workflows/sentinel-remediate.yml`, by hand only).
-   - **`propose`** has a read-only token and no secret. It runs the pinned Trivy, `scan iac` and the fixers,
-     then `remediate apply`, which commits each proposal on its own `sentinel/fix/<id>` branch of the clone
-     with plumbing commands (#48). It hands over each proposal, `apply`'s output and a git bundle of that
-     branch.
+   - **`propose`** has a read-only token and no secret. It reads the scanned commit as it is committed: a bare
+     copy whose attributes come from no tree (`attr.tree`), exported with `git archive --worktree-attributes`,
+     so the commit's `.gitattributes` cannot rewrite what is scanned and fixed (#98 review). It runs the pinned
+     Trivy, `scan iac` and the fixers on that tree, then `remediate apply`, which commits each proposal on its
+     own `sentinel/fix/<id>` branch of the bare copy with plumbing commands (#48). It hands over each
+     proposal, `apply`'s output and a git bundle of that branch.
    - **`publish`** has the write token (`contents` and `pull-requests`) and runs no repository code: no
      checkout, no Python, no package. Its one script uses the runner's git, jq and gh.
 2. **`publish` trusts nothing `propose` says.** It fetches the scanned commit and the bundle into an empty bare

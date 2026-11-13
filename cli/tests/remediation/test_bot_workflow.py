@@ -268,8 +268,11 @@ class Bot:
             f"^{self.base}",
         )
 
-    def run(self, job: str, name: str, **env: str) -> subprocess.CompletedProcess[str]:
-        """A step's script, with the environment the workflow gives it (`env`) and a fresh GITHUB_OUTPUT."""
+    def run(
+        self, job: str, name: str, cwd: Path | None = None, **env: str
+    ) -> subprocess.CompletedProcess[str]:
+        """A step's script, with the environment the workflow gives it (`env`) and a fresh GITHUB_OUTPUT, in
+        `cwd` (the job's checkout) if given."""
         self.output = self.tmp / f"{job}-output"
         self.output.write_text("")
         base = {
@@ -279,6 +282,7 @@ class Bot:
         }  # fmt: skip
         return subprocess.run(
             ["bash", "-c", step(job, name)["run"]],
+            cwd=cwd,
             env=base | env,
             capture_output=True,
             text=True,
@@ -559,6 +563,60 @@ def tools_with_opa() -> Path:
     if not all((tools / "bin" / tool).exists() for tool in ("gitleaks", "trivy", "opa")):
         pytest.skip("SENTINEL_TOOLS_DIR needs gitleaks, trivy and opa")
     return tools
+
+
+PROPOSE_STEP = "Scan, propose and commit each proposal on its branch"
+
+
+def test_propose_scans_and_fixes_the_commit_as_committed() -> None:
+    """#98 review, nit 2: the propose job reads the scanned commit through a bare copy whose attributes come
+    from no tree, never through the checkout, which its .gitattributes may have rewritten."""
+    run = step("propose", PROPOSE_STEP)["run"]
+    init = run.index('git init --quiet --bare "$repo"')
+    pinned = run.index('git -C "$repo" config attr.tree "$(git hash-object -t tree /dev/null)"')
+    assert init < pinned < run.index('git -C "$repo" fetch')
+    assert 'git -C "$repo" archive --worktree-attributes --format=tar "$SHA" | tar -x -C "$tree"' in run
+    assert 'sentinel scan iac "$tree/$SCAN_PATH" --repo-root "$tree"' in run
+    assert '--out "$out/proposals/$strategy.json" --repo-root "$tree"' in run, "the fixer reads the tree"
+    assert '--repo-root "$repo" --base "$SHA"' in run and "--repo-root ." not in run
+    assert 'git -C "$repo" bundle create' in run
+
+
+def test_a_checkout_its_attributes_rewrote_still_gets_its_proposal(bot: Bot) -> None:
+    """The scanned commit sets eol=crlf, so the checkout's manifest differs from its blob. The propose step
+    still proposes, and its commit applies to the blob: the diff is made from the commit, not the checkout.
+    Reading the checkout, the fixer resolved nothing and the job proposed nothing, silently."""
+    tools = tools_with_opa()
+    (bot.clone / ".gitattributes").write_text("demo-shop/** text eol=crlf\n")
+    git(bot.clone, "add", ".gitattributes")
+    git(bot.clone, "commit", "-qm", "attributes")
+    git(bot.clone, "push", "-q", str(bot.origin), "main")
+    sha = git(bot.clone, "rev-parse", "HEAD")
+    checkout = bot.tmp / "checkout"
+    subprocess.run(["git", "clone", "-q", str(bot.origin), str(checkout)], check=True)
+    assert b"\r\n" in (checkout / SEED_PATH).read_bytes(), "the checkout was rewritten"
+    shutil.copy(ROOT / "tools.lock.toml", checkout)  # the job's checkout is this repository, which has it
+    runner = bot.tmp / "runner"
+    runner.mkdir()
+    (runner / "sentinel-tools").symlink_to(tools)
+    shim = bot.tmp / "bin" / "uv"  # `uv run sentinel ...` as the job runs it, with this environment's CLI
+    shim.write_text(f'#!/bin/sh\n[ "$1" = run ] && shift\nexec {Path(sys.executable).parent}/"$@"\n')
+    shim.chmod(0o755)
+    done = bot.run(
+        "propose", PROPOSE_STEP, cwd=checkout, RUNNER_TEMP=str(runner), GITHUB_WORKSPACE=str(checkout),
+        SHA=sha, REF="refs/heads/main", RUN_ID="1",
+    )  # fmt: skip
+    assert done.returncode == 0, done.stdout + done.stderr
+    out = runner / "remediation"
+    assert (out / "proposals" / "kubernetes.applied.json").is_file(), done.stdout + done.stderr
+    applied = json.loads((out / "proposals" / "kubernetes.applied.json").read_text())
+    assert applied["base"] == sha and (out / "summary.txt").read_text() == "proposals: 1\n"
+    bundle = out / "bundles" / "kubernetes.bundle"
+    git(checkout, "fetch", "-q", str(bundle), f"refs/heads/{applied['branch']}")
+    assert git(checkout, "rev-parse", "FETCH_HEAD") == applied["commit"]
+    patched = git(checkout, "show", f"{applied['commit']}:{SEED_PATH}")
+    assert "\r" not in patched and "runAsNonRoot: true" in patched, "the blob's own line endings, fixed"
+    assert git(checkout, "diff", "--name-only", sha, applied["commit"]) == SEED_PATH
 
 
 def test_one_run_proposes_publishes_verifies_and_reports(bot: Bot) -> None:
