@@ -34,6 +34,7 @@ from sentinelci.scanners.zizmor import (
 ROOT = Path(__file__).resolve().parents[3]
 REPO_LOCK = ROOT / "tools.lock.toml"
 LOCK = load_lock(REPO_LOCK)
+PINNED = LOCK.python_tools["zizmor"].version  # the version every real run must report
 INJECTION = """name: label
 on:
   issues:
@@ -167,7 +168,7 @@ def test_another_cis_file_is_skipped_and_reported_never_counted_as_audited(tmp_p
     assert scan.run is not None and "ci/config.yml" not in scan.run.args
     (repo / "examples" / "label.yml").unlink()
     assert scan_pipelines_with_run(repo, lock=LOCK) == PipelineScan(
-        results=[], run=None, audited=[], skipped=["ci/config.yml", "ci/other.yml"], version="1.31.1",
+        results=[], run=None, audited=[], skipped=["ci/config.yml", "ci/other.yml"], version=PINNED,
         binary_sha256=verified_zizmor(LOCK).sha256,
     )  # fmt: skip
 
@@ -195,7 +196,7 @@ def test_nothing_to_audit_runs_nothing_but_still_checks_the_binary(
     repo = tmp_path / "empty"
     repo.mkdir()
     assert scan_pipelines_with_run(repo, lock=LOCK) == PipelineScan(
-        results=[], run=None, audited=[], skipped=[], version="1.31.1",
+        results=[], run=None, audited=[], skipped=[], version=PINNED,
         binary_sha256=verified_zizmor(LOCK).sha256,
     )  # fmt: skip
 
@@ -228,7 +229,7 @@ def test_a_replaced_binary_never_runs_even_with_its_record_rewritten(
     now checked against tools.lock.toml, whose hashes come from the wheels uv.lock pins."""
     _environment_with(tmp_path, monkeypatch, b"#!/bin/sh\necho '[]'\n")
     with pytest.raises(
-        ToolIntegrityError, match=r"is not a zizmor 1\.31\.1 binary pinned in tools\.lock\.toml"
+        ToolIntegrityError, match=rf"is not a zizmor {re.escape(PINNED)} binary pinned in tools\.lock\.toml"
     ):
         scan_pipelines_with_run(_repo(tmp_path), lock=LOCK)
 
@@ -245,9 +246,8 @@ def test_another_installed_version_never_runs(monkeypatch: pytest.MonkeyPatch) -
         version = "1.30.0"
 
     monkeypatch.setattr(zizmor, "distribution", lambda name: Dist())
-    with pytest.raises(
-        ToolIntegrityError, match=r"zizmor 1\.30\.0 is installed, but tools\.lock\.toml pins 1\.31\.1"
-    ):
+    pins = rf"zizmor 1\.30\.0 is installed, but tools\.lock\.toml pins {re.escape(PINNED)}"
+    with pytest.raises(ToolIntegrityError, match=pins):
         verified_zizmor(LOCK)
 
 
@@ -369,12 +369,12 @@ def test_cli_summary_names_the_verified_version_even_when_every_file_is_skipped(
     (repo / "ci" / "config.yml").write_text(CIRCLECI)
     code, output = _cli(repo, tmp_path / "out.ndjson")
     assert code == 0, output
-    assert "zizmor 1.31.1: 0 file(s) audited, 1 skipped, 0 finding(s)" in output
+    assert f"zizmor {PINNED}: 0 file(s) audited, 1 skipped, 0 finding(s)" in output
     (repo / "ci" / "config.yml").unlink()
     (repo / ".github" / "workflows").mkdir(parents=True)
     (repo / ".github" / "workflows" / "clean.yml").write_text(CLEAN)
     code, output = _cli(repo, tmp_path / "out.ndjson")
-    assert code == 0 and "zizmor 1.31.1: 1 file(s) audited, 0 finding(s)" in output, output
+    assert code == 0 and f"zizmor {PINNED}: 1 file(s) audited, 0 finding(s)" in output, output
 
 
 def test_cli_findings_carry_the_version_that_ran(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -435,7 +435,7 @@ def test_cli_records_an_ok_tool_status_with_the_verified_binary_and_its_wheel(
     binary = verified_zizmor(LOCK)
     wheels = {wheel.sha256: wheel.binary_sha256 for wheel in LOCK.python_tools["zizmor"].wheels}
     (tool,) = document["tools"].values()
-    assert list(document["tools"]) == ["zizmor"] and tool["status"] == "ok" and tool["version"] == "1.31.1"
+    assert list(document["tools"]) == ["zizmor"] and tool["status"] == "ok" and tool["version"] == PINNED
     assert tool["binary_sha256"] == binary.sha256 and wheels[tool["artifact_sha256"]] == binary.sha256
     assert document["lock_sha256"] == hashlib.sha256(REPO_LOCK.read_bytes()).hexdigest()
 
@@ -468,6 +468,6 @@ def test_cli_records_a_failure_so_the_gate_blocks_it(
     document = json.loads(status.read_text())
     assert not list(_status_validator().iter_errors(document))
     assert document["tools"]["zizmor"]["status"] == status_name
-    assert document["tools"]["zizmor"]["version"] == "1.31.1", "the pinned version: it may never have run"
+    assert document["tools"]["zizmor"]["version"] == PINNED, "the pinned version: it may never have run"
     if how == "timeout":
         assert "37 s" in document["tools"]["zizmor"]["detail"]
