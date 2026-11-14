@@ -31,8 +31,10 @@ The report gives, next to each ARI, how many findings are labelled, with how man
 pairs of findings share one: with few same-root pairs, an ARI mostly measures whether those few merge. It
 also gives the ARI without SCA, where the truth ("one upgrade") is stage 2a's own package key, so that SCA
 does not hide the other categories. And it measures the stages that have no parameter to tune (dedup,
-structural) on the **whole run**: the test half holds every unlabelled finding and only half of the others, so
-its alert reduction is not demo-shop's (SPEC section 3's 40 % is read on the whole run).
+structural) on the **whole run**: the halves split root causes, not findings, so the test half's share of the
+findings and of the SCA ones is whatever the split gives (a seeded package brings all its advisories, eight
+for GT-SCA-006 alone), and its alert reduction is not demo-shop's. The report counts both shares, and SPEC
+section 3's 40 % is read on the whole run.
 
 ## No tuning on the test set
 
@@ -50,11 +52,16 @@ findings.
    ```
 
    It picks the stage 2b threshold with the best ARI (a tie goes to the highest, which merges least) and
-   records the model and its digest. **Commit `threshold.json` before measuring the test half.**
+   records the model and its digest, the inputs, and whether the threshold is at the edge of the grid (0.5
+   to 0.95: then the best ARI may lie outside it, and the report says so; the grid is never widened after
+   the test half is seen). **Commit `threshold.json` before measuring the test half.**
 
 2. **Measure** the test half with the committed threshold: `make eval-correlation`. A threshold calibrated
-   with another model or digest is refused. The ARI-vs-threshold curve on the test half is reported as
-   sensitivity only.
+   with another model or digest is refused, and so is one calibrated on other halves: another ground truth,
+   split or root causes moves findings between them, so after a label edit, calibrate again. Findings of
+   another `make eval` run (a new Grype database, say) give another calibration half but leak nothing of
+   the test half: the report says "of another `make eval` run". The ARI-vs-threshold curve on the test half
+   is reported as sensitivity only.
 
 Without Ollama, or with `--no-embedding`, the stages without a model (dedup, structural) are still measured
 and the others say why they were not.

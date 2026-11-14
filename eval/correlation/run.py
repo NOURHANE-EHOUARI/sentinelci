@@ -20,7 +20,9 @@ no label).
    highest threshold, which merges least) and writes `threshold.json` with the embedding model's digest. It
    is committed before the test half is measured.
 2. Without `--calibrate`, the test half is measured with the committed threshold, which must name the model
-   the provider serves. The ARI-vs-threshold curve on the test half is reported as sensitivity only.
+   the provider serves and the halves it was calibrated on (the same ground truth, split and root causes:
+   another one moves findings between the halves). Findings of another `make eval` run are said in the
+   report. The ARI-vs-threshold curve on the test half is reported as sensitivity only.
 
 The embedding model is the pinned one (ADR-0009) on a local Ollama (`SENTINEL_OLLAMA_URL`, default the
 loopback). Without it, or with `--no-embedding`, the configurations without stage 2b are still measured and
@@ -58,6 +60,8 @@ ROOT_CAUSES = HERE / "root-causes.yaml"
 THRESHOLD = HERE / "threshold.json"
 FINDINGS = ROOT / "out" / "eval" / "findings"
 HALVES = ("calibration", "test")
+# What decides which findings are in which half: a threshold calibrated on other values is refused.
+HALVES_INPUTS = ("ground_truth_sha256", "split_sha256", "root_causes_sha256")
 
 Finding = Mapping[str, Any]
 
@@ -304,6 +308,29 @@ def read_threshold(text: str, model: Model | None) -> float:
     return float(threshold)
 
 
+def calibrated_on(text: str, inputs: Mapping[str, Any]) -> str:
+    """Where the committed threshold comes from. Another ground truth, split or root causes moves findings
+    between the halves, so a threshold calibrated on them is refused; other findings are said (Hiba, #90
+    review: a new Grype database gives another calibration half, but it does not leak the test half)."""
+    calibrated = json.loads(text).get("inputs")
+    changed = [k for k in HALVES_INPUTS if not isinstance(calibrated, dict) or calibrated.get(k) != inputs[k]]
+    if changed:
+        raise EvalError(
+            f"threshold.json was calibrated on other halves ({', '.join(changed)} changed since): calibrate "
+            "again (`make eval-correlation-calibrate`) before measuring the test half"
+        )
+    same = calibrated.get("findings_sha256") == inputs["findings_sha256"]
+    return "threshold.json, calibrated on the calibration half" + (
+        "" if same else " of another `make eval` run (other findings)"
+    )
+
+
+def at_the_grid_edge(threshold: float) -> bool:
+    """A best threshold at the lowest or highest of the grid: the grid did not bracket it."""
+    thresholds = grid()
+    return threshold in (thresholds[0], thresholds[-1])
+
+
 # ---------------------------------------------------------------- the measurements
 
 
@@ -322,6 +349,10 @@ def what_the_ari_sees(truth: Mapping[str, str]) -> dict[str, int]:
         "root_causes": len(sizes),
         "same_root_pairs": sum(n * (n - 1) // 2 for n in sizes.values()),
     }
+
+
+def sca_findings(findings: Sequence[Finding]) -> int:
+    return sum(f.get("category") == "SCA" for f in findings)
 
 
 def without_sca(
@@ -361,6 +392,7 @@ def calibration_document(
     return {
         "embedding_model": asdict(model),
         "threshold": best.threshold,
+        "at_grid_edge": at_the_grid_edge(best.threshold),
         "calibration": {"ari": best.ari, "alert_reduction": best.alert_reduction, **what_the_ari_sees(truth)},
         "curve": [{"threshold": s.threshold, "ari": s.ari, "groups": s.groups} for s in curve],
         "inputs": dict(inputs),
@@ -388,6 +420,7 @@ def measurement(
             out[name] = {"measured": False, "reason": reason or "no calibrated threshold"}
     result: dict[str, Any] = {
         "findings": len(findings),
+        "sca_findings": sca_findings(findings),
         "reported_places": places,
         **what_the_ari_sees(truth),
         "configurations": {name: out[name] for name in CONFIGURATIONS},
@@ -408,6 +441,7 @@ def whole_run(findings: Sequence[Finding], truth: Mapping[str, str]) -> dict[str
     scores = ablation(findings, truth, raw_alerts=places)
     return {
         "findings": len(findings),
+        "sca_findings": sca_findings(findings),
         "reported_places": places,
         **what_the_ari_sees(truth),
         "configurations": {s.configuration: _score(s) for s in scores},
@@ -452,11 +486,17 @@ def _without_sca(part: Mapping[str, Any]) -> str:
 def markdown(report: Mapping[str, Any]) -> str:
     test, whole, threshold = report["test"], report["whole_run"], report["threshold"]
     value = "not calibrated" if threshold["value"] is None else threshold["value"]
+    edge = ""
+    if threshold["at_grid_edge"]:
+        edge = (
+            f" The threshold is at the edge of the grid ({grid()[0]} to {grid()[-1]}): the best ARI may lie "
+            "outside it, and the grid is never widened after the test half is seen."
+        )
     lines = [
         "# Correlation on demo-shop",
         "",
         f"Test half: {_sees(test)}. Threshold: {value} ({threshold['source']}). "
-        f"Embedding model: {report['embedding_model']}.",
+        f"Embedding model: {report['embedding_model']}.{edge}",
         "",
         *_table(test["configurations"]),
         "",
@@ -475,8 +515,10 @@ def markdown(report: Mapping[str, Any]) -> str:
         ]
     lines += [
         "",
-        f"Whole run, the stages with no parameter to tune: {_sees(whole)}. The test half holds every finding "
-        "no label places and half of the others, so its alert reduction is not demo-shop's: this one is.",
+        f"Whole run, the stages with no parameter to tune: {_sees(whole)}. The halves split root causes, not "
+        f"findings: the test half holds {test['findings']} of these {whole['findings']} findings and "
+        f"{test['sca_findings']} of the {whole['sca_findings']} SCA ones (a seeded package brings all its "
+        "advisories), so its alert reduction is not demo-shop's: this one is.",
         "",
         *_table(whole["configurations"]),
         "",
@@ -515,12 +557,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         return document
 
     threshold: float | None = None
-    source = "not calibrated: `make eval-correlation-calibrate` writes threshold.json"
+    source = "no threshold.json: `make eval-correlation-calibrate` writes it"
     if THRESHOLD.is_file():
         text = THRESHOLD.read_bytes()
         threshold = read_threshold(text.decode("utf-8"), model)
+        source = calibrated_on(text.decode("utf-8"), inputs)
         inputs["threshold_sha256"] = sha256(text)
-        source = "threshold.json, calibrated on the calibration half"
     try:
         test = measurement(*half("test"), embed=embed, threshold=threshold, why_not=why_not)
     except EmbedderError as exc:  # the model failed mid-run: the stages without it are still measured
@@ -535,7 +577,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         used = f"{model.name} ({model.digest})"
     return {
         "embedding_model": used,
-        "threshold": {"value": threshold, "source": source},
+        "threshold": {
+            "value": threshold,
+            "source": source,
+            "at_grid_edge": None if threshold is None else at_the_grid_edge(threshold),
+        },
         "test": test,
         "whole_run": whole_run(findings, truth),
         "inputs": inputs,

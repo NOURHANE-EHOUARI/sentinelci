@@ -233,6 +233,7 @@ def test_calibration_then_the_test_half_with_the_committed_threshold(
     calibrated = json.loads(model.read_text(encoding="utf-8"))
     assert calibrated["embedding_model"] == {"name": MODEL.name, "digest": MODEL.digest}
     assert calibrated["threshold"] == 0.95  # every threshold gives ARI 1 here: the tie goes to the highest
+    assert calibrated["at_grid_edge"] is True  # 0.95 is the grid's highest: said, never widened afterwards
     assert calibrated["calibration"]["labelled"] == 4  # RC-K8S-001 (3) and RC-K8S-003: the calibration half
 
     out = tmp_path / "out"
@@ -244,8 +245,17 @@ def test_calibration_then_the_test_half_with_the_committed_threshold(
     assert test["configurations"]["dedup+embedding"]["ari"] == 1.0
     assert test["configurations"]["dedup+embedding"]["groups"] == 2
     assert test["configurations"]["dedup+embedding"]["alert_reduction"] == pytest.approx(0.6)
+    assert test["without_sca"]["dedup+embedding"]["ari"] == 1.0  # stage 2b in the ablation without SCA too
     assert {s["threshold"] for s in test["sensitivity"]} == set(run.grid())
     assert report["inputs"]["threshold_sha256"] == hashlib.sha256(model.read_bytes()).hexdigest()
+    assert report["threshold"] == {
+        "value": 0.95,
+        "source": "threshold.json, calibrated on the calibration half",
+        "at_grid_edge": True,
+    }
+    assert "The threshold is at the edge of the grid (0.5 to 0.95)" in (out / "correlation.md").read_text(
+        encoding="utf-8"
+    )
 
     again = tmp_path / "again"
     assert run.main(["--findings", str(findings_dir), "--out", str(again)]) == 0
@@ -342,6 +352,20 @@ def test_alert_reduction_counts_the_other_locations(
     assert test["reported_places"] == 10  # 5 findings of the test half, one with 5 more places
     assert test["configurations"]["dedup"]["alerts"] == 10
     assert test["configurations"]["dedup"]["alert_reduction"] == pytest.approx(0.5)
+    whole = json.loads((out / "correlation.json").read_text(encoding="utf-8"))["whole_run"]
+    assert whole["configurations"]["dedup"]["alerts"] == 14  # 9 findings, one with 5 more places
+    assert whole["without_sca"]["dedup"]["same_root_pairs"] == 9
+
+
+def test_the_calibration_counts_the_other_locations(findings_dir: Path, model: Path) -> None:
+    path = findings_dir / "trivy.ndjson"
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    (row,) = [r for r in rows if r["rule_id"] == "KSV-0001"]  # RC-K8S-001: the calibration half
+    row["other_locations"] = [{"path": "demo-shop/infra/k8s/other.yaml"}] * 5
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    assert run.main(["--findings", str(findings_dir), "--calibrate"]) == 0
+    calibrated = json.loads(model.read_text(encoding="utf-8"))["calibration"]
+    assert calibrated["alert_reduction"] == pytest.approx(1 - 2 / 9)  # 4 findings and 5 more places, 2 groups
 
 
 def test_the_report_says_how_much_each_ari_can_see_and_measures_the_whole_run(
@@ -363,6 +387,97 @@ def test_the_report_says_how_much_each_ari_can_see_and_measures_the_whole_run(
     text = (out / "correlation.md").read_text(encoding="utf-8")
     assert "5 labelled with 2 root causes (6 same-root pairs)" in text
     assert "Whole run, the stages with no parameter to tune" in text and "Without SCA" in text
+
+
+def test_a_threshold_calibrated_on_other_halves_is_refused(
+    findings_dir: Path,
+    model: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Review of #90 (Hiba): a label edit between the calibration and the measurement moves findings between
+    the halves, so the report's "calibrated on the calibration half" would no longer be true."""
+    assert run.main(["--findings", str(findings_dir), "--calibrate"]) == 0
+    causes = tmp_path / "root-causes.yaml"
+    text = run.ROOT_CAUSES.read_text(encoding="utf-8")
+    old = "  - id: RC-K8S-001\n    half: calibration"
+    assert text.count(old) == 1
+    causes.write_text(text.replace(old, "  - id: RC-K8S-001\n    half: test"), encoding="utf-8")
+    monkeypatch.setattr(run, "ROOT_CAUSES", causes)  # RC-K8S-001's findings move to the test half
+    assert run.main(["--findings", str(findings_dir), "--out", str(tmp_path / "out")]) == 2
+    assert "calibrated on other halves (root_causes_sha256 changed since)" in capsys.readouterr().err
+
+
+def test_a_threshold_without_its_inputs_is_refused(
+    findings_dir: Path, model: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    model.write_text(json.dumps({"embedding_model": vars(MODEL), "threshold": 0.8}), encoding="utf-8")
+    assert run.main(["--findings", str(findings_dir), "--out", str(tmp_path / "out")]) == 2
+    err = capsys.readouterr().err
+    assert "(ground_truth_sha256, split_sha256, root_causes_sha256 changed since)" in err
+
+
+def test_a_threshold_from_another_make_eval_run_says_so(
+    findings_dir: Path, model: Path, tmp_path: Path
+) -> None:
+    assert run.main(["--findings", str(findings_dir), "--calibrate"]) == 0
+    path = findings_dir / "trivy.ndjson"
+    path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")  # same findings, other bytes
+    out = tmp_path / "out"
+    assert run.main(["--findings", str(findings_dir), "--out", str(out)]) == 0
+    source = json.loads((out / "correlation.json").read_text(encoding="utf-8"))["threshold"]["source"]
+    assert source.endswith("of another `make eval` run (other findings)")
+
+
+def test_a_threshold_inside_the_grid_is_not_called_an_edge(
+    findings_dir: Path, model: Path, tmp_path: Path
+) -> None:
+    assert run.main(["--findings", str(findings_dir), "--calibrate"]) == 0
+    calibrated = json.loads(model.read_text(encoding="utf-8"))
+    model.write_text(json.dumps(calibrated | {"threshold": 0.8}), encoding="utf-8")
+    out = tmp_path / "out"
+    assert run.main(["--findings", str(findings_dir), "--out", str(out)]) == 0
+    assert (
+        json.loads((out / "correlation.json").read_text(encoding="utf-8"))["threshold"]["at_grid_edge"]
+        is False
+    )
+    assert "edge of the grid" not in (out / "correlation.md").read_text(encoding="utf-8")
+    assert run.at_the_grid_edge(0.5) and run.at_the_grid_edge(0.95) and not run.at_the_grid_edge(0.55)
+
+
+def test_the_whole_run_sentence_counts_what_the_test_half_holds(
+    findings_dir: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(run, "THRESHOLD", tmp_path / "none.json")
+    out = tmp_path / "out"
+    assert run.main(["--findings", str(findings_dir), "--out", str(out), "--no-embedding"]) == 0
+    text = (out / "correlation.md").read_text(encoding="utf-8")
+    assert "the test half holds 5 of these 9 findings and 0 of the 0 SCA ones" in text
+    assert "every finding no label places" not in text
+    assert (
+        "Threshold: not calibrated (no threshold.json: `make eval-correlation-calibrate` writes it)" in text
+    )
+
+
+def test_the_sca_findings_are_counted_in_each_part() -> None:
+    iac = finding("trivy", "KSV-0011", K8S)
+    dep = sca("GHSA-29mw-wpgm-hmr9", "pkg:npm/lodash@4.17.20")
+    assert run.sca_findings([iac, dep, dep | {"id": "other"}]) == 2
+    assert run.sca_findings([iac]) == 0
+
+
+def test_without_sca_leaves_out_the_sca_findings_and_their_labels() -> None:
+    iac = finding("trivy", "KSV-0011", K8S)
+    dep = sca("GHSA-29mw-wpgm-hmr9", "pkg:npm/lodash@4.17.20")
+    kept, truth = run.without_sca([iac, dep], {iac["id"]: "A", dep["id"]: "B"})
+    assert kept == [iac] and truth == {iac["id"]: "A"}
+
+
+def test_the_package_key_is_an_sca_findings_and_leaves_the_version_out() -> None:
+    old, new = sca("GHSA-a", "pkg:npm/lodash@4.17.20"), sca("GHSA-b", "pkg:npm/lodash@4.17.21")
+    assert run._package(old) == run._package(new) is not None, "one package in two versions: one upgrade"
+    assert run._package(old | {"category": "CONTAINER"}) is None, "only SCA findings have a package key"
 
 
 @pytest.mark.parametrize(
