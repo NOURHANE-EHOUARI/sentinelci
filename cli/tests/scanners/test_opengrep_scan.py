@@ -4,8 +4,10 @@ Unit tests use a fake `opengrep` script pinned in a test lock. Integration tests
 only when SENTINEL_TOOLS_DIR points to a `sentinel tools install` directory.
 """
 
+import hashlib
 import json
 import os
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,7 @@ import pytest
 from typer.testing import CliRunner
 
 from sentinelci.cli import app
+from sentinelci.scanners import runner
 from sentinelci.scanners.errors import ScannerError
 from sentinelci.scanners.lock import load_lock
 from sentinelci.scanners.opengrep import OFFLINE_ENV, escaping_links, scan_sast_with_run
@@ -312,7 +315,9 @@ def test_links_inside_the_tree_are_fine(tmp_path: Path) -> None:
     assert escaping_links(target) == []
 
 
-def _cli(tmp_path: Path, dest: Path, target: Path, out: Path, repo_root: Path) -> tuple[int, str]:
+def _cli(
+    tmp_path: Path, dest: Path, target: Path, out: Path, repo_root: Path, *extra: str
+) -> tuple[int, str]:
     result = CliRunner().invoke(
         app,
         [
@@ -320,6 +325,7 @@ def _cli(tmp_path: Path, dest: Path, target: Path, out: Path, repo_root: Path) -
             "--context", "pr", "--repo-root", str(repo_root), "--lock", str(tmp_path / "tools.lock.toml"),
             "--tools-dir", str(dest),
             "--platform", PLATFORM,
+            *extra,
         ],
     )  # fmt: skip
     return result.exit_code, result.output
@@ -379,6 +385,113 @@ def test_cli_a_file_mostly_not_analysed_exits_3_even_with_findings(
     assert code == 3 and "FAIL CLOSED" in output
     assert "PartialParsing in app/mid.py: 609 of 610 lines not analysed" in output
     assert not out.exists()
+
+
+# ---------------------------------------------------------------- tool status (the gate's SC-010, A3)
+
+
+def _validator() -> Any:
+    from jsonschema import Draft202012Validator
+
+    root = Path(__file__).resolve().parents[3]
+    return Draft202012Validator(json.loads((root / "schemas" / "tool-status.v1.json").read_text("utf-8")))
+
+
+def test_cli_records_an_ok_status_for_the_verified_binary_after_the_findings(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
+) -> None:
+    target = _target(tmp_path)
+    dest, _ = fake_opengrep(
+        tmp_path, releases, write_lock, {"version": "1.0.0", "results": [_result(target)], "errors": []}
+    )
+    out, status = tmp_path / "sast.ndjson", tmp_path / "status.json"
+    code, output = _cli(tmp_path, dest, target, out, target, "--tool-status-out", str(status))
+    assert code == 0, output
+    document = json.loads(status.read_text())
+    assert not list(_validator().iter_errors(document))
+    binary = hashlib.sha256((dest / "bin" / "opengrep").read_bytes()).hexdigest()
+    assert document["tools"] == {
+        "opengrep": {"version": "1.0.0", "binary_sha256": binary, "artifact_sha256": binary, "status": "ok"}
+    }
+    lock_bytes = (tmp_path / "tools.lock.toml").read_bytes()
+    assert document["lock_sha256"] == hashlib.sha256(lock_bytes).hexdigest()
+    assert len(out.read_text().splitlines()) == 1
+
+
+@pytest.mark.parametrize(
+    ("how", "status_name", "detail"),
+    [
+        ("crash", "failed", "exited with code 2"),
+        ("untrusted", "failed", "is not SentinelCI's"),
+        ("timeout", "timeout", "timed out after 37 s"),
+        ("tampered", "integrity_mismatch", ""),
+    ],
+)
+def test_cli_records_a_failure_so_the_gate_blocks_it(
+    tmp_path: Path,
+    releases: FakeReleases,
+    write_lock: Callable[[str], Path],
+    monkeypatch: pytest.MonkeyPatch,
+    how: str,
+    status_name: str,
+    detail: str,
+) -> None:
+    target = _target(tmp_path)
+    results = [{"check_id": "x"}] if how == "untrusted" else []
+    report = {"version": "1.0.0", "results": results, "errors": []}
+    dest, record = fake_opengrep(tmp_path, releases, write_lock, report, exit_code=2 if how == "crash" else 0)
+    if how == "timeout":
+
+        def slow(*args: Any, **kwargs: Any) -> Any:
+            raise subprocess.TimeoutExpired(cmd="opengrep", timeout=kwargs["timeout"])
+
+        monkeypatch.setattr(runner.subprocess, "run", slow)
+    if how == "tampered":
+        (dest / "bin" / "opengrep").write_text(f"#!/bin/sh\ntouch {record}/tampered-ran\n")
+    out, status = tmp_path / "sast.ndjson", tmp_path / "status.json"
+    out.write_text("stale")
+    status.write_text("stale")
+    code, output = _cli(
+        tmp_path, dest, target, out, target, "--tool-status-out", str(status), "--timeout", "37"
+    )
+    assert code == 3 and "FAIL CLOSED" in output, output
+    assert not out.exists() and not (record / "tampered-ran").exists()
+    document = json.loads(status.read_text())
+    assert not list(_validator().iter_errors(document))
+    outcome = document["tools"]["opengrep"]
+    assert outcome["status"] == status_name and detail in outcome["detail"] and "binary_sha256" not in outcome
+    assert outcome["version"] == "1.0.0", "the pinned version: it may never have run"
+
+
+def test_cli_writes_no_status_without_a_lock(tmp_path: Path) -> None:
+    # Nothing to vouch for: no status at all, which the gate blocks (SC-010) once required_tools.rego
+    # requires the tool.
+    target = _target(tmp_path)
+    status = tmp_path / "status.json"
+    status.write_text("stale")
+    code, _ = _cli(tmp_path, tmp_path / "tools", target, tmp_path / "out.ndjson", target,
+                   "--tool-status-out", str(status))  # fmt: skip
+    assert code == 3 and not status.exists()
+
+
+def test_cli_passes_its_time_limit_to_opengrep(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sentinelci.cli as cli
+
+    seen: dict[str, object] = {}
+    real = cli.scan_sast_with_run
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "scan_sast_with_run", spy)
+    target = _target(tmp_path)
+    dest, _ = fake_opengrep(tmp_path, releases, write_lock)
+    code, output = _cli(tmp_path, dest, target, tmp_path / "out.ndjson", target, "--timeout", "1234")
+    assert code == 0, output
+    assert seen["timeout_s"] == 1234
 
 
 # ---------------------------------------------------------------- the real Opengrep
