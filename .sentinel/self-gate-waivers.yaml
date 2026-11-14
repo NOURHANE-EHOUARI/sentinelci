@@ -1,7 +1,9 @@
-# Waivers of SentinelCI's own release gate (the self-gate, A10): read from the commit that is gated, like the
-# workflow's (ADR-0008). Each one names a finding by its fingerprint, why it is not a risk, who answers for it,
-# and when it expires. demo-shop is not gated here (it is the intentionally vulnerable target): these are
-# findings of SentinelCI's own tree.
+# Waivers of SentinelCI's own release gate (the self-gate, A10). They are read from the pipeline commit, the
+# checkout that judges, never from the commit that is judged: a waiver applies once it is reviewed and merged,
+# never to the change that adds it (ADR-0008, #95 review). `release.py` always names this file to `sentinel
+# evaluate`; demo-shop's gates read .sentinel/waivers.yaml, so neither applies to the other. Each waiver names a
+# finding by its fingerprint, why it is not a risk, who answers for it, and when it expires. demo-shop is not
+# gated here (it is the intentionally vulnerable target): these are findings of SentinelCI's own tree.
 version: 1
 waivers:
   - id: self-2026-001

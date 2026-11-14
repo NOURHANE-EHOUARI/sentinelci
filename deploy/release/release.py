@@ -42,21 +42,27 @@ could not be made (a precondition, a failed step, or a signed release `sentinel 
 bundle). With --expect-block (`make release-block`, the demo's BLOCK image), 0 means the gate blocked it, and
 1 that it did not: nothing is signed either way.
 
-`self-gate` (`make self-gate`, A10, SPEC principle P4) runs the same release gate on SentinelCI itself: the
-same preconditions, the commit's own files without demo-shop (exported from the commit and checked blob by
-blob, so no export attribute can hide or rewrite one), the five scanners of the gate (secrets, SAST, IaC, CI
-workflows, and Grype on the SBOM of the lockfiles), the commit's own `.sentinel/waivers.yaml`, then
-`sentinel evaluate --context release`. The decision and its evidence go to `out/self-gate/evidence`;
-nothing is signed. Exit 0: PASS or WARN; 1: BLOCK; 3: no decision.
+`self-gate` (`make self-gate`, A10, SPEC principle P4) runs the same release gate on SentinelCI itself, and
+like the workflow (ADR-0008) the commit judged is not the one that judges (#95 review). The checkout is the
+pipeline commit: clean, a reviewed commit of main, and a release tag `vX.Y.Z` or named on purpose with
+`--pipeline <HEAD>`; its CLI, policies, tool lock and `.sentinel/self-gate-waivers.yaml` decide. The target is
+origin's main, fetched now: its own files without demo-shop (exported from the commit and checked blob by
+blob, so no export attribute can hide or rewrite one), scanned by the gate's five scanners (secrets, SAST,
+IaC, CI workflows, and Grype on the SBOM of the lockfiles), then `sentinel evaluate --context release` with
+the waivers (and VEX) always named. The pipeline files changed between the two are printed and kept with the
+evidence. The decision and its evidence go to `out/self-gate/evidence`; nothing is signed. Exit 0: PASS or
+WARN; 1: BLOCK; 3: no decision.
 
-`sentinelci --version X.Y.Z` (`make release-sentinelci VERSION=X.Y.Z`, A10) releases SentinelCI itself: the
-self-gate first (a BLOCK builds nothing), then the wheels and source distributions of both packages and the
-policy bundle (the policies and the tool lock), built twice from the exported tree with the commit's time as
-SOURCE_DATE_EPOCH and refused unless both builds are byte for byte the same. Each artifact and SHA256SUMS is
-signed with the release key, each artifact attested twice (SLSA provenance v1, and the self-gate's decision),
-everything verified with the committed public key, and only then kept in `<out>/sentinelci-X.Y.Z` and tagged
-`vX.Y.Z` here (pushing the tag is left to the person). A version is released once: its tag must not exist
-here or on origin, and both packages must declare it.
+`sentinelci --version X.Y.Z` (`make release-sentinelci VERSION=X.Y.Z`, A10) releases SentinelCI itself,
+origin's main judged by the pipeline commit as above: the self-gate first (a BLOCK builds nothing), then the
+wheels and source distributions of both packages and the policy bundle (the policies and the tool lock), built
+twice from the exported target with the commit's time as SOURCE_DATE_EPOCH and the build backend pinned by
+hash (`deploy/release/build-constraints.txt` of the pipeline commit, `--require-hashes`), and refused unless
+both builds are byte for byte the same. Each artifact and SHA256SUMS is signed with the release key, each
+artifact attested twice (SLSA provenance v1, and the self-gate's decision), everything verified with the
+committed public key, and only then kept in `<out>/sentinelci-X.Y.Z` and tagged `vX.Y.Z` here (pushing the tag
+is left to the person). A version is released once: its tag must not exist here or on origin, and both
+packages must declare it.
 
 `key` (`make release-key`) makes the release key pair with the pinned Cosign: the private key, password
 protected, in ~/.sentinelci (never in the repository), and its public key at deploy/keys/release.pub, to be
@@ -106,10 +112,24 @@ SCANS = ("secrets", "sast", "iac", "pipelines", "container")
 # intentionally vulnerable target, gated by its own workflow (demo-shop.yml), never released as SentinelCI.
 SELF_SCANS = ("secrets", "sast", "iac", "pipelines", "sca")
 NOT_SELF = ("demo-shop",)
-WAIVERS = Path(".sentinel") / "waivers.yaml"  # read from the commit's tree, like the workflow's (ADR-0008)
+# The self-gate's own exceptions, read from the pipeline commit (the checkout), never from the commit it
+# judges: a waiver applies once it is reviewed and merged, never to the change that adds it (ADR-0008, #95
+# review). They are apart from .sentinel/waivers.yaml, which every `sentinel evaluate` of demo-shop reads by
+# default (nit 1).
+SELF_WAIVERS = Path(".sentinel") / "self-gate-waivers.yaml"
+SELF_VEX = Path(".sentinel") / "self-gate-vex.json"
+# What decides: the files whose changes between the pipeline commit and the target are printed and kept with
+# the evidence (judged by the pipeline, not judging), as ADR-0008 decision 4 warns on a pull request.
+PIPELINE_FILES = (
+    ".github/workflows", ".sentinel", "cli", "deploy/release", "eval/feeds", "policies", "pyproject.toml",
+    "tools.lock.toml", "uv.lock",
+)  # fmt: skip
 # SentinelCI's own release (A10): its two Python packages, and the policy bundle the gate decides with.
 PACKAGES = {"sentinelci": "cli", "sentinel-ai": "ai"}  # package -> its directory
 POLICY_BUNDLE = ("policies", "tools.lock.toml")
+# The build backend and its dependencies, pinned by hash and read from the pipeline commit (#95 review): `uv
+# build` would otherwise resolve `hatchling>=1.27` from the index at release time, outside uv.lock.
+BUILD_CONSTRAINTS = Path("deploy") / "release" / "build-constraints.txt"
 DECISION_TYPE = "https://github.com/NOURHANE-EHOUARI/sentinelci/specs/release-decision/v1"  # as for images
 PROVENANCE_TYPE = "slsaprovenance1"  # https://slsa.dev/provenance/v1
 BUILD_TYPE = f"https://github.com/{REPO}/specs/local-release/v1"
@@ -122,6 +142,7 @@ EXIT_RELEASED, EXIT_BLOCKED, EXIT_FAILED = 0, 1, 3
 COSIGN_IMAGE = "dev.cosignproject.cosign/image"
 _DIGEST = re.compile(r"sha256:[a-f0-9]{64}")
 _COMMIT = re.compile(r"[a-f0-9]{40}")
+_TAG = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 _ORIGIN = re.compile(
     rf"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/){re.escape(REPO)}(?:\.git)?/?",
     re.IGNORECASE,
@@ -223,8 +244,8 @@ def check_origin(url: str) -> None:
         )
 
 
-def preconditions(run: Runner, *, fetch: bool, environ: Mapping[str, str]) -> str:
-    """The commit to release: HEAD, which must be origin's main, with a clean working tree."""
+def checkout_is_clean(run: Runner, *, environ: Mapping[str, str]) -> None:
+    """No COSIGN_PASSWORD, `origin` this repository with one URL, and a clean working tree."""
     if "COSIGN_PASSWORD" in environ:
         raise ReleaseError(
             "COSIGN_PASSWORD is set: unset it. The key password is asked on the terminal and given only to "
@@ -249,6 +270,11 @@ def preconditions(run: Runner, *, fetch: bool, environ: Mapping[str, str]) -> st
     if stray:
         shown = ", ".join(line[3:] for line in stray[:5]) + (", ..." if len(stray) > 5 else "")
         raise ReleaseError(f"policies/ holds files git ignores ({shown}): the gate would load them")
+
+
+def preconditions(run: Runner, *, fetch: bool, environ: Mapping[str, str]) -> str:
+    """The commit to release: HEAD, which must be origin's main, with a clean working tree."""
+    checkout_is_clean(run, environ=environ)
     if fetch:
         run(["git", "fetch", "--quiet", "--no-tags", "origin", f"+{MAIN}:refs/remotes/origin/main"])
     head = run(["git", "rev-parse", "--verify", "HEAD^{commit}"]).stdout.strip()
@@ -261,6 +287,69 @@ def preconditions(run: Runner, *, fetch: bool, environ: Mapping[str, str]) -> st
             "(ADR-0011, decision 4)"
         )
     return head
+
+
+@dataclass(frozen=True)
+class Pipeline:
+    """Who judges what, ADR-0008 on the laptop (#95 review): `commit` is the checkout, whose CLI, policies,
+    tool lock and self-gate waivers decide; `target` is origin's main, which is judged (and released) as
+    data."""
+
+    commit: str
+    target: str
+    changed: tuple[str, ...]  # PIPELINE_FILES that differ between the two
+
+    def evidence(self) -> dict[str, Any]:
+        return {
+            "pipeline_commit": self.commit,
+            "target_commit": self.target,
+            "pipeline_files_changed": list(self.changed),
+            "target_is_its_own_pipeline": self.commit == self.target,
+        }
+
+
+def pipeline_preconditions(
+    run: Runner, *, fetch: bool, environ: Mapping[str, str], named: str | None
+) -> Pipeline:
+    """The pipeline commit (HEAD, clean, a reviewed commit of main: a release tag, or named on purpose with
+    --pipeline) and the target (origin's main, fetched now)."""
+    checkout_is_clean(run, environ=environ)
+    if fetch:
+        run(["git", "fetch", "--quiet", "--no-tags", "origin", f"+{MAIN}:refs/remotes/origin/main"])
+    head = run(["git", "rev-parse", "--verify", "HEAD^{commit}"]).stdout.strip()
+    target = run(
+        ["git", "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"], check=False
+    ).stdout.strip()
+    if not _COMMIT.fullmatch(head) or not _COMMIT.fullmatch(target):
+        raise ReleaseError(f"HEAD is {head}, origin/main is {target or 'unknown'}: fetch origin's main first")
+    if run(["git", "merge-base", "--is-ancestor", head, target], check=False).returncode != 0:
+        raise ReleaseError(
+            f"HEAD {head} is not on origin/main: the pipeline must be a reviewed commit of main (ADR-0008)"
+        )
+    if named is not None:
+        if named != head:
+            raise ReleaseError(
+                f"--pipeline {named} is not HEAD ({head}): check out the pipeline commit first"
+            )
+    elif not [t for t in run(["git", "tag", "--points-at", head]).stdout.split() if _TAG.fullmatch(t)]:
+        raise ReleaseError(
+            f"HEAD {head} is no release tag (vX.Y.Z): check out the last release to judge main with it, or "
+            "name the pipeline commit on purpose with --pipeline <HEAD>"
+        )
+    changed = run(["git", "diff", "--name-only", "-z", "--no-renames", head, target, "--", *PIPELINE_FILES])
+    return Pipeline(head, target, tuple(sorted(filter(None, changed.stdout.split("\0")))))
+
+
+def announce(pipe: Pipeline, what: str) -> None:
+    """Which commit judges which, and what of the pipeline changed in between (judged here, not judging)."""
+    print(f"{what}: {REPO} at {pipe.target} (main), judged by the pipeline at {pipe.commit}")
+    if pipe.commit == pipe.target:
+        print(f"{what}: the target is its own pipeline: this decision shows it passes its own gate, not "
+              "one it did not write")  # fmt: skip
+    elif pipe.changed:
+        shown = ", ".join(pipe.changed[:20]) + (", ..." if len(pipe.changed) > 20 else "")
+        print(f"{what}: {len(pipe.changed)} pipeline file(s) changed since the pipeline commit, judged here "
+              f"and not judging: {shown}")  # fmt: skip
 
 
 # ---------------------------------------------------------------- the key
@@ -669,6 +758,7 @@ def gate(
     *,
     image_digest: str | None = None,
     waivers: Path | None = None,
+    vex: Path | None = None,
 ) -> Decided:
     """The release gate on the scans' findings: combined, scored, then `sentinel evaluate` in the release
     context, about the image when there is one."""
@@ -686,6 +776,7 @@ def gate(
                  "--out", str(paths.findings)))  # fmt: skip
     image = ["--image-digest", image_digest, "--sbom", str(paths.sbom)] if image_digest else []
     waived = ["--waivers", str(waivers)] if waivers is not None else []
+    waived += ["--vex", str(vex)] if vex is not None else []
     evaluated = run(
         sentinel(
             "evaluate", "--findings", str(paths.findings), "--repo", REPO, "--commit", commit,
@@ -978,35 +1069,84 @@ def self_scan_commands(commit: str, paths: Paths, settings: Settings) -> dict[st
     }  # fmt: skip
 
 
+def from_commit(commit: str, path: Path, destination: Path, run: Runner) -> bool:
+    """`path` as `commit` holds it (its blob, never the working tree's copy), written to `destination`; False
+    when the commit has no such file."""
+    listed = run(["git", "ls-tree", "-z", commit, "--", path.as_posix()]).stdout.rstrip("\0")
+    if not listed:
+        return False
+    meta, _, _ = listed.partition("\t")
+    mode, kind, blob = meta.split()
+    if kind != "blob" or mode == "120000":
+        raise ReleaseError(f"{path} is not a file in {commit}")
+    destination.write_text(run(["git", "cat-file", "blob", blob]).stdout, encoding="utf-8")
+    return True
+
+
+def self_gate_inputs(
+    pipe: Pipeline, settings: Settings, paths: Paths, run: Runner
+) -> tuple[Path, Path | None]:
+    """The self-gate's waivers and VEX, from the pipeline commit's blobs, kept with the evidence and always
+    named to `sentinel evaluate` (#95 review, nit 2): no waivers file is an empty one, so nothing falls back
+    to the working directory's. A VEX document holds at least one statement, so with none, the
+    `.sentinel/vex.json` that `sentinel evaluate` reads by default from its working directory (the checkout)
+    must not exist either."""
+    waivers = paths.evidence / SELF_WAIVERS.name
+    if not from_commit(pipe.commit, SELF_WAIVERS, waivers, run):
+        waivers.write_text("version: 1\nwaivers: []\n", encoding="utf-8")
+    vex = paths.evidence / SELF_VEX.name
+    if from_commit(pipe.commit, SELF_VEX, vex, run):
+        return waivers, vex
+    if (settings.root / ".sentinel" / "vex.json").exists():
+        raise ReleaseError(
+            f".sentinel/vex.json would be read by default: the self-gate's VEX is {SELF_VEX} only"
+        )
+    return waivers, None
+
+
+def export_target(pipe: Pipeline, paths: Paths, run: Runner, what: str) -> None:
+    """The target's own files without demo-shop, and which pipeline judges them, kept with the evidence."""
+    files = export_tree(pipe.target, paths.source, run)
+    announce(pipe, what)
+    print(f"{what}: {len(files)} files, without {', '.join(NOT_SELF)}/")
+    (paths.evidence / "pipeline.json").write_text(
+        json.dumps(pipe.evidence(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def judge(pipe: Pipeline, paths: Paths, settings: Settings, run: Runner) -> Decided:
+    """The self-gate on the exported target: scanned and decided by the pipeline commit."""
+    prepare_grype_db(paths, settings, run)
+    run_scans(self_scan_commands(pipe.target, paths, settings), paths, run)
+    waivers, vex = self_gate_inputs(pipe, settings, paths, run)
+    return gate(pipe.target, SELF_SCANS, paths, settings, run, waivers=waivers, vex=vex)
+
+
 @dataclass
 class SelfGate:
-    """SPEC principle P4, practice what we preach: SentinelCI's release gate on SentinelCI itself, at `main`.
-    The same preconditions as a release (a clean checkout of origin's main), the commit's own files without
-    demo-shop, the gate's five scanners, its own waivers (`.sentinel/waivers.yaml` of the commit), and a
-    decision kept with its evidence. Nothing is signed here."""
+    """SPEC principle P4, practice what we preach: SentinelCI's release gate on SentinelCI itself. Like the
+    workflow (ADR-0008), the commit judged is not the one that judges: the checkout is the pipeline commit (a
+    release tag, or named with --pipeline), and origin's main is the target, exported and scanned without
+    demo-shop by the pipeline's five scanners, with the pipeline's own self-gate waivers. The decision is kept
+    with its evidence and the pipeline it was made with. Nothing is signed here."""
 
     out: Path
     settings: Settings
     fetch: bool = True
     run: Runner | None = None
     environ: Mapping[str, str] = field(default_factory=lambda: dict(os.environ))
+    pipeline: str | None = None  # --pipeline: HEAD named on purpose when it is no release tag
 
     def __call__(self) -> int:
         run = self.run if self.run is not None else functools.partial(run_command, cwd=self.settings.root)
         paths = Paths(self.out)
-        commit = preconditions(run, fetch=self.fetch, environ=self.environ)
+        pipe = pipeline_preconditions(run, fetch=self.fetch, environ=self.environ, named=self.pipeline)
         fresh_work(paths)
-        files = export_tree(commit, paths.source, run)
-        print(f"self-gate: {REPO} at {commit} (main): {len(files)} files, without {', '.join(NOT_SELF)}/")
-        prepare_grype_db(paths, self.settings, run)
-        run_scans(self_scan_commands(commit, paths, self.settings), paths, run)
-        waivers = paths.source / WAIVERS
-        decided = gate(
-            commit, SELF_SCANS, paths, self.settings, run, waivers=waivers if waivers.is_file() else None
-        )
+        export_target(pipe, paths, run, "self-gate")
+        decided = judge(pipe, paths, self.settings, run)
         replace_dir(paths.evidence, self.out / "evidence")
         rules = ", ".join(decided.rules) or "no rule"
-        print(f"self-gate: the gate says {decided.verdict} for {commit}: {rules}; evidence in "
+        print(f"self-gate: the gate says {decided.verdict} for {pipe.target}: {rules}; evidence in "
               f"{self.out / 'evidence'}")  # fmt: skip
         return EXIT_BLOCKED if decided.blocked else EXIT_RELEASED
 
@@ -1036,10 +1176,17 @@ def check_tag_is_new(tag: str, run: Runner) -> None:
 
 
 def build_artifacts(
-    commit: str, version: str, source: Path, dist: Path, run: Runner, environ: Mapping[str, str]
+    commit: str,
+    version: str,
+    source: Path,
+    dist: Path,
+    run: Runner,
+    environ: Mapping[str, str],
+    constraints: Path,
 ) -> list[Path]:
     """The wheels and source distributions of both packages, built from the exported tree with the commit's
-    time as SOURCE_DATE_EPOCH, and the policy bundle (`git archive` of the policies and the tool lock)."""
+    time as SOURCE_DATE_EPOCH and the build backend pinned by hash (`constraints`, `--require-hashes`), and
+    the policy bundle (`git archive` of the policies and the tool lock)."""
     dist.mkdir(parents=True)
     epoch = run(["git", "log", "-1", "--format=%ct", commit]).stdout.strip()
     env = {key: value for key, value in environ.items() if key != "COSIGN_PASSWORD"} | {
@@ -1057,6 +1204,9 @@ def build_artifacts(
                 package,
                 "--out-dir",
                 str(dist),
+                "--build-constraints",
+                str(constraints),
+                "--require-hashes",
             ],
             env=env,
             capture=False,
@@ -1097,9 +1247,11 @@ def reproducible(first: Sequence[Path], second: Sequence[Path]) -> dict[str, str
     return a
 
 
-def provenance(commit: str, version: str) -> dict[str, Any]:
-    """SLSA provenance v1 of the release: what was built, from which commit, by which builder. No clock: the
-    same commit and version give the same document."""
+def provenance(
+    commit: str, version: str, *, pipeline: str, constraints_sha256: str, uv: str
+) -> dict[str, Any]:
+    """SLSA provenance v1 of the release: what was built, from which commit, with which build backend and uv,
+    judged by which pipeline commit, by which builder. No clock: the same inputs give the same document."""
     return {
         "buildDefinition": {
             "buildType": BUILD_TYPE,
@@ -1108,8 +1260,13 @@ def provenance(commit: str, version: str) -> dict[str, Any]:
                 "ref": MAIN,
                 "version": version,
             },
+            "internalParameters": {"gatePipeline": {"gitCommit": pipeline}, "uv": uv},
             "resolvedDependencies": [
-                {"uri": f"git+https://github.com/{REPO}@{MAIN}", "digest": {"gitCommit": commit}}
+                {"uri": f"git+https://github.com/{REPO}@{MAIN}", "digest": {"gitCommit": commit}},
+                {
+                    "uri": f"git+https://github.com/{REPO}@{pipeline}#{BUILD_CONSTRAINTS.as_posix()}",
+                    "digest": {"sha256": constraints_sha256},
+                },
             ],
         },
         "runDetails": {"builder": {"id": builder_id()}},
@@ -1131,6 +1288,7 @@ class SentinelRelease:
     ask_password: Callable[[str], str] = getpass.getpass
     environ: Mapping[str, str] = field(default_factory=lambda: dict(os.environ))
     tool: Callable[[str], Path] | None = None  # default: the pinned tool, verified
+    pipeline: str | None = None  # --pipeline: HEAD named on purpose when it is no release tag
 
     def _run(self) -> Runner:
         return self.run if self.run is not None else functools.partial(run_command, cwd=self.settings.root)
@@ -1143,15 +1301,6 @@ class SentinelRelease:
     def _cosign(self, args: Sequence[str], home: Path, password: str | None = None) -> None:
         env = _tool_env(home) | ({"COSIGN_PASSWORD": password} if password is not None else {})
         self._run()([str(self._tool("cosign")), *args], env=env)
-
-    def _gate(self, commit: str, paths: Paths) -> Decided:
-        run = self._run()
-        prepare_grype_db(paths, self.settings, run)
-        run_scans(self_scan_commands(commit, paths, self.settings), paths, run)
-        waivers = paths.source / WAIVERS
-        return gate(
-            commit, SELF_SCANS, paths, self.settings, run, waivers=waivers if waivers.is_file() else None
-        )
 
     def _sign(self, built: Sequence[Path], sums: Path, predicate: Path, paths: Paths, password: str) -> None:
         """Each artifact and SHA256SUMS signed; each artifact attested: its provenance, then the decision."""
@@ -1192,7 +1341,8 @@ class SentinelRelease:
             self.out / f"sentinelci-{self.version}",
             self.out / f"sentinelci-{self.version}-block",
         )
-        commit = preconditions(run, fetch=self.fetch, environ=self.environ)
+        pipe = pipeline_preconditions(run, fetch=self.fetch, environ=self.environ, named=self.pipeline)
+        commit = pipe.target
         check_tag_is_new(tag, run)
         if final.exists():
             raise ReleaseError(f"{final} exists: a version is released once")
@@ -1200,14 +1350,19 @@ class SentinelRelease:
         password = self.ask_password(f"Password of the release key {self.key}: ")
         fresh_work(paths)
         check_key_pair(self.key, public_key, password, self._tool("cosign"), run, paths.home)
-        export_tree(commit, paths.source, run)
+        export_target(pipe, paths, run, "release")
+        constraints = paths.work / BUILD_CONSTRAINTS.name
+        if not from_commit(pipe.commit, BUILD_CONSTRAINTS, constraints, run):
+            raise ReleaseError(
+                f"the pipeline commit has no {BUILD_CONSTRAINTS}: the build backend must be pinned"
+            )
         versions = package_versions(paths.source)
         if set(versions.values()) != {self.version}:
             raise ReleaseError(
                 f"the packages declare {versions}, not {self.version}: bump them in a PR first"
             )
         print(f"release: SentinelCI {self.version} at {commit} (main): the self-gate first")
-        decided = self._gate(commit, paths)
+        decided = judge(pipe, paths, self.settings, run)
         print(
             f"release: the gate says {decided.verdict} for {commit}: {', '.join(decided.rules) or 'no rule'}"
         )
@@ -1216,13 +1371,19 @@ class SentinelRelease:
             print(f"release: nothing built or signed; the evidence is in {blocked}")
             return EXIT_BLOCKED
         dist = paths.work / "dist"
-        built = build_artifacts(commit, self.version, paths.source, dist, run, self.environ)
-        again = build_artifacts(commit, self.version, paths.source, paths.work / "again", run, self.environ)
+        built = build_artifacts(commit, self.version, paths.source, dist, run, self.environ, constraints)
+        again = build_artifacts(
+            commit, self.version, paths.source, paths.work / "again", run, self.environ, constraints
+        )
         digests = reproducible(built, again)
         sums = dist / "SHA256SUMS"
         sums.write_text("".join(f"{digests[name]}  {name}\n" for name in sorted(digests)), encoding="utf-8")
         predicate = paths.work / "provenance.json"
-        predicate.write_text(json.dumps(provenance(commit, self.version), sort_keys=True), encoding="utf-8")
+        uv = run(["uv", "--version"]).stdout.strip()
+        document = provenance(
+            commit, self.version, pipeline=pipe.commit, constraints_sha256=sha256_file(constraints), uv=uv
+        )
+        predicate.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
         self._sign(built, sums, predicate, paths, password)
         self._verify(built, sums, paths)
         shutil.copyfile(predicate, dist / "provenance.json")
@@ -1298,6 +1459,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--no-fetch", action="store_true", help="compare HEAD with origin/main as last fetched"
     )
+    parser.add_argument(
+        "--pipeline",
+        help="self-gate, sentinelci: HEAD's full commit id, to judge origin/main with a pipeline commit "
+        "that is no release tag (on purpose)",
+    )
     args = parser.parse_args(argv)
     settings = Settings(
         root=ROOT,
@@ -1318,11 +1484,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             return SentinelRelease(
                 version=args.version, key=args.key.expanduser().resolve(),
                 out=(args.out or ROOT / "out" / "release").resolve(), settings=settings,
-                fetch=not args.no_fetch,
+                fetch=not args.no_fetch, pipeline=args.pipeline,
             )()  # fmt: skip
         if args.command == "self-gate":
             out = (args.out or ROOT / "out" / "self-gate").resolve()
-            return SelfGate(out=out, settings=settings, fetch=not args.no_fetch)()
+            return SelfGate(out=out, settings=settings, fetch=not args.no_fetch, pipeline=args.pipeline)()
         return Release(
             key=args.key.expanduser().resolve(), out=(args.out or ROOT / "out" / "release").resolve(),
             settings=settings,

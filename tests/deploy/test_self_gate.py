@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -14,7 +15,7 @@ from tests.deploy.release_support import Call, Recorder, done, git, make_repo, r
 OWN = {
     "cli/src/sentinelci/__init__.py": "VERSION = '1.0.0'\n",
     ".github/workflows/ci.yml": "name: ci\non: push\njobs: {}\n",
-    ".sentinel/waivers.yaml": "version: 1\nwaivers: []\n",
+    ".sentinel/self-gate-waivers.yaml": "version: 1\nwaivers: []\n",
     "uv.lock": "version = 1\n",
 }
 
@@ -23,7 +24,7 @@ class FakeCli:
     """`sentinel` as the self-gate calls it, writing what it would; `verdict` is the gate's answer."""
 
     def __init__(self, recorder: Recorder, *, verdict: str = "PASS") -> None:
-        self.verdict, self.failing_scan, self.decided_commit = verdict, "", ""
+        self.verdict, self.failing_scan, self.decided_commit, self.image_digest = verdict, "", "", ""
         self.scanned: dict[str, set[str]] = {}
         recorder.fakes.update({
             "sentinel tools grype-db": lambda call: done(),
@@ -77,6 +78,8 @@ class FakeCli:
             "WARN": [{"rule": "SC-006", "effect": "WARN"}],
         }
         subject = {"commit": self.decided_commit or call.option("--commit"), "context": "release"}
+        if self.image_digest:
+            subject["image_digest"] = self.image_digest
         decision = {"verdict": self.verdict, "subject": subject, "violations": rules.get(self.verdict, [])}
         Path(call.option("--output")).write_text(json.dumps(decision))
         return done(returncode=1 if self.verdict == "BLOCK" else 0)
@@ -87,16 +90,28 @@ def repo(tmp_path: Path) -> Path:
     return make_repo(tmp_path / "repo", OWN)
 
 
-def self_gate(repo: Path, tmp_path: Path, recorder: Recorder) -> Any:
-    settings = release.Settings(root=repo, tools_dir=tmp_path / "tools", grype_db=tmp_path / "grype-db")
-    return release.SelfGate(
-        out=repo / "out" / "self-gate", settings=settings, fetch=False, run=recorder,
-        environ={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
-    )  # fmt: skip
-
-
 def head(repo: Path) -> str:
     return git(repo, "rev-parse", "HEAD").strip()
+
+
+def self_gate(repo: Path, tmp_path: Path, recorder: Recorder, **changes: Any) -> Any:
+    """The self-gate from this checkout; HEAD is named as the pipeline unless `pipeline` says otherwise."""
+    settings = release.Settings(root=repo, tools_dir=tmp_path / "tools", grype_db=tmp_path / "grype-db")
+    options: dict[str, Any] = {
+        "out": repo / "out" / "self-gate", "settings": settings, "fetch": False, "run": recorder,
+        "environ": {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}, "pipeline": head(repo),
+    }  # fmt: skip
+    return release.SelfGate(**(options | changes))
+
+
+def advance_main(repo: Path, files: dict[str, str]) -> str:
+    """origin's main moves on by one commit holding `files`; the checkout stays at the pipeline commit."""
+    pipeline = head(repo)
+    commit(repo, files)
+    target = head(repo)
+    git(repo, "update-ref", "refs/remotes/origin/main", target)
+    git(repo, "checkout", "--quiet", "--detach", pipeline)
+    return target
 
 
 def test_the_commits_own_tree_without_demo_shop_is_scanned_by_the_five_scanners(
@@ -125,32 +140,127 @@ def test_the_decision_is_about_the_commit_with_its_own_waivers_and_no_image(
     gate = self_gate(repo, tmp_path, recorder)
     assert gate() == release.EXIT_RELEASED
     (evaluate,) = recorder.named("sentinel evaluate")
-    assert evaluate.option("--waivers") == str(gate.out / "work" / "source" / ".sentinel" / "waivers.yaml")
+    waivers = Path(evaluate.option("--waivers"))
+    assert waivers == gate.out / "work" / "evidence" / "self-gate-waivers.yaml", "kept with the evidence"
+    assert "--vex" not in evaluate.args
     assert "--image-digest" not in evaluate.args and "--sbom" not in evaluate.args
     assert (gate.out / "evidence" / "decision.v1.json").is_file(), "the decision is kept with its evidence"
 
 
-def test_the_waivers_come_from_the_commit_not_the_working_tree(repo: Path, tmp_path: Path) -> None:
-    git(repo, "rm", "--quiet", ".sentinel/waivers.yaml")
-    git(
-        repo,
-        "-c",
-        "user.name=t",
-        "-c",
-        "user.email=t@example.invalid",
-        "commit",
-        "--quiet",
-        "-m",
-        "no waivers",
-    )
+def test_the_waivers_come_from_the_pipeline_commit_not_the_working_tree(repo: Path, tmp_path: Path) -> None:
+    git(repo, "rm", "--quiet", ".sentinel/self-gate-waivers.yaml")
+    commit(repo, {})
     git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
     (repo / ".sentinel").mkdir(exist_ok=True)
     (repo / ".git" / "info" / "exclude").write_text(".sentinel/\n")  # an ignored local file: still not read
-    (repo / ".sentinel" / "waivers.yaml").write_text("version: 1\nwaivers: []\n")
+    (repo / ".sentinel" / "self-gate-waivers.yaml").write_text("version: 1\nwaivers:\n  - id: local\n")
     recorder = Recorder(repo)
     FakeCli(recorder)
-    assert self_gate(repo, tmp_path, recorder)() == release.EXIT_RELEASED
-    assert "--waivers" not in recorder.named("sentinel evaluate")[0].args
+    gate = self_gate(repo, tmp_path, recorder)
+    assert gate() == release.EXIT_RELEASED
+    named = Path(recorder.named("sentinel evaluate")[0].option("--waivers"))
+    kept = gate.out / "evidence" / named.name
+    assert kept.read_text() == "version: 1\nwaivers: []\n", "none in the commit: an empty file, named"
+
+
+def test_main_is_judged_by_the_pipeline_commit_not_by_itself(repo: Path, tmp_path: Path, capsys: Any) -> None:
+    """#95 review, should-fix 1: a commit that adds a token and its waiver together cannot pick the gate that
+    judges it. The target's files are scanned; the pipeline commit's waivers decide."""
+    pipeline = head(repo)
+    target = advance_main(repo, {
+        "cli/src/sentinelci/planted.py": "TOKEN = 'not a real token'\n",
+        ".sentinel/self-gate-waivers.yaml": "version: 1\nwaivers:\n  - id: added-with-the-token\n",
+        "policies/gate.rego": "package sentinel.gate\n",
+    })  # fmt: skip
+    recorder = Recorder(repo)
+    cli = FakeCli(recorder)
+    gate = self_gate(repo, tmp_path, recorder, pipeline=pipeline)
+    assert gate() == release.EXIT_RELEASED
+    assert "cli/src/sentinelci/planted.py" in cli.scanned["secrets"], "the target's files are scanned"
+    (evaluate,) = recorder.named("sentinel evaluate")
+    assert evaluate.option("--commit") == target
+    kept = gate.out / "evidence" / Path(evaluate.option("--waivers")).name
+    assert kept.read_text() == OWN[".sentinel/self-gate-waivers.yaml"], "the pipeline's, not the target's"
+    assert evaluate.option("--policy-dir") == str(repo / "policies"), "the pipeline checkout's policies"
+    kept = json.loads((gate.out / "evidence" / "pipeline.json").read_text())
+    assert kept == {
+        "pipeline_commit": pipeline, "target_commit": target, "target_is_its_own_pipeline": False,
+        "pipeline_files_changed": [".sentinel/self-gate-waivers.yaml", "cli/src/sentinelci/planted.py",
+                                   "policies/gate.rego"],
+    }  # fmt: skip
+    printed = capsys.readouterr().out
+    assert f"judged by the pipeline at {pipeline}" in printed and "3 pipeline file(s) changed" in printed
+
+
+def test_a_release_tag_is_a_pipeline_without_naming_it(repo: Path, tmp_path: Path) -> None:
+    git(repo, "tag", "v0.9.0")
+    recorder = Recorder(repo)
+    FakeCli(recorder)
+    assert self_gate(repo, tmp_path, recorder, pipeline=None)() == release.EXIT_RELEASED
+
+
+@pytest.mark.parametrize(
+    ("setup", "message"),
+    [
+        (lambda repo: None, "no release tag (vX.Y.Z)"),
+        (lambda repo: git(repo, "tag", "release-candidate"), "no release tag (vX.Y.Z)"),
+        (lambda repo: git(repo, "tag", "v1.0"), "no release tag (vX.Y.Z)"),
+    ],
+)  # fmt: skip
+def test_a_pipeline_that_is_no_release_tag_must_be_named(
+    repo: Path, tmp_path: Path, setup: Any, message: str
+) -> None:
+    setup(repo)
+    recorder = Recorder(repo)
+    FakeCli(recorder)
+    with pytest.raises(release.ReleaseError, match=re.escape(message)):
+        self_gate(repo, tmp_path, recorder, pipeline=None)()
+    assert not recorder.named("sentinel")
+
+
+def test_the_named_pipeline_must_be_head(repo: Path, tmp_path: Path) -> None:
+    recorder = Recorder(repo)
+    FakeCli(recorder)
+    with pytest.raises(release.ReleaseError, match="is not HEAD"):
+        self_gate(repo, tmp_path, recorder, pipeline="f" * 40)()
+
+
+def test_a_pipeline_that_is_not_on_main_is_refused(repo: Path, tmp_path: Path) -> None:
+    git(repo, "checkout", "--quiet", "-b", "unreviewed")
+    commit(repo, {"policies/gate.rego": "package sentinel.gate\ndecision := {}\n"})
+    recorder = Recorder(repo)
+    FakeCli(recorder)
+    with pytest.raises(release.ReleaseError, match="is not on origin/main"):
+        self_gate(repo, tmp_path, recorder)()
+    assert not recorder.named("sentinel")
+
+
+def test_the_pipelines_vex_is_named_and_demo_shops_never_read(repo: Path, tmp_path: Path) -> None:
+    vex = '{"statements": []}\n'
+    commit(repo, {".sentinel/self-gate-vex.json": vex})
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    recorder = Recorder(repo)
+    FakeCli(recorder)
+    gate = self_gate(repo, tmp_path, recorder)
+    assert gate() == release.EXIT_RELEASED
+    named = Path(recorder.named("sentinel evaluate")[0].option("--vex"))
+    assert (gate.out / "evidence" / named.name).read_text() == vex
+    git(repo, "rm", "--quiet", ".sentinel/self-gate-vex.json")
+    commit(repo, {".sentinel/vex.json": vex})
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    recorder = Recorder(repo)
+    FakeCli(recorder)
+    with pytest.raises(release.ReleaseError, match="would be read by default"):
+        self_gate(repo, tmp_path, recorder)()
+
+
+def test_a_decision_about_an_image_is_refused(repo: Path, tmp_path: Path) -> None:
+    """#95 review, nit 3: the self-gate decides about a commit, never about an image."""
+    recorder = Recorder(repo)
+    cli = FakeCli(recorder)
+    cli.image_digest = "sha256:" + "a" * 64
+    with pytest.raises(release.ReleaseError, match="the decision is not about"):
+        self_gate(repo, tmp_path, recorder)()
 
 
 def test_a_block_is_exit_1_and_its_evidence_is_kept(repo: Path, tmp_path: Path, capsys: Any) -> None:
@@ -244,4 +354,6 @@ def test_main_runs_the_self_gate_into_out_self_gate(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(release.SelfGate, "__call__", lambda gate: seen.append(gate) or 0)
     assert release.main(["self-gate", "--no-fetch"]) == 0
     (gate,) = seen
-    assert gate.out == release.ROOT / "out" / "self-gate" and gate.fetch is False
+    assert gate.out == release.ROOT / "out" / "self-gate" and gate.fetch is False and gate.pipeline is None
+    assert release.main(["self-gate", "--no-fetch", "--pipeline", "a" * 40]) == 0
+    assert seen[1].pipeline == "a" * 40

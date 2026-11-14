@@ -37,8 +37,10 @@ OWN = {
     "policies/gate.rego": "package sentinel.gate\n",
     "tools.lock.toml": "[tools]\n",
     "deploy/keys/release.pub": RELEASE_PUB,
-    ".sentinel/waivers.yaml": "version: 1\nwaivers: []\n",
+    ".sentinel/self-gate-waivers.yaml": "version: 1\nwaivers: []\n",
+    "deploy/release/build-constraints.txt": "hatchling==1.33.0 \\\n    --hash=sha256:" + "4" * 64 + "\n",
 }
+UV = "uv 0.11.32 (x86_64-unknown-linux-gnu)"
 
 
 class FakeTools:
@@ -48,6 +50,7 @@ class FakeTools:
         self.reproducible, self.trusted, self.builds = reproducible, trusted, 0
         recorder.fakes.update({
             "uv --directory": self.build,
+            "uv --version": lambda call: done(UV + "\n"),
             "cosign public-key": lambda call: done(RELEASE_PUB, 0 if self.password(call) else 1),
             "cosign sign-blob": self.write_bundle,
             "cosign attest-blob": self.write_bundle,
@@ -88,6 +91,7 @@ def make_release(repo: Path, tmp_path: Path, recorder: Recorder, **changes: Any)
         "version": VERSION, "key": key, "out": repo / "out" / "release", "settings": settings, "fetch": False,
         "run": recorder, "ask_password": lambda prompt: PASSWORD,
         "environ": {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}, "tool": lambda name: Path(f"/t/{name}"),
+        "pipeline": git(repo, "rev-parse", "HEAD").strip(),
     }  # fmt: skip
     return release.SentinelRelease(**(options | changes))
 
@@ -135,7 +139,13 @@ def test_the_gate_comes_first_then_two_builds_then_signatures_then_verification(
 ) -> None:
     recorder, _, _ = setup(repo)
     make_release(repo, tmp_path, recorder)()
-    steps = ("sentinel evaluate", "uv ", "cosign sign-blob", "cosign attest-blob", "cosign verify-blob")
+    steps = (
+        "sentinel evaluate",
+        "uv --directory",
+        "cosign sign-blob",
+        "cosign attest-blob",
+        "cosign verify-blob",
+    )
     order = [
         "evaluate" if c.line.startswith("sentinel") else c.line.split()[0]
         for c in recorder.calls
@@ -230,11 +240,89 @@ def test_only_a_plain_version_is_released(repo: Path, tmp_path: Path, version: s
 
 
 def test_the_provenance_names_the_commit_and_the_builder_and_reads_no_clock() -> None:
-    first = release.provenance("a" * 40, VERSION)
-    assert first == release.provenance("a" * 40, VERSION)
-    assert first["buildDefinition"]["resolvedDependencies"][0]["digest"] == {"gitCommit": "a" * 40}
+    inputs = {"pipeline": "b" * 40, "constraints_sha256": "c" * 64, "uv": UV}
+    first = release.provenance("a" * 40, VERSION, **inputs)
+    assert first == release.provenance("a" * 40, VERSION, **inputs)
+    source, backend = first["buildDefinition"]["resolvedDependencies"]
+    assert source["digest"] == {"gitCommit": "a" * 40}
+    assert backend == {
+        "uri": f"git+https://github.com/{release.REPO}@{'b' * 40}#deploy/release/build-constraints.txt",
+        "digest": {"sha256": "c" * 64},
+    }
+    assert first["buildDefinition"]["internalParameters"] == {
+        "gatePipeline": {"gitCommit": "b" * 40},
+        "uv": UV,
+    }
     assert first["runDetails"]["builder"]["id"] == release.builder_id()
     assert "startedOn" not in json.dumps(first)
+
+
+def test_the_build_backend_is_pinned_by_hash_from_the_pipeline_commit(repo: Path, tmp_path: Path) -> None:
+    """#95 review, should-fix 2: `uv build` gets the pipeline commit's constraints and `--require-hashes`, so
+    the build backend never comes unpinned from the index; the provenance names that file and uv."""
+    recorder, _, _ = setup(repo)
+    made = make_release(repo, tmp_path, recorder)
+    assert made() == release.EXIT_RELEASED
+    constraints = OWN["deploy/release/build-constraints.txt"]
+    for call in recorder.named("uv --directory"):
+        assert "--require-hashes" in call.args
+        assert Path(call.option("--build-constraints")).name == "build-constraints.txt"
+    final = made.out / f"sentinelci-{VERSION}"
+    document = json.loads((final / "provenance.json").read_text())
+    backend = document["buildDefinition"]["resolvedDependencies"][1]
+    assert backend["digest"] == {"sha256": hashlib.sha256(constraints.encode()).hexdigest()}
+    assert document["buildDefinition"]["internalParameters"]["uv"] == UV
+
+
+def test_a_pipeline_commit_without_pinned_build_constraints_is_refused(repo: Path, tmp_path: Path) -> None:
+    git(repo, "rm", "--quiet", "deploy/release/build-constraints.txt")
+    git(
+        repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "--quiet", "-m", "unpinned"
+    )
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    recorder, _, _ = setup(repo)
+    with pytest.raises(release.ReleaseError, match="the build backend must be pinned"):
+        make_release(repo, tmp_path, recorder)()
+    assert not recorder.named("sentinel scan") and not recorder.named("uv ")
+
+
+def test_main_is_released_as_judged_by_an_earlier_pipeline_commit(repo: Path, tmp_path: Path) -> None:
+    """The release builds and tags origin's main, judged by the checkout (#95 review, should-fix 1)."""
+    pipeline = git(repo, "rev-parse", "HEAD").strip()
+    (repo / "notes.md").write_text("changed on main\n")
+    (repo / "deploy/release/build-constraints.txt").write_text(
+        "hatchling==9.9.9 \\\n    --hash=sha256:" + "9" * 64
+    )
+    git(repo, "add", "-A")
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "--quiet", "-m", "main")
+    target = git(repo, "rev-parse", "HEAD").strip()
+    git(repo, "update-ref", "refs/remotes/origin/main", target)
+    git(repo, "checkout", "--quiet", "--detach", pipeline)
+    recorder, _, _ = setup(repo)
+    made = make_release(repo, tmp_path, recorder, pipeline=pipeline)
+    assert made() == release.EXIT_RELEASED
+    assert git(repo, "rev-parse", f"v{VERSION}^{{commit}}").strip() == target, "the target is tagged"
+    final = made.out / f"sentinelci-{VERSION}"
+    assert (final / "evidence" / "pipeline.json").is_file()
+    document = json.loads((final / "provenance.json").read_text())
+    assert document["buildDefinition"]["resolvedDependencies"][0]["digest"] == {"gitCommit": target}
+    assert document["buildDefinition"]["internalParameters"]["gatePipeline"] == {"gitCommit": pipeline}
+    pinned = hashlib.sha256(OWN["deploy/release/build-constraints.txt"].encode()).hexdigest()
+    backend = document["buildDefinition"]["resolvedDependencies"][1]
+    assert backend["digest"] == {"sha256": pinned}, "the pipeline's build constraints, not the target's"
+
+
+def test_an_existing_release_directory_is_refused_before_the_password(repo: Path, tmp_path: Path) -> None:
+    """#95 review, nit 3: a version is released once, here too."""
+    recorder, _, _ = setup(repo)
+    asked: list[str] = []
+    made = make_release(
+        repo, tmp_path, recorder, ask_password=lambda prompt: asked.append(prompt) or PASSWORD
+    )
+    (made.out / f"sentinelci-{VERSION}").mkdir(parents=True)
+    with pytest.raises(release.ReleaseError, match="a version is released once"):
+        made()
+    assert asked == [] and not recorder.named("sentinel")
 
 
 # ---------------------------------------------------------------- with the real Cosign (opt-in)
