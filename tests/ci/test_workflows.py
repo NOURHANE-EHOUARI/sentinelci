@@ -190,3 +190,30 @@ def test_the_pr_gate_and_its_baseline_run_the_same_scanners() -> None:
         assert f'--tool-status "$RUNNER_TEMP/scan/{kind}-status.json"' in combine, (
             "a failure must reach the gate"
         )
+
+
+def test_a_re_run_scans_as_a_new_run_and_the_upload_example_is_the_gates_own_run() -> None:
+    """The findings carry the scan's run id, and the platform knows a CI run by it: with the attempt in it, a
+    re-run of the job is a new run (a new scan, a new decision), never the first attempt's run. The README's
+    upload command (#87) uses what the gate step gives `sentinel evaluate`, so the platform accepts it."""
+    text = SCAN_WORKFLOW.read_text(encoding="utf-8")
+    run_ids = re.findall(r"^          RUN_ID: (.*)$", text, re.MULTILINE)
+    assert run_ids and all(
+        value.startswith("${{ github.run_id }}/${{ github.run_attempt }}") for value in run_ids
+    ), run_ids
+    (step,) = [s for s in _steps(_job(text, "gate", "report")) if s.startswith("Evaluate the release gate")]
+    evaluate = step[step.index("evaluate \\") :]
+    readme = (ROOT / "cli" / "README.md").read_text(encoding="utf-8")
+    example = readme[
+        readme.index('uv run sentinel upload --findings "$RUNNER_TEMP/decision/findings.ndjson"') :
+    ]
+    example = example[: example.index("```")]
+    for name, option in (
+        ("REPO", "--repo"),
+        ("HEAD_SHA", "--commit"),
+        ("CONTEXT", "--context"),
+        ("REF", "--ref"),
+    ):
+        assert f'{option} "${name}"' in evaluate, f"the gate passes {option} from {name}"
+        assert f'{option} "${name}"' in example, f"the README's upload passes {option} from {name}"
+    assert '--run-id "$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT"' in example
