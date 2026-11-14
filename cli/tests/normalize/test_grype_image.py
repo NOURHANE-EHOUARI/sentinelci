@@ -135,3 +135,40 @@ def test_an_image_needs_its_digest() -> None:
 def test_the_source_tree_adapter_still_refuses_an_image_report() -> None:
     with pytest.raises(NormalizationError, match="image report needs the image adapter"):
         normalize_grype(image_report(), run=RUN)
+
+
+def test_every_place_s_layer_is_checked_not_only_the_one_used() -> None:
+    """Review of #70, nit 2: a malformed layer on a later path was ignored."""
+    report = image_report()
+    (match,) = [m for m in report["matches"] if m["vulnerability"]["id"] == PYYAML]
+    match["artifact"]["locations"] = [
+        in_image("/opt/a/METADATA", BASE_LAYER),
+        in_image("/usr/lib/z/METADATA", "l1"),
+    ]
+    with pytest.raises(NormalizationError, match="not a sha256 digest: 'l1'"):
+        normalize_grype_image(report, run=RUN, image=IMAGE)
+
+
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "kind-registry:5000/demo-shop/shop-api@" + OTHER,
+        "kind-registry:5000/demo-shop/shop-api:1.0.0",
+        "shop-api:latest",
+        "shop-api@" + OTHER,
+        "",
+    ],
+    ids=["digest", "tag", "short-name-tag", "short-name-digest", "empty"],
+)
+def test_an_image_reference_carries_no_tag_or_digest(ref: str) -> None:
+    """Review of #70, should fix 3: the finding's digest is the image's; a second one would contradict it."""
+    with pytest.raises(NormalizationError, match="without tag or digest"):
+        ImageSubject(digest=DIGEST, ref=ref)
+
+
+@pytest.mark.parametrize(
+    "ref",
+    ["kind-registry:5000/demo-shop/shop-api", "localhost:5000/shop-api", "demo-shop/shop-api", "shop-api"],
+)
+def test_a_registry_port_is_not_a_tag(ref: str) -> None:
+    assert ImageSubject(digest=DIGEST, ref=ref).ref == ref

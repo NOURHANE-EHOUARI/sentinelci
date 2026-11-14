@@ -17,7 +17,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -271,6 +271,7 @@ class FakeTools:
 
     def __init__(self, recorder: Recorder, *, verdict: str = "WARN", public_key: str = RELEASE_PUB) -> None:
         self.verdict, self.public_key, self.trusted, self.failing_scan = verdict, public_key, True, ""
+        self.silent_scan = ""  # killed before it wrote anything (exit -15)
         self.after_evaluate: Any = None
         recorder.fakes.update({
             "cosign public-key": self.public_key_of,
@@ -295,19 +296,33 @@ class FakeTools:
         Path(call.option("--spdx")).write_text('{"spdxVersion": "SPDX-2.3"}')
         return done()
 
+    # Each scan's tools, as the real CLI names them in its tool status.
+    TOOLS: ClassVar[dict[str, tuple[str, ...]]] = {
+        "secrets": ("gitleaks",), "sast": ("opengrep",), "iac": ("trivy",), "pipelines": ("zizmor",),
+        "container": ("syft", "grype"), "sca": ("syft", "grype"),
+    }  # fmt: skip
+
     def scan(self, call: Call) -> Any:
         name = Path(call.option("--out")).stem
-        if name == self.failing_scan:
+        if name == self.silent_scan:
+            return done(returncode=-15)
+        failed = name == self.failing_scan
+        status = {"status": "failed", "detail": "exit 3"} if failed else {"status": "ok"}
+        tools = {tool: {"version": "1.0.0", **status} for tool in self.TOOLS[name]}
+        Path(call.option("--tool-status-out")).write_text(json.dumps({"tools": tools}))
+        if failed:
             return done(returncode=3)
         Path(call.option("--out")).write_text("")
-        Path(call.option("--tool-status-out")).write_text(json.dumps({"tools": {name: {"version": "1.0.0"}}}))
         return done()
 
     def combine(self, call: Call) -> Any:
+        """Merges the tool statuses that exist, as the real one does (a missing one is skipped)."""
+        tools: dict[str, Any] = {}
+        for path in [call.args[i + 1] for i, arg in enumerate(call.args) if arg == "--tool-status"]:
+            if Path(path).is_file():
+                tools |= json.loads(Path(path).read_text())["tools"]
         Path(call.option("--out")).write_text("")
-        Path(call.option("--tool-status-out")).write_text(
-            json.dumps({"tools": {"gitleaks": {"version": "8.30.1"}}})
-        )
+        Path(call.option("--tool-status-out")).write_text(json.dumps({"tools": tools}))
         return done()
 
     def opa(self, call: Call) -> Any:
@@ -435,6 +450,42 @@ def test_the_build_reads_the_staged_context_not_the_working_tree(repo: Path, tmp
     assert build.args[-1] == str(repo / "out" / "release" / "work" / "source" / SERVICE)
     assert "REQUIREMENTS=requirements.release.txt" in build.args
     assert "ONLY_BINARY=:all:" in build.args, "a release installs wheels only"
+    assert build.option("--metadata-file") == str(repo / "out" / "release" / "work" / "build.json")
+
+
+@pytest.mark.parametrize(
+    ("recorded", "message"),
+    [
+        ("sha256:" + "9" * 64, "not the image the build recorded"),
+        ("latest", "names no image digest"),
+        (None, "names no image digest"),
+    ],
+    ids=["another-image", "not-a-digest", "missing"],
+)
+def test_the_image_is_the_one_the_build_recorded_not_the_one_the_layout_claims(
+    repo: Path, tmp_path: Path, recorded: str | None, message: str
+) -> None:
+    """Review of #70: the layout's index.json is its own claim, BuildKit's --metadata-file the builder's."""
+    recorder = Recorder(repo)
+    FakeTools(recorder)
+
+    def build(call: Call) -> Any:
+        support.fake_build(call.args)
+        Path(call.option("--metadata-file")).write_text(json.dumps({"containerimage.digest": recorded}))
+        return done()
+
+    recorder.fakes["docker buildx build"] = build
+    with pytest.raises(release.ReleaseError, match=message):
+        make_release(repo, tmp_path, recorder)()
+    assert recorder.named("sentinel scan") == [] and recorder.named("sentinel attest") == [], "nothing ran"
+
+
+def test_unreadable_build_metadata_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "build.json").write_text("{not json")
+    with pytest.raises(release.ReleaseError, match="cannot be read"):
+        release.built_digest(tmp_path / "build.json")
+    with pytest.raises(release.ReleaseError, match="cannot be read"):
+        release.built_digest(tmp_path / "missing.json")
 
 
 def test_a_block_signs_nothing_and_keeps_the_image_for_the_attack_demo(repo: Path, tmp_path: Path) -> None:
@@ -478,6 +529,56 @@ def test_a_failed_scan_is_left_to_the_gate_with_an_empty_findings_file(repo: Pat
     findings = [combine.args[i + 1] for i, a in enumerate(combine.args) if a == "--findings"]
     assert len(findings) == 5 and all(Path(path).name.endswith(".ndjson") for path in findings)
     assert (repo / "out" / "release" / "work" / "scans" / "secrets.ndjson").read_text() == ""
+
+
+@pytest.mark.parametrize("scan", ["sast", "container"])
+def test_a_scan_that_ends_without_a_tool_status_is_a_failed_release(
+    repo: Path, tmp_path: Path, scan: str
+) -> None:
+    """A scan killed before it wrote its status is left out by `scan combine`, and the real gate would not
+    notice: `required_tools` does not list opengrep, syft or grype in release (#82 review)."""
+    recorder = Recorder(repo)
+    tools = FakeTools(recorder, verdict="PASS")
+    tools.silent_scan = scan
+    with pytest.raises(release.ReleaseError, match="no tool status for"):
+        make_release(repo, tmp_path, recorder)()
+    assert recorder.named("sentinel evaluate") == [] and recorder.named("sentinel attest") == []
+    assert not (repo / "out" / "release" / "bundle").exists()
+
+
+def test_a_scan_that_fails_with_its_status_is_left_to_the_gate(repo: Path, tmp_path: Path) -> None:
+    """A failed scan that says so is decided on: its status reaches `evaluate` (SC-010 there)."""
+    recorder = Recorder(repo)
+    tools = FakeTools(recorder, verdict="BLOCK")
+    tools.failing_scan = "container"
+    seen: list[dict[str, Any]] = []
+    tools.after_evaluate = lambda call: seen.append(
+        json.loads(Path(call.option("--tool-status")).read_text())
+    )
+    assert make_release(repo, tmp_path, recorder)() == release.EXIT_BLOCKED
+    (status,) = seen
+    assert status["tools"]["grype"]["status"] == "failed" and set(status["tools"]) == release.RELEASE_TOOLS
+
+
+def test_an_ignored_file_in_the_policies_is_refused(repo: Path) -> None:
+    """OPA loads every file under policies/: an ignored one, left by another branch, could waive anything."""
+    (repo / "policies" / "__pycache__").mkdir(parents=True)
+    (repo / "policies" / "__pycache__" / "local.rego").write_text("package sentinel.gate\n")
+    with pytest.raises(release.ReleaseError, match="policies/ holds files git ignores"):
+        release.preconditions(runner(repo), fetch=False, environ={})
+
+
+def test_an_origin_with_two_urls_is_refused(repo: Path) -> None:
+    """git reads the last `url` of a remote but fetches from the first: one URL only (#82 review)."""
+    support.git(repo, "config", "--add", "remote.origin.url", "/somewhere/else.git")
+    with pytest.raises(release.ReleaseError, match="origin has 2 URLs"):
+        release.preconditions(runner(repo), fetch=False, environ={})
+
+
+def test_a_failed_cli_step_is_named_by_its_command() -> None:
+    assert release._named(release.sentinel("scan", "combine", "--out", "x")) == "sentinel scan combine"
+    assert release._named(release.sentinel("evaluate", "--findings", "x")) == "sentinel evaluate"
+    assert release._named(["git", "fetch", "--quiet", "origin"]) == "git fetch --quiet"
 
 
 def test_no_decision_is_a_failed_release(repo: Path, tmp_path: Path) -> None:

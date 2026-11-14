@@ -60,7 +60,7 @@ class Instruction:
         return range(self.start + 1, self.end + 1)
 
 
-def _instructions(lines: list[str]) -> list[Instruction]:
+def parse_instructions(lines: list[str]) -> list[Instruction]:
     """The instructions of a Dockerfile and their physical lines (continuations joined, comments skipped)."""
     found: list[Instruction] = []
     index = 0
@@ -224,7 +224,7 @@ def fix_dockerfile(text: str, rule_ids: Iterable[str], context: FixContext | Non
     for rule, (label, function) in FIXES.items():
         if rule in wanted:
             before = "".join(edit.lines)
-            function(edit, _instructions(edit.lines))
+            function(edit, parse_instructions(edit.lines))
             if "".join(edit.lines) != before:
                 changes.append(label)
     return Fixed(text="".join(edit.lines), changes=changes, left_open=frozenset(edit.left_open))

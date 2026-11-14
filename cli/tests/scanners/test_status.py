@@ -194,7 +194,8 @@ def test_cli_records_a_tampered_binary_that_never_ran(
 
 
 def test_cli_writes_no_status_without_a_lock(tmp_path: Path) -> None:
-    # Nothing to vouch for: no status at all, which the gate reports as SC-010 "Tool status missing".
+    # Nothing to vouch for: no status at all, which the gate blocks (SC-010) once required_tools.rego
+    # requires the tool.
     _stale_status(tmp_path)
     result, out, status = _scan(tmp_path, tmp_path / "tools", lock=tmp_path / "missing.lock.toml")
 

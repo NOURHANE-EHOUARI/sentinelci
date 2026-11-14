@@ -47,9 +47,11 @@ from sentinelci.scanners.runner import DEFAULT_TIMEOUT_S, ToolRun, is_within, ru
 from sentinelci.supplychain.sbom import OFFLINE_ENV, Sbom, generate_sbom
 
 
-class SbomScanFailure(Exception):
+class SbomScanFailure(ScannerError):
     """Which tool of a Syft-then-Grype scan failed (`syft`, or `grype` once the SBOM exists), and why: the
-    tool status names each tool's own outcome, and Grype never runs when Syft failed."""
+    tool status names each tool's own outcome, and Grype never runs when Syft failed. A ScannerError, so a
+    caller that catches scanner errors, as every other scanner's caller does, never lets it through as a
+    traceback (review of #80, nit 2)."""
 
     def __init__(self, tool: str, error: Exception, sbom: Sbom | None = None) -> None:
         super().__init__(str(error))

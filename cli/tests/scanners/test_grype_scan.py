@@ -455,9 +455,10 @@ def test_cli_reports_the_database_the_scan_read_and_the_sbom_it_matched(
     tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
 ) -> None:
     _, dest, fakes = install_fakes(tmp_path, releases, write_lock, report=_report())
-    report = tmp_path / "evidence" / "sca-report.json"
-    result, _, _ = _sca_status(tmp_path, dest, "--report", str(report))
+    report, sbom = tmp_path / "evidence" / "sca-report.json", tmp_path / "evidence" / "sca-sbom.syft.json"
+    result, _, _ = _sca_status(tmp_path, dest, "--report", str(report), "--sbom-out", str(sbom))
     assert result.exit_code == 0, result.output
+    assert sbom.read_bytes() == (fakes.record / "grype.sbom").read_bytes(), "the SBOM Grype matched, kept"
     binaries = {
         tool: hashlib.sha256((dest / "bin" / tool).read_bytes()).hexdigest() for tool in ("syft", "grype")
     }
@@ -471,22 +472,37 @@ def test_cli_reports_the_database_the_scan_read_and_the_sbom_it_matched(
             "built": database.built,
             "checksum": database.checksum,
         },
-        "sbom_sha256": hashlib.sha256((fakes.record / "grype.sbom").read_bytes()).hexdigest(),
+        "sbom_sha256": hashlib.sha256(sbom.read_bytes()).hexdigest(),
     }
 
 
-def test_cli_leaves_no_report_when_the_scan_fails(
+def test_cli_leaves_no_report_and_no_sbom_when_the_scan_fails(
     tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
 ) -> None:
     _, dest, _ = install_fakes(tmp_path, releases, write_lock, report=_report(**{"by-cve": True}))
+    report, sbom = tmp_path / "sca-report.json", tmp_path / "sca-sbom.syft.json"
+    report.write_text("an older scan's report")
+    sbom.write_text("an older scan's SBOM")
+    result, _, _ = _sca_status(tmp_path, dest, "--report", str(report), "--sbom-out", str(sbom))
+    assert result.exit_code == 3 and not report.exists() and not sbom.exists()
+
+
+def test_cli_a_report_is_never_written_without_the_sbom_it_names(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
+) -> None:
+    """Review of #80, should fix 1: the digest of bytes nobody keeps could be checked against nothing."""
+    _, dest, fakes = install_fakes(tmp_path, releases, write_lock, report=_report())
     report = tmp_path / "sca-report.json"
     report.write_text("an older scan's report")
-    result, _, _ = _sca_status(tmp_path, dest, "--report", str(report))
-    assert result.exit_code == 3 and not report.exists()
+    result, out, status = _sca_status(tmp_path, dest, "--report", str(report))
+    assert result.exit_code == 2 and "--report needs --sbom-out" in result.output, result.output
+    assert not (fakes.record / "syft.argv").exists(), "nothing ran"
+    assert not report.exists() and not out.exists() and status is None, "and nothing older is left behind"
 
 
 def test_cli_writes_no_status_without_a_lock(tmp_path: Path) -> None:
-    # Nothing to vouch for: no status at all, which the gate reports as SC-010 "Tool status missing".
+    # Nothing to vouch for: no status at all, which the gate blocks (SC-010) once required_tools.rego
+    # requires the tool.
     dest = tmp_path / "tools"
     dest.mkdir()
     result, out, document = _sca_status(tmp_path, dest)

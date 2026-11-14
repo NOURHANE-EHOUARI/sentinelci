@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -34,21 +34,33 @@ class FakeCli:
             "sentinel evaluate": self.evaluate,
         })  # fmt: skip
 
+    # Each scan's tools, as the real CLI names them in its tool status (the release checks they all reported).
+    TOOLS: ClassVar[dict[str, tuple[str, ...]]] = {
+        "secrets": ("gitleaks",), "sast": ("opengrep",), "iac": ("trivy",), "pipelines": ("zizmor",),
+        "sca": ("syft", "grype"),
+    }  # fmt: skip
+
     def scan(self, call: Call) -> Any:
         name = Path(call.option("--out")).stem
         target = Path(call.args[5])
         self.scanned[name] = {p.relative_to(target).as_posix() for p in target.rglob("*") if p.is_file()}
-        if name == self.failing_scan:
+        failed = name == self.failing_scan
+        status = {"status": "failed", "detail": "exit 3"} if failed else {"status": "ok"}
+        tools = {tool: {"version": "1.0.0", **status} for tool in self.TOOLS[name]}
+        Path(call.option("--tool-status-out")).write_text(json.dumps({"tools": tools}))
+        if failed:
             return done(returncode=3)
         Path(call.option("--out")).write_text("")
-        Path(call.option("--tool-status-out")).write_text(json.dumps({"tools": {name: {"version": "1.0.0"}}}))
         return done()
 
     def combine(self, call: Call) -> Any:
+        """Merges the tool statuses that exist, as the real one does (a missing one is skipped)."""
+        tools: dict[str, Any] = {}
+        for path in [call.args[i + 1] for i, arg in enumerate(call.args) if arg == "--tool-status"]:
+            if Path(path).is_file():
+                tools |= json.loads(Path(path).read_text())["tools"]
         Path(call.option("--out")).write_text("")
-        Path(call.option("--tool-status-out")).write_text(
-            json.dumps({"tools": {"gitleaks": {"version": "8"}}})
-        )
+        Path(call.option("--tool-status-out")).write_text(json.dumps({"tools": tools}))
         return done()
 
     def opa(self, call: Call) -> Any:

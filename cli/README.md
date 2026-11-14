@@ -305,7 +305,10 @@ uv run sentinel normalize grype grype.json --scan-root demo-shop --out out/sca.n
 - **Report** (`--report`, only on success): what this scan read, the Syft and Grype binaries, the database Grype
   matched against (schema, build time, checksum, as Grype's report names it) and the sha256 of the SBOM it
   matched. A decision can only be explained with its database: two databases give different findings on the same
-  tree. `sentinel-scan.yml` keeps it with the scan evidence (`sca-report.json`).
+  tree. `--report` needs `--sbom-out`, which keeps that SBOM (Syft's JSON): a digest of bytes nobody keeps could
+  be checked against nothing. The same tree gives the same SBOM bytes, since `supplychain/configs/syft.yaml`
+  fixes the two directories Syft records in it. `sentinel-scan.yml` keeps both with the scan evidence
+  (`sca-report.json`, `sca-sbom.syft.json`).
 - **CPE matching is pinned too.** `scanners/configs/grype.yaml` sets the `match` block (which ecosystems Grype
   also matches by CPE, Grype 0.121.0's defaults), and a report whose recorded block differs is refused: turning
   CPE matching off for an ecosystem drops what only a CPE finds.
@@ -357,8 +360,8 @@ uv run sentinel verify <registry>/demo-shop/shop-api@sha256:<digest> --key cosig
 
 ```bash
 docker buildx build --output type=oci,dest=out/image.oci.tar --provenance=false --sbom=false \
-  -f demo-shop/services/shop-api/Dockerfile.release demo-shop/services/shop-api
-uv run sentinel scan image out/image.oci.tar --image-digest "sha256:<manifest digest from index.json>" \
+  --metadata-file out/build.json -f demo-shop/services/shop-api/Dockerfile.release demo-shop/services/shop-api
+uv run sentinel scan image out/image.oci.tar --image-digest "$(jq -r '."containerimage.digest"' out/build.json)" \
   --image-ref kind-registry:5000/demo-shop/shop-api --db-dir .sentinel/grype-db --out out/container.ndjson \
   --tool-status-out out/container-status.json \
   --repo NOURHANE-EHOUARI/sentinelci --commit "$(git rev-parse HEAD)" --context release
@@ -367,9 +370,16 @@ uv run sentinel scan image out/image.oci.tar --image-digest "sha256:<manifest di
 - The same Syft run as `sentinel sbom` on the image's OCI layout archive, which must hold the image of
   `--image-digest` (both SBOMs name it), then the same Grype, database and checks as `scan sca`: offline, from a
   private directory, SentinelCI's configuration, nothing that hides a match.
+- `--image-digest` is what the build recorded (`--metadata-file`, `containerimage.digest`), not what the
+  layout's `index.json` claims. Before Syft runs, every blob of the layout must hold the content its digest names,
+  the layout holds nothing else (no link, no other file, no entry twice), and the manifest's config and layers are
+  all there: Syft checks the manifest, not the layer bytes.
 - Findings (category CONTAINER): one per (vulnerability id, purl base), with `package` and `image` (the digest,
-  `--image-ref`, and the layer of the package's first place in the image, by path). Paths inside the image are
-  not repository paths, so there is no `location`. The report must be about `--image-digest`.
+  `--image-ref`, and the layer of the package's first place in the image, by path). The layer is its `diff_id`
+  (the digest of the uncompressed layer tar, as the image config and Trivy name it), not the compressed blob's.
+  Paths inside the image are not repository paths, so there is no `location`. The report must be about
+  `--image-digest`. `--image-ref` is a repository (`kind-registry:5000/demo-shop/shop-api`): a tag or a digest in
+  it is refused, so a finding never names two images.
 - `--tool-status-out` names `syft` and `grype`: a Syft failure leaves Grype `not_run`; a Grype failure, or a
   report that cannot be trusted, keeps Syft `ok` and records Grype's failure. Exit code `3` and no findings file
   in every failure.
@@ -391,7 +401,8 @@ uv run sentinel sbom out/image-oci --source oci-dir --name demo-shop/shop-api \
 - `--source`: `dir` (default; `--base-path` stops links above the tree), or the OCI image layout the build wrote,
   with one image manifest: `oci-dir` (a directory) or `oci-archive` (a tar of one). Never a registry pull.
   - An image needs `--image-digest`, its manifest digest, and both SBOMs must name it (CycloneDX
-    `metadata.component.version`, the SPDX root package's `versionInfo`), or exit `3`.
+    `metadata.component.version`, the SPDX root package's `versionInfo`), or exit `3`. Before Syft runs, every
+    blob of the layout must hold the content its digest names (as `scan image` checks).
   - A Docker archive is not accepted: Syft names it by a digest it computes itself, which no registry knows.
   - A plain `docker save` tar from Docker's containerd image store holds a nested index that Syft cannot read as
     an `oci-archive`. The release workflow (A4c) is to write the layout with BuildKit's OCI exporter.
@@ -441,8 +452,36 @@ SENTINEL_API_TOKEN=... uv run sentinel upload --findings out/findings.ndjson --a
 - **CI runs resume themselves.** With `--run-id`, the platform answers the same CI run again with 409 and the
   run it has (API 1.1.0), so the same command again finishes or confirms that run, with no `--resume`. The run
   id is free text: in GitHub Actions it is `<run id>/<run attempt>` (the scan's `--run-id` too, since the
-  findings carry it), so a re-run of the job is a new run, as it is a new scan and a new decision. A run with no
-  `--run-id` (a local run) is recorded anew each time.
+  findings carry it), so a re-run of the job is a new run, as it is a new scan and a new decision. After a
+  BLOCK, re-run **all** jobs: "Re-run failed jobs" runs only the gate, in a new attempt but on the scan of the
+  first one, so its findings name another run id and the upload refuses them before sending anything (#87
+  review). A run with no `--run-id` (a local run) is recorded anew each time.
+- **The decision (`--decision`, API 1.6.0)** is sent last, once the findings are recorded: the Decision v1
+  record `sentinel evaluate` wrote, byte for byte (`POST /api/v1/runs/{id}/decision`). The platform keeps one
+  decision per run, and only the one made on exactly the findings it recorded. So `--findings` must then be
+  the **scored findings the gate evaluated** (in `sentinel-scan.yml`, `$RUNNER_TEMP/decision/findings.ndjson`,
+  what `sentinel score` wrote and `sentinel evaluate --findings` read), not the scan's. The decision is checked
+  before anything is sent: a valid Decision v1 (one JSON object, no repeated key, no NaN), made on these
+  findings (`inputs.findings_digest` is the sha256 of the `--findings` bytes), about this run (repo, commit,
+  context, and the ref when the decision names one), naming only findings of the file. Otherwise exit `4` and
+  no run is created. A 409 that names this run and the sha256 of the bytes sent means the decision is recorded
+  already: the same step again, or `--resume`, exits `0` with `"decision_already_recorded": true`. Another
+  decision for the run is refused (a new decision, after a new waiver for example, is a new run), and so is a
+  `decision_id` another run recorded. The output adds `decision_sha256` and `verdict`.
+
+In the gate job of `sentinel-scan.yml`, after `sentinel evaluate`, with the values that step gives the gate
+(`REPO`, `HEAD_SHA`, `CONTEXT`, `REF`: the pull request's head and `refs/pull/<n>/head`, not the merge commit)
+and the scan's run id:
+
+```bash
+SENTINEL_API_TOKEN=... uv run sentinel upload --findings "$RUNNER_TEMP/decision/findings.ndjson" \
+  --decision "$RUNNER_TEMP/decision/decision.v1.json" --api-url https://sentinel.example \
+  --repo "$REPO" --commit "$HEAD_SHA" --context "$CONTEXT" --ref "$REF" \
+  --run-id "$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT"
+```
+
+A local run (no `--run-id`) that failed after its run was created is finished with `--resume <run id>`, never
+with the same command again: that would create another run, which the platform then refuses the decision for.
 
 
 ## `sentinel scan pipelines` (CI workflows, A1)
@@ -482,6 +521,7 @@ uv run sentinel scan pipelines demo-shop --repo-root . --out out/pipelines.ndjso
 ```bash
 uv run sentinel remediate kubernetes --findings out/findings.ndjson --repo-root . --out out/proposal.json
 uv run sentinel remediate apply --proposal out/proposal.json --findings out/base.ndjson --repo-root .
+uv run sentinel remediate check --proposal out/proposal.json --base-root out/base --patched-root out/patched
 uv run sentinel remediate verify --proposal out/proposal.json --before out/base.ndjson \
   --after out/patched.ndjson --decision out/patched-decision.json --tool-status out/patched-tool-status.json \
   --build-ok --tests-ok --out out/result.json
@@ -556,6 +596,28 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
     tool status; for a `--tool-status` that is not the one the decision recorded, or that does not show the
     scanner of every target `ok`: a scan that failed, was skipped or never ran must not vouch for the patch;
   - `--out` can never be one of the inputs.
+- `check` builds and tests an infrastructure-as-code proposal for `verify`, on the trees of the base and the
+  patched commit (exported with `git archive`, never checked out), and prints `{proposal_id, strategy,
+  build_ok, tests_ok, problems}`. A manifest or a Dockerfile has no compiler or unit test of its own, so:
+  - **build**: every edited file still parses as what it was, into the same resources. A manifest keeps its
+    documents, each with the same apiVersion, kind, name and namespace; a Dockerfile keeps its stages (the same
+    FROM lines) and holds only Dockerfile instructions. A scanner reports nothing in a file it cannot parse,
+    so without this a broken file would make its findings "gone";
+  - **tests**: the patch changes only what its strategy may change. A manifest read as data is the same once
+    the pod's and every container's `securityContext` and the pod's host namespaces are set aside; a Dockerfile
+    is the same line for line once its added `USER 10001:10001` lines are skipped (each an instruction of its
+    own after the final stage's last RUN), except ADD → COPY and an added `--no-install-recommends`. Whether
+    the new settings are right is the scanners' part: a weaker one is a new finding;
+  - manifests are read with a safe loader that refuses aliases and duplicate keys;
+  - exit `0` when both hold, `1` when one does not (the problems name the file and why), `3` when they cannot
+    be checked honestly: a strategy with no build or tests defined here (an LLM code fix, B6), a file that is
+    not a regular file of both trees, a base file this check cannot read.
+
+The bot (`.github/workflows/sentinel-remediate.yml`, ADR-0013) chains them: `propose` (read-only) scans, runs
+the fixers and `apply`; `publish` (no repository code) pushes each branch and opens its pull request; `verify`
+(read-only, the scanned commit's pipeline) rebuilds each pull request's commit, scans both commits with the
+scanners the pr gate requires, runs `check`, the gate in pr context and `verify`; `report` (no repository code)
+comments each result and sets the `sentinelci/remediation` commit status.
 
 ## `sentinel admission-policy` (Kyverno admission of releases, A5)
 

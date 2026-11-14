@@ -72,6 +72,7 @@ from sentinelci.policy.tool_status import load_tool_status
 from sentinelci.policy.vex import DEFAULT_VEX_PATH
 from sentinelci.policy.waivers import DEFAULT_WAIVERS_PATH
 from sentinelci.remediation.apply import apply_proposal
+from sentinelci.remediation.check import CheckError, check_iac
 from sentinelci.remediation.dockerfile import propose as propose_dockerfile
 from sentinelci.remediation.gate import check_proposal, verify_proposal
 from sentinelci.remediation.kubernetes import propose as propose_kubernetes
@@ -83,7 +84,14 @@ from sentinelci.report.pr_comment import (
     render_no_decision,
     render_pr_comment,
 )
-from sentinelci.report.upload import TOKEN_VARIABLE, RunInfo, UploadError, platform_from, upload
+from sentinelci.report.upload import (
+    TOKEN_VARIABLE,
+    DecisionNotRecorded,
+    RunInfo,
+    UploadError,
+    platform_from,
+    upload,
+)
 from sentinelci.risk import RiskModel, RiskModelError, score_finding
 from sentinelci.scanners.combine import CombineError, combine_findings, combine_tool_statuses
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
@@ -600,46 +608,59 @@ def upload_command(
     resume: Annotated[
         str | None, typer.Option(help="Finish the upload of a run the platform already created (its id).")
     ] = None,
+    decision: Annotated[
+        Path | None,
+        typer.Option(
+            help="The Decision v1 record `sentinel evaluate` made on --findings, sent after them (then "
+            "--findings must be the scored findings the gate evaluated)."
+        ),
+    ] = None,
 ) -> None:
-    """Send one run's findings to the SentinelCI platform (B1 ingestion API), after the decision.
+    """Send one run's findings to the SentinelCI platform (B1 ingestion API), after the decision, and with
+    --decision the decision itself.
 
     The token comes only from the SENTINEL_API_TOKEN environment variable. Exit code 0 when the platform
-    recorded exactly these findings (with --resume, also when it already had them), 4 when it did not, for
-    whatever reason: an upload never changes the verdict, which was decided before. With --run-id, the same
-    command again resumes the platform's run of that CI run; without it, a re-run records a new run.
+    recorded exactly these findings (with --resume, also when it already had them), and with --decision
+    exactly this decision, 4 when it did not, for whatever reason: an upload never changes the verdict, which
+    was decided before. With --run-id, the same command again resumes the platform's run of that CI run;
+    without it, a re-run records a new run.
     """
     run = RunInfo(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id)
+    what = "the findings or the decision were not recorded" if decision else "the findings were not uploaded"
     try:
         platform = platform_from(api_url)
-        uploaded = upload(findings.read_bytes(), run, platform, resume=resume)
+        decision_bytes = decision.read_bytes() if decision is not None else None
+        uploaded = upload(findings.read_bytes(), run, platform, resume=resume, decision=decision_bytes)
     except (OSError, UploadError) as exc:
         # The platform's own words are quoted in some messages: one that echoes the request (a gateway quoting
         # the Authorization header) must not make the CLI print the token.
         said, token = str(exc), os.environ.get(TOKEN_VARIABLE, "").strip()
         said = said.replace(token, f"<{TOKEN_VARIABLE}>") if token else said
-        typer.echo(
-            f"sentinel upload: {said}\nthe findings were not uploaded (the verdict is unchanged)", err=True
-        )
+        if isinstance(exc, DecisionNotRecorded):
+            state = "may be recorded or not" if exc.unconfirmed else "was not recorded"
+            what = f"the decision {state} (the findings are, in run {exc.run_id})"
+        typer.echo(f"sentinel upload: {said}\n{what} (the verdict is unchanged)", err=True)
         raise typer.Exit(EXIT_UPLOAD_FAILED) from exc
     except Exception as exc:
         # Last resort: an upload never ends with 1 or a traceback. Only the type is printed: an unexpected
         # error's text could hold anything, the token included.
         typer.echo(
-            f"sentinel upload: unexpected {type(exc).__name__}\nthe findings were not uploaded "
-            "(the verdict is unchanged)",
-            err=True,
+            f"sentinel upload: unexpected {type(exc).__name__}\n{what} (the verdict is unchanged)", err=True
         )
         raise typer.Exit(EXIT_UPLOAD_FAILED) from None
-    typer.echo(
-        json.dumps(
-            {
-                "run_id": uploaded.run_id,
-                "finding_count": uploaded.finding_count,
-                "findings_sha256": uploaded.findings_sha256,
-                "already_recorded": uploaded.already_recorded,
-            }
-        )
-    )
+    printed: dict[str, object] = {
+        "run_id": uploaded.run_id,
+        "finding_count": uploaded.finding_count,
+        "findings_sha256": uploaded.findings_sha256,
+        "already_recorded": uploaded.already_recorded,
+    }
+    if decision is not None:
+        printed |= {
+            "decision_sha256": uploaded.decision_sha256,
+            "verdict": uploaded.verdict,
+            "decision_already_recorded": uploaded.decision_already_recorded,
+        }
+    typer.echo(json.dumps(printed))
 
 
 @app.command("replay")
@@ -1138,7 +1159,7 @@ def _scan_and_record(
         tool_lock = load_lock(lock)
         findings, tool_run = scan(tool_lock)
     except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
-        if tool_status_out is not None and tool_lock is not None:  # no lock: no status, the gate blocks
+        if tool_status_out is not None and tool_lock is not None:  # no lock: no status (SC-010 once required)
             outcome = outcome_from_error(tool, exc, lock=tool_lock)
             _write_status(tool_status_out, lock, platform or _host_platform(), {tool: outcome})
         raise _fail_closed(exc) from exc
@@ -1165,13 +1186,16 @@ def _write_status(
     typer.echo(f"tool status written to {destination}", err=True)
 
 
-def _sbom_scan_outcomes(failure: SbomScanFailure, lock: ToolLock, platform: str | None) -> dict[str, Any]:
-    """Syft's and Grype's outcomes when one of them failed: Grype never ran after a failed Syft."""
+def _sbom_scan_outcomes(
+    failure: SbomScanFailure, lock: ToolLock, platform: str | None, *, of: str = ""
+) -> dict[str, Any]:
+    """Syft's and Grype's outcomes when one of them failed: Grype never ran after a failed Syft (`of` names
+    what Syft read, for an image)."""
     outcomes = {failure.tool: outcome_from_error(failure.tool, failure.error, lock=lock)}
     if failure.sbom is not None:
         outcomes["syft"] = outcome_from_run(failure.sbom.run, lock=lock, platform=platform)
     else:
-        outcomes["grype"] = outcome_not_run("grype", "not started: Syft produced no SBOM", lock=lock)
+        outcomes["grype"] = outcome_not_run("grype", f"not started: Syft produced no SBOM{of}", lock=lock)
     return outcomes
 
 
@@ -1338,7 +1362,15 @@ def scan_sca_cmd(
         typer.Option(
             "--report",
             help="Also write what this scan read (JSON): the Syft and Grype binaries, the database Grype "
-            "matched against and the sha256 of the SBOM it matched. Only on success.",
+            "matched against and the sha256 of the SBOM it matched (kept with --sbom-out). Only on success.",
+        ),
+    ] = None,
+    sbom_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--sbom-out",
+            help="Also keep the SBOM Grype matched (Syft's own JSON), the bytes the report's sbom_sha256 "
+            "names. Needed with --report. Only on success.",
         ),
     ] = None,
 ) -> None:
@@ -1350,8 +1382,11 @@ def scan_sca_cmd(
     Syft failed, and a report that cannot be trusted is Grype's failure.
     """
     _clear(out, tool_status_out)
-    if report is not None:
-        report.unlink(missing_ok=True)  # an older report must never describe this scan
+    for older in (report, sbom_out):
+        if older is not None:
+            older.unlink(missing_ok=True)  # an older report or SBOM must never describe this scan
+    if report is not None and sbom_out is None:  # the digest of bytes nobody keeps proves nothing (#80)
+        raise typer.BadParameter("--report needs --sbom-out: the SBOM its sbom_sha256 names is kept with it")
     root = repo_root or target
     host = platform or _host_platform()
     tool_lock: ToolLock | None = None
@@ -1390,6 +1425,9 @@ def scan_sca_cmd(
     out.parent.mkdir(parents=True, exist_ok=True)
     write_ndjson(findings, out)
     database = scan.database
+    if sbom_out is not None:  # before the report: it never names bytes not yet kept
+        sbom_out.parent.mkdir(parents=True, exist_ok=True)
+        sbom_out.write_bytes(scan.sbom.syft_json or b"")
     if report is not None:  # the database the scan read, not the one a `tools grype-db` run prepared
         evidence = {
             "schema_version": 1,
@@ -1426,14 +1464,17 @@ def scan_image_cmd(
     image_digest: Annotated[
         str,
         typer.Option(
-            "--image-digest", help="Its manifest digest (sha256:...), from the layout's index.json."
+            "--image-digest",
+            help="Its manifest digest (sha256:...), as the build recorded it (`docker buildx build "
+            "--metadata-file`: containerimage.digest), not as the layout claims it.",
         ),
     ],
     image_ref: Annotated[
         str,
         typer.Option(
             "--image-ref",
-            help="Where it is released, without tag or digest (e.g. kind-registry:5000/demo/api).",
+            help="Where it is released, without tag or digest (e.g. kind-registry:5000/demo/api): "
+            "a reference with either is refused.",
         ),
     ],
     out: Annotated[Path, typer.Option(help="Destination NDJSON file.")],
@@ -1480,6 +1521,10 @@ def scan_image_cmd(
     out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
     if tool_status_out is not None:
         tool_status_out.unlink(missing_ok=True)  # nor an older status vouching for it
+    try:  # before any tool runs: a reference with its own tag or digest is never scanned
+        image = ImageSubject(digest=image_digest, ref=image_ref)
+    except NormalizationError as exc:
+        raise _fail_closed(exc) from exc
     host = platform or _host_platform()
     tool_lock: ToolLock | None = None
     outcomes: dict[str, dict[str, Any]] = {}
@@ -1501,11 +1546,13 @@ def scan_image_cmd(
         findings = normalize_grype_image(
             scan.report,
             run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
-            image=ImageSubject(digest=image_digest, ref=image_ref),
+            image=image,
         )
     except SbomScanFailure as failure:
         if tool_status_out is not None and tool_lock is not None:
-            _write_status(tool_status_out, lock, host, _sbom_scan_outcomes(failure, tool_lock, host))
+            _write_status(
+                tool_status_out, lock, host, _sbom_scan_outcomes(failure, tool_lock, host, of=" of the image")
+            )
         raise _fail_closed(failure.error) from failure
     except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
         if tool_status_out is not None and tool_lock is not None:
@@ -1937,6 +1984,41 @@ def remediate_apply(
             "diff_sha256": applied.diff_sha256,
         })
     )  # fmt: skip
+
+
+@remediate_app.command("check")
+def remediate_check(
+    proposal: Annotated[Path, typer.Option(help="The patch proposal (schemas/patch-proposal.v1.json).")],
+    base_root: Annotated[
+        Path, typer.Option(help="The tree of the commit the proposal applies to (exported, not checked out).")
+    ],
+    patched_root: Annotated[
+        Path, typer.Option(help="The tree of the patched commit (exported the same way).")
+    ],
+) -> None:
+    """Build and test an infrastructure-as-code proposal for the verification gate, and print the result
+    as JSON. Build: every edited file still parses into the same resources (a manifest's documents, a
+    Dockerfile's stages). Tests: the patch changes only what its strategy may change. Their results are what
+    `sentinel remediate verify` takes as --build-ok/--build-failed and --tests-ok/--tests-failed.
+
+    Exit code 0 when both hold, 1 when one does not (the JSON says which file and why), 3 when they cannot
+    be checked honestly (a strategy with no build or tests defined here, a file that is not a regular file
+    of both trees, a base file this check cannot read): nothing is verified then.
+    """
+    try:
+        applied = PatchProposal.model_validate_json(proposal.read_bytes())
+        checked = check_iac(applied, base_root, patched_root)
+    except (OSError, ValidationError, CheckError) as exc:
+        typer.echo(f"sentinel remediate check: {exc}\nFAIL CLOSED: nothing is verified.", err=True)
+        raise typer.Exit(EXIT_NO_DECISION) from exc
+    typer.echo(
+        json.dumps({
+            "proposal_id": applied.proposal_id, "strategy": applied.strategy, "build_ok": checked.build_ok,
+            "tests_ok": checked.tests_ok, "problems": checked.problems,
+        })
+    )  # fmt: skip
+    if not (checked.build_ok and checked.tests_ok):
+        raise typer.Exit(EXIT_NOT_VERIFIED)
 
 
 @remediate_app.command("verify")

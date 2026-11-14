@@ -51,7 +51,10 @@ registry (ADR-0006, decision 4). Facts checked with the pinned tools on 2026-11-
 2. **Build without a registry and without credentials:**
    `docker buildx build --output type=oci,dest=image.oci.tar --provenance=false --sbom=false`.
    - BuildKit's own attestations are off: SentinelCI's four statements are the evidence.
-   - The release digest is the manifest digest in the layout's `index.json`.
+   - The release digest is the one BuildKit records for the image it built (`--metadata-file`,
+     `containerimage.digest`); the layout's `index.json` must name exactly that one manifest. Before Syft reads
+     the layout, every blob must hold the content its digest names (review of #70: Syft checks the manifest,
+     not the layers).
 3. **Analyse the layout, decide on its digest:**
    - `sentinel sbom` (oci-archive, `--image-digest`) gives CycloneDX and SPDX;
    - Grype scans the SBOM (CONTAINER findings, adapter A1) and the source scans run as in `sentinel-scan.yml`;
@@ -120,9 +123,10 @@ registry (ADR-0006, decision 4). Facts checked with the pinned tools on 2026-11-
 `make release` is `deploy/release/release.py`; `make release-block` builds the demo's BLOCK image with
 `requirements.block.txt` and succeeds only when the gate blocks it; `make release-key` makes the key pair.
 
-- **Preconditions.** `origin` must be `github.com/NOURHANE-EHOUARI/sentinelci`, the working tree clean (untracked
-  files included, ignored ones not), and `HEAD` the `main` fetched from it now (`--no-fetch` compares with the
-  last fetch). `COSIGN_PASSWORD` set in the environment is refused.
+- **Preconditions.** `origin` must be `github.com/NOURHANE-EHOUARI/sentinelci`, with that one URL only, the working
+  tree clean (untracked files included, ignored ones not), no file at all under `policies/` that git ignores (the
+  gate loads every file there, and an ignored one survives `git checkout main`), and `HEAD` the `main` fetched
+  from it now (`--no-fetch` compares with the last fetch). `COSIGN_PASSWORD` set in the environment is refused.
 - **The key, before the long steps.** The password is asked once (`getpass`), then `cosign public-key` must open
   the key with it and derive exactly `deploy/keys/release.pub`: a wrong password or another key stops the
   release before the build. The password then reaches only `cosign public-key` and `sentinel attest`, which
@@ -135,8 +139,10 @@ registry (ADR-0006, decision 4). Facts checked with the pinned tools on 2026-11-
 - **What is scanned.** Secrets, SAST, IaC and CI workflows on that context (the same commands and tool statuses as
   `sentinel-scan.yml`), and the image itself (`sentinel scan image`, CONTAINER findings). The requirements files
   are not scanned as source: the image scan reads what was installed from the selected one (hash-pinned,
-  `--no-deps`), while the context also holds the other one, which the build does not install. A failed scan
-  leaves an empty findings file and its status, so the gate blocks (SC-010).
+  `--no-deps`), while the context also holds the other one, which the build does not install. A scan that fails
+  with its status leaves an empty findings file, and the gate blocks (SC-010). A scan that leaves no status
+  (killed, crashed) stops the release before anything is decided: every scanner of the release (Gitleaks,
+  Opengrep, Trivy, zizmor, Syft, Grype) must have reported, whatever `required_tools` lists in `release`.
 - **Provenance.** `sentinel attest --builder local-release` writes SLSA provenance whose builder is
   `https://github.com/NOURHANE-EHOUARI/sentinelci/deploy/release/release.py@refs/heads/main`, with build type
   `.../specs/local-release/v1`, the repository and commit as the source, and nothing about the machine (no host,
