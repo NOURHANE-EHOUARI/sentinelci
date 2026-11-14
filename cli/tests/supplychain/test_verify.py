@@ -6,22 +6,38 @@ without Cosign, on verified predicates. Real-tool tests are opt-in: set SENTINEL
 """
 
 import base64
+import hashlib
 import json
 import os
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from typer.testing import CliRunner, Result
 
 from sentinelci.cli import app
+from sentinelci.contracts.release import TrustReport as TrustReportContract
 from sentinelci.scanners.lock import load_lock
 from sentinelci.scanners.runner import run_verified_tool
-from sentinelci.supplychain.attestations import KINDS, AttestationError, parse_image, release_predicates
-from sentinelci.supplychain.cosign import Signer, Verified
-from sentinelci.supplychain.verify import trust_checks
+from sentinelci.supplychain.attestations import (
+    KINDS,
+    AttestationError,
+    Image,
+    parse_image,
+    release_predicates,
+)
+from sentinelci.supplychain.cosign import Registry, Signer, Verified
+from sentinelci.supplychain.verify import (
+    TrustReport,
+    public_key_sha256,
+    report_document,
+    trust_checks,
+    verified_decision_id,
+    verify_registry,
+)
 
 from .conftest import (
     BUILDER,
@@ -186,6 +202,33 @@ def test_a_missing_or_unreadable_public_key_means_verify_could_not_run(
     assert result.exit_code == 3, result.output
     assert "FAIL CLOSED" in result.output and "AAAA" not in result.output
     assert f"{key} is not a PEM public key" in result.output or "cannot be read" in result.output
+
+
+class _InRegistry:
+    """A verifier that finds the image signed, and the four attestations of `verified()`, in its registry."""
+
+    def __init__(self) -> None:
+        self.by_type = {predicate_type: verified()[kind] for kind, predicate_type in KINDS.items()}
+
+    def verify_signature(self, image: Image, registry: Registry, environ: Mapping[str, str]) -> Verified:
+        return Verified(1, None)
+
+    def verify_in_registry(
+        self, image: Image, predicate_type: str, registry: Registry, environ: Mapping[str, str]
+    ) -> Verified:
+        return self.by_type[predicate_type]
+
+
+def test_a_registry_report_names_the_decision_it_verified() -> None:
+    """No other test runs `verify_registry` (#86 review, round 2): without the decision id, every trusted
+    registry report would be refused by the API, and no real release could be uploaded."""
+    fake: Any = _InRegistry()
+    report = verify_registry(parse_image(IMAGE), fake, Registry(), {}, repo=REPO, builder_id=BUILDER)
+    document = report_document(
+        report, mode="registry", repo=REPO, builder_id=BUILDER, key_sha256="a" * 64, verified_at=VERIFIED_AT
+    )
+    assert document["trusted"] and len(document["checks"]) == 16
+    assert document["decision_id"] == json.loads(decision_bytes())["decision_id"]
 
 
 def test_a_missing_attestation_fails_closed() -> None:
@@ -458,3 +501,114 @@ def test_a_failure_halfway_leaves_no_evidence(
         assert result.exception is error
     assert len(signed) == 2, "the first two were written before the failure"
     assert list((out / "attestations").iterdir()) == []
+
+
+# ---------------------------------------------------------------- the trust report as JSON (A8)
+
+VERIFIED_AT = datetime(2026, 11, 11, 17, 30, 5, 123456, tzinfo=UTC)
+
+
+def report_of(
+    outcomes: dict[str, Verified], mode: Literal["registry", "evidence"] = "evidence"
+) -> dict[str, Any]:
+    image = parse_image(IMAGE)
+    checks = trust_checks(image, outcomes, repo=REPO, builder_id=BUILDER)
+    report = TrustReport(image, checks, verified_decision_id(outcomes))
+    return report_document(
+        report, mode=mode, repo=REPO, builder_id=BUILDER, key_sha256="a" * 64, verified_at=VERIFIED_AT
+    )
+
+
+def test_the_json_report_is_a_trust_report_v1_with_every_check_in_order() -> None:
+    document = report_of(verified())
+    parsed = TrustReportContract.model_validate_json(json.dumps(document))
+    assert parsed.problem() is None and parsed.trusted
+    assert [check.name for check in parsed.checks][:2] == [
+        "signature: release decision",
+        "signature: SBOM (CycloneDX)",
+    ]
+    assert len(parsed.checks) == 15 and parsed.verified_at == "2026-11-11T17:30:05Z"
+    assert parsed.image.digest == f"sha256:{IMAGE_HEX}" and parsed.mode == "evidence"
+    assert parsed.decision_id == json.loads(decision_bytes())["decision_id"], "the decision it verified"
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [Verified(None, "no matching attestation"), Verified({"schema_version": "1.0"}, None)],
+    ids=["unsigned", "not-a-decision"],
+)
+def test_a_report_without_a_valid_decision_names_none(decision: Verified) -> None:
+    """Review of #86: the platform ties a report to the decision it names; without one, it names none."""
+    document = report_of(verified(decision=decision))
+    parsed = TrustReportContract.model_validate_json(json.dumps(document))
+    assert parsed.decision_id is None and not parsed.trusted and parsed.problem() is None
+
+
+def test_a_failed_check_is_reported_on_one_line() -> None:
+    separator = chr(0x2028)  # LINE SEPARATOR
+    reason = f"no matching attestation:\nerror: bundle\r\nnot signed{separator}by this key " + "x" * 400
+    document = report_of(verified(provenance=Verified(None, reason)))
+    parsed = TrustReportContract.model_validate_json(json.dumps(document))
+    assert parsed.problem() is None and not parsed.trusted
+    detail = next(c.detail for c in parsed.checks if c.name == "signature: provenance (SLSA v1)")
+    assert (
+        detail.startswith("no matching attestation: error: bundle not signed by this key x")
+        and len(detail) == 300
+    )
+
+
+def test_the_key_is_named_by_the_sha256_of_its_der_bytes(tmp_path: Path) -> None:
+    der = b"\x30\x59" + bytes(range(89))
+    body = base64.b64encode(der).decode()
+    unix, windows = tmp_path / "unix.pub", tmp_path / "windows.pub"
+    unix.write_text(f"-----BEGIN PUBLIC KEY-----\n{body[:64]}\n{body[64:]}\n-----END PUBLIC KEY-----\n")
+    windows.write_text(f"-----BEGIN PUBLIC KEY-----\r\n{body}\r\n-----END PUBLIC KEY-----\r\n")
+    expected = hashlib.sha256(der).hexdigest()
+    assert public_key_sha256(unix) == public_key_sha256(windows) == expected
+
+
+def verify_json(public_key: Path, evidence: Path, report: Path) -> Result:
+    return CliRunner().invoke(
+        app,
+        [
+            "verify", IMAGE, "--key", str(public_key), "--repo", REPO, "--builder-id", BUILDER,
+            "--evidence", str(evidence), "--report-json", str(report),
+            "--lock", str(REPO_LOCK), "--tools-dir", str(TOOLS_DIR),
+        ],
+    )  # fmt: skip
+
+
+@real
+@pytest.mark.integration
+def test_the_json_report_says_what_the_printed_one_says(
+    evidence: Path, keys: dict[str, Path], tmp_path: Path
+) -> None:
+    report = tmp_path / "reports" / "trust-report.json"
+    assert verify_json(keys["release.pub"], evidence, report).exit_code == 0
+    trusted = TrustReportContract.model_validate_json(report.read_bytes())
+    assert trusted.trusted and trusted.key_sha256 == public_key_sha256(keys["release.pub"])
+    assert trusted.mode == "evidence", "an offline check never reads as what Kyverno checks (review of #86)"
+    assert trusted.decision_id == json.loads(decision_bytes())["decision_id"]
+    assert verify_json(keys["other.pub"], evidence, report).exit_code == 1
+    refused = TrustReportContract.model_validate_json(report.read_bytes())
+    assert not refused.trusted and refused.problem() is None
+    assert sum(not check.ok for check in refused.checks) >= 4
+    assert refused.key_sha256 == public_key_sha256(keys["other.pub"])
+
+
+def test_the_json_report_is_never_written_over_the_public_key(tmp_path: Path) -> None:
+    """Review of #86, should fix 5: the older report was removed before the guard, so the key went with it."""
+    key = tmp_path / "release.pub"
+    key.write_text("-----BEGIN PUBLIC KEY-----\nnever read: refused first\n-----END PUBLIC KEY-----\n")
+    before = key.read_bytes()
+    for report in (key, tmp_path / "." / "release.pub"):
+        result = verify_json(key, tmp_path / "evidence", report)
+        assert result.exit_code == 3 and "cannot be the public key" in result.output
+        assert key.read_bytes() == before, "the key is still there"
+
+
+def test_no_json_report_when_the_verification_cannot_run(tmp_path: Path) -> None:
+    report = tmp_path / "trust-report.json"
+    report.write_text('{"trusted": true}')  # an older report must not stand for this run
+    result = verify_json(tmp_path / "missing.pub", tmp_path / "evidence", report)
+    assert result.exit_code == 3 and not report.exists()

@@ -7,8 +7,9 @@ against the pinned Trivy, and it claims only the findings an edit resolved:
   archive by its content, not its name, and the build context may be the Dockerfile's directory or the
   repository root, so every source must be found, and every place it could be (next to the Dockerfile, at
   the repository root) must hold nothing or a plain directory or regular file inside the repository: no
-  symbolic link, tar or compressed file. A URL, a git source, a glob, a variable, a missing source and an
-  ADD-only flag keep ADD;
+  symbolic link, tar or compressed file. A URL, a git or SSH source (`user@host:path`), a glob, a variable,
+  a path with `..`, a quoted or escaped word, a JSON form that is not a list of plain names, a missing
+  source and an ADD-only flag keep ADD: BuildKit could read each of them otherwise;
 - DS-0029 (apt-get without --no-install-recommends): the flag is added to each `apt-get install` lacking it;
 - DS-0002 (the image runs as root): `USER 10001:10001` is added to the final stage (the last FROM) after its
   last RUN and USER, so every RUN still runs as the user it ran as: before the next CMD or ENTRYPOINT, or at
@@ -27,15 +28,16 @@ Only the lines of the edited instructions change. A file the fixer cannot edit s
 directive, a heredoc) is left alone rather than guessed at.
 """
 
+import json
 import re
 import tarfile
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from sentinelci.contracts.finding import Finding
-from sentinelci.remediation.proposal import FixContext, Fixed, NotFixable, Plan, propose_fixes
+from sentinelci.remediation.proposal import FixContext, Fixed, NotFixable, Plan, lines_of, propose_fixes
 from sentinelci.scanners.runner import is_within
 
 NON_ROOT_USER = "10001:10001"
@@ -77,9 +79,14 @@ def parse_instructions(lines: list[str]) -> list[Instruction]:
     return found
 
 
-def _check(lines: list[str]) -> None:
+def check_editable(lines: list[str]) -> None:
+    """Raise NotFixable for a file the fixer never edits, as its instructions cannot be told apart safely: no
+    final newline, a byte-order mark, an `escape` parser directive, a heredoc. `sentinel remediate check` asks
+    the same."""
     if not lines or not lines[-1].endswith("\n"):
         raise NotFixable("the file does not end with a newline")
+    if lines[0].startswith("\ufeff"):  # #85 review: BuildKit drops it and reads `# escape=` after it
+        raise NotFixable("a byte-order mark: Docker reads the parser directives after it")
     for line in lines:
         if line.strip() and not line.strip().startswith("#"):
             break  # parser directives only come first
@@ -132,10 +139,14 @@ def _plain_local_source(source: str, context: FixContext | None) -> bool:
     holds a symbolic link (Docker follows it, and unpacks a tar it points to), something outside the
     repository, a tar, something compressed, or anything but a directory or a regular file keeps ADD. ADD
     becomes COPY only when the source was found and every place that holds it is plain.
+
+    A source BuildKit may read otherwise keeps ADD too: a URL or a git source (`://`, or any `user@host:path`,
+    which it fetches over SSH), and a path with `..`, which it cleans into the context (`../app.py` from
+    `svc/` is `svc/app.py` there), so the places checked here would not be the ones it reads.
     """
-    if context is None or not source or any(c in source for c in "*?[$") or "://" in source:
+    if context is None or not source or any(c in source for c in "*?[$:@"):
         return False
-    if source.startswith("git@"):
+    if ".." in PurePosixPath(source).parts:
         return False
     root = context.repo_root
     found = False
@@ -157,14 +168,31 @@ def _plain_local_source(source: str, context: FixContext | None) -> bool:
     return found
 
 
+def add_only_copies(lines: list[str], ins: Instruction, context: FixContext | None) -> bool:
+    """This ADD does nothing COPY would not: only flags COPY takes too, and every source a plain local file or
+    directory wherever the build context puts it (`_plain_local_source`). The fixer turns only such an ADD
+    into COPY, and `sentinel remediate check` accepts only that edit."""
+    text = " ".join(line.strip().rstrip("\\") for line in lines[ins.start : ins.end])
+    words = text.split()[1:]
+    flags_ok = all(not w.startswith("--") or w.startswith(_COPY_FLAGS) for w in words)
+    args = [w for w in words if not w.startswith("--")]
+    if args and args[0].startswith("["):  # the JSON form: read as BuildKit reads it, or not at all
+        try:
+            parsed = json.loads(" ".join(args))
+        except ValueError:
+            return False
+        if not (isinstance(parsed, list) and all(isinstance(a, str) and a.split() == [a] for a in parsed)):
+            return False  # not a list of strings, or a name with a space in it
+        args = parsed
+    elif any(c in word for word in args for c in "\"'\\"):
+        return False  # a quote or an escape: the shell form's words are not these
+    sources = args[:-1]
+    return bool(sources) and flags_ok and all(_plain_local_source(source, context) for source in sources)
+
+
 def _copy_not_add(edit: _Edit, instructions: list[Instruction]) -> None:
     for ins in (ins for ins in instructions if ins.keyword == "ADD"):
-        text = " ".join(line.strip().rstrip("\\") for line in edit.lines[ins.start : ins.end])
-        words = text.split()[1:]
-        flags_ok = all(not w.startswith("--") or w.startswith(_COPY_FLAGS) for w in words)
-        sources = [w.strip('[]",') for w in words if not w.startswith("--")][:-1]
-        plain = sources and all(_plain_local_source(source, edit.context) for source in sources)
-        if not (flags_ok and plain and edit.free(ins)):
+        if not (add_only_copies(edit.lines, ins, edit.context) and edit.free(ins)):
             edit.leave("DS-0005", ins)  # ADD does more here, or editing it would rename another finding
             continue
         line = edit.lines[ins.start]
@@ -190,7 +218,7 @@ def _no_recommends(edit: _Edit, instructions: list[Instruction]) -> None:
         for offset in reversed(edits):
             text = text[:offset] + " --no-install-recommends" + text[offset:]
         if edits:  # text is inserted within lines: the line count, so every instruction's place, is kept
-            edit.lines[ins.start : ins.end] = text.splitlines(keepends=True)
+            edit.lines[ins.start : ins.end] = lines_of(text)
 
 
 EditFunction = Callable[[_Edit, list[Instruction]], None]
@@ -215,8 +243,8 @@ def _held_lines(others: Sequence[Finding], path: str) -> set[int]:
 def fix_dockerfile(text: str, rule_ids: Iterable[str], context: FixContext | None = None) -> Fixed:
     """Apply the edits of `rule_ids` (those this fixer knows) to a Dockerfile. Without a context, no ADD
     source can be checked, so ADD stays."""
-    lines = text.splitlines(keepends=True)
-    _check(lines)
+    lines = lines_of(text)
+    check_editable(lines)
     held = _held_lines(context.others, context.path) if context else set()
     edit = _Edit(lines=lines, held=held, context=context, left_open=set())
     changes: list[str] = []
