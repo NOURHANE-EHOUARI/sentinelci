@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup check lint format typecheck imports policy test zizmor web eval tools tools-verify compose-env up down
+.PHONY: help setup check lint format typecheck imports policy test zizmor web eval tools tools-verify compose-env up down eval-replay
 
 # OPA is a pinned binary, not a Python package: `uv run sentinel tools install opa` (tools.lock.toml).
 OPA ?= $(or $(SENTINEL_OPA),opa)
@@ -49,6 +49,9 @@ web: ## Dashboard: locked install (no package scripts), typed client up to date,
 EVAL_TOOLS ?= $(or $(SENTINEL_TOOLS_DIR),.sentinel/tools)
 eval: ## Detection report of demo-shop (B8): out/eval/detection.json and detection.md
 	uv run python eval/detection/run.py --tools-dir $(EVAL_TOOLS) $(if $(DB_DIR),--db-dir $(DB_DIR))
+
+eval-replay: ## Replay identity (B8): record the corpus and make eval's decision, replay them, out/eval/replay.md
+	uv run python eval/replay/run.py $(if $(wildcard out/eval/findings/gitleaks.ndjson),--findings out/eval/findings)
 
 tools: ## Download, hash-check and install the pinned scanners into .sentinel/tools
 	uv run sentinel tools install
