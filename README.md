@@ -70,7 +70,7 @@ own ignore files and inline comments are never read.
 
 ## How it is verified
 
-- **About 4,800 tests** (`make check`): unit, contract and end-to-end. They include runs of the real pinned
+- **About 5,200 tests** (`make check`): unit, contract and end-to-end. They include runs of the real pinned
   scanners and OPA, the remediation workflow's scripts executed against a local origin, and the API on a real
   PostgreSQL.
 - **Contracts first.** A JSON Schema for every contract between the two tracks (findings, decisions, tool
@@ -83,7 +83,8 @@ own ignore files and inline comments are never read.
 - **A labelled benchmark** (`demo-shop/`, intentionally vulnerable, never deployed outside its container). Its
   seeds cover secrets, SAST, SCA, containers, IaC, CI workflows and prompt-injection canaries, plus clean
   controls. `make eval` measures recall per category and false positives, and `make eval-correlation` measures
-  the root-cause grouping (ARI, alert reduction).
+  the root-cause grouping (ARI, alert reduction). On 14 November 2026, with the pinned scanners and that day's
+  Grype database, all 28 seeds were detected and no clean control gave a false positive.
 
 ## Try it
 
@@ -125,7 +126,7 @@ docs/                specification, architecture decision records, threat model
 - [Threat model](docs/threat-model.md): assets, attackers, trust boundaries, and each control with its test
 - [Architecture decision records](docs/adr/): among them OPA for policy (0003), AI advises and policy decides
   (0004), the base branch's pipeline judges a PR (0008), local models (0009), release attestations (0010), the
-  laptop release (0011) and the remediation bot (0013)
+  laptop release (0011), the remediation bot (0013) and LLM fixes verified on the laptop (0014)
 - [Security policy](SECURITY.md) · [Instructions for coding agents](CLAUDE.md)
 
 ## Team
