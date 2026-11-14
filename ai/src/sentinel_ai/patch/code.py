@@ -162,20 +162,22 @@ def _json_line(value: object) -> str:
 
 
 def _clip(value: object) -> str:
-    text = " ".join(str(value).split())
+    """Redacted, then clipped: a token cut at the limit would no longer match its pattern, and its start
+    would be sent (#99 review)."""
+    text = " ".join(redact(str(value)).split())
     return text if len(text) <= MAX_FIELD else text[: MAX_FIELD - 3] + "..."
 
 
 def _described(finding: Finding, start: int, end: int) -> dict[str, Any]:
-    """What is sent of the finding: never its id, snippet or evidence; every text clipped and redacted."""
+    """What is sent of the finding: never its id, snippet or evidence; every text redacted, then clipped."""
     described: dict[str, Any] = {
         "category": finding.category,
-        "rule": redact(_clip(finding.rule_id)),
+        "rule": _clip(finding.rule_id),
         "severity": finding.severity,
-        "title": redact(_clip(finding.title)),
-        "message": redact(_clip(finding.message)) if finding.message else None,
-        "cwe": [redact(_clip(cwe)) for cwe in (finding.cwe or [])[:5]] or None,
-        "file": redact(_clip(finding.location.path)) if finding.location else None,
+        "title": _clip(finding.title),
+        "message": _clip(finding.message) if finding.message else None,
+        "cwe": [_clip(cwe) for cwe in (finding.cwe or [])[:5]] or None,
+        "file": _clip(finding.location.path) if finding.location else None,
         "start_line": start,
         "end_line": end,
     }
