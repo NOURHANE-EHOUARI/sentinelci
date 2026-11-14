@@ -10,7 +10,7 @@ import hashlib
 import json
 import os
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -22,14 +22,21 @@ from sentinelci.cli import app
 from sentinelci.contracts.release import TrustReport as TrustReportContract
 from sentinelci.scanners.lock import load_lock
 from sentinelci.scanners.runner import run_verified_tool
-from sentinelci.supplychain.attestations import KINDS, AttestationError, parse_image, release_predicates
-from sentinelci.supplychain.cosign import Signer, Verified
+from sentinelci.supplychain.attestations import (
+    KINDS,
+    AttestationError,
+    Image,
+    parse_image,
+    release_predicates,
+)
+from sentinelci.supplychain.cosign import Registry, Signer, Verified
 from sentinelci.supplychain.verify import (
     TrustReport,
     public_key_sha256,
     report_document,
     trust_checks,
     verified_decision_id,
+    verify_registry,
 )
 
 from .conftest import (
@@ -195,6 +202,33 @@ def test_a_missing_or_unreadable_public_key_means_verify_could_not_run(
     assert result.exit_code == 3, result.output
     assert "FAIL CLOSED" in result.output and "AAAA" not in result.output
     assert f"{key} is not a PEM public key" in result.output or "cannot be read" in result.output
+
+
+class _InRegistry:
+    """A verifier that finds the image signed, and the four attestations of `verified()`, in its registry."""
+
+    def __init__(self) -> None:
+        self.by_type = {predicate_type: verified()[kind] for kind, predicate_type in KINDS.items()}
+
+    def verify_signature(self, image: Image, registry: Registry, environ: Mapping[str, str]) -> Verified:
+        return Verified(1, None)
+
+    def verify_in_registry(
+        self, image: Image, predicate_type: str, registry: Registry, environ: Mapping[str, str]
+    ) -> Verified:
+        return self.by_type[predicate_type]
+
+
+def test_a_registry_report_names_the_decision_it_verified() -> None:
+    """No other test runs `verify_registry` (#86 review, round 2): without the decision id, every trusted
+    registry report would be refused by the API, and no real release could be uploaded."""
+    fake: Any = _InRegistry()
+    report = verify_registry(parse_image(IMAGE), fake, Registry(), {}, repo=REPO, builder_id=BUILDER)
+    document = report_document(
+        report, mode="registry", repo=REPO, builder_id=BUILDER, key_sha256="a" * 64, verified_at=VERIFIED_AT
+    )
+    assert document["trusted"] and len(document["checks"]) == 16
+    assert document["decision_id"] == json.loads(decision_bytes())["decision_id"]
 
 
 def test_a_missing_attestation_fails_closed() -> None:
