@@ -16,7 +16,14 @@ def workflow() -> dict[Any, Any]:
 
 def test_it_runs_only_once_the_repository_is_public() -> None:
     (job,) = workflow()["jobs"].values()
-    assert job["if"].replace(" ", "") == "${{!github.event.repository.private}}"
+    assert job["if"].replace(" ", "") == "${{github.event.repository.visibility=='public'}}"
+
+
+def test_every_trigger_has_the_payload_its_condition_reads() -> None:
+    # `github.event` is the webhook payload, and a scheduled run has none: there, both
+    # `!github.event.repository.private` and `github.event.repository.private == false` are true
+    # (#104 review).
+    assert set(workflow()[True]) <= {"push", "workflow_dispatch"}
 
 
 def test_it_holds_only_what_scorecard_needs() -> None:
@@ -27,10 +34,10 @@ def test_it_holds_only_what_scorecard_needs() -> None:
     assert "security-events" not in job["permissions"], "no code-scanning upload in this project (ADR-0006)"
 
 
-def test_it_scores_main_weekly_and_publishes_its_result() -> None:
+def test_it_scores_main_and_publishes_its_result() -> None:
     document = workflow()
     triggers = document[True]  # PyYAML reads the `on:` key as True
-    assert triggers["push"] == {"branches": ["main"]} and "schedule" in triggers
+    assert triggers["push"] == {"branches": ["main"]}
     assert "pull_request" not in triggers and "pull_request_target" not in triggers
     (job,) = document["jobs"].values()
     (scorecard,) = [s for s in job["steps"] if s.get("uses", "").startswith("ossf/scorecard-action@")]

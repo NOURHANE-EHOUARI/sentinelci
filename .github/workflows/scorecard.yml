@@ -8,14 +8,18 @@ name: scorecard
 # of its checks need a public repository, and publishing would reveal the repository. No SARIF goes to GitHub
 # code scanning (ADR-0006: results go to artifacts); the job keeps it as an artifact.
 #
-# The action is pinned by commit; it runs the image ghcr.io/ossf/scorecard-action named by that commit's
-# action.yaml. `id-token: write` lets it sign the published result with Sigstore; nothing else is granted.
+# The action is pinned by commit (not by its annotated tag's object). Its action.yaml names the image
+# `docker://ghcr.io/ossf/scorecard-action:v2.5.0` by tag, so the job runs whatever that tag points to on the day:
+# the commit pin does not cover the image, and Scorecard's publish rules leave no clean way to pin it (a
+# residual risk in docs/threat-model.md). `id-token: write` lets it sign the published result with Sigstore;
+# nothing else is granted.
+#
+# No `schedule` yet: a scheduled run has no event payload, so it cannot tell a public repository from a private
+# one. The weekly run comes with the switch to GitHub mode, once the repository is public.
 
 on:
   push:
     branches: [main]
-  schedule:
-    - cron: "17 4 * * 1" # weekly, Monday 04:17 UTC
   workflow_dispatch:
 
 permissions: {}
@@ -27,7 +31,8 @@ concurrency:
 jobs:
   analysis:
     name: Scorecard analysis
-    if: ${{ !github.event.repository.private }}
+    # Fails closed: without a `repository` in the payload, null never equals 'public' (#104 review).
+    if: ${{ github.event.repository.visibility == 'public' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -41,7 +46,7 @@ jobs:
           persist-credentials: false
 
       - name: Run Scorecard
-        uses: ossf/scorecard-action@46dc3187a971a9febf3aeb7f94ccde489f7bb46a # v2.5.0
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
         with:
           results_file: scorecard.sarif
           results_format: sarif
