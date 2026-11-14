@@ -47,11 +47,13 @@ findings.
 
    ```bash
    ollama pull qwen3-embedding:0.6b        # its digest must be ADR-0009's
-   make eval                               # out/eval/findings/ (with DB_DIR=... for SCA)
+   make eval DB_DIR=...                    # out/eval/findings/: every scanner must have run
    make eval-correlation-calibrate         # writes eval/correlation/threshold.json
    ```
 
-   It picks the stage 2b threshold with the best ARI (a tie goes to the highest, which merges least) and
+   A `make eval` in which a scanner failed or was skipped (no `<tool>.ndjson`, SCA without `DB_DIR`) is
+   refused: the correlation is measured on every scanner's findings or not at all. It picks the stage 2b
+   threshold with the best ARI (a tie goes to the highest, which merges least) and
    records the model and its digest, the inputs, and whether the threshold is at the edge of the grid (0.5
    to 0.95: then the best ARI may lie outside it, and the report says so; the grid is never widened after
    the test half is seen). **Commit `threshold.json` before measuring the test half.**

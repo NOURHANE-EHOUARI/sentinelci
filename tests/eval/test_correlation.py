@@ -215,6 +215,8 @@ def findings_dir(tmp_path: Path) -> Path:
     rows = [finding("trivy", rule, K8S, line=20) for rule in GROUPS if rule.startswith("KSV")]
     rows.append(finding("trivy", "AWS-0077", "infra/terraform/database.tf", line=2))
     (directory / "trivy.ndjson").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    for tool in ("gitleaks", "grype", "opengrep", "zizmor"):  # every scanner ran; these found nothing here
+        (directory / f"{tool}.ndjson").write_text("", encoding="utf-8")
     return directory
 
 
@@ -494,6 +496,18 @@ def test_the_package_key_is_an_sca_findings_and_leaves_the_version_out() -> None
 def test_a_threshold_file_that_cannot_be_read_is_refused(text: str, message: str) -> None:
     with pytest.raises(run.EvalError, match=message):
         run.read_threshold(text, MODEL)
+
+
+@pytest.mark.parametrize("failed", ["grype", "opengrep"])
+def test_a_run_without_a_scanners_findings_is_refused(
+    findings_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], failed: str
+) -> None:
+    """A scanner that failed or was skipped in `make eval` writes no file: measuring the rest would report a
+    smaller run as demo-shop's (on the laptop, a relative --tools-dir once left out Grype and Opengrep)."""
+    (findings_dir / f"{failed}.ndjson").unlink()
+    assert run.main(["--findings", str(findings_dir), "--no-embedding", "--out", str(tmp_path / "out")]) == 2
+    assert f"{failed}.ndjson missing in" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
 
 
 def test_no_findings_is_an_error_that_says_what_to_run(

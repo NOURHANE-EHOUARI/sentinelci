@@ -59,6 +59,9 @@ SPLIT = HERE / "split.yaml"
 ROOT_CAUSES = HERE / "root-causes.yaml"
 THRESHOLD = HERE / "threshold.json"
 FINDINGS = ROOT / "out" / "eval" / "findings"
+# The scanners of `make eval` (eval/detection/run.py): a run is measured with all of their findings or not
+# at all. A scanner that failed or was skipped writes no file, and without it a run looks like a smaller one.
+SCANNERS = ("gitleaks", "grype", "opengrep", "trivy", "zizmor")
 HALVES = ("calibration", "test")
 # What decides which findings are in which half: a threshold calibrated on other values is refused.
 HALVES_INPUTS = ("ground_truth_sha256", "split_sha256", "root_causes_sha256")
@@ -118,10 +121,17 @@ def load_split(text: str, seeds: Sequence[Mapping[str, Any]]) -> dict[str, str]:
 
 
 def read_findings(directory: Path) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """Every finding of the `<tool>.ndjson` files, in file and line order, and each file's sha256."""
-    files = sorted(directory.glob("*.ndjson"))
-    if not files:
+    """Every finding of each scanner's `<tool>.ndjson`, in file and line order, and each file's sha256."""
+    files = [directory / f"{tool}.ndjson" for tool in SCANNERS]
+    missing = [path.name for path in files if not path.is_file()]
+    if len(missing) == len(files):
         raise EvalError(f"no findings in {directory}: run `make eval` first (or give --findings DIR)")
+    if missing:
+        raise EvalError(
+            f"{', '.join(missing)} missing in {directory}: `make eval` did not run every scanner (see "
+            "out/eval/detection.md; SCA needs DB_DIR). The correlation is measured on all of them or not "
+            "at all"
+        )
     findings: list[dict[str, Any]] = []
     digests: dict[str, str] = {}
     for path in files:
