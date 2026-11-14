@@ -135,10 +135,12 @@ def test_every_scan_of_verify_reaches_the_gate() -> None:
     """A scan whose findings no `combine` reads is one the gate never sees. Each scan's findings reach the
     baseline and the patched findings, and each patched scan's status reaches the gate (Hiba, #116 review)."""
     run = step("verify", VERIFY_STEP)["run"]
+    # Inside each `combine` call: `remediate check --findings` reads the base IaC file too (#116, nit 1).
+    before, after = (call.split("--out ", 1)[0] for call in run.split('"$SENTINEL" scan combine ')[1:])
     for name in ("secrets", "iac", "sast", "sca", "pipelines"):
-        for out in (f'"$WORK/base-{name}.ndjson"', f'"$out/{name}.ndjson"'):
-            assert f"--out {out}" in run and f"--findings {out}" in run, f"{name}: {out} reaches the gate"
-        assert f'--tool-status "$out/{name}-status.json"' in run, f"{name}: its status reaches the gate"
+        for combine, out in ((before, f'"$WORK/base-{name}.ndjson"'), (after, f'"$out/{name}.ndjson"')):
+            assert f"--out {out}" in run and f"--findings {out}" in combine, f"{name}: {out} reaches the gate"
+        assert f'--tool-status "$out/{name}-status.json"' in after, f"{name}: its status reaches the gate"
 
 
 def test_the_database_and_each_dependency_scan_are_handed_over_with_the_results() -> None:
