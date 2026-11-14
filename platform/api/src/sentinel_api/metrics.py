@@ -17,10 +17,13 @@ Exposed now:
   priority (`P0` to `P4` from `risk`, or `unscored`) and category, summed over the repositories. Once such a
   run exists, every pair is present, at 0 when there is none, so a series never vanishes; with none, the
   metric is absent.
+- `sentinel_attestation_verifications_total{result}` (counter): the recorded releases whose image
+  `sentinel verify` checked on the release laptop (`POST /api/v1/releases`), by `result`: `trusted` when every
+  trust report trusted it, `not_trusted` otherwise. A BLOCK carries no report: nothing was signed, so nothing
+  was verified. A release is never deleted, so the count only grows. Absent until one is recorded.
 
 Absent until their data is stored: `sentinel_remediation_attempts_total` (remediation jobs, A6),
-`sentinel_attestation_verifications_total`, `sentinel_pipeline_stage_duration_seconds` and
-`sentinel_ai_request_duration_seconds`.
+`sentinel_pipeline_stage_duration_seconds` and `sentinel_ai_request_duration_seconds`.
 """
 
 from __future__ import annotations
@@ -36,7 +39,7 @@ from sqlalchemy import case, func, literal, select, text
 from sqlalchemy.orm import Session
 
 from sentinel_api.api import SessionDep, _errors
-from sentinel_api.models import Run, RunDecision, RunFinding
+from sentinel_api.models import Release, Run, RunDecision, RunFinding
 from sentinelci.contracts.decision import DecisionContext, Verdict
 from sentinelci.contracts.finding import Category
 
@@ -159,8 +162,31 @@ def gate_decisions(session: Session, default_ref: str) -> Family | None:
     )
 
 
+def attestation_verifications(session: Session, _default_ref: str) -> Family | None:
+    """The recorded releases `sentinel verify` checked, by result (a BLOCK, with no report, is not one)."""
+    rows = session.execute(
+        select(Release.trusted, func.count()).where(Release.trusted.is_not(None)).group_by(Release.trusted)
+    ).all()
+    if not rows:
+        return None
+    counts = {bool(trusted): count for trusted, count in rows}
+    return Family(
+        name="sentinel_attestation_verifications_total",
+        kind="counter",
+        help="Recorded releases whose image sentinel verify checked, by result.",
+        samples=[
+            ({"result": "trusted"}, counts.get(True, 0)),
+            ({"result": "not_trusted"}, counts.get(False, 0)),
+        ],
+    )
+
+
 # Each metric the platform can compute; one returns None while its data is not stored.
-METRICS: tuple[Callable[[Session, str], Family | None], ...] = (gate_decisions, findings_open)
+METRICS: tuple[Callable[[Session, str], Family | None], ...] = (
+    gate_decisions,
+    findings_open,
+    attestation_verifications,
+)
 
 
 @router.get(

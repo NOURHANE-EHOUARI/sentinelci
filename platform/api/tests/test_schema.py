@@ -21,6 +21,7 @@ from sentinel_api.models import Base
 
 ROOT = Path(__file__).resolve().parents[3]
 OPENAPI = ROOT / "schemas" / "openapi.yaml"
+HEAD = "0007"  # the latest migration: a downgrade that stops leaves the database there
 
 
 def test_the_migrations_build_exactly_the_models(database_url: str) -> None:
@@ -98,7 +99,7 @@ def test_going_below_0004_stops_while_a_run_keeps_its_uploaded_bytes(postgres_se
     with pytest.raises(RuntimeError, match=r"1 run\(s\) keep their uploaded findings bytes"):
         downgrade(url, "0003")
     with psycopg.connect(url) as conn:  # one transaction: nothing changed, the head included
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == ("0006",)
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
         assert conn.execute("SELECT findings_ndjson FROM runs").fetchone() == (b"{}",)
 
 
@@ -123,9 +124,9 @@ def test_going_below_0005_stops_while_a_correlation_is_kept(postgres_server: str
             (run[0], document, document),
         )
     with pytest.raises(RuntimeError, match=r"1 correlation version\(s\) are kept"):
-        downgrade(url, "0004")  # 0006 goes down (no decision is kept), 0005 stops
+        downgrade(url, "0004")  # 0007 and 0006 go down (nothing is kept there), 0005 stops
     with psycopg.connect(url) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == ("0006",)
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
         assert conn.execute("SELECT count(*) FROM correlations").fetchone() == (1,)
 
 
@@ -158,7 +159,34 @@ def test_going_below_0006_stops_while_a_decision_is_kept(postgres_server: str) -
             (run[0], document, decision_id, document),
         )
     with pytest.raises(RuntimeError, match=r"1 decision\(s\) are kept"):
-        downgrade(url, "0005")
+        downgrade(url, "0005")  # 0007 goes down (no release is kept), 0006 stops
     with psycopg.connect(url) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == ("0006",)
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
         assert conn.execute("SELECT count(*) FROM decisions").fetchone() == (1,)
+
+
+def test_going_below_0007_stops_while_a_release_is_kept(postgres_server: str) -> None:
+    """Dropping `releases` would lose the only copy of the evidence `make release` posted: the downgrade
+    stops, changing nothing, while any release is kept."""
+    name = f"t_{uuid.uuid4().hex}"
+    with psycopg.connect(f"{postgres_server}/sentinel", autocommit=True) as conn:
+        conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+    url = f"{postgres_server}/{name}"
+    upgrade(url)
+    # A real release's bytes: the database checks the columns against the document (review of #86).
+    block = ROOT / "schemas" / "fixtures" / "release-evidence" / "valid" / "block-without-a-trust-report.json"
+    document = block.read_bytes()
+    decision = json.loads(document)["decision"]
+    subject = decision["subject"]
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute(
+            'INSERT INTO releases (decision_id, repo, "commit", ref, image_digest, verdict, evaluated_at, '
+            "sha256, document) VALUES (%s, %s, %s, %s, %s, 'BLOCK', now(), encode(sha256(%s), 'hex'), %s)",
+            (decision["decision_id"], subject["repo"], subject["commit"], subject.get("ref"),
+             subject["image_digest"], document, document),
+        )  # fmt: skip
+    with pytest.raises(RuntimeError, match=r"1 release\(s\) are kept"):
+        downgrade(url, "0006")
+    with psycopg.connect(url) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
+        assert conn.execute("SELECT count(*) FROM releases").fetchone() == (1,)

@@ -4,6 +4,8 @@ import type { components } from "./schema";
 export type FindingPage = components["schemas"]["FindingPage"];
 export type FindingDetail = components["schemas"]["FindingDetail"];
 export type CorrelationVersion = components["schemas"]["CorrelationOut"];
+export type ReleasePage = components["schemas"]["ReleasePage"];
+export type ReleaseSummary = components["schemas"]["ReleaseOut"];
 
 export class ApiError extends Error {
   constructor(
@@ -65,4 +67,21 @@ export async function getCorrelation(runId: string): Promise<unknown> {
 /** GET /metrics: Prometheus text. */
 export async function getMetrics(): Promise<string> {
   return (await get("/metrics", {}, "text/plain")).text();
+}
+
+export interface ReleaseFilters {
+  repo?: string | undefined;
+  verdict?: string | undefined;
+  limit?: number | undefined;
+  offset?: number | undefined;
+}
+
+export async function listReleases(filters: ReleaseFilters): Promise<ReleasePage> {
+  return (await get("/api/v1/releases", { ...filters })).json() as Promise<ReleasePage>;
+}
+
+/** The image's latest release evidence (Release evidence v1), or the one of `decisionId`. */
+export async function getReleaseEvidence(imageDigest: string, decisionId?: string): Promise<unknown> {
+  const path = `/api/v1/releases/${encodeURIComponent(imageDigest)}/evidence`;
+  return (await get(path, { decision_id: decisionId })).json();
 }

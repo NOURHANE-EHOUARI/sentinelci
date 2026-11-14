@@ -161,6 +161,22 @@ def test_a_correlation_with_u0000_in_a_string_is_refused(client: TestClient, hea
     assert client.get(f"/api/v1/runs/{run_id}/correlations").status_code == 404
 
 
+def test_release_evidence_with_u0000_in_a_check_is_refused(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    """The case of the #86 review: the releases trigger casts the bytes to jsonb, which refused U+0000
+    (a 500)."""
+    path = ROOT / "schemas" / "fixtures" / "release-evidence" / "valid"
+    document = json.loads(
+        (path / "warn-verified-in-the-registry-and-from-the-evidence.json").read_text(encoding="utf-8")
+    )
+    document["trust_reports"][0]["checks"][0]["detail"] = f"signed{NUL} by the key"
+    body = json.dumps(document, indent=2).encode("utf-8")
+    response = client.post("/api/v1/releases", content=body, headers={**headers, **JSON})
+    assert is_nul_refusal(response), response.text
+    assert client.get("/api/v1/releases").json()["total"] == 0
+
+
 def test_a_raw_nul_byte_is_refused(client: TestClient, headers: dict[str, str]) -> None:
     """Not valid JSON in a string either; the 422 names U+0000 rather than a parse error."""
     run_id = create_run(client, headers)

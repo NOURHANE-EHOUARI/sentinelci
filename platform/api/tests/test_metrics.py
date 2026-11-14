@@ -36,7 +36,12 @@ COMMITS = [f"{n:x}" * 40 for n in range(1, 6)]
 NDJSON = {"Content-Type": "application/x-ndjson"}
 SAMPLE = re.compile(r"^(?P<name>[a-z_]+)\{(?P<labels>[^}]*)\} (?P<value>-?[0-9]+(?:\.[0-9]+)?)$")
 LABEL = re.compile(r'^(?P<key>[a-z_]+)="(?P<value>[^"\\\n]*)"$')
-ALLOWED = {"priority": {*PRIORITIES, UNSCORED}, "category": set(CATEGORIES)}
+ALLOWED = {
+    "priority": {*PRIORITIES, UNSCORED},
+    "category": set(CATEGORIES),
+    "result": {"trusted", "not_trusted"},
+}
+RELEASES = ROOT / "schemas" / "fixtures" / "release-evidence" / "valid"
 
 
 def finding(name: str, **changes: Any) -> dict[str, Any]:
@@ -190,6 +195,34 @@ def test_decision_and_remediation_metrics_are_absent_until_their_data_is_stored(
     assert "sentinel_findings_open" in body
     for name in SPEC_NAMES - {"sentinel_findings_open"}:
         assert name not in body, f"{name}: not stored yet, so absent rather than 0"
+
+
+def release(name: str, **subject: Any) -> bytes:
+    document: dict[str, Any] = json.loads((RELEASES / name).read_text(encoding="utf-8"))
+    document["decision"]["subject"].update(subject)
+    for report in document["trust_reports"]:
+        report["image"]["digest"] = document["decision"]["subject"]["image_digest"]
+    return json.dumps(document).encode()
+
+
+def verifications(client: TestClient) -> dict[str, float]:
+    family = samples(client.get("/metrics").text).get("sentinel_attestation_verifications_total", {})
+    return {dict(key)["result"]: value for key, value in family.items()}
+
+
+def test_attestation_verifications_count_the_releases_verify_checked(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    post = {"Content-Type": "application/json"} | headers
+    block = release("block-without-a-trust-report.json")
+    assert client.post("/api/v1/releases", content=block, headers=post).status_code == 201
+    assert verifications(client) == {}, "a BLOCK was never signed, so never verified: absent, not 0"
+    warn = release("warn-verified-in-the-registry-and-from-the-evidence.json")
+    assert client.post("/api/v1/releases", content=warn, headers=post).status_code == 201
+    assert verifications(client) == {"trusted": 1, "not_trusted": 0}
+    body = client.get("/metrics").text
+    assert "# TYPE sentinel_attestation_verifications_total counter" in body
+    assert "sha256:" not in body and "NOURHANE" not in body, "nothing that names a release"
 
 
 def test_the_counts_are_made_by_postgresql_in_a_read_only_transaction(
