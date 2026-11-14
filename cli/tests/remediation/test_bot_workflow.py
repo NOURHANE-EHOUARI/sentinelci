@@ -118,6 +118,8 @@ def test_verify_reads_trees_the_commit_cannot_configure_and_replays_the_fixer(tm
     run = step("verify", VERIFY_STEP)["run"]
     archives = re.findall(r'git -C "\$repo" archive [^|]*', run)
     assert len(archives) == 2 and all("--worktree-attributes" in a for a in archives), archives
+    # #85 review: both trees whole, so Trivy sees the same local Terraform modules on either side.
+    assert all(" -- " not in a for a in archives), archives
     assert 'archive --worktree-attributes --format=tar "$BASE_SHA" |' in run, "the whole scanned commit"
     assert '--findings "$WORK/base-iac.ndjson"' in run, (
         "the fixer re-run on the scanned commit's IaC findings"
