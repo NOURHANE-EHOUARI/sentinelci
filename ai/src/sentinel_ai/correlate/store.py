@@ -29,7 +29,9 @@ from sentinel_ai.correlate.models import Correlation, EmbeddingModel
 from sentinel_ai.correlate.stages import DEFAULT_THRESHOLD, Embedder, correlate_run
 from sentinelci.report.upload import Platform, UploadError, answer_summary
 
-MAX_FINDINGS_BYTES = 32 * 1024 * 1024  # the platform's default upload limit (SENTINEL_API_MAX_UPLOAD_BYTES)
+# The platform's default upload limit. A platform configured higher (SENTINEL_API_MAX_UPLOAD_BYTES) can hold a
+# run larger than this, which is then refused here, before anything is posted: it fails safe (#71 review).
+MAX_FINDINGS_BYTES = 32 * 1024 * 1024
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _SHA256 = re.compile(r"[a-f0-9]{64}")
 
@@ -57,7 +59,7 @@ def document_bytes(correlation: Correlation) -> bytes:
 def read_findings(platform: Platform, run_id: str) -> bytes:
     """The run's findings, byte for byte as recorded, or StoreError."""
     if not _UUID.fullmatch(run_id):
-        raise StoreError(f"{run_id!r} is not a run id")
+        raise StoreError(f"{run_id!r} is not a run id (a UUID in lowercase)")
     try:
         run = platform.run(run_id)
         recorded = run.get("findings_sha256")

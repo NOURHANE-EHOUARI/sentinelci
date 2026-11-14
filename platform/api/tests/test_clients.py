@@ -19,6 +19,8 @@ import uvicorn
 from typer.testing import CliRunner
 
 from sentinel_ai.cli import app as ai_app
+from sentinel_ai.correlate import correlate_run
+from sentinel_ai.correlate.store import StoreError, store
 from sentinel_api.config import Settings
 from sentinel_api.main import create_app
 from sentinelci.report.upload import Platform, RunInfo, upload
@@ -108,3 +110,27 @@ def test_a_wrong_token_stores_nothing_and_is_never_printed(live_api: str) -> Non
         env={"SENTINEL_API_TOKEN": wrong},
     )  # fmt: skip
     assert done.exit_code == 4 and wrong not in done.output
+    assert "HTTP 401" in done.stderr and versions(platform, uploaded.run_id) == [], (
+        "#71 review: nothing stored"
+    )
+
+
+def versions(platform: Platform, run_id: str) -> list[Any]:
+    served = platform.get_bytes(f"/api/v1/runs/{run_id}/correlations/versions", limit=1 << 20)
+    return list(json.loads(served)["items"])
+
+
+def test_the_apis_refusals_are_reported_in_its_words(live_api: str) -> None:
+    """#71 review: the two refusals the client parses, as the real API gives them: a 409 with `detail` only,
+    and a 422. The fake in ai/tests checks things in another order than the API."""
+    platform = Platform(base_url=live_api, token=TOKEN)
+    data = findings()
+    run_id, _ = platform.create_run(RUN)
+    with pytest.raises(StoreError, match="HTTP 409, the platform says 'no findings recorded"):
+        store(platform, run_id, correlate_run(data), findings=data)
+    uploaded = upload(data, RUN, platform)
+    one = correlate_run(data.split(b"\n")[0] + b"\n")  # groups of the first finding only
+    other = one.model_copy(update={"findings_sha256": uploaded.findings_sha256})
+    with pytest.raises(StoreError, match=r"HTTP 422, .*each of the run's 3 findings exactly once"):
+        store(platform, uploaded.run_id, other, findings=data)
+    assert versions(platform, uploaded.run_id) == []
