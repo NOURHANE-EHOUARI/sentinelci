@@ -112,6 +112,15 @@ def test_verify_judges_with_the_scanned_commits_pipeline_and_the_scanners_the_pr
     assert '(cd "$PIPELINE" && "$SENTINEL" evaluate' in run, "waivers from the pipeline checkout"
 
 
+def test_the_check_judges_an_add_on_the_scanned_commits_whole_tree() -> None:
+    """#85 review: the fixer looks for an ADD source next to the Dockerfile and at the repository root, so the
+    check's base tree is the whole scanned commit, not the scanned directory."""
+    run = step("verify", VERIFY_STEP)["run"]
+    (export,) = re.findall(r'git -C "\$repo" archive [^|]*"\$BASE_SHA"[^|]*\| tar -x -C "([^"]+)"', run)
+    assert re.search(r'archive [^|]*"\$BASE_SHA" \|', run), "the whole commit: no pathspec"
+    assert f'remediate check --proposal "$proposal" --base-root "{export}"' in run
+
+
 def test_the_verify_job_outlives_every_scanner_run() -> None:
     text = WORKFLOW.read_text(encoding="utf-8")
     per_run = int(re.search(r'^  SCANNER_TIMEOUT_S: "(\d+)"$', text, re.MULTILINE)[1])  # type: ignore[index]

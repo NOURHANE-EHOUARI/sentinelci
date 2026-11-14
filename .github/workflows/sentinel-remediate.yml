@@ -360,8 +360,9 @@ jobs:
           git -C "$repo" fetch --quiet --no-tags "$CHECKOUT" "+HEAD:refs/sentinel/base" \
             && [ "$(git -C "$repo" rev-parse refs/sentinel/base)" = "$BASE_SHA" ] \
             || { echo "::error::the checkout is not the scanned commit $BASE_SHA"; exit 1; }
-          # Its findings: the before side of every proposal, and the baseline of every decision.
-          if ! { git -C "$repo" archive --format=tar "$BASE_SHA" -- "$SCAN_PATH" | tar -x -C "$WORK/base"; } \
+          # Its whole tree (the check, like the fixer, looks for an ADD source at the repository root too) and its
+          # findings: the before side of every proposal, and the baseline of every decision.
+          if ! { git -C "$repo" archive --format=tar "$BASE_SHA" | tar -x -C "$WORK/base"; } \
             || ! "$SENTINEL" scan secrets "$WORK/base/$SCAN_PATH" --mode dir --repo-root "$WORK/base" \
               --commit "$BASE_SHA" --ref "$BASE_REF" --out "$WORK/base-secrets.ndjson" \
               --tool-status-out "$WORK/base-secrets-status.json" "${common[@]}" \
