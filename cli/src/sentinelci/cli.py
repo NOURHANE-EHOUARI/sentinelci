@@ -99,7 +99,7 @@ from sentinelci.risk import RiskModel, RiskModelError, score_finding
 from sentinelci.scanners.combine import CombineError, combine_findings, combine_tool_statuses
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
-from sentinelci.scanners.grype import ImageScanFailure, scan_image, scan_sca, update_database
+from sentinelci.scanners.grype import SbomScanFailure, scan_image, scan_sca, update_database
 from sentinelci.scanners.installer import VerificationReport, detect_platform, install_tools, verify_tools
 from sentinelci.scanners.lock import LOCK_FILE_NAME, ToolLock, load_lock
 from sentinelci.scanners.opengrep import rule_ids, scan_sast_with_run
@@ -108,6 +108,7 @@ from sentinelci.scanners.runner import ToolRun
 from sentinelci.scanners.status import (
     outcome_from_error,
     outcome_from_run,
+    outcome_not_run,
     tool_status_document,
     write_tool_status,
 )
@@ -1033,6 +1034,7 @@ def tools_grype_db(
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
     ] = DEFAULT_TOOLS_DIR,
     platform: PlatformOption = None,
+    timeout: ScanTimeoutOption = SCAN_TIMEOUT_DEFAULT_S,
 ) -> None:
     """Prepare Grype's vulnerability database with the verified Grype and SentinelCI's configuration.
 
@@ -1049,6 +1051,7 @@ def tools_grype_db(
             platform=platform,
             archive=archive,
             allow_stale_db=allow_stale_db,
+            timeout_s=timeout,
         )
     except (ToolIntegrityError, ScannerError) as exc:
         raise _fail_closed(exc) from exc
@@ -1264,7 +1267,7 @@ def _scan_and_record(
         tool_lock = load_lock(lock)
         findings, tool_run = scan(tool_lock)
     except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
-        if tool_status_out is not None and tool_lock is not None:  # no lock: no status, the gate blocks
+        if tool_status_out is not None and tool_lock is not None:  # no lock: no status (SC-010 once required)
             outcome = outcome_from_error(tool, exc, lock=tool_lock)
             _write_status(tool_status_out, lock, platform or _host_platform(), {tool: outcome})
         raise _fail_closed(exc) from exc
@@ -1291,6 +1294,19 @@ def _write_status(
     typer.echo(f"tool status written to {destination}", err=True)
 
 
+def _sbom_scan_outcomes(
+    failure: SbomScanFailure, lock: ToolLock, platform: str | None, *, of: str = ""
+) -> dict[str, Any]:
+    """Syft's and Grype's outcomes when one of them failed: Grype never ran after a failed Syft (`of` names
+    what Syft read, for an image)."""
+    outcomes = {failure.tool: outcome_from_error(failure.tool, failure.error, lock=lock)}
+    if failure.sbom is not None:
+        outcomes["syft"] = outcome_from_run(failure.sbom.run, lock=lock, platform=platform)
+    else:
+        outcomes["grype"] = outcome_not_run("grype", f"not started: Syft produced no SBOM{of}", lock=lock)
+    return outcomes
+
+
 @scan_app.command("sast")
 def scan_sast_cmd(
     target: Annotated[Path, typer.Argument(help="Directory to scan with SentinelCI's SAST rules.")],
@@ -1308,14 +1324,23 @@ def scan_sast_cmd(
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
     ] = (DEFAULT_TOOLS_DIR),
     platform: PlatformOption = None,
+    timeout: ScanTimeoutOption = SCAN_TIMEOUT_DEFAULT_S,
+    tool_status_out: Annotated[
+        Path | None,
+        typer.Option(
+            help="Also write a tool status (schemas/tool-status.v1.json), on success and on failure, so the "
+            "gate can record a failed scan as SC-010."
+        ),
+    ] = None,
 ) -> None:
     """Static analysis with the verified Opengrep binary and SentinelCI's own rules (offline, never configured
     or silenced by the scanned repository): findings of category SAST."""
-    out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
+    _clear(out, tool_status_out)
     root = repo_root or target
-    try:
+
+    def scan(tool_lock: ToolLock) -> tuple[list[Finding], ToolRun]:
         scan = scan_sast_with_run(
-            target, lock=load_lock(lock), tools_dir=tools_dir, repo_root=root, platform=platform
+            target, lock=tool_lock, tools_dir=tools_dir, repo_root=root, platform=platform, timeout_s=timeout
         )
         findings = normalize_opengrep(
             scan.results,
@@ -1326,16 +1351,14 @@ def scan_sast_cmd(
             scan_root=scan.target.relative_to(root.resolve()).as_posix(),
             gaps=scan.gaps,
         )
-    except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
-        raise _fail_closed(exc) from exc
-    out.parent.mkdir(parents=True, exist_ok=True)
-    write_ndjson(findings, out)
-    if scan.warnings:  # analysed only in part: say where, in the job log
-        typer.echo(
-            f"warning: opengrep reported {len(scan.warnings)} problem(s): {'; '.join(scan.warnings)}",
-            err=True,
-        )
-    typer.echo(f"opengrep {scan.run.version}: {len(findings)} finding(s) written to {out}")
+        if scan.warnings:  # analysed only in part: say where, in the job log
+            typer.echo(
+                f"warning: opengrep reported {len(scan.warnings)} problem(s): {'; '.join(scan.warnings)}",
+                err=True,
+            )
+        return findings, scan.run
+
+    _scan_and_record("opengrep", scan, out=out, tool_status_out=tool_status_out, lock=lock, platform=platform)
 
 
 @scan_app.command("pipelines")
@@ -1434,36 +1457,103 @@ def scan_sca_cmd(
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
     ] = (DEFAULT_TOOLS_DIR),
     platform: PlatformOption = None,
+    timeout: ScanTimeoutOption = SCAN_TIMEOUT_DEFAULT_S,
+    tool_status_out: Annotated[
+        Path | None,
+        typer.Option(
+            help="Also write a tool status (schemas/tool-status.v1.json) for Syft and Grype, on success and "
+            "on failure, so the gate can record a failed scan as SC-010."
+        ),
+    ] = None,
+    report: Annotated[
+        Path | None,
+        typer.Option(
+            "--report",
+            help="Also write what this scan read (JSON): the Syft and Grype binaries, the database Grype "
+            "matched against and the sha256 of the SBOM it matched (kept with --sbom-out). Only on success.",
+        ),
+    ] = None,
+    sbom_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--sbom-out",
+            help="Also keep the SBOM Grype matched (Syft's own JSON), the bytes the report's sbom_sha256 "
+            "names. Needed with --report. Only on success.",
+        ),
+    ] = None,
 ) -> None:
     """Vulnerable dependencies: the verified Syft's SBOM of the tree, matched by the verified Grype, offline.
 
     The scan never downloads: the database is the directory given in --db-dir. Exit code 3, with no findings
     file written, when a tool fails or is tampered with, the database is missing, invalid or stale, or the
-    report shows a silenced match.
+    report shows a silenced match. The tool status names each tool's own outcome: Grype is `not_run` when
+    Syft failed, and a report that cannot be trusted is Grype's failure.
     """
-    out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
+    _clear(out, tool_status_out)
+    for older in (report, sbom_out):
+        if older is not None:
+            older.unlink(missing_ok=True)  # an older report or SBOM must never describe this scan
+    if report is not None and sbom_out is None:  # the digest of bytes nobody keeps proves nothing (#80)
+        raise typer.BadParameter("--report needs --sbom-out: the SBOM its sbom_sha256 names is kept with it")
     root = repo_root or target
+    host = platform or _host_platform()
+    tool_lock: ToolLock | None = None
+    outcomes: dict[str, dict[str, Any]] = {}
     try:
+        tool_lock = load_lock(lock)
         scan = scan_sca(
             target,
             repo_root=root,
             name=repo,
             db_dir=db_dir,
-            lock=load_lock(lock),
+            lock=tool_lock,
             tools_dir=tools_dir,
             platform=platform,
             allow_stale_db=allow_stale_db,
+            timeout_s=timeout,
         )
+        outcomes = {
+            "syft": outcome_from_run(scan.sbom.run, lock=tool_lock, platform=host),
+            "grype": outcome_from_run(scan.grype, lock=tool_lock, platform=host),
+        }
         findings = normalize_grype(
             scan.report,
             run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
             scan_root=scan.scan_root,
         )
+    except SbomScanFailure as failure:
+        if tool_status_out is not None and tool_lock is not None:
+            _write_status(tool_status_out, lock, host, _sbom_scan_outcomes(failure, tool_lock, host))
+        raise _fail_closed(failure.error) from failure
     except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
+        if tool_status_out is not None and tool_lock is not None and outcomes:
+            outcomes["grype"] = outcome_from_error("grype", exc, lock=tool_lock)  # its report is not trusted
+            _write_status(tool_status_out, lock, host, outcomes)
         raise _fail_closed(exc) from exc
     out.parent.mkdir(parents=True, exist_ok=True)
     write_ndjson(findings, out)
     database = scan.database
+    if sbom_out is not None:  # before the report: it never names bytes not yet kept
+        sbom_out.parent.mkdir(parents=True, exist_ok=True)
+        sbom_out.write_bytes(scan.sbom.syft_json or b"")
+    if report is not None:  # the database the scan read, not the one a `tools grype-db` run prepared
+        evidence = {
+            "schema_version": 1,
+            "syft": {"version": scan.sbom.run.version, "binary_sha256": scan.sbom.run.binary_sha256},
+            "grype": {"version": scan.grype.version, "binary_sha256": scan.grype.binary_sha256},
+            "database": {
+                "schema_version": database.schema_version,
+                "built": database.built,
+                "checksum": database.checksum,
+            },
+            "sbom_sha256": hashlib.sha256(scan.sbom.syft_json or b"").hexdigest(),
+        }
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(
+            json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n"
+        )
+    if tool_status_out is not None:  # last: an `ok` status never vouches for a findings file not yet written
+        _write_status(tool_status_out, lock, host, outcomes)
     typer.echo(
         f"grype {scan.grype.version} on the SBOM of syft {scan.sbom.run.version} ({scan.sbom.packages} "
         f"package(s)), database {database.schema_version} built {database.built} "
@@ -1566,17 +1656,11 @@ def scan_image_cmd(
             run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
             image=image,
         )
-    except ImageScanFailure as failure:
+    except SbomScanFailure as failure:
         if tool_status_out is not None and tool_lock is not None:
-            outcomes = {failure.tool: outcome_from_error(failure.tool, failure.error, lock=tool_lock)}
-            if failure.sbom is not None:
-                outcomes["syft"] = outcome_from_run(failure.sbom.run, lock=tool_lock, platform=host)
-            else:
-                outcomes["grype"] = {
-                    "version": tool_lock.tools["grype"].version, "status": "not_run",
-                    "detail": "not started: Syft produced no SBOM of the image",
-                }  # fmt: skip
-            _write_status(tool_status_out, lock, host, outcomes)
+            _write_status(
+                tool_status_out, lock, host, _sbom_scan_outcomes(failure, tool_lock, host, of=" of the image")
+            )
         raise _fail_closed(failure.error) from failure
     except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
         if tool_status_out is not None and tool_lock is not None:
