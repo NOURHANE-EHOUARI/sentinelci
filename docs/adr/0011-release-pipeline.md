@@ -124,8 +124,11 @@ registry (ADR-0006, decision 4). Facts checked with the pinned tools on 2026-11-
 `requirements.block.txt` and succeeds only when the gate blocks it; `make release-key` makes the key pair.
 
 - **Preconditions.** `origin` must be `github.com/NOURHANE-EHOUARI/sentinelci`, with that one URL only, the working
-  tree clean (untracked files included, ignored ones not), no file at all under `policies/` that git ignores (the
-  gate loads every file there, and an ignored one survives `git checkout main`), and `HEAD` the `main` fetched
+  tree clean (untracked files included, ignored ones not, with no file-system monitor), no tracked file marked
+  skip-worktree or assume-unchanged (`git status` would believe the index), no file that git ignores among the
+  gate's inputs (`policies/`, where the gate loads every file and an ignored one survives `git checkout main`,
+  and `.sentinel/waivers.yaml`, `.sentinel/vex.json` and `tools.lock.toml`, which it reads when they exist,
+  whether `.gitignore` or `.git/info/exclude` hides them), and `HEAD` the `main` fetched
   from it now (`--no-fetch` compares with the last fetch). `COSIGN_PASSWORD` set in the environment is refused.
 - **The key, before the long steps.** The password is asked once (`getpass`), then `cosign public-key` must open
   the key with it and derive exactly `deploy/keys/release.pub`: a wrong password or another key stops the

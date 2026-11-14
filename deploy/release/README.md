@@ -36,8 +36,10 @@ Exit codes: 0 released (or, for `release-block`, blocked as expected); 1 the gat
 not block the BLOCK image); 3 the release could not be made. Nothing is signed unless the decision is PASS or
 WARN, and nothing signed is kept unless `sentinel verify` trusts it.
 
-What it refuses before anything runs: a working tree that is not clean, a file under `policies/` that git
-ignores (the gate would load it), a `HEAD` that is not `origin/main`, an `origin` that is not this repository or
+What it refuses before anything runs: a working tree that is not clean, a tracked file git is told not to look
+at (skip-worktree or assume-unchanged), a file that git ignores among the gate's inputs (`policies/`,
+`.sentinel/waivers.yaml`, `.sentinel/vex.json`, `tools.lock.toml`: the gate would read it), a `HEAD` that is not
+`origin/main`, an `origin` that is not this repository or
 that has more than one URL, `COSIGN_PASSWORD` in the environment, a key that is not the pair of
 `deploy/keys/release.pub` or a wrong password. A scan that ends without writing its tool status stops the release
 before the gate decides.

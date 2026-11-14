@@ -564,8 +564,70 @@ def test_an_ignored_file_in_the_policies_is_refused(repo: Path) -> None:
     """OPA loads every file under policies/: an ignored one, left by another branch, could waive anything."""
     (repo / "policies" / "__pycache__").mkdir(parents=True)
     (repo / "policies" / "__pycache__" / "local.rego").write_text("package sentinel.gate\n")
-    with pytest.raises(release.ReleaseError, match="policies/ holds files git ignores"):
+    with pytest.raises(
+        release.ReleaseError, match=re.escape("hold files git ignores (policies/__pycache__/local.rego)")
+    ):
         release.preconditions(runner(repo), fetch=False, environ={})
+
+
+@pytest.mark.parametrize(
+    ("flag", "path"),
+    [("--skip-worktree", "policies/gate.rego"), ("--assume-unchanged", "deploy/release/release.py")],
+)
+def test_a_file_git_is_told_not_to_look_at_is_refused(repo: Path, flag: str, path: str) -> None:
+    """`git status` believes the index: an edited file marked skip-worktree or assume-unchanged looks clean.
+    Any tracked file counts, this script and the CLI included (#82 review, round 3)."""
+    (repo / path).parent.mkdir(parents=True, exist_ok=True)
+    (repo / path).write_text("package sentinel.gate\n")
+    support.git(repo, "add", path)
+    support.git(
+        repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "--quiet", "-m", "x"
+    )
+    support.git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    support.git(repo, "update-index", flag, path)
+    (repo / path).write_text("package sentinel.gate\ndecision := {}\n")
+    assert support.git(repo, "status", "--porcelain=v1", "--untracked-files=all").strip() == ""
+    with pytest.raises(release.ReleaseError, match=re.escape(f"git is told not to look at {path}")):
+        release.preconditions(runner(repo), fetch=False, environ={})
+
+
+@pytest.mark.parametrize("name", [".sentinel/waivers.yaml", ".sentinel/vex.json", "tools.lock.toml"])
+def test_a_gate_input_hidden_by_the_local_excludes_is_refused(repo: Path, name: str) -> None:
+    """The gate reads these from the checkout when they exist: one that git ignores, here through
+    `.git/info/exclude`, would decide without being in the commit (#82 review, round 3)."""
+    (repo / ".git" / "info").mkdir(exist_ok=True)
+    (repo / ".git" / "info" / "exclude").write_text(f"/{name.split('/')[0]}\n")
+    (repo / name).parent.mkdir(parents=True, exist_ok=True)
+    (repo / name).write_text("version: 1\n")
+    assert support.git(repo, "status", "--porcelain=v1", "--untracked-files=all").strip() == ""
+    with pytest.raises(release.ReleaseError, match=re.escape(f"hold files git ignores ({name})")):
+        release.preconditions(runner(repo), fetch=False, environ={})
+
+
+def test_every_look_at_the_tree_bypasses_a_file_system_monitor(repo: Path) -> None:
+    """A core.fsmonitor hook answers which files changed, so it could hide an edit from `git status`: the
+    clean-tree checks run git with the monitor off."""
+    seen: list[list[str]] = []
+
+    def recording(args: list[str], **kwargs: Any) -> Any:
+        seen.append(list(args))
+        return release.run_command(args, cwd=repo, **kwargs)
+
+    release.preconditions(recording, fetch=False, environ={})
+    looks = [args for args in seen if {"status", "ls-files"} & set(args)]
+    assert len(looks) == 3 and all(args[:3] == ["git", "-c", "core.fsmonitor=false"] for args in looks), looks
+
+
+def test_the_ignored_tools_and_outputs_still_let_a_clean_checkout_through(repo: Path) -> None:
+    """.sentinel/tools/ and out/ are ignored and never read as gate inputs."""
+    (repo / ".git" / "info").mkdir(exist_ok=True)
+    (repo / ".git" / "info" / "exclude").write_text("/.sentinel/\n")
+    (repo / ".sentinel" / "tools" / "bin").mkdir(parents=True)
+    (repo / ".sentinel" / "tools" / "bin" / "opa").write_text("binary")
+    (repo / "out").mkdir()
+    (repo / "out" / "previous-release.json").write_text("{}")
+    head = support.git(repo, "rev-parse", "HEAD").strip()
+    assert release.preconditions(runner(repo), fetch=False, environ={}) == head
 
 
 def test_an_origin_with_two_urls_is_refused(repo: Path) -> None:
