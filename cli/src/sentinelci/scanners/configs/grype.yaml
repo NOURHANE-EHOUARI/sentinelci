@@ -21,6 +21,23 @@ by-cve: false
 # No timestamp: the same SBOM and database give the same report.
 timestamp: false
 
+# Which ecosystems Grype also matches by CPE: Grype 0.121.0's defaults, pinned so that the report shows them and
+# the normalizer can require them (normalize/grype.py). Turning CPE matching off for an ecosystem drops the
+# matches only a CPE finds.
+match:
+  java: {using-cpes: false}
+  jvm: {using-cpes: true}
+  dotnet: {using-cpes: false}
+  golang: {using-cpes: false, always-use-cpe-for-stdlib: false, allow-main-module-pseudo-version-comparison: false}
+  javascript: {using-cpes: false}
+  python: {using-cpes: false}
+  ruby: {using-cpes: false}
+  rust: {using-cpes: false}
+  hex: {using-cpes: false}
+  stock: {using-cpes: true}
+  dpkg: {using-cpes: false, missing-epoch-strategy: zero, use-cpes-for-eol: false}
+  rpm: {using-cpes: false, missing-epoch-strategy: auto, use-cpes-for-eol: false}
+
 # Offline: no Maven Central lookup, no database download during a scan. The database is the directory the
 # pipeline prepared (GRYPE_DB_CACHE_DIR, set by the scanner), checked against its own hash before use.
 external-sources:
