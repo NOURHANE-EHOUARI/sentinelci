@@ -4,6 +4,7 @@ asks for (every touched file is a file the findings flag; the diff applies with 
 import difflib
 import hashlib
 import json
+import re
 import uuid
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
@@ -17,6 +18,7 @@ from sentinelci.scanners.runner import is_within
 
 # Fixed namespace: the same proposal (strategy, attempt, findings, diff) always gets the same id.
 _NAMESPACE = uuid.UUID("5e1c0a2e-6a6b-4b0e-9a8d-3c2f1e0d9b7a")
+_LINE = re.compile(r"[^\n]*\n|[^\n]+\Z")
 
 
 class RemediationError(Exception):
@@ -59,12 +61,20 @@ def proposal_id_of(strategy: str, attempt: int, finding_ids: Sequence[str], diff
     return str(uuid.uuid5(_NAMESPACE, key))
 
 
+def lines_of(text: str) -> list[str]:
+    """The lines of `text` as git and the scanners count them: split on line feeds only, each keeping its
+    own. `str.splitlines` also splits on a form feed, U+0085, U+2028 and other separators, which would give
+    other line numbers than the findings' and a diff whose line counts `git apply` refuses."""
+    return _LINE.findall(text)
+
+
 def unified_diff(path: str, old: str, new: str) -> str:
-    """A `git apply`-able diff of one text file, with a/ and b/ prefixes."""
-    lines = difflib.unified_diff(
-        old.splitlines(keepends=True), new.splitlines(keepends=True), f"a/{path}", f"b/{path}", n=3
-    )
-    return f"diff --git a/{path} b/{path}\n" + "".join(lines)
+    """A `git apply`-able diff of one text file, with a/ and b/ prefixes; a last line without a line feed
+    carries git's `\\ No newline at end of file` marker."""
+    body = []
+    for line in difflib.unified_diff(lines_of(old), lines_of(new), f"a/{path}", f"b/{path}", n=3):
+        body.append(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n")
+    return f"diff --git a/{path} b/{path}\n" + "".join(body)
 
 
 def build_proposal(

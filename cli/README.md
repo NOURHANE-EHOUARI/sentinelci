@@ -250,6 +250,13 @@ uv run sentinel verify registry.local/demo-shop/shop-api@sha256:<digest> --evide
 - Exit code `0` trusted, `1` not trusted (any check failed), `3` the verification could not run (for example
   a Cosign binary that does not match `tools.lock.toml`). Offline: the evidence directory and the public key
   are all it needs.
+- `--report-json <file>` also writes the report as `schemas/trust-report.v1.json`, trusted or not: the mode
+  (`registry` or `evidence`), the repository and builder id required, the sha256 of the public key (its DER
+  bytes, so a key file's line endings do not change it), the time, the `decision_id` of the decision it
+  verified (null without a valid decision attestation: the platform records a report only next to that
+  decision), and every check in order with a one-line detail. An older file at that path is removed first,
+  nothing is written when the verification cannot run (exit `3`), and a `--report-json` that is the public key
+  itself is refused before anything is removed. It is what `sentinel upload-release` sends to the platform.
 
 ## `sentinel scan sca` (dependency vulnerabilities, A1)
 
@@ -392,6 +399,41 @@ uv run sentinel sbom out/image-oci --source oci-dir --name demo-shop/shop-api \
   file for both, or a path that cannot be cleared is refused before anything is written.
 - The package count it prints leaves out the operating-system component Syft adds for an image.
 
+## `sentinel upload-release` (release evidence to the platform, A8)
+
+```bash
+SENTINEL_API_TOKEN=... uv run sentinel upload-release --decision out/release/evidence/decision.v1.json \
+  --trust-report out/release/evidence/trust-report.registry.json \
+  --trust-report out/release/evidence/trust-report.evidence.json --api-url http://localhost:8000
+```
+
+- Sends `schemas/release-evidence.v1.json` to `POST /api/v1/releases`: the release decision and the trust
+  reports of its image (none for a BLOCK, which nothing signed), registry mode first. The Releases & evidence
+  page shows it.
+- Checked first as the platform checks it (a release decision about an image; each report about that image
+  and repository, one per mode, `trusted` exactly when every check passed; no trusted report for a BLOCK), so a
+  document the platform would refuse is never sent. The same files always give the same bytes.
+- A release is recorded once: sending the same evidence again is "already recorded" (exit `0`); other
+  evidence for a recorded decision is refused (exit `4`), since a release never changes.
+- Like `sentinel upload`: the token only from `SENTINEL_API_TOKEN`, https or the loopback only, no redirect,
+  exit `4` on any failure with a line that names no secret. A report: the release, its decision and its
+  signatures are unchanged whatever happens.
+
+## `sentinel upload-remediation` (a remediation attempt to the platform, A8)
+
+```bash
+SENTINEL_API_TOKEN=... uv run sentinel upload-remediation --proposal proposal.json --result result.json \
+  --repo NOURHANE-EHOUARI/sentinelci --api-url http://localhost:8000
+```
+
+- Sends `schemas/remediation-attempt.v1.json` to `POST /api/v1/remediations`: the patch proposal, its
+  verification result (`sentinel remediate verify`) and the repository. The Remediation page shows it, and
+  `/metrics` counts it in `sentinel_remediation_attempts_total{strategy,outcome}`.
+- Checked first as the platform checks it: the contracts (VERIFIED only through the verification gate of SPEC
+  §9.2), the result the proposal's (same id and attempt), not verified before the proposal was made.
+- An attempt is recorded once: the same files again are "already recorded" (exit `0`), another document for a
+  recorded proposal is refused (exit `4`). Exit `4` on any failure, with the rules of `sentinel upload`.
+
 ## `sentinel upload` (findings to the platform, M1)
 
 Sends one run's findings to the SentinelCI platform (the B1 ingestion API, `schemas/openapi.yaml`): first
@@ -498,7 +540,8 @@ uv run sentinel scan pipelines demo-shop --repo-root . --out out/pipelines.ndjso
 ```bash
 uv run sentinel remediate kubernetes --findings out/findings.ndjson --repo-root . --out out/proposal.json
 uv run sentinel remediate apply --proposal out/proposal.json --findings out/base.ndjson --repo-root .
-uv run sentinel remediate check --proposal out/proposal.json --base-root out/base --patched-root out/patched
+uv run sentinel remediate check --proposal out/proposal.json --base-root out/base --patched-root out/patched \
+  --findings out/base-iac.ndjson
 uv run sentinel remediate verify --proposal out/proposal.json --before out/base.ndjson \
   --after out/patched.ndjson --decision out/patched-decision.json --tool-status out/patched-tool-status.json \
   --build-ok --tests-ok --out out/result.json
@@ -573,9 +616,11 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
     tool status; for a `--tool-status` that is not the one the decision recorded, or that does not show the
     scanner of every target `ok`: a scan that failed, was skipped or never ran must not vouch for the patch;
   - `--out` can never be one of the inputs.
-- `check` builds and tests an infrastructure-as-code proposal for `verify`, on the trees of the base and the
-  patched commit (exported with `git archive`, never checked out), and prints `{proposal_id, strategy,
-  build_ok, tests_ok, problems}`. A manifest or a Dockerfile has no compiler or unit test of its own, so:
+- `check` builds and tests an infrastructure-as-code proposal for `verify`, on the trees of the base commit
+  (all of it: an ADD source may be at the repository root) and of the patched commit (exported with `git
+  archive`, never checked out), with `--findings`, the base commit's IaC findings, and prints `{proposal_id,
+  strategy, build_ok, tests_ok, problems}`. A manifest or a Dockerfile has no compiler or unit test of its
+  own, so:
   - **build**: every edited file still parses as what it was, into the same resources. A manifest keeps its
     documents, each with the same apiVersion, kind, name and namespace; a Dockerfile keeps its stages (the same
     FROM lines) and holds only Dockerfile instructions. A scanner reports nothing in a file it cannot parse,
@@ -584,14 +629,18 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
     the pod's and every container's `securityContext` and the pod's host namespaces are set aside; a Dockerfile
     is the same line for line once its added `USER 10001:10001` lines are skipped (each an instruction of its
     own after the final stage's last RUN), except ADD → COPY (on an ADD's first line, and only where the fixer
-    makes that edit: the same rule, on the base commit's whole tree, except that the check does not see the
-    other findings) and an added `--no-install-recommends`. A file the fixer never edits (a byte-order mark, an
-    `escape` parser directive, a heredoc) fails. Whether the new settings are right is the scanners' part: a weaker one is a
-    new finding;
+    makes that edit: the same rule, on the base commit's whole tree) and an added `--no-install-recommends`. A
+    file the fixer never edits (a byte-order mark, an `escape` parser directive, a heredoc) fails. Whether the
+    new settings are right is the scanners' part: a weaker one is a new finding;
+  - **the fixer's own proposal** (tests too): the deterministic fixer is re-run on the base tree and
+    `--findings`, and the proposal must be its output, field for field but `created_at`. That catches any
+    edit the fixer would not make, whatever its shape, and a proposal that claims other findings than the
+    fixer's;
   - manifests are read with a safe loader that refuses aliases and duplicate keys;
   - exit `0` when both hold, `1` when one does not (the problems name the file and why), `3` when they cannot
-    be checked honestly: a strategy with no build or tests defined here (an LLM code fix, B6), a file that is
-    not a regular file of both trees, a base file this check cannot read.
+    be checked honestly: a strategy with no build or tests defined here (an LLM code fix, B6) or no fixer to
+    re-run, a file that is not a regular file of both trees, a base file this check cannot read, findings that
+    cannot be read or that the fixer refuses.
 
 The bot (`.github/workflows/sentinel-remediate.yml`, ADR-0013) chains them: `propose` (read-only) scans, runs
 the fixers and `apply`; `publish` (no repository code) pushes each branch and opens its pull request; `verify`

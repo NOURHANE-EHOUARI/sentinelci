@@ -9,6 +9,7 @@ which, like GitHub, lets a client fetch a commit by its id) and a `gh` that reco
   real-tool tests): propose, publish, verify and report, as one run would.
 """
 
+import io
 import json
 import os
 import re
@@ -16,6 +17,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +112,63 @@ def test_verify_judges_with_the_scanned_commits_pipeline_and_the_scanners_the_pr
         assert run.count(kinds[tool]) == 2, f"{tool}: the scanned commit and the patched commit"
     assert "--context pr" in run and '--baseline "$WORK/before.ndjson"' in run
     assert '(cd "$PIPELINE" && "$SENTINEL" evaluate' in run, "waivers from the pipeline checkout"
+
+
+def test_verify_reads_trees_the_commit_cannot_configure_and_replays_the_fixer(tmp_path: Path) -> None:
+    run = step("verify", VERIFY_STEP)["run"]
+    archives = re.findall(r'git -C "\$repo" archive [^|]*', run)
+    assert len(archives) == 2 and all("--worktree-attributes" in a for a in archives), archives
+    # #85 review: both trees whole, so Trivy sees the same local Terraform modules on either side.
+    assert all(" -- " not in a for a in archives), archives
+    assert 'archive --worktree-attributes --format=tar "$BASE_SHA" |' in run, "the whole scanned commit"
+    assert '--findings "$WORK/base-iac.ndjson"' in run, (
+        "the fixer re-run on the scanned commit's IaC findings"
+    )
+    # #98 review, nit 3: a crash exits 1 too, so only a whole result counts (else FAILED, never REJECTED).
+    whole = run.index('jq -e \'(.build_ok | type == "boolean") and (.tests_ok | type == "boolean")')
+    assert run.index('"$SENTINEL" remediate check') < whole < run.index("jq -r '.problems[]'")
+    # #98 review: the attributes come from the empty tree, set right after the bare repository is made and
+    # before anything is fetched into it, so no later step can bring the commit's back by making HEAD resolve.
+    init = run.index('git init --quiet --bare "$repo"')
+    pinned = run.index('git -C "$repo" config attr.tree "$(git hash-object -t tree /dev/null)"')
+    assert init < pinned < run.index('git -C "$repo" fetch')
+    # What this relies on, with HEAD resolving to the scanned commit: archive --worktree-attributes and
+    # Gitleaks' git log read no attribute of the commit.
+    source, bare = tmp_path / "source", tmp_path / "bare.git"
+    source.mkdir()
+    git(source, "init", "--quiet")
+    (source / ".gitattributes").write_text(
+        "Dockerfile export-ignore\napp.yaml export-subst\nid.txt ident\n*.env -diff\n"
+    )
+    (source / "Dockerfile").write_text("FROM scratch\n")
+    (source / "app.yaml").write_text("commit: $Format:%H$\n")
+    (source / "id.txt").write_text("$Id$\n")
+    git(source, "add", "-A")
+    git(source, "commit", "--quiet", "-m", "attributes")
+    (source / "a.env").write_text("TOKEN=fake-not-a-secret\n")
+    git(source, "add", "-A")
+    git(source, "commit", "--quiet", "-m", "a fake token")
+    git(tmp_path, "init", "--quiet", "--bare", str(bare))
+    empty = subprocess.run(
+        ["git", "hash-object", "-t", "tree", "/dev/null"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    git(bare, "config", "attr.tree", empty)
+    git(bare, "fetch", "--quiet", str(source), "+HEAD:refs/sentinel/base")
+    git(bare, "symbolic-ref", "HEAD", "refs/sentinel/base")  # any later step that makes HEAD resolve
+    archive = subprocess.run(
+        ["git", "-C", str(bare), "archive", "--worktree-attributes", "--format=tar", "refs/sentinel/base"],
+        check=True, capture_output=True,
+    ).stdout  # fmt: skip
+    with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+        exported = {m.name: tar.extractfile(m).read() for m in tar if m.isfile()}  # type: ignore[union-attr]
+    assert exported["Dockerfile"] == b"FROM scratch\n", "export-ignore dropped nothing"
+    assert exported["app.yaml"] == b"commit: $Format:%H$\n", "export-subst rewrote nothing"
+    assert exported["id.txt"] == b"$Id$\n", "ident expanded nothing"
+    log = subprocess.run(
+        ["git", "-C", str(bare), "log", "-p", "refs/sentinel/base"],
+        check=True, capture_output=True, text=True,
+    ).stdout  # fmt: skip
+    assert "+TOKEN=fake-not-a-secret" in log, "-diff hid nothing from Gitleaks' git log"
 
 
 def test_the_check_judges_an_add_on_the_scanned_commits_whole_tree() -> None:
