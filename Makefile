@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help setup check lint format typecheck imports policy test zizmor web eval tools tools-verify compose-env up down \
-	release release-block release-key
+	remediate-code release release-block release-key
 
 # OPA is a pinned binary, not a Python package: `uv run sentinel tools install opa` (tools.lock.toml).
 OPA ?= $(or $(SENTINEL_OPA),opa)
@@ -65,6 +65,10 @@ up: compose-env ## Start the local platform; COMPOSE_PROFILES=ai,observability a
 
 down: ## Stop the local platform (volumes are kept; `docker compose ... down --volumes` wipes them)
 	$(COMPOSE) down
+
+remediate-code: ## LLM fixes of main's SAST findings, verified (ADR-0014): TEST_IMAGE=<pinned> [FINDING=] [PUBLISH=1] [API_URL=]
+	uv run python deploy/remediate/remediate_code.py --test-image "$(TEST_IMAGE)" \
+		$(if $(FINDING),--finding "$(FINDING)") $(if $(PUBLISH),--publish) $(if $(API_URL),--api-url "$(API_URL)")
 
 # Releases are made on the laptop that holds the release key (ADR-0011, deploy/release/release.py): from a clean
 # checkout of origin/main, with Docker (buildx) and the pinned tools (`make tools`). The password is asked.
