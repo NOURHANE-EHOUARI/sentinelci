@@ -441,6 +441,89 @@
         "overrides": []
       },
       "options": {}
+    },
+    {
+      "id": 15,
+      "type": "row",
+      "title": "Fix time and alert reduction (from recorded decisions and correlations)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 43
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "MTTR, by priority",
+      "description": "Mean time from a finding's first report to the first release run that no longer reports it, on each repository's default branch (runs whose scanner failed are not evidence of a fix), in the order the runs were recorded. A mean over every fix since the first recorded release run: an older run's late decision can move a fix earlier, so the line can go down.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 44
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (priority) (sentinel_findings_fix_seconds) / sum by (priority) (sentinel_findings_fixed > 0)",
+          "legendFormat": "{{priority}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Alert reduction, by category",
+      "description": "1 - root-cause groups / findings, on each repository's latest correlated release run (A7).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 44
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "1 - sum by (category) (sentinel_root_cause_groups) / sum by (category) (sentinel_correlated_findings > 0)",
+          "legendFormat": "{{category}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {}
     }
   ]
 }

@@ -9,13 +9,15 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import uuid
 from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import event
+from sqlalchemy import create_engine, event, text
 
+from sentinel_ai.correlate.models import group_id
 from sentinel_api.config import Settings
 from sentinel_api.main import create_app
 from sentinel_api.metrics import (
@@ -240,8 +242,10 @@ def test_the_counts_are_made_by_postgresql_in_a_read_only_transaction(
         assert client.get("/metrics").status_code == 200
     finally:
         event.remove(engine, "before_cursor_execute", seen)
-    assert statements[0] == "SET TRANSACTION READ ONLY", statements
+    assert statements[0] == "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY", statements
     selects = statements[1:]
+    for query in ("WITH evidence AS", "WITH ranked AS"):  # a ratio's two halves come from one query
+        assert sum(query in statement for statement in selects) == 1, query
     assert selects and all("count(" in statement for statement in selects), selects
     assert any("GROUP BY" in statement for statement in selects)
     for statement in selects:
@@ -301,3 +305,301 @@ def test_the_names_and_labels_are_spec_section_10s() -> None:
     section = section.split("\n## ", 1)[0]
     listed = dict(re.findall(r"`(sentinel_[a-z_]+)\{([a-z_,]+)\}`", section))
     assert {name: tuple(labels.split(",")) for name, labels in listed.items()} == SPEC_METRICS
+
+
+# ---------------------------------------------------------------- MTTR (fixes on the default branch)
+
+DECISIONS = ROOT / "schemas" / "fixtures" / "decision" / "valid"
+
+
+def ndjson(
+    repo: str, commit: str, context: str, *documents: dict[str, Any], ref: str = "refs/heads/main"
+) -> bytes:
+    """The bytes `record` uploads for these findings."""
+    run = {"repo": repo, "commit": commit, "context": context, "ref": ref}
+    return "".join(json.dumps(d | {"run": run}) + "\n" for d in documents).encode()
+
+
+def decision(
+    repo: str, commit: str, *documents: dict[str, Any], scanner_failed: bool = False,
+    context: str = "release", ref: str = "refs/heads/main",
+) -> bytes:  # fmt: skip
+    """A decision on these findings: PASS, or a BLOCK for a scanner failure (SC-010) that names no finding."""
+    name = "block-release-v1.2-scanner-timeout.json" if scanner_failed else "pass-pr.json"
+    document: dict[str, Any] = json.loads((DECISIONS / name).read_text(encoding="utf-8"))
+    document["decision_id"] = str(uuid.uuid4())
+    document["subject"] = {"repo": repo, "commit": commit, "context": context, "ref": ref}
+    digest = hashlib.sha256(ndjson(repo, commit, context, *documents, ref=ref)).hexdigest()
+    document["inputs"]["findings_digest"] = f"sha256:{digest}"
+    return json.dumps(document).encode()
+
+
+def decide(
+    client: TestClient, headers: dict[str, str], run_id: str, repo: str, commit: str,
+    *documents: dict[str, Any], scanner_failed: bool = False, context: str = "release",
+    ref: str = "refs/heads/main",
+) -> None:  # fmt: skip
+    """Record the run's decision (see `decision`)."""
+    body = decision(repo, commit, *documents, scanner_failed=scanner_failed, context=context, ref=ref)
+    json_headers = {**headers, "Content-Type": "application/json"}
+    response = client.post(f"/api/v1/runs/{run_id}/decision", content=body, headers=json_headers)
+    assert response.status_code == 201, response.text
+
+
+def evidence_run(
+    client: TestClient, headers: dict[str, str], repo: str, commit: str, *documents: dict[str, Any],
+    scanner_failed: bool = False, context: str = "release", ref: str = "refs/heads/main",
+) -> str:  # fmt: skip
+    """A run with its findings and its decision: evidence when it is a release run of the default branch."""
+    run_id = record(client, headers, repo, commit, context, *documents, ref=ref)
+    decide(client, headers, run_id, repo, commit, *documents, scanner_failed=scanner_failed, context=context,
+           ref=ref)  # fmt: skip
+    return run_id
+
+
+def recorded_at(database_url: str, *run_ids: str) -> list[float]:
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        found = {
+            str(run_id): at.timestamp()
+            for run_id, at in connection.execute(text("SELECT id, findings_uploaded_at FROM runs"))
+        }
+    engine.dispose()
+    return [found[run_id] for run_id in run_ids]
+
+
+def fixes(client: TestClient) -> dict[str, tuple[float, float]]:
+    found = samples(client.get("/metrics").text)
+    fixed, seconds = found.get("sentinel_findings_fixed"), found.get("sentinel_findings_fix_seconds")
+    if fixed is None or seconds is None:
+        assert fixed is None and seconds is None, "both or neither"
+        return {}
+    return {dict(key)["priority"]: (value, seconds[key]) for key, value in fixed.items()}
+
+
+def test_a_finding_is_fixed_when_the_next_evidence_run_no_longer_reports_it(
+    client: TestClient, headers: dict[str, str], database_url: str
+) -> None:
+    first = evidence_run(client, headers, REPO_A, COMMITS[0], SCA_P0, SCA_P2)
+    second = evidence_run(client, headers, REPO_A, COMMITS[1], SCA_P2)  # SCA_P0 is gone
+    third = evidence_run(client, headers, REPO_A, COMMITS[2], SECRET)  # SCA_P2 is gone, SECRET is new
+    t1, t2, t3 = recorded_at(database_url, first, second, third)
+    found = fixes(client)
+    assert set(found) == set(ALLOWED["priority"]), "every priority, so no series vanishes"
+    assert found["P0"] == (1, pytest.approx(t2 - t1, abs=1e-3))
+    assert found["P2"] == (1, pytest.approx(t3 - t1, abs=1e-3)), "from its first report, not its last"
+    assert {level: value for level, value in found.items() if level not in ("P0", "P2")} == {
+        level: (0, 0) for level in ALLOWED["priority"] - {"P0", "P2"}
+    }, "SECRET is still reported: not fixed"
+
+
+def test_a_run_whose_scanner_failed_is_no_evidence_that_a_finding_is_gone(
+    client: TestClient, headers: dict[str, str], database_url: str
+) -> None:
+    first = evidence_run(client, headers, REPO_A, COMMITS[0], SCA_P0, SECRET)
+    evidence_run(client, headers, REPO_A, COMMITS[1], SECRET, scanner_failed=True)  # SC-010: skipped
+    assert fixes(client)["P0"] == (0, 0)
+    third = evidence_run(client, headers, REPO_A, COMMITS[2], SECRET)
+    t1, t3 = recorded_at(database_url, first, third)
+    assert fixes(client)["P0"] == (1, pytest.approx(t3 - t1, abs=1e-3))
+
+
+def test_a_finding_that_comes_back_is_fixed_twice(client: TestClient, headers: dict[str, str]) -> None:
+    for n, documents in enumerate([(SCA_P0, SECRET), (SECRET,), (SCA_P0, SECRET), (SECRET,)]):
+        evidence_run(client, headers, REPO_A, COMMITS[n], *documents)
+    assert fixes(client)["P0"][0] == 2
+
+
+def test_runs_without_a_decision_other_refs_and_other_repositories_streaks_do_not_mix(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    record(client, headers, REPO_A, COMMITS[0], "release", SCA_P0)  # no decision: not evidence
+    assert fixes(client) == {}, "absent, not 0: no evidence run"
+    evidence_run(client, headers, REPO_A, COMMITS[1], SCA_P0)
+    evidence_run(client, headers, REPO_B, COMMITS[2], SECRET)  # B never reported SCA_P0
+    record(client, headers, REPO_A, COMMITS[3], "release", SECRET, ref="refs/heads/feature")
+    assert all(value == (0, 0) for value in fixes(client).values()), "nothing is gone from A's main yet"
+
+
+# Hiba's scenarios of the #92 review (P2 to P12): each pins one property of the query exactly, with the times
+# read back from the database. Each kills at least one mutant the tests above let through (in brackets).
+SCA_P0_AS_P2 = finding(
+    "sca-enriched-and-scored.json", risk={**SCA_P0["risk"], "score": 40.0, "priority": "P2"}
+)  # the same finding as SCA_P0, scored P2
+
+
+def test_a_fix_has_the_priority_of_the_last_run_that_reported_it(
+    client: TestClient, headers: dict[str, str]
+) -> None:  # [M11]
+    evidence_run(client, headers, REPO_A, COMMITS[0], SCA_P0_AS_P2, SECRET)
+    evidence_run(client, headers, REPO_A, COMMITS[1], SCA_P0, SECRET)
+    evidence_run(client, headers, REPO_A, COMMITS[2], SECRET)
+    found = fixes(client)
+    assert (found["P0"][0], found["P2"][0]) == (1, 0)
+
+
+def test_the_seconds_of_every_fix_are_summed(
+    client: TestClient, headers: dict[str, str], database_url: str
+) -> None:  # [M15]
+    reported = [(SCA_P0, SECRET), (SECRET,), (SCA_P0, SECRET), (SCA_P0, SECRET), (SECRET,)]
+    runs = [evidence_run(client, headers, REPO_A, COMMITS[n], *found) for n, found in enumerate(reported)]
+    t1, t2, t3, _, t5 = recorded_at(database_url, *runs)
+    assert fixes(client)["P0"] == (2, pytest.approx((t2 - t1) + (t5 - t3), abs=1e-3))
+
+
+def test_each_repository_has_its_own_runs_and_its_own_next_run(
+    client: TestClient, headers: dict[str, str], database_url: str
+) -> None:  # [M5, M13]
+    a1 = evidence_run(client, headers, REPO_A, COMMITS[0], SCA_P0)
+    evidence_run(client, headers, REPO_B, COMMITS[1], SCA_P0)
+    a2 = evidence_run(client, headers, REPO_A, COMMITS[2], SECRET)
+    evidence_run(client, headers, REPO_B, COMMITS[3], SCA_P0)
+    t1, t2 = recorded_at(database_url, a1, a2)
+    assert fixes(client)["P0"] == (1, pytest.approx(t2 - t1, abs=1e-3)), "B still reports it"
+
+
+def test_another_repositorys_runs_do_not_cut_a_streak(
+    client: TestClient, headers: dict[str, str], database_url: str
+) -> None:  # [M8]
+    a1 = evidence_run(client, headers, REPO_A, COMMITS[0], SCA_P0)
+    evidence_run(client, headers, REPO_B, COMMITS[1], SCA_P0)
+    evidence_run(client, headers, REPO_A, COMMITS[2], SCA_P0)
+    evidence_run(client, headers, REPO_B, COMMITS[3], SCA_P0)
+    a3 = evidence_run(client, headers, REPO_A, COMMITS[4], SECRET)
+    t1, t3 = recorded_at(database_url, a1, a3)
+    assert fixes(client)["P0"] == (1, pytest.approx(t3 - t1, abs=1e-3))
+
+
+def test_pull_request_runs_and_release_runs_of_other_refs_are_not_evidence(
+    client: TestClient, headers: dict[str, str]
+) -> None:  # [M1, M2]
+    evidence_run(client, headers, REPO_A, COMMITS[0], SCA_P0)
+    evidence_run(client, headers, REPO_A, COMMITS[1], SECRET, context="pr")  # a pull request into main
+    evidence_run(client, headers, REPO_A, COMMITS[2], SECRET, ref="refs/heads/feature")
+    assert fixes(client)["P0"] == (0, 0), "only main's release runs say what main fixed"
+
+
+def test_an_unscored_finding_is_fixed_as_unscored(
+    client: TestClient, headers: dict[str, str], database_url: str
+) -> None:  # [M14]
+    first = evidence_run(client, headers, REPO_A, COMMITS[0], SCA_P0, SECRET)
+    second = evidence_run(client, headers, REPO_A, COMMITS[1], SCA_P0)
+    t1, t2 = recorded_at(database_url, first, second)
+    found = fixes(client)
+    assert (found[UNSCORED], found["P4"]) == ((1, pytest.approx(t2 - t1, abs=1e-3)), (0, 0))
+
+
+def test_one_scrape_reads_one_snapshot(client: TestClient, headers: dict[str, str]) -> None:
+    """A decision recorded while a scrape runs (another API process) is in the next scrape, never in half of
+    this one: the decisions counted and the fixes come from the same rows."""
+    from sentinel_api.decisions import _store
+
+    evidence_run(client, headers, REPO_A, COMMITS[0], SCA_P0, SECRET)
+    evidence_run(client, headers, REPO_A, COMMITS[1], SECRET)  # SCA_P0 fixed
+    evidence_run(client, headers, REPO_A, COMMITS[2], SCA_P0, SECRET)  # it is back
+    late = record(client, headers, REPO_A, COMMITS[3], "release", SECRET)  # fixes it again, once decided
+    body = decision(REPO_A, COMMITS[3], SECRET)
+    sessions = client.app.state.sessions  # type: ignore[attr-defined]
+    engine = sessions.kw["bind"]
+    selects: list[str] = []
+
+    def meanwhile(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
+        if "SET TRANSACTION" in statement:
+            selects.clear()
+            selects.append("")
+        elif selects == [""]:
+            selects.append(statement)  # the scrape's first query, which takes its snapshot
+            with sessions() as other:
+                _store(other, uuid.UUID(late), body)
+
+    event.listen(engine, "after_cursor_execute", meanwhile)
+    try:
+        during = samples(client.get("/metrics").text)
+    finally:
+        event.remove(engine, "after_cursor_execute", meanwhile)
+    assert len(selects) == 2, "the decision was recorded after the scrape's first query"
+    decided = sum(during["sentinel_gate_decisions_total"].values())
+    fixed = during["sentinel_findings_fixed"][(("priority", "P0"),)]
+    assert (decided, fixed) == (3, 1), "the decision recorded meanwhile is in neither"
+    after = samples(client.get("/metrics").text)
+    assert sum(after["sentinel_gate_decisions_total"].values()) == 4
+    assert after["sentinel_findings_fixed"][(("priority", "P0"),)] == 2
+
+
+# ---------------------------------------------------------------- alert reduction (latest correlations)
+
+
+def correlation_group(*members: dict[str, Any]) -> dict[str, Any]:
+    ids = sorted(f["id"] for f in members)
+    stage = {"stage": "structural", "key": "package:pkg:pypi/x"} if len(ids) > 1 else {"stage": "dedup"}
+    return {
+        "schema_version": "1.0", "group_id": group_id(ids), "finding_ids": ids, "labelled_by": "template",
+        "title": "t", "root_cause": "r", "single_fix": None,
+    } | stage  # fmt: skip
+
+
+def correlate(
+    client: TestClient, headers: dict[str, str], run_id: str, body: bytes, *groups: tuple[dict[str, Any], ...]
+) -> None:
+    document = {
+        "schema_version": "1.0",
+        "findings_sha256": hashlib.sha256(body).hexdigest(),
+        "correlator": {"version": "0.1.0", "stages": ["dedup", "structural"]},
+        "groups": sorted(
+            (correlation_group(*members) for members in groups), key=lambda g: str(g["group_id"])
+        ),
+    }
+    response = client.post(
+        f"/api/v1/runs/{run_id}/correlations",
+        content=json.dumps(document).encode(),
+        headers={**headers, "Content-Type": "application/json"},
+    )
+    assert response.status_code == 201, response.text
+
+
+def reduction(client: TestClient) -> dict[str, tuple[float, float]]:
+    found = samples(client.get("/metrics").text)
+    findings, groups = found.get("sentinel_correlated_findings"), found.get("sentinel_root_cause_groups")
+    if findings is None or groups is None:
+        assert findings is None and groups is None, "both or neither"
+        return {}
+    return {dict(key)["category"]: (value, groups[key]) for key, value in findings.items()}
+
+
+def test_alert_reduction_counts_each_repositorys_latest_correlated_release_run(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    older = record(client, headers, REPO_A, COMMITS[0], "release", SECRET)
+    correlate(client, headers, older, ndjson(REPO_A, COMMITS[0], "release", SECRET), (SECRET,))
+    assert reduction(client)["SECRET"] == (1, 1)
+    latest = record(client, headers, REPO_A, COMMITS[1], "release", SCA_P0, SCA_P2, CONTAINER)
+    body = ndjson(REPO_A, COMMITS[1], "release", SCA_P0, SCA_P2, CONTAINER)
+    correlate(client, headers, latest, body, (SCA_P0,), (SCA_P2,), (CONTAINER,))
+    correlate(client, headers, latest, body, (SCA_P0, SCA_P2), (CONTAINER,))  # a newer version: it counts
+    record(client, headers, REPO_A, COMMITS[2], "release", SECRET)  # newer, not correlated yet: left out
+    pr = record(client, headers, REPO_A, COMMITS[3], "pr", SECRET)
+    correlate(client, headers, pr, ndjson(REPO_A, COMMITS[3], "pr", SECRET), (SECRET,))  # not main's
+    found = reduction(client)
+    assert set(found) == set(CATEGORIES), "every category, so no series vanishes"
+    assert {c: v for c, v in found.items() if v != (0, 0)} == {"SCA": (2, 1), "CONTAINER": (1, 1)}
+
+
+def test_alert_reduction_counts_every_repository_and_only_the_default_branch(
+    client: TestClient, headers: dict[str, str]
+) -> None:  # [M18, M21]
+    a = record(client, headers, REPO_A, COMMITS[0], "release", SCA_P0, SCA_P2)
+    correlate(client, headers, a, ndjson(REPO_A, COMMITS[0], "release", SCA_P0, SCA_P2), (SCA_P0, SCA_P2))
+    b = record(client, headers, REPO_B, COMMITS[1], "release", SECRET)
+    correlate(client, headers, b, ndjson(REPO_B, COMMITS[1], "release", SECRET), (SECRET,))
+    feature = record(client, headers, REPO_A, COMMITS[2], "release", CONTAINER, ref="refs/heads/feature")
+    body = ndjson(REPO_A, COMMITS[2], "release", CONTAINER, ref="refs/heads/feature")
+    correlate(client, headers, feature, body, (CONTAINER,))  # newer, but not the default branch's
+    found = {category: value for category, value in reduction(client).items() if value != (0, 0)}
+    assert found == {"SCA": (2, 1), "SECRET": (1, 1)}
+
+
+def test_alert_reduction_is_absent_until_a_release_run_is_correlated(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    record(client, headers, REPO_A, COMMITS[0], "release", SECRET)
+    assert reduction(client) == {}
