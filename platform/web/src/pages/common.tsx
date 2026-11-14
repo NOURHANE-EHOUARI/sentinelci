@@ -25,3 +25,45 @@ export function Failure({ error }: { error: unknown }) {
 export function Loading() {
   return <p className="text-sm text-slate-500">Loading…</p>;
 }
+
+const VERDICT_STYLE: Record<string, string> = {
+  PASS: "bg-emerald-100 text-emerald-800",
+  WARN: "bg-amber-100 text-amber-800",
+  BLOCK: "bg-red-700 text-white",
+};
+
+/** The gate's verdict on a release. */
+export function Verdict({ value }: { value: string }) {
+  const style = VERDICT_STYLE[value] ?? "bg-slate-100 text-slate-700";
+  return <span className={`rounded px-1.5 py-0.5 text-xs font-semibold ${style}`}>{value}</span>;
+}
+
+/** What `sentinel verify` found on the release laptop: trusted, not trusted, or nothing signed (a BLOCK). */
+/** What verify found. Unknown (null) is never trusted: for a BLOCK nothing was signed; otherwise nobody sent a
+ * verification, which does not mean the image was not signed (review of #86). */
+export function Trust({ trusted, verdict }: { trusted: boolean | null; verdict?: string }) {
+  if (trusted === null) {
+    return <span className="text-xs text-slate-500">{verdict === "BLOCK" ? "not signed" : "not verified"}</span>;
+  }
+  return trusted ? (
+    <span className="text-xs font-medium text-emerald-700">✓ trusted</span>
+  ) : (
+    <span className="text-xs font-medium text-red-700">✗ not trusted</span>
+  );
+}
+
+/** A sha256 digest, shortened for a table; the full value stays in the title. */
+export function Digest({ value }: { value: string }) {
+  const short = value.startsWith("sha256:") ? `${value.slice(0, 19)}…` : value;
+  return (
+    <span className="font-mono text-xs" title={value}>
+      {short}
+    </span>
+  );
+}
+
+export function utc(value: string | null): string {
+  if (value === null) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "—" : `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}

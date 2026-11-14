@@ -203,6 +203,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/releases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Releases
+         * @description The releases, newest first (as recorded), without their documents.
+         */
+        get: operations["list_releases_api_v1_releases_get"];
+        put?: never;
+        /**
+         * Record Release
+         * @description Record a release decision and the trust reports of its image, kept byte for byte, once.
+         */
+        post: operations["record_release_api_v1_releases_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/releases/{image_digest}/evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Release Evidence
+         * @description The image's release recorded last (or the release `decision_id`), exactly as it was posted. "Last"
+         *     is the order of recording, not of the decisions: a late upload of an older decision becomes the one
+         *     served without `decision_id`.
+         */
+        get: operations["get_release_evidence_api_v1_releases__image_digest__evidence_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/metrics": {
         parameters: {
             query?: never;
@@ -369,6 +415,62 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /**
+         * ReleaseExists
+         * @description 409: this decision is recorded already (`release`); with the same bytes when `release.sha256` is
+         *     theirs.
+         */
+        ReleaseExists: {
+            /** Detail */
+            detail: string;
+            release: components["schemas"]["ReleaseOut"];
+        };
+        /** ReleaseOut */
+        ReleaseOut: {
+            /**
+             * Decision Id
+             * Format: uuid
+             */
+            decision_id: string;
+            /** Repo */
+            repo: string;
+            /** Commit */
+            commit: string;
+            /** Ref */
+            ref: string | null;
+            /** Image Digest */
+            image_digest: string;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "PASS" | "WARN" | "BLOCK";
+            /** Trusted */
+            trusted: boolean | null;
+            /**
+             * Evaluated At
+             * Format: date-time
+             */
+            evaluated_at: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Sha256 */
+            sha256: string;
+        };
+        /** ReleasePage */
+        ReleasePage: {
+            /** Items */
+            items: components["schemas"]["ReleaseOut"][];
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
         };
         /** RunCreate */
         RunCreate: {
@@ -1269,6 +1371,198 @@ export interface operations {
             };
             /** @description The decision is not `application/json`. */
             415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description No database is configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    list_releases_api_v1_releases_get: {
+        parameters: {
+            query?: {
+                repo?: string | null;
+                verdict?: ("PASS" | "WARN" | "BLOCK") | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReleasePage"];
+                };
+            };
+            /** @description The document is larger than the upload limit. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description No database is configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    record_release_api_v1_releases_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description One Release evidence v1 document (schemas/release-evidence.v1.json). */
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReleaseOut"];
+                };
+            };
+            /** @description No valid ingestion token (`Authorization: Bearer <token>`). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description The decision is recorded already (`release`): with these bytes, or with other evidence, which never changes. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReleaseExists"];
+                };
+            };
+            /** @description The document is larger than the upload limit. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description The evidence is not `application/json`. */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Not a Release evidence v1 document, or one that contradicts itself: a BLOCK with a trust report, a report about another image, repository or decision (the reason is in `msg`). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description No database is configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_release_evidence_api_v1_releases__image_digest__evidence_get: {
+        parameters: {
+            query?: {
+                /** @description One release of the image; without it, the one recorded last. */
+                decision_id?: string | null;
+            };
+            header?: never;
+            path: {
+                image_digest: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The Release evidence v1 document byte for byte: its sha256 is the ETag. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description No release recorded for this image (or this decision). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description The document is larger than the upload limit. */
+            413: {
                 headers: {
                     [name: string]: unknown;
                 };
