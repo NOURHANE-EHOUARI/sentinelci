@@ -75,6 +75,9 @@ function Group({ runId, findingId }: { runId: string; findingId: string }) {
       <div className="font-medium">{group.title}</div>
       <p className="mt-1">{group.rootCause}</p>
       {group.singleFix && <p className="mt-1"><span className="font-medium">One fix: </span>{group.singleFix}</p>}
+      <Link to={`/runs/${encodeURIComponent(runId)}/groups`} className="mt-2 inline-block text-xs text-sky-700 hover:underline">
+        Every group of this run →
+      </Link>
     </aside>
   );
 }

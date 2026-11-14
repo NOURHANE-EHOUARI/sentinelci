@@ -9,6 +9,7 @@ which, like GitHub, lets a client fetch a commit by its id) and a `gh` that reco
   real-tool tests): propose, publish, verify and report, as one run would.
 """
 
+import io
 import json
 import os
 import re
@@ -16,6 +17,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +112,72 @@ def test_verify_judges_with_the_scanned_commits_pipeline_and_the_scanners_the_pr
         assert run.count(kinds[tool]) == 2, f"{tool}: the scanned commit and the patched commit"
     assert "--context pr" in run and '--baseline "$WORK/before.ndjson"' in run
     assert '(cd "$PIPELINE" && "$SENTINEL" evaluate' in run, "waivers from the pipeline checkout"
+
+
+def test_verify_reads_trees_the_commit_cannot_configure_and_replays_the_fixer(tmp_path: Path) -> None:
+    run = step("verify", VERIFY_STEP)["run"]
+    archives = re.findall(r'git -C "\$repo" archive [^|]*', run)
+    assert len(archives) == 2 and all("--worktree-attributes" in a for a in archives), archives
+    # #85 review: both trees whole, so Trivy sees the same local Terraform modules on either side.
+    assert all(" -- " not in a for a in archives), archives
+    assert 'archive --worktree-attributes --format=tar "$BASE_SHA" |' in run, "the whole scanned commit"
+    assert '--findings "$WORK/base-iac.ndjson"' in run, (
+        "the fixer re-run on the scanned commit's IaC findings"
+    )
+    # #98 review, nit 3: a crash exits 1 too, so only a whole result counts (else FAILED, never REJECTED).
+    whole = run.index('jq -e \'(.build_ok | type == "boolean") and (.tests_ok | type == "boolean")')
+    assert run.index('"$SENTINEL" remediate check') < whole < run.index("jq -r '.problems[]'")
+    # #98 review: the attributes come from the empty tree, set right after the bare repository is made and
+    # before anything is fetched into it, so no later step can bring the commit's back by making HEAD resolve.
+    init = run.index('git init --quiet --bare "$repo"')
+    pinned = run.index('git -C "$repo" config attr.tree "$(git hash-object -t tree /dev/null)"')
+    assert init < pinned < run.index('git -C "$repo" fetch')
+    # What this relies on, with HEAD resolving to the scanned commit: archive --worktree-attributes and
+    # Gitleaks' git log read no attribute of the commit.
+    source, bare = tmp_path / "source", tmp_path / "bare.git"
+    source.mkdir()
+    git(source, "init", "--quiet")
+    (source / ".gitattributes").write_text(
+        "Dockerfile export-ignore\napp.yaml export-subst\nid.txt ident\n*.env -diff\n"
+    )
+    (source / "Dockerfile").write_text("FROM scratch\n")
+    (source / "app.yaml").write_text("commit: $Format:%H$\n")
+    (source / "id.txt").write_text("$Id$\n")
+    git(source, "add", "-A")
+    git(source, "commit", "--quiet", "-m", "attributes")
+    (source / "a.env").write_text("TOKEN=fake-not-a-secret\n")
+    git(source, "add", "-A")
+    git(source, "commit", "--quiet", "-m", "a fake token")
+    git(tmp_path, "init", "--quiet", "--bare", str(bare))
+    empty = subprocess.run(
+        ["git", "hash-object", "-t", "tree", "/dev/null"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    git(bare, "config", "attr.tree", empty)
+    git(bare, "fetch", "--quiet", str(source), "+HEAD:refs/sentinel/base")
+    git(bare, "symbolic-ref", "HEAD", "refs/sentinel/base")  # any later step that makes HEAD resolve
+    archive = subprocess.run(
+        ["git", "-C", str(bare), "archive", "--worktree-attributes", "--format=tar", "refs/sentinel/base"],
+        check=True, capture_output=True,
+    ).stdout  # fmt: skip
+    with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+        exported = {m.name: tar.extractfile(m).read() for m in tar if m.isfile()}  # type: ignore[union-attr]
+    assert exported["Dockerfile"] == b"FROM scratch\n", "export-ignore dropped nothing"
+    assert exported["app.yaml"] == b"commit: $Format:%H$\n", "export-subst rewrote nothing"
+    assert exported["id.txt"] == b"$Id$\n", "ident expanded nothing"
+    log = subprocess.run(
+        ["git", "-C", str(bare), "log", "-p", "refs/sentinel/base"],
+        check=True, capture_output=True, text=True,
+    ).stdout  # fmt: skip
+    assert "+TOKEN=fake-not-a-secret" in log, "-diff hid nothing from Gitleaks' git log"
+
+
+def test_the_check_judges_an_add_on_the_scanned_commits_whole_tree() -> None:
+    """#85 review: the fixer looks for an ADD source next to the Dockerfile and at the repository root, so the
+    check's base tree is the whole scanned commit, not the scanned directory."""
+    run = step("verify", VERIFY_STEP)["run"]
+    (export,) = re.findall(r'git -C "\$repo" archive [^|]*"\$BASE_SHA"[^|]*\| tar -x -C "([^"]+)"', run)
+    assert re.search(r'archive [^|]*"\$BASE_SHA" \|', run), "the whole commit: no pathspec"
+    assert f'remediate check --proposal "$proposal" --base-root "{export}"' in run
 
 
 def test_the_verify_job_outlives_every_scanner_run() -> None:
@@ -520,10 +588,12 @@ def test_one_run_proposes_publishes_verifies_and_reports(bot: Bot) -> None:
     manifest = bot.tmp / "opa-manifest.json"
     subprocess.run([sentinel, "tools", "verify", "opa", "--lock", lock, "--dest", str(tools), "--report",
                     str(manifest)], check=True, capture_output=True)  # fmt: skip
+    checkout = bot.tmp / "checkout"  # the verify job's, as actions/checkout leaves it (fetch-depth: 1)
+    subprocess.run(["git", "clone", "-q", "--depth=1", f"file://{bot.origin}", str(checkout)], check=True)
 
     def verify(entries: list[dict[str, Any]], work: str) -> subprocess.CompletedProcess[str]:
         return bot.run(
-            "verify", VERIFY_STEP, SENTINEL=sentinel, PIPELINE=str(ROOT), CHECKOUT=str(bot.clone),
+            "verify", VERIFY_STEP, SENTINEL=sentinel, PIPELINE=str(ROOT), CHECKOUT=str(checkout),
             TOOLS=str(tools), OPA_MANIFEST=str(manifest), OPENED=json.dumps(entries),
             PROPOSALS=str(bot.artifact), WORK=str(bot.tmp / work), RESULTS=str(bot.tmp / work / "results"),
             BASE_SHA=bot.base, BASE_REF="refs/heads/main", RUN_ID="1", SCANNER_TIMEOUT_S="300",
@@ -573,3 +643,17 @@ def test_a_failed_push_is_named_and_the_others_still_go(bot: Bot) -> None:
     done = bot.publish()
     assert done.returncode == 0 and not bot.gh() and bot.outputs() == {"opened": "[]", "refused": "2"}
     assert done.stdout.count("the push of") == 2, "both proposals were tried, and each failure is named"
+
+
+def test_verify_copies_the_scanned_commit_from_a_shallow_checkout(bot: Bot) -> None:
+    """actions/checkout leaves a depth-1 clone: the bare copy still gets the scanned commit (#125). Git and
+    bash only, so it runs where the end-to-end test is skipped (no SENTINEL_TOOLS_DIR: CI, `make check`)."""
+    run = step("verify", VERIFY_STEP)["run"]
+    start = run.index('repo="$WORK/repo.git"')
+    end = run.index("exit 1; }", run.index("fetch --quiet --no-tags")) + len("exit 1; }")
+    checkout = bot.tmp / "checkout"
+    subprocess.run(["git", "clone", "-q", "--depth=1", f"file://{bot.origin}", str(checkout)], check=True)
+    env = {**os.environ, "WORK": str(bot.tmp / "verify"), "CHECKOUT": str(checkout), "BASE_SHA": bot.base}
+    script = run[start:end] + '\ngit -C "$repo" rev-parse refs/sentinel/base\n'
+    done = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+    assert done.returncode == 0 and done.stdout.strip() == bot.base, done.stdout + done.stderr

@@ -17,9 +17,10 @@ name: sentinel-remediate
 # - `verify` judges each pull request it opened with the scanned commit's pipeline, read-only and with no secret
 #   (VERIFYING). It rebuilds the commit from the proposal and the scanned commit and requires the pull request's
 #   commit to be that one; scans both commits with the scanners the pr gate requires (Gitleaks, Trivy and
-#   zizmor); builds and tests the patch (`sentinel remediate check`); evaluates the gate on the patched commit
-#   in pr context, the scanned commit as baseline; then applies the verification gate
-#   (`sentinel remediate verify`): VERIFIED, REJECTED or FAILED.
+#   zizmor); builds and tests the patch and re-runs the fixer, whose output the proposal must be
+#   (`sentinel remediate check`); evaluates the gate on the patched commit in pr context, the scanned commit
+#   as baseline; then applies the verification gate (`sentinel remediate verify`): VERIFIED, REJECTED or
+#   FAILED.
 # - `report` runs no repository code either. It re-checks each result against the gate's own invariant, comments
 #   it on its pull request, and sets the `sentinelci/remediation` commit status. A pull request without a
 #   trustworthy result is reported FAILED, and the run fails.
@@ -354,14 +355,24 @@ jobs:
           audit=(--repo "$REPO" --context pr --run-id "$RUN_ID" --timeout "$SCANNER_TIMEOUT_S"
             --lock "$PIPELINE/tools.lock.toml")
           common=("${audit[@]}" --tools-dir "$TOOLS")
-          # The scanned commit, fetched from the checkout into a bare repository: nothing is ever checked out.
+          # The scanned commit, fetched from the checkout into a bare repository: nothing is ever checked out. One
+          # commit (--depth=1): actions/checkout leaves a shallow clone, and git refuses to set a ref to a shallow
+          # root otherwise (a warning, exit 0, and no ref: every pull request would be FAILED).
           repo="$WORK/repo.git"
           git init --quiet --bare "$repo"
-          git -C "$repo" fetch --quiet --no-tags "$CHECKOUT" "+HEAD:refs/sentinel/base" \
+          # Attributes come from no tree, whatever HEAD becomes: the commit never configures git archive or
+          # Gitleaks' git log (export-ignore, export-subst, ident, eol, -diff). git reads a bare repository's
+          # HEAD:.gitattributes once HEAD resolves; attr.tree names the empty tree instead.
+          git -C "$repo" config attr.tree "$(git hash-object -t tree /dev/null)"
+          git -C "$repo" fetch --quiet --no-tags --depth=1 "$CHECKOUT" "+HEAD:refs/sentinel/base" \
             && [ "$(git -C "$repo" rev-parse refs/sentinel/base)" = "$BASE_SHA" ] \
             || { echo "::error::the checkout is not the scanned commit $BASE_SHA"; exit 1; }
-          # Its findings: the before side of every proposal, and the baseline of every decision.
-          if ! { git -C "$repo" archive --format=tar "$BASE_SHA" -- "$SCAN_PATH" | tar -x -C "$WORK/base"; } \
+          # Its whole tree (the fixers look for an ADD source at the repository root too) and its findings: the
+          # before side of every proposal, and the baseline of every decision. Every tree is exported with
+          # --worktree-attributes (without it, git archive reads the archived tree's own attributes) from this
+          # bare repository, whose attr.tree is empty: the commit's .gitattributes cannot drop (export-ignore)
+          # or rewrite (export-subst, ident, eol) what is scanned and checked.
+          if ! { git -C "$repo" archive --worktree-attributes --format=tar "$BASE_SHA" | tar -x -C "$WORK/base"; } \
             || ! "$SENTINEL" scan secrets "$WORK/base/$SCAN_PATH" --mode dir --repo-root "$WORK/base" \
               --commit "$BASE_SHA" --ref "$BASE_REF" --out "$WORK/base-secrets.ndjson" \
               --tool-status-out "$WORK/base-secrets-status.json" "${common[@]}" \
@@ -386,8 +397,9 @@ jobs:
             [ "$(jq -r .commit "$out/applied.json")" = "$commit" ] \
               || refuse "$name" "#$pr's commit is not the proposal applied to $BASE_SHA" || return 1
             # 2. The patched commit, scanned like a pull request: its commits for secrets, its tree for IaC and
-            #    for its CI workflows (the pr gate requires gitleaks, trivy and zizmor).
-            { git -C "$repo" archive --format=tar "$commit" -- "$SCAN_PATH" | tar -x -C "$out/patched"; } \
+            #    for its CI workflows (the pr gate requires gitleaks, trivy and zizmor). Its whole tree, as the
+            #    base's: Trivy loads local Terraform modules outside the scan path, so both sides must hold them.
+            { git -C "$repo" archive --worktree-attributes --format=tar "$commit" | tar -x -C "$out/patched"; } \
               && "$SENTINEL" scan secrets "$repo" --mode git --log-opts "$BASE_SHA..$commit -- $SCAN_PATH" \
                 --repo-root "$repo" --commit "$commit" --ref "refs/pull/$pr/head" --out "$out/secrets.ndjson" \
                 --tool-status-out "$out/secrets-status.json" "${common[@]}" \
@@ -402,11 +414,16 @@ jobs:
                 --tool-status "$out/iac-status.json" --tool-status "$out/pipelines-status.json" \
                 --out "$out/after.ndjson" --tool-status-out "$out/after-status.json" \
               || refuse "$name" "the patched commit could not be scanned" || return 1
-            # 3. Build and tests of the patch.
+            # 3. Build and tests of the patch, and the fixer re-run on the scanned commit's IaC findings: the
+            #    proposal must be its own output.
             code=0
             "$SENTINEL" remediate check --proposal "$proposal" --base-root "$WORK/base" \
-              --patched-root "$out/patched" > "$out/check.json" || code=$?
+              --patched-root "$out/patched" --findings "$WORK/base-iac.ndjson" > "$out/check.json" || code=$?
             [ "$code" -le 1 ] || refuse "$name" "its build and tests could not be checked" || return 1
+            # A crash also exits 1: only a whole result is one (else FAILED, never REJECTED).
+            jq -e '(.build_ok | type == "boolean") and (.tests_ok | type == "boolean")
+              and (.problems | type == "array")' "$out/check.json" > /dev/null 2>&1 \
+              || refuse "$name" "its build and tests could not be checked" || return 1
             jq -r '.problems[]' "$out/check.json" | sed "s/^/$name: /"
             build=--build-ok; [ "$(jq -r .build_ok "$out/check.json")" = true ] || build=--build-failed
             tests=--tests-ok; [ "$(jq -r .tests_ok "$out/check.json")" = true ] || tests=--tests-failed
