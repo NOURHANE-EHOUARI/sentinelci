@@ -584,19 +584,34 @@ def test_propose_scans_and_fixes_the_commit_as_committed() -> None:
     assert 'git -C "$repo" bundle create' in run
 
 
-def test_a_checkout_its_attributes_rewrote_still_gets_its_proposal(bot: Bot) -> None:
-    """The scanned commit sets eol=crlf, so the checkout's manifest differs from its blob. The propose step
-    still proposes, and its commit applies to the blob: the diff is made from the commit, not the checkout.
-    Reading the checkout, the fixer resolved nothing and the job proposed nothing, silently."""
+@pytest.mark.parametrize(
+    "attributes",
+    ["demo-shop/** text eol=crlf\n", "demo-shop/** working-tree-encoding=UTF-16LE\n", "demo-shop/** ident\n"],
+    ids=["eol", "encoding", "ident"],
+)
+def test_a_checkout_its_attributes_rewrote_still_gets_its_proposal(bot: Bot, attributes: str) -> None:
+    """The scanned commit's attributes rewrite the checkout's manifest (line endings, encoding, an expanded
+    `$Id$`), so it differs from its blob. The propose step still proposes, and its commit applies to the
+    blob: the diff is made from the commit, not the checkout. Reading the checkout, the fixer resolved nothing
+    (eol), Trivy saw 4 findings of 25 (encoding) or `apply` refused the diff (ident). The checkout is shallow,
+    as actions/checkout leaves it (#118 review)."""
     tools = tools_with_opa()
-    (bot.clone / ".gitattributes").write_text("demo-shop/** text eol=crlf\n")
+    manifest = bot.clone / SEED_PATH  # an $Id$ the fixer's diff keeps as context
+    text = manifest.read_text()
+    manifest.write_text(text.replace("      hostNetwork:", "      # $Id$\n      hostNetwork:", 1))
+    git(bot.clone, "commit", "-qam", "ident")
+    (bot.clone / ".gitattributes").write_text(attributes)
     git(bot.clone, "add", ".gitattributes")
     git(bot.clone, "commit", "-qm", "attributes")
     git(bot.clone, "push", "-q", str(bot.origin), "main")
     sha = git(bot.clone, "rev-parse", "HEAD")
     checkout = bot.tmp / "checkout"
-    subprocess.run(["git", "clone", "-q", str(bot.origin), str(checkout)], check=True)
-    assert b"\r\n" in (checkout / SEED_PATH).read_bytes(), "the checkout was rewritten"
+    # As actions/checkout leaves it (fetch-depth: 1): a shallow clone.
+    subprocess.run(["git", "clone", "-q", "--depth=1", f"file://{bot.origin}", str(checkout)], check=True)
+    blob = subprocess.run(
+        ["git", "-C", str(checkout), "cat-file", "blob", f"HEAD:{SEED_PATH}"], check=True, capture_output=True
+    ).stdout
+    assert (checkout / SEED_PATH).read_bytes() != blob, "the checkout was rewritten"
     shutil.copy(ROOT / "tools.lock.toml", checkout)  # the job's checkout is this repository, which has it
     runner = bot.tmp / "runner"
     runner.mkdir()
@@ -618,6 +633,7 @@ def test_a_checkout_its_attributes_rewrote_still_gets_its_proposal(bot: Bot) -> 
     assert git(checkout, "rev-parse", "FETCH_HEAD") == applied["commit"]
     patched = git(checkout, "show", f"{applied['commit']}:{SEED_PATH}")
     assert "\r" not in patched and "runAsNonRoot: true" in patched, "the blob's own line endings, fixed"
+    assert "# $Id$\n" in patched, "the blob's own bytes, never the checkout's"
     assert git(checkout, "diff", "--name-only", sha, applied["commit"]) == SEED_PATH
 
 
@@ -647,9 +663,12 @@ def test_one_run_proposes_publishes_verifies_and_reports(bot: Bot) -> None:
     subprocess.run([sentinel, "tools", "verify", "opa", "--lock", lock, "--dest", str(tools), "--report",
                     str(manifest)], check=True, capture_output=True)  # fmt: skip
 
+    checkout = bot.tmp / "checkout"  # the verify job's, as actions/checkout leaves it (fetch-depth: 1)
+    subprocess.run(["git", "clone", "-q", "--depth=1", f"file://{bot.origin}", str(checkout)], check=True)
+
     def verify(entries: list[dict[str, Any]], work: str) -> subprocess.CompletedProcess[str]:
         return bot.run(
-            "verify", VERIFY_STEP, SENTINEL=sentinel, PIPELINE=str(ROOT), CHECKOUT=str(bot.clone),
+            "verify", VERIFY_STEP, SENTINEL=sentinel, PIPELINE=str(ROOT), CHECKOUT=str(checkout),
             TOOLS=str(tools), OPA_MANIFEST=str(manifest), OPENED=json.dumps(entries),
             PROPOSALS=str(bot.artifact), WORK=str(bot.tmp / work), RESULTS=str(bot.tmp / work / "results"),
             BASE_SHA=bot.base, BASE_REF="refs/heads/main", RUN_ID="1", SCANNER_TIMEOUT_S="300",

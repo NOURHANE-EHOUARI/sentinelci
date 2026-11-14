@@ -27,7 +27,9 @@ VERIFYING → VERIFIED | REJECTED | FAILED, "never merges", "verification jobs g
 1. **Two jobs** (`.github/workflows/sentinel-remediate.yml`, by hand only).
    - **`propose`** has a read-only token and no secret. It reads the scanned commit as it is committed: a bare
      copy whose attributes come from no tree (`attr.tree`), exported with `git archive --worktree-attributes`,
-     so the commit's `.gitattributes` cannot rewrite what is scanned and fixed (#98 review). It runs the pinned
+     so the commit's `.gitattributes` cannot rewrite what is scanned and fixed (#98 review). The copy holds one
+     commit, fetched with `--depth=1` from the checkout, which `actions/checkout` leaves shallow: git refuses
+     to set a ref to a shallow root otherwise (#118 review). `verify` makes its copy the same way. It runs the pinned
      Trivy, `scan iac` and the fixers on that tree, then `remediate apply`, which commits each proposal on its
      own `sentinel/fix/<id>` branch of the bare copy with plumbing commands (#48). It hands over each
      proposal, `apply`'s output and a git bundle of that branch.

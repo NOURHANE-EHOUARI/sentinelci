@@ -601,10 +601,12 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
     cannot be read or that the fixer refuses.
 
 The bot (`.github/workflows/sentinel-remediate.yml`, ADR-0013) chains them: `propose` (read-only) scans the
-commit as it is committed (a bare copy with no attributes, never the checkout), runs the fixers and `apply`; `publish` (no repository code) pushes each branch and opens its pull request; `verify`
-(read-only, the scanned commit's pipeline) rebuilds each pull request's commit, scans both commits with the
-scanners the pr gate requires, runs `check`, the gate in pr context and `verify`; `report` (no repository code)
-comments each result and sets the `sentinelci/remediation` commit status.
+commit as it is committed (a bare copy with no attributes, one commit fetched from the shallow checkout, never
+the checkout itself), runs the fixers and `apply`; `publish` (no repository code) pushes each branch and opens
+its pull request; `verify` (read-only, the scanned commit's pipeline) rebuilds each pull request's commit in
+the same kind of copy, scans both commits with the scanners the pr gate requires, runs `check`, the gate in pr
+context and `verify`; `report` (no repository code) comments each result and sets the `sentinelci/remediation`
+commit status.
 
 ## `sentinel admission-policy` (Kyverno admission of releases, A5)
 
