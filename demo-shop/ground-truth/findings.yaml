@@ -365,6 +365,10 @@ seeds:
     vulnerability: GHSA-8q59-q68h-6hv4
     cve: CVE-2020-14343
     kev: false
+    relevance: 2  # B8 ranking (README: a seed added later, graded by the rubric; CONTAINER is not ranked yet)
+    relevance_why: >-
+      the same code execution as GT-SCA-001, but only in the BLOCK image, which is built to be refused (the
+      gate blocks it and the attest step never signs it): a component demo-shop never deploys
     expected:
       gate: SC-002
       detections:
