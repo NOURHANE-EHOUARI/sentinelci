@@ -91,15 +91,30 @@ def items(
     findings: Sequence[Mapping[str, Any]],
     detects: Callable[[Mapping[str, Any], Mapping[str, Any]], bool],
     score: Callable[[Mapping[str, Any]], float],
+    package_of: Callable[[Mapping[str, Any]], Any] | None = None,
 ) -> list[Item]:
-    """The ranked items of one order (module docstring): a seed at its best finding's score."""
+    """The ranked items of one order (module docstring): a seed at its best finding's score.
+
+    With `package_of`, a finding with the same package key as one that detects a seed also stands for that
+    seed: one upgrade fixes every advisory of a package in a manifest, so a sibling advisory leads to the
+    seed's fix and is not an irrelevant item. A finding can stand for one seed only (ValueError otherwise).
+    """
     by_seed: dict[str, list[Mapping[str, Any]]] = {}
-    matched: set[str] = set()
+    matched: dict[str, str] = {}
     for seed in seeds:
         hits = [finding for finding in findings if detects(seed, finding)]
+        if hits and package_of is not None:
+            keys = {key for key in (package_of(finding) for finding in hits) if key is not None}
+            ids = {str(finding["id"]) for finding in hits}
+            hits += [f for f in findings if str(f["id"]) not in ids and package_of(f) in keys]
         if hits:
             by_seed[str(seed["id"])] = hits
-            matched.update(str(finding["id"]) for finding in hits)
+            for finding in hits:
+                other = matched.setdefault(str(finding["id"]), str(seed["id"]))
+                if other != str(seed["id"]):
+                    raise ValueError(
+                        f"finding {finding['id']} stands for two seeds: {other} and {seed['id']}"
+                    )
     grade = {str(seed["id"]): int(seed["relevance"]) for seed in seeds}
     ranked = [
         Item(

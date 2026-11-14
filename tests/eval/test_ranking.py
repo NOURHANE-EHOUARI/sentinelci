@@ -127,8 +127,8 @@ def test_a_seed_nothing_detects_lowers_both_orders() -> None:
     data = run.measure(seeds, [finding("f1", "app/a.py", 90, cvss=9.0)])
     assert data["seeds_detected"] == 1
     assert (
-        data["risk"]["ndcg_at_10"]
-        == data["cvss_baseline"]["ndcg_at_10"]
+        data["advisory"]["risk"]["ndcg_at_10"]
+        == data["advisory"]["cvss_baseline"]["ndcg_at_10"]
         == pytest.approx(round(7 * d(1) / (7 * d(1) + 7 * d(2)), 4))
     )
 
@@ -144,9 +144,10 @@ def test_the_two_orders_differ_where_the_scores_do() -> None:
     seeds = [seed("GT-SAST-001", 3, "app/a.py"), seed("GT-SAST-002", 1, "app/b.py")]
     findings = [finding("f1", "app/a.py", 90, cvss=5.0), finding("f2", "app/b.py", 30, cvss=9.0)]
     data = run.measure(seeds, findings)
-    assert data["risk"]["ndcg_at_10"] == 1.0
-    assert data["cvss_baseline"]["ndcg_at_10"] < 1.0
-    assert [row["item"] for row in data["cvss_baseline"]["top"]] == ["GT-SAST-002", "GT-SAST-001"]
+    advisory = data["advisory"]
+    assert advisory["risk"]["ndcg_at_10"] == 1.0
+    assert advisory["cvss_baseline"]["ndcg_at_10"] < 1.0
+    assert [row["item"] for row in advisory["cvss_baseline"]["top"]] == ["GT-SAST-002", "GT-SAST-001"]
 
 
 # ---------------------------------------------------------------- the report
@@ -174,8 +175,9 @@ def test_the_report_is_the_same_for_the_same_inputs() -> None:
     again = run.report(truth, list(reversed(findings)), {"x": "1"})
     assert json.dumps(first, sort_keys=True) == json.dumps(again, sort_keys=True)
     assert run.markdown(first) == run.markdown(again)
-    assert first["sca_only"]["risk"]["ndcg_at_10"] is None  # no SCA seed: not measured, never 0
-    assert "| SCA only | 0 (0) | not measured |" in run.markdown(first)
+    for definition in ("advisory", "package"):  # no SCA seed: not measured, never 0
+        assert first["sca_only"][definition]["risk"]["ndcg_at_10"] is None
+    assert "| SCA only | advisory | 0 (0) | not measured |" in run.markdown(first)
 
 
 def test_a_seed_of_a_category_no_scan_measured_is_left_out_and_listed() -> None:
@@ -187,10 +189,10 @@ def test_a_seed_of_a_category_no_scan_measured_is_left_out_and_listed() -> None:
     findings = [finding("f1", "app/a.py", 90, cvss=9.0)]
     data = run.report(truth, findings, {}, frozenset({"SAST"}))
     assert data["not_measured"] == ["GT-CONTAINER-001"] and data["all"]["seeds"] == 1
-    assert data["all"]["risk"]["ndcg_at_10"] == 1.0
+    assert data["all"]["advisory"]["risk"]["ndcg_at_10"] == 1.0
     assert "Not measured (no scan of their category ran" in run.markdown(data)
     everything = run.report(truth, findings, {})
-    assert everything["not_measured"] == [] and everything["all"]["risk"]["ndcg_at_10"] < 1.0
+    assert everything["not_measured"] == [] and everything["all"]["advisory"]["risk"]["ndcg_at_10"] < 1.0
 
 
 def test_every_ground_truth_seed_is_graded() -> None:
@@ -208,3 +210,83 @@ def test_without_findings_it_says_to_run_make_eval_first(tmp_path: Path) -> None
         cwd=ROOT,
     )
     assert done.returncode == 2 and "run `make eval` first" in done.stderr
+
+
+# ---------------------------------------------------------------- #121 review
+
+
+def sca_seed(seed_id: str, relevance: int, purl: str, advisory: str) -> dict[str, Any]:
+    return {
+        "id": seed_id,
+        "category": "SCA",
+        "relevance": relevance,
+        "location": {"path": "services/web/package.json"},
+        "package": purl,
+        "vulnerability": advisory,
+        "expected": {"detections": [{"tool": "grype", "rule": advisory}]},
+    }
+
+
+def sca_finding(finding_id: str, purl: str, advisory: str, risk: float, cvss: float | None) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "id": finding_id,
+        "tool": {"name": "grype", "version": "1"},
+        "rule_id": advisory,
+        "category": "SCA",
+        "severity": "HIGH",
+        "location": {"path": "demo-shop/services/web/package-lock.json"},
+        "package": {"purl": purl},
+        "risk": {"score": risk},
+    }
+    if cvss is not None:
+        out["enrichment"] = {"cvss": {"score": cvss}}
+    return out
+
+
+def test_a_seeded_packages_other_advisories_stand_for_the_seed_in_the_package_definition() -> None:
+    """One upgrade fixes every advisory of a package in a manifest: under "package", a sibling the risk order
+    puts above the seed's own advisory is the seed's item, not an irrelevant one. "advisory" is kept as it
+    was."""
+    seeds = [sca_seed("GT-SCA-004", 3, "pkg:npm/lodash@4.17.20", "GHSA-a")]
+    findings = [
+        sca_finding("seed", "pkg:npm/lodash@4.17.20", "GHSA-a", risk=70, cvss=9.8),
+        *(
+            sca_finding(f"sib{i}", "pkg:npm/lodash@4.17.20", f"GHSA-s{i}", risk=95, cvss=None)
+            for i in range(3)
+        ),
+        sca_finding("other", "pkg:npm/lodash-es@4.17.20", "GHSA-s0", risk=95, cvss=None),  # another package
+    ]
+    data = run.measure(seeds, findings)
+    assert data["advisory"]["risk"]["ndcg_at_10"] < 1.0
+    assert data["package"]["risk"]["ndcg_at_10"] < 1.0  # lodash-es ties with the siblings at 95
+    top = data["package"]["risk"]["top"]
+    assert top[0]["item"] == "GT-SCA-004" and top[0]["score"] == 95.0
+    assert "lodash-es" not in str(rank.items(seeds, findings, run.detection.detects, lambda f: 0.0,
+                                             run.package_of)[0].findings)  # fmt: skip
+
+
+def test_a_finding_that_stands_for_two_seeds_is_refused() -> None:
+    seeds = [sca_seed("GT-SCA-004", 3, "pkg:npm/lodash@4.17.20", "GHSA-a"),
+             sca_seed("GT-SCA-009", 1, "pkg:npm/lodash@4.17.20", "GHSA-b")]  # fmt: skip
+    findings = [
+        sca_finding("f1", "pkg:npm/lodash@4.17.20", "GHSA-a", risk=70, cvss=None),
+        sca_finding("f2", "pkg:npm/lodash@4.17.20", "GHSA-b", risk=70, cvss=None),
+    ]
+    with pytest.raises(run.EvalError, match="stands for two seeds"):
+        run.measure(seeds, findings)
+
+
+def test_a_grade_outside_one_to_three_is_refused() -> None:
+    with pytest.raises(run.EvalError, match="GT-SAST-001: relevance 1, 2 or 3"):
+        run.report(truth_of(seed("GT-SAST-001", 7, "a.py")), [finding("f1", "a.py", 1)], {})
+
+
+@pytest.mark.parametrize("missing", ["grype", "opengrep"])
+def test_a_make_eval_run_without_a_scanners_findings_is_refused(tmp_path: Path, missing: str) -> None:
+    """A scanner that failed writes no file: ranking the others as the whole run would hide it. An empty file
+    is a scanner that ran and found nothing."""
+    for tool in run.TOOLS:
+        if tool != missing:
+            (tmp_path / f"{tool}.ndjson").write_text("", encoding="utf-8")
+    with pytest.raises(run.EvalError, match=f"no {missing}.ndjson in"):
+        run.scored_findings(tmp_path, tmp_path / "work")

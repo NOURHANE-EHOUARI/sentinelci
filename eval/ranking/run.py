@@ -27,6 +27,7 @@ from typing import Any
 
 import yaml
 
+from sentinel_ai.correlate.stages import purl_base
 from sentinelci.risk import cvss_baseline
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -87,11 +88,15 @@ def scored_findings(
 ) -> tuple[list[dict[str, Any]], dict[str, Any], frozenset[str]]:
     """The findings of `make eval`, enriched offline and scored, the digests of what they came from, and the
     categories its scans measured."""
-    files = {
-        tool: findings_dir / f"{tool}.ndjson" for tool in TOOLS if (findings_dir / f"{tool}.ndjson").is_file()
-    }
-    if not files:
-        raise EvalError(f"no <tool>.ndjson in {findings_dir}: run `make eval` first")
+    files = {tool: findings_dir / f"{tool}.ndjson" for tool in TOOLS}
+    missing = [tool for tool, path in files.items() if not path.is_file()]
+    if missing:
+        # A scanner that failed or was skipped writes no file: ranking the rest as the whole run would hide
+        # it. An empty file is a scanner that ran and found nothing (#121 review).
+        names = ", ".join(f"{tool}.ndjson" for tool in missing)
+        raise EvalError(
+            f"no {names} in {findings_dir}: run `make eval` first, with every scanner (and DB_DIR for SCA)"
+        )
     work.mkdir(parents=True, exist_ok=True)
     combined = work / "findings.ndjson"
     combined.write_bytes(b"".join(path.read_bytes() for _, path in sorted(files.items())))
@@ -108,7 +113,26 @@ def scored_findings(
         "snapshot_sha256": sha256(SNAPSHOT.read_bytes()),
         "risk_model_sha256": sha256((POLICIES / "risk-model.yaml").read_bytes()),
     }
+    inputs["scanners"] = {tool: _version(read_ndjson(path)) for tool, path in sorted(files.items())}
     return read_ndjson(scored), inputs, frozenset(CATEGORY_OF[tool] for tool in files)
+
+
+def _version(findings: Sequence[Mapping[str, Any]]) -> str:
+    """The scanner version its findings name, or why there is none."""
+    tool = findings[0].get("tool") if findings else None
+    version = tool.get("version") if isinstance(tool, Mapping) else None
+    return str(version) if version else "no finding"
+
+
+def package_of(finding: Mapping[str, Any]) -> tuple[str, str] | None:
+    """An SCA finding's manifest and package without version: what one upgrade fixes (as A7's #90 labels)."""
+    package = finding.get("package")
+    purl = package.get("purl") if isinstance(package, Mapping) else None
+    location = finding.get("location")
+    path = location.get("path") if isinstance(location, Mapping) else None
+    if finding.get("category") != "SCA" or not isinstance(purl, str) or not isinstance(path, str):
+        return None
+    return path, purl_base(purl)
 
 
 def coverage(findings: Sequence[Mapping[str, Any]]) -> dict[str, int]:
@@ -141,13 +165,21 @@ def measure(seeds: Sequence[Mapping[str, Any]], findings: Sequence[Mapping[str, 
         "seeds_detected": sum(any(detection.detects(s, f) for f in findings) for s in seeds),
         "findings": len(findings),
     }
-    for name, score in orders.items():
-        items = rank.items(seeds, findings, detection.detects, score)
-        out[name] = {
-            f"ndcg_at_{K}": _round(rank.ndcg(items, grades, K)),
-            "ndcg": _round(rank.ndcg(items, grades, None)),
-            "top": rank.top(items, K),
-        }
+    # Two definitions of what a seed's item holds (both reported, #121 review): "advisory", the findings that
+    # detect it (the first published one); "package", those and the other advisories of its package in the
+    # same manifest, which one upgrade fixes too.
+    for definition, packages in (("advisory", None), ("package", package_of)):
+        out[definition] = {}
+        for name, score in orders.items():
+            try:
+                items = rank.items(seeds, findings, detection.detects, score, packages)
+            except ValueError as exc:
+                raise EvalError(str(exc)) from exc
+            out[definition][name] = {
+                f"ndcg_at_{K}": _round(rank.ndcg(items, grades, K)),
+                "ndcg": _round(rank.ndcg(items, grades, None)),
+                "top": rank.top(items, K),
+            }
     return out
 
 
@@ -167,6 +199,9 @@ def report(
     graded = [seed for seed in truth["seeds"] if "relevance" in seed]
     if len(graded) != len(truth["seeds"]):
         raise EvalError("every seed needs a relevance grade (demo-shop/ground-truth/README.md)")
+    bad = [str(seed["id"]) for seed in graded if seed["relevance"] not in (1, 2, 3)]
+    if bad:
+        raise EvalError(f"{', '.join(bad)}: relevance 1, 2 or 3 (demo-shop/ground-truth/README.md)")
     seeds = [seed for seed in graded if measured is None or seed["category"] in measured]
     not_measured = sorted(str(seed["id"]) for seed in graded if seed not in seeds)
     unscored = [str(f.get("id")) for f in findings if not isinstance(f.get("risk"), Mapping)]
@@ -179,7 +214,11 @@ def report(
         "all": measure(seeds, findings),
         "sca_only": measure(sca, [f for f in findings if f.get("category") == "SCA"]),
         "coverage": coverage(findings),
-        "inputs": {"ground_truth_sha256": sha256(truth_bytes), **inputs},
+        "inputs": {
+            "ground_truth_sha256": sha256(truth_bytes),
+            **{k: v for k, v in inputs.items() if k != "scanners"},
+        },
+        "scanners": dict(inputs.get("scanners", {})),
         "k": K,
         "not_measured": not_measured,
         "rubric": "demo-shop/ground-truth/README.md, Ranking relevance (grades fixed before any ranking)",
@@ -196,9 +235,13 @@ def markdown(data: Mapping[str, Any]) -> str:
         "# Ranking report (B8)",
         "",
         f"NDCG@{data['k']} of demo-shop's findings, ranked by SentinelCI's risk score and by the CVSS-only "
-        "baseline. Relevance is each seed's grade (" + data["rubric"] + "); a finding that detects no seed "
+        "baseline. Relevance is each seed's grade ("
+        + data["rubric"]
+        + "); a finding that stands for no seed "
         "counts 0, and a seed counts once, at the best place of its findings. Ties share their places' mean "
-        "discount.",
+        'discount. A seed\'s item holds either the findings that detect it ("advisory", the definition '
+        "first published) or those and the other advisories of its package in the same manifest, which one "
+        'upgrade fixes too ("package", added after the first result was seen; #121 review). Both are shown.',
         "",
         f"Inputs: {cover['findings']} findings, {cover['with_cvss']} with a CVSS score, {cover['with_epss']} "
         f"with EPSS and {cover['with_kev']} with KEV, from the committed feed snapshot "
@@ -206,22 +249,30 @@ def markdown(data: Mapping[str, Any]) -> str:
         "baseline uses their severity's CVSS floor, and the risk score its no-data defaults (an unknown "
         "exposure counts as internet-facing).",
         "",
-        "| Set | Seeds (detected) | Risk NDCG@10 | Baseline NDCG@10 | Risk NDCG | Baseline NDCG |",
-        "|---|---|---|---|---|---|",
+        "Scanners ranked: "
+        + ", ".join(f"{tool} {version}" for tool, version in sorted(data["scanners"].items()))
+        + ".",
+        "",
+        "| Set | Seed item | Seeds (detected) | Risk NDCG@10 | Baseline NDCG@10 | Risk NDCG "
+        "| Baseline NDCG |",
+        "|---|---|---|---|---|---|---|",
     ]
     at_k = f"ndcg_at_{data['k']}"
     for name, label in (("all", "All categories"), ("sca_only", "SCA only")):
         part = data[name]
-        risk, base = part["risk"], part["cvss_baseline"]
-        lines.append(
-            f"| {label} | {part['seeds']} ({part['seeds_detected']}) | {_number(risk[at_k])} | "
-            f"{_number(base[at_k])} | {_number(risk['ndcg'])} | {_number(base['ndcg'])} |"
-        )
-    for order, title in (("risk", "Risk score"), ("cvss_baseline", "CVSS baseline")):
-        heading = f"## Top {data['k']}, {title.lower()} (all categories)"
-        lines += ["", heading, "", "| Places | Item | Grade | Score |", "|---|---|---|---|"]
-        for row in data["all"][order]["top"]:
-            lines.append(f"| {row['places']} | {row['item']} | {row['gain']} | {row['score']} |")
+        for definition in ("advisory", "package"):
+            risk, base = part[definition]["risk"], part[definition]["cvss_baseline"]
+            lines.append(
+                f"| {label} | {definition} | {part['seeds']} ({part['seeds_detected']}) | "
+                f"{_number(risk[at_k])} | {_number(base[at_k])} | {_number(risk['ndcg'])} | "
+                f"{_number(base['ndcg'])} |"
+            )
+    for definition in ("advisory", "package"):
+        for order, title in (("risk", "risk score"), ("cvss_baseline", "CVSS baseline")):
+            heading = f"## Top {data['k']}, {title}, seed item: {definition} (all categories)"
+            lines += ["", heading, "", "| Places | Item | Grade | Score |", "|---|---|---|---|"]
+            for row in data["all"][definition][order]["top"]:
+                lines.append(f"| {row['places']} | {row['item']} | {row['gain']} | {row['score']} |")
     if data["not_measured"]:
         lines += ["", "Not measured (no scan of their category ran, so they are left out of every order): "
                   + ", ".join(data["not_measured"]) + "."]  # fmt: skip

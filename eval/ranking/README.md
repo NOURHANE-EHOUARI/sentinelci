@@ -11,6 +11,10 @@ uv run python eval/ranking/run.py --findings out/eval/findings --out out/eval
 
 ## What it does
 
+`make eval-ranking` needs all five findings files of `make eval` (gitleaks, trivy, zizmor, opengrep, grype).
+A scanner that failed writes no file, and ranking the rest as the whole run would hide that, so a missing file
+stops it. An empty file is a scanner that ran and found nothing. The report names each scanner and version.
+
 1. **Enrich** the findings with the committed feed snapshot, `eval/feeds/snapshot.json`. That file holds the
    recorded EPSS, KEV and OSV answers for the seeded packages, the same ones the gate's fixtures use. It uses
    no network. The report says how many findings got a CVSS score, an EPSS percentile and a KEV answer. The
@@ -28,8 +32,15 @@ uv run python eval/ranking/run.py --findings out/eval/findings --out out/eval
 - **Relevance** is each seed's `relevance` grade in the ground truth, 1 to 3. The rubric is in
   `demo-shop/ground-truth/README.md` ("Ranking relevance"). The grades were committed before any ranking was
   computed, in their own commit.
-- **A seed is ranked once,** at the best place any finding that detects it reaches. The detection rules are
-  `eval/detection/score.py`'s.
+- **A seed is ranked once,** at the best place any finding of its item reaches. The report gives two
+  definitions of that item, side by side:
+  - **advisory:** the findings that detect the seed, by `eval/detection/score.py`'s rules. This is the
+    definition the first result was published with.
+  - **package:** those, plus the other advisories of the seed's package (its purl without version) in the
+    same manifest. One upgrade fixes them all, so a sibling advisory at the top of the list leads to the
+    seed's fix. This rule is A7's (#90). It was added to the ranking after the first result was seen (#121
+    review), which is why both numbers are shown.
+  - A finding that would stand for two seeds is refused.
 - **A finding that detects no seed** is ranked on its own, with gain 0. It is a real issue that the ground
   truth does not grade, so it can only push graded seeds down.
 - **A seed no finding detects** is missing from both orders, but it stays in the ideal order. So it lowers
