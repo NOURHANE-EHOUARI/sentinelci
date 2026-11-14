@@ -473,8 +473,8 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
     Trivy names a Dockerfile finding by its instruction's text, so the other finding would get a new
     fingerprint. Only the findings an edit resolved are claimed; a file where nothing could be resolved is
     reported as "nothing this fixer can resolve". The base image's tag or digest, a HEALTHCHECK and a script
-    piped to a shell are left alone too, and so is a file with an `escape` directive, a heredoc or CRLF line
-    endings.
+    piped to a shell are left alone too, and so is a file with a byte-order mark, an `escape` directive, a
+    heredoc or CRLF line endings.
   - **It can change what the image does**: files it writes at run time must be writable by UID 10001, and an
     image that needs root at run time breaks. The rationale says so.
 - `apply` turns a proposal into one commit on a new `sentinel/fix/<id>` branch of a local clone, and prints
@@ -528,8 +528,8 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
     is the same line for line once its added `USER 10001:10001` lines are skipped (each an instruction of its
     own after the final stage's last RUN), except ADD → COPY (on an ADD's first line, and only where the fixer
     makes that edit: the same rule, on the base commit's whole tree, except that the check does not see the
-    other findings) and an added `--no-install-recommends`. A file the fixer never edits (an `escape` parser
-    directive, a heredoc) fails. Whether the new settings are right is the scanners' part: a weaker one is a
+    other findings) and an added `--no-install-recommends`. A file the fixer never edits (a byte-order mark, an
+    `escape` parser directive, a heredoc) fails. Whether the new settings are right is the scanners' part: a weaker one is a
     new finding;
   - manifests are read with a safe loader that refuses aliases and duplicate keys;
   - exit `0` when both hold, `1` when one does not (the problems name the file and why), `3` when they cannot
