@@ -4,3 +4,4 @@
 !app/
 !requirements.release.txt
 !requirements.block.txt
+!requirements.build.txt
