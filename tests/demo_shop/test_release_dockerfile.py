@@ -66,9 +66,30 @@ def test_dependencies_are_hash_pinned_and_nothing_unlisted_is_installed() -> Non
     found = instructions()
     runs = [text for keyword, text in found if keyword == "RUN"]
     assert len(runs) == 1 and "--require-hashes" in runs[0] and "--no-deps" in runs[0]
+    installs = runs[0].split("pip install")[1:]
+    assert len(installs) == 2 and all("--require-hashes" in i and "--no-deps" in i for i in installs)
+    # A package built from source uses the hash-pinned backend, never one pip fetches (review of #89).
+    assert "--target /opt/backend --requirement /tmp/build.txt" in installs[0]
+    assert "PYTHONPATH=/opt/backend /opt/venv/bin/pip" in runs[0] and "--no-build-isolation" in installs[1]
     assert "ARG REQUIREMENTS=requirements.release.txt" in DOCKERFILE.read_text(encoding="utf-8")
+    # Wheels only by default (Hiba's review of #69): no setup.py runs, and an sdist's build dependencies,
+    # whose hashes pip does not check, never enter the release image. Only the BLOCK build turns it off.
+    assert '--only-binary="${ONLY_BINARY}"' in runs[0]
+    assert ("ARG", "ONLY_BINARY=:all:") in found
     assert not any(tool in run for run in runs for tool in ("curl", "wget", "apt-get", "| sh"))
     assert not [keyword for keyword, _ in found if keyword in ("ADD", "HEALTHCHECK")]
+
+
+def test_the_build_backend_is_hash_pinned() -> None:
+    """Every requirement of requirements.build.txt is pinned to one version and carries its hashes."""
+    text = (SERVICE / "requirements.build.txt").read_text(encoding="utf-8")
+    entries = re.split(
+        r"\n(?=[a-z])", "\n".join(line for line in text.splitlines() if not line.startswith("#"))
+    )
+    assert entries and entries[0].startswith("setuptools==")
+    for entry in entries:
+        assert re.match(r"^[a-z0-9._-]+==[0-9][^ ]* \\$", entry.splitlines()[0]), entry
+        assert re.search(r"--hash=sha256:[a-f0-9]{64}", entry), f"no hash: {entry.splitlines()[0]}"
 
 
 def test_the_final_stage_runs_nothing_as_root_and_listens_on_8080() -> None:
@@ -87,8 +108,14 @@ def test_the_build_context_is_an_allow_list_of_what_the_dockerfile_copies() -> N
     rules = [
         line for line in IGNORE.read_text(encoding="utf-8").splitlines() if line and not line.startswith("#")
     ]
-    assert rules == ["*", "!app/", "!requirements.release.txt", "!requirements.block.txt"]
-    sources = {"requirements.release.txt", "requirements.block.txt", "app/"}
+    assert rules == [
+        "*",
+        "!app/",
+        "!requirements.release.txt",
+        "!requirements.block.txt",
+        "!requirements.build.txt",
+    ]
+    sources = {"requirements.release.txt", "requirements.block.txt", "requirements.build.txt", "app/"}
     copied = {
         text.split()[0] for keyword, text in instructions() if keyword == "COPY" and "--from" not in text
     }
