@@ -76,12 +76,15 @@ def run_verified_tool(
 ) -> ToolRun:
     """Verify `name` against the lock, then run it. Raises ToolIntegrityError or ScannerError on any doubt."""
     (verified,) = verify_tools(lock, tools_dir, platform=platform, only=[name]).entries
+    # The file just verified, by an absolute path: the tool runs in `cwd`, often an empty directory of its
+    # own, where a relative --tools-dir (`.sentinel/tools`, the default) names nothing.
+    binary = verified.path.absolute()
     with tempfile.TemporaryDirectory(prefix=f"sentinel-{name}-home-") as home:
         env = minimal_env(Path(home)) | (extra_env or {})
         started = time.monotonic()
         try:
             completed = subprocess.run(  # noqa: S603 (verified binary, argument list, no shell)
-                [str(verified.path), *args],
+                [str(binary), *args],
                 cwd=cwd,
                 env=env,
                 capture_output=True,
