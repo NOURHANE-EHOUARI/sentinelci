@@ -5,6 +5,7 @@ to an injection's echo; every document is checked against the contracts."""
 import hashlib
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -434,3 +435,25 @@ def test_the_embedder_reads_redacted_text() -> None:
     findings = [located("SAST", f"rule-{n}", f"app/{token}/{n}.py", 3) for n in "ab"]
     correlate(findings, structural=False, embed=recording, threshold=0.9)
     assert seen and all("ghp_" not in text and token not in text for text in seen), seen
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('token_type = "bearer", next', 'token_type = "[REDACTED]", next'),
+        ('{"password": "hunter22", "user": "bob"}', '{"password": "[REDACTED]", "user": "bob"}'),
+        ("Hardcoded password: 'admin' found", "Hardcoded password: '[REDACTED]' found"),
+    ],
+)
+def test_a_quoted_value_keeps_its_closing_quote(text: str, expected: str) -> None:
+    """#99 review, nit 1: the closing quote stays, so the model never gets unbalanced quotes."""
+    assert redact(text) == expected
+
+
+@pytest.mark.parametrize("unit", ["a.", "a-", "password", "pwd_"])
+def test_redaction_takes_linear_time_on_a_long_name(unit: str) -> None:
+    """#99 review: every text is redacted whole before it is clipped, so a long one must not cost minutes."""
+    text = unit * (100_000 // len(unit))
+    start = time.perf_counter()
+    redact(text)
+    assert time.perf_counter() - start < 2
