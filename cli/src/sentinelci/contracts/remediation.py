@@ -1,14 +1,19 @@
 """Read models of the remediation contracts: `schemas/patch-proposal.v1.json` and
 `schemas/verification-result.v1.json` (SPEC §9). The contract fixtures pin each model to its schema: every
-valid fixture is accepted and every invalid one refused."""
+valid fixture is accepted and every invalid one refused. Strict, like the decision's and the release's models:
+a value of another JSON type (`1` for `true`, `"81"` for `81`, a Unix time for a date) is refused, as the
+schema refuses it, never coerced."""
 
 import re
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
 _ONE_LINE = re.compile("[^\r\n\u2028\u2029]*")
+# RFC 3339, as the schema's `format: date-time`: pydantic alone also reads "1893456000" as a Unix time, and
+# takes a space for the "T" or a time without seconds (#88 review).
+_RFC3339 = re.compile(r"\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})")
 _UUID = r"^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$"
 
 Strategy = Literal[
@@ -25,6 +30,16 @@ def _relative_path(value: str) -> str:
     return value
 
 
+def _rfc3339(value: Any) -> Any:
+    """An RFC 3339 string, parsed here: strict mode then sees the datetime. Anything else is left to strict
+    mode (a datetime built in Python passes, any other type is refused)."""
+    if not isinstance(value, str):
+        return value
+    if not _RFC3339.fullmatch(value):
+        raise ValueError("must be an RFC 3339 date-time")
+    return datetime.fromisoformat(value.upper())
+
+
 def _utc_timestamp(value: datetime) -> datetime:
     if value.tzinfo is None:
         raise ValueError("must carry a time zone")
@@ -33,11 +48,11 @@ def _utc_timestamp(value: datetime) -> datetime:
 
 Fingerprint = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 RelativePath = Annotated[str, Field(min_length=1), AfterValidator(_relative_path)]
-Timestamp = Annotated[datetime, AfterValidator(_utc_timestamp)]
+Timestamp = Annotated[datetime, BeforeValidator(_rfc3339), AfterValidator(_utc_timestamp)]
 
 
 class _Contract(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
 class Model(_Contract):
@@ -93,3 +108,24 @@ class VerificationResult(_Contract):
                 "VERIFIED needs a build, passing tests, the target gone, no new finding and no BLOCK"
             )
         return self
+
+
+class RemediationAttempt(_Contract):
+    """`schemas/remediation-attempt.v1.json`: one attempt of the loop, its proposal and its result, for the
+    platform (`sentinel upload-remediation`, `POST /api/v1/remediations`, A8). `problem()` adds the rules JSON
+    Schema cannot express."""
+
+    schema_version: Literal["1.0"]
+    repo: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+    proposal: PatchProposal
+    result: VerificationResult
+
+    def problem(self) -> str | None:
+        """Why the result is not this proposal's, or None."""
+        if self.result.proposal_id != self.proposal.proposal_id:
+            return f"the result is about proposal {self.result.proposal_id}, not {self.proposal.proposal_id}"
+        if self.result.attempt != self.proposal.attempt:
+            return f"the result is about attempt {self.result.attempt}, not {self.proposal.attempt}"
+        if self.result.verified_at < self.proposal.created_at:
+            return "the result was verified before the proposal was made"
+        return None

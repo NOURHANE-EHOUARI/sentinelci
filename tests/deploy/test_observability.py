@@ -24,7 +24,7 @@ def spec_metrics() -> dict[str, set[str]]:
     section = (ROOT / "docs" / "spec" / "SPEC.md").read_text(encoding="utf-8").split("## 10.", 1)[1]
     section = section.split("\n## ", 1)[0]
     listed = dict(re.findall(r"`(sentinel_[a-z_]+)\{([a-z_,]+)\}`", section))
-    assert len(listed) == 6, listed
+    assert len(listed) == 10, listed  # SPEC section 10 names ten metrics
     return {name: set(labels.split(",")) for name, labels in listed.items()}
 
 
@@ -118,3 +118,21 @@ def test_every_spec_metric_has_a_panel() -> None:
         for name in re.findall(r"\b(sentinel_[a-z_]+)", expr)
     }
     assert shown == set(spec_metrics())
+
+
+def test_mttr_and_alert_reduction_are_the_ratios_of_spec_section_10() -> None:
+    """Sums, not means, so Prometheus aggregates them across priorities and instances; a priority with no fix
+    or a category with no finding is filtered out (`> 0`) rather than shown as NaN or 0 %. Pinned exactly: a
+    swapped ratio or a dropped `1 -` reads the same names and labels as these."""
+    targets = {
+        panel["title"]: [target["expr"] for target in panel.get("targets", [])]
+        for path in DASHBOARDS
+        for panel in dashboard(path)["panels"]
+    }
+    assert targets["MTTR, by priority"] == [
+        "sum by (priority) (sentinel_findings_fix_seconds) / sum by (priority) (sentinel_findings_fixed > 0)"
+    ]
+    assert targets["Alert reduction, by category"] == [
+        "1 - sum by (category) (sentinel_root_cause_groups)"
+        " / sum by (category) (sentinel_correlated_findings > 0)"
+    ]
