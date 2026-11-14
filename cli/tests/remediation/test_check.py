@@ -4,10 +4,12 @@ Each fixer's real proposal builds and passes. Each way a patch could go wrong, b
 fails the build or the tests, and what cannot be checked honestly is refused (exit 3).
 """
 
+import gzip
 import json
 import os
 import shutil
 import subprocess
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -165,6 +167,152 @@ def test_a_flag_the_base_had_cannot_be_removed(tmp_path: Path) -> None:
     assert checked.problems == [
         f"tests: {DOCKERFILE_PATH}: line 3 is not a change the Dockerfile fixer makes"
     ]
+
+
+def test_add_becomes_copy_only_on_the_first_line_of_an_add(tmp_path: Path) -> None:
+    """#65 review, nit 1: a continuation line that reads `add ...` is not an ADD, whatever its case."""
+    proposal, base, patched = dockerfile(tmp_path)
+    edit(
+        base,
+        DOCKERFILE_PATH,
+        "    apt-get install -y curl\n",
+        "    apt-get install -y curl \\\n    add curl\n",
+    )
+    edit(patched, DOCKERFILE_PATH, "    apt-get install --no-install-recommends -y curl\n",
+         "    apt-get install --no-install-recommends -y curl \\\n    COPY curl\n")  # fmt: skip
+    checked = check_iac(proposal, base, patched)
+    assert (checked.build_ok, checked.tests_ok) == (True, False)
+    assert checked.problems == [
+        f"tests: {DOCKERFILE_PATH}: line 8 is not a change the Dockerfile fixer makes"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source", "prepare"),
+    [
+        ("https://example.com/app.py", None),
+        ("app.tar", "tar"),
+        ("app.tgz", "gzip"),
+        ("linked.py", "link"),
+        ("missing.py", None),
+        ("$APP", None),
+        ("app*.py", None),
+        ("--checksum=sha256:00 app.py", None),
+    ],
+    ids=["url", "tar", "compressed", "link", "missing", "variable", "glob", "add-only-flag"],
+)
+def test_add_becomes_copy_only_where_the_fixer_would_make_it_copy(
+    tmp_path: Path, source: str, prepare: str | None
+) -> None:
+    """#65 review, nit 2: ADD fetches a URL and unpacks an archive, so COPY there is another build. The check
+    asks what the fixer asks, of the base tree."""
+    proposal, base, patched = dockerfile(tmp_path)
+    svc = base / "svc"
+    if prepare == "tar":
+        with tarfile.open(svc / "app.tar", "w") as archive:
+            archive.add(svc / "app.py", arcname="app.py")
+    elif prepare == "gzip":
+        (svc / "app.tgz").write_bytes(gzip.compress(b"print('x')\n"))
+    elif prepare == "link":
+        (svc / "linked.py").symlink_to("app.py")
+    edit(base, DOCKERFILE_PATH, "ADD app.py /app/", f"ADD {source} /app/")
+    edit(patched, DOCKERFILE_PATH, "COPY app.py /app/", f"COPY {source} /app/")
+    checked = check_iac(proposal, base, patched)
+    assert (checked.build_ok, checked.tests_ok) == (True, False)
+    assert checked.problems == [
+        f"tests: {DOCKERFILE_PATH}: line 5 is not a change the Dockerfile fixer makes"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("line", "files"),
+    [
+        ("ADD ../app.py /app/", {"app.py": "plain", "svc/app.py": "tar"}),
+        ('ADD ["my app.tgz", "/app/"]', {"svc/my": "plain", "svc/app.tgz": "plain", "svc/my app.tgz": "tar"}),
+        ("ADD deploy@example.invalid:repo.git /app/", {"svc/deploy@example.invalid:repo.git": "plain"}),
+        # BuildKit splits a quoted name with a space and the build fails; the quotes are not stripped here.
+        ('ADD "my app.tgz" /app/', {"svc/my": "plain", "svc/app.tgz": "plain", "svc/my app.tgz": "tar"}),
+        # #85 review: a one-word source is unquoted or unescaped by BuildKit, which then unpacks the tar.
+        ('ADD "app.tgz" /app/', {'svc/"app.tgz"': "plain", "svc/app.tgz": "tar"}),
+        ("ADD 'app.tgz' /app/", {"svc/'app.tgz'": "plain", "svc/app.tgz": "tar"}),
+        ("ADD app\\.tgz /app/", {"svc/app\\.tgz": "plain", "svc/app.tgz": "tar"}),
+    ],
+    ids=[
+        "dotdot",
+        "json-space",
+        "ssh-git",
+        "quotes-not-stripped",
+        "double-quoted",
+        "single-quoted",
+        "escaped",
+    ],
+)
+def test_add_stays_where_buildkit_reads_the_source_otherwise(
+    tmp_path: Path, line: str, files: dict[str, str]
+) -> None:
+    """#85 review, should-fix 3: BuildKit cleans `..` into the context, reads a JSON name with a space as one
+    name and any `user@host:path` as a git source over SSH: the places checked are not the ones it reads."""
+    proposal, base, patched = dockerfile(tmp_path)
+    archive_path = tmp_path / "payload.tgz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        archive.add(base / "svc" / "app.py", arcname="inside.py")
+    for name, kind in files.items():
+        (base / name).write_bytes(archive_path.read_bytes() if kind == "tar" else b"plain\n")
+    edit(base, DOCKERFILE_PATH, "ADD app.py /app/", line)
+    edit(patched, DOCKERFILE_PATH, "COPY app.py /app/", line.replace("ADD", "COPY", 1))
+    checked = check_iac(proposal, base, patched)
+    assert (checked.build_ok, checked.tests_ok) == (True, False)
+
+
+@pytest.mark.parametrize(
+    ("first", "block", "patched_block"),
+    [
+        ("# escape=`\n", "RUN cd /src && git `\n    add app.py docs/\n",
+         "RUN cd /src && git `\n    COPY app.py docs/\n"),
+        ("# syntax=docker/dockerfile:1\n", "RUN <<CMD\nadd app.py docs/\nCMD\n",
+         "RUN <<CMD\nCOPY app.py docs/\nCMD\n"),
+    ],
+    ids=["escape-directive", "heredoc"],
+)  # fmt: skip
+def test_a_file_the_fixer_does_not_edit_fails_the_tests(
+    tmp_path: Path, first: str, block: str, patched_block: str
+) -> None:
+    """#85 review, should-fix 2: the edited line is inside a RUN for Docker, whatever this parser reads."""
+    proposal, base, patched = dockerfile(tmp_path)
+    for root, text, before in ((base, block, "CMD"), (patched, patched_block, "USER")):
+        edit(root, DOCKERFILE_PATH, "# syntax=docker/dockerfile:1\n", first)
+        edit(root, DOCKERFILE_PATH, before, text + before)
+    checked = check_iac(proposal, base, patched)
+    assert (checked.build_ok, checked.tests_ok) == (True, False)
+    assert checked.problems == [
+        f"tests: {DOCKERFILE_PATH}: the Dockerfile fixer does not edit this file ("
+        + ("an `escape` parser directive changes how lines continue" if "escape" in first
+           else "a heredoc: its lines cannot be told apart from instructions safely")
+        + ")"
+    ]  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "line",
+    ['ADD ["app.py", "/app/"]\n', "ADD --chown=10001 \\\n    app.py /app/\n"],
+    ids=["json", "continued"],
+)
+def test_a_plain_add_in_json_form_or_continued_may_become_copy(tmp_path: Path, line: str) -> None:
+    """#85 review, nit 1: the JSON form is read as JSON, and a continued ADD as one instruction."""
+    proposal, base, patched = dockerfile(tmp_path)
+    edit(base, DOCKERFILE_PATH, "ADD app.py /app/\n", line)
+    edit(patched, DOCKERFILE_PATH, "COPY app.py /app/\n", line.replace("ADD", "COPY", 1))
+    checked = check_iac(proposal, base, patched)
+    assert (checked.build_ok, checked.tests_ok, checked.problems) == (True, True, [])
+
+
+def test_add_of_a_plain_directory_may_become_copy(tmp_path: Path) -> None:
+    proposal, base, patched = dockerfile(tmp_path)
+    (base / "svc" / "static").mkdir()
+    edit(base, DOCKERFILE_PATH, "ADD app.py /app/", "ADD --chown=10001 app.py static/ /app/")
+    edit(patched, DOCKERFILE_PATH, "COPY app.py /app/", "COPY --chown=10001 app.py static/ /app/")
+    checked = check_iac(proposal, base, patched)
+    assert (checked.build_ok, checked.tests_ok, checked.problems) == (True, True, [])
 
 
 # ---------------------------------------------------------------- what cannot be checked honestly

@@ -136,7 +136,7 @@ jobs:
           HEAD_SHA: ${{ steps.context.outputs.head_sha }}
           REF: ${{ steps.context.outputs.ref }}
           REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}/${{ github.run_attempt }}  # a re-run is a new run on the platform
           SCAN_PATH: ${{ inputs.path }}
         # A failed scan does not stop the job: the CLI records the failure in its tool status (written last on
         # success, so an `ok` status always comes with its findings), and the gate turns it into SC-010. The
@@ -170,7 +170,7 @@ jobs:
           HEAD_SHA: ${{ steps.context.outputs.head_sha }}
           REF: ${{ steps.context.outputs.ref }}
           REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}/${{ github.run_attempt }}  # a re-run is a new run on the platform
           SCAN_PATH: ${{ inputs.path }}
         # The whole tree at the head commit, in both modes: in a pull request the baseline below keeps what the
         # base branch already had from blocking. Failures are recorded like the secret scan's.
@@ -194,7 +194,7 @@ jobs:
           HEAD_SHA: ${{ steps.context.outputs.head_sha }}
           REF: ${{ steps.context.outputs.ref }}
           REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}/${{ github.run_attempt }}  # a re-run is a new run on the platform
           SCAN_PATH: ${{ inputs.path }}
         # Every GitHub workflow, action and Dependabot file under the path, and any other YAML file with a `jobs:`
         # key, of the head commit in both modes: SC-009 blocks a high-severity issue the change introduces. The

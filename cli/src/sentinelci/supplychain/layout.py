@@ -29,7 +29,8 @@ from sentinelci.scanners.errors import ScannerError
 
 _BLOB = re.compile(r"blobs/sha256/([a-f0-9]{64})")
 _DIGEST = re.compile(r"sha256:([a-f0-9]{64})")
-_DIRECTORIES = frozenset({"", "blobs", "blobs/sha256"})
+# `ingest`: the empty directory BuildKit's `type=oci,tar=false` leaves (#70 review); a file in it is refused.
+_DIRECTORIES = frozenset({"", "blobs", "blobs/sha256", "ingest"})
 _JSON_LIMIT = 1 << 20  # index.json and the manifest are small documents; anything larger is refused
 _CHUNK = 1 << 20
 
@@ -108,6 +109,14 @@ def _walk_archive(archive: Path, walk: _Walk) -> None:
                 walk.file(member.name, open_)
             else:
                 raise ScannerError(f"{walk.where}: {member.name!r} is a link or a special file, not a blob")
+        end = tar.offset  # where tarfile stopped: only the zero blocks that end an archive may follow
+    # tarfile ends quietly at one zero block or a header with a bad checksum, where Go's reader (Syft's) may
+    # go on: whatever follows must be nothing but zeros, or the layout checked is not the one Syft reads.
+    with archive.open("rb") as raw:
+        raw.seek(end)
+        while chunk := raw.read(_CHUNK):
+            if chunk.strip(b"\0"):
+                raise ScannerError(f"{walk.where}: data after the end of the archive")
 
 
 def _walk_directory(root: Path, walk: _Walk) -> None:
