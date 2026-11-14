@@ -29,10 +29,10 @@ VERIFYING → VERIFIED | REJECTED | FAILED, "never merges", "verification jobs g
      copy whose attributes come from no tree (`attr.tree`), exported with `git archive --worktree-attributes`,
      so the commit's `.gitattributes` cannot rewrite what is scanned and fixed (#98 review). The copy holds one
      commit, fetched with `--depth=1` from the checkout, which `actions/checkout` leaves shallow: git refuses
-     to set a ref to a shallow root otherwise (#118 review). `verify` makes its copy the same way. It runs the pinned
-     Trivy, `scan iac` and the fixers on that tree, then `remediate apply`, which commits each proposal on its
-     own `sentinel/fix/<id>` branch of the bare copy with plumbing commands (#48). It hands over each
-     proposal, `apply`'s output and a git bundle of that branch.
+     to set a ref to a shallow root otherwise (#118 review). `propose` runs the pinned Trivy, `scan iac` and
+     the fixers on that tree, then `remediate apply`, which commits each proposal on its own `sentinel/fix/<id>`
+     branch of the bare copy with plumbing commands (#48). It hands over each proposal, `apply`'s output and a
+     git bundle of that branch. `verify` makes its own bare copy the same way.
    - **`publish`** has the write token (`contents` and `pull-requests`) and runs no repository code: no
      checkout, no Python, no package. Its one script uses the runner's git, jq and gh.
 2. **`publish` trusts nothing `propose` says.** It fetches the scanned commit and the bundle into an empty bare
