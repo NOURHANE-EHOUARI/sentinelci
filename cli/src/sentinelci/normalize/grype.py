@@ -1,7 +1,8 @@
-"""Grype JSON report (`-o json`) of a source tree -> Finding v1, category SCA (task A1).
+"""Grype JSON report (`-o json`) -> Finding v1: SCA for a source tree, CONTAINER for an image (task A1).
 
-- Input: the pinned Grype's report on the Syft SBOM of a directory (`sentinel scan sca`). An image report is
-  refused here: its findings are CONTAINER findings, which need the image digest (the image adapter).
+- Input: the pinned Grype's report on the Syft SBOM of a directory (`sentinel scan sca`, `normalize_grype`),
+  or of an image's OCI layout (`sentinel scan image`, `normalize_grype_image`). Each refuses the other's
+  report. An image report must be about the image the caller names: its manifest digest is the image's.
 - One finding per (vulnerability id, purl base), the SCA fingerprint of SPEC 13.1. The vulnerability id is
   Grype's `vulnerability.id`, the record that matched (a GHSA for a language package). It is `rule_id`, and
   it stays the same when a CVE is assigned later, so the fingerprint does too. The CVE ids Grype relates to it
@@ -34,12 +35,13 @@ from urllib.parse import parse_qs, urlsplit
 
 from pydantic import ValidationError
 
-from sentinelci.contracts.finding import Category, Finding, Location, Package, Run, Severity, Tool
+from sentinelci.contracts.finding import Category, Finding, Image, Location, Package, Run, Severity, Tool
 from sentinelci.normalize.errors import NormalizationError
 from sentinelci.normalize.fingerprint import package_fingerprint
 from sentinelci.normalize.paths import to_repo_relative
 
 CATEGORY: Category = "SCA"
+IMAGE_CATEGORY: Category = "CONTAINER"
 GRYPE_SEVERITIES: dict[str, Severity] = {
     "Critical": "CRITICAL",
     "High": "HIGH",
@@ -341,7 +343,15 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def _finding(fingerprint: str, places: Sequence[_Place], *, run: Run, tool: Tool) -> Finding:
+def _finding(
+    fingerprint: str,
+    places: Sequence[_Place],
+    *,
+    run: Run,
+    tool: Tool,
+    category: Category = CATEGORY,
+    image: Image | None = None,
+) -> Finding:
     ordered = sorted(places, key=lambda place: place.order)
     first = ordered[0]
     where = f"Grype match for {first.purl}"
@@ -367,7 +377,7 @@ def _finding(fingerprint: str, places: Sequence[_Place], *, run: Run, tool: Tool
             id=fingerprint,
             tool=tool,
             rule_id=rule_id,
-            category=CATEGORY,
+            category=category,
             title=_title(name, summary),
             message=_clip(f"{name} {version} is affected by {rule_id}; {fix_text}.", MAX_MESSAGE),
             severity=severity,
@@ -384,7 +394,103 @@ def _finding(fingerprint: str, places: Sequence[_Place], *, run: Run, tool: Tool
                 ecosystem=first.ecosystem,
                 fixed_versions=fixed or None,
             ),
+            image=image,
             run=run,
         )
     except ValidationError as exc:
         raise NormalizationError(f"{where} does not fit Finding v1: {exc.errors()[0]['msg']}") from exc
+
+
+# ---------------------------------------------------------------- images (CONTAINER findings)
+
+
+@dataclass(frozen=True)
+class ImageSubject:
+    """The image a report must be about: its manifest digest, and the reference findings show (no tag)."""
+
+    digest: str
+    ref: str | None = None
+
+    def __post_init__(self) -> None:
+        if not _SHA256.fullmatch(self.digest):
+            raise NormalizationError(f"image digest {self.digest!r} is not sha256:<64 lowercase hex>")
+        # The finding's digest is the image's: a reference with its own tag or digest would put a second
+        # identity in the same evidence (review of #70, should fix 3). A port is a `:` before the last `/`.
+        if self.ref is not None and (not self.ref or "@" in self.ref or ":" in self.ref.rsplit("/", 1)[-1]):
+            raise NormalizationError(
+                f"image reference {self.ref!r} is not a repository without tag or digest "
+                "(e.g. kind-registry:5000/demo-shop/shop-api)"
+            )
+
+
+def _layer(locations: Sequence[Mapping[str, Any]], where: str) -> str | None:
+    """The layer of the package's first place in the image, by path: where a fix has to change it. Every
+    place's layer is checked, not only the one used (review of #70, nit 2)."""
+    layers: list[str | None] = []
+    for location in sorted(locations, key=lambda loc: str(loc.get("path", ""))):
+        layer = location.get("layerID")
+        if layer is not None and (not isinstance(layer, str) or not _SHA256.fullmatch(layer)):
+            raise NormalizationError(f"{where} names a layer that is not a sha256 digest: {layer!r}")
+        layers.append(layer)
+    return next((layer for layer in layers if layer is not None), None)
+
+
+def _image_place(match: Mapping[str, Any], where: str) -> tuple[str, _Place, str | None]:
+    artifact = _object(match.get("artifact"), f"{where} artifact")
+    name = _text(artifact, "name", f"{where} artifact")
+    version = _text(artifact, "version", f"{where} artifact")
+    purl = _text(artifact, "purl", f"{where} artifact")
+    purl_match = _PURL.fullmatch(purl)
+    if purl_match is None:
+        raise NormalizationError(f"{where} artifact has no usable purl ({purl!r}), so no fingerprint")
+    locations = [_object(loc, f"{where} location") for loc in _list(artifact.get("locations"), where)]
+    inside = sorted(_text(loc, "path", f"{where} location") for loc in locations)
+    rule_id, _, _ = _ids(match, where)
+    # The paths are inside the image, not in the repository: they order the places, never become locations.
+    order = (inside[0] if inside else "\U0010ffff", version, name, str(artifact.get("id", "")))
+    place = _Place((), match, artifact, purl, purl_match.group(1), order)
+    return package_fingerprint(IMAGE_CATEGORY, rule_id, purl), place, _layer(locations, where)
+
+
+def normalize_grype_image(report: Mapping[str, Any], *, run: Run, image: ImageSubject) -> list[Finding]:
+    """Convert a Grype report of an image into CONTAINER findings, one per (vulnerability, purl base), each
+    carrying the image's digest, its reference and the layer the package is in."""
+    if not _SHA256.fullmatch(image.digest):
+        raise NormalizationError(f"image digest {image.digest!r} is not sha256:<64 lowercase hex>")
+    tool, _ = check_grype_report(report)
+    source = _object(report.get("source"), "Grype report source")
+    if source.get("type") != "image":
+        raise NormalizationError(
+            f"Grype report of a {source.get('type')!r} source: only an image report gives CONTAINER findings"
+        )
+    reported = _object(source.get("target"), "Grype report source target").get("manifestDigest")
+    if reported != image.digest:
+        raise NormalizationError(
+            f"the Grype report is about image {reported!r}, not {image.digest}: its findings are not this "
+            "image's"
+        )
+    matches = report.get("matches", ...)
+    if matches is ...:
+        raise NormalizationError("Grype report has no matches list")
+    groups: dict[str, list[tuple[_Place, str | None]]] = defaultdict(list)
+    for index, raw in enumerate(_list(matches, "Grype report matches")):
+        where = f"Grype match #{index}"
+        fingerprint, place, layer = _image_place(_object(raw, where), where)
+        groups[fingerprint].append((place, layer))
+    findings = []
+    for fingerprint, placed in groups.items():
+        _, first_layer = min(placed, key=lambda item: item[0].order)
+        findings.append(
+            _finding(
+                fingerprint,
+                [place for place, _ in placed],
+                run=run,
+                tool=tool,
+                category=IMAGE_CATEGORY,
+                image=Image(digest=image.digest, ref=image.ref, layer=first_layer),
+            )
+        )
+    return sorted(
+        findings,
+        key=lambda finding: (finding.rule_id, finding.package.purl if finding.package else "", finding.id),
+    )
