@@ -31,7 +31,11 @@ stops it. An empty file is a scanner that ran and found nothing. The report name
 
 - **Relevance** is each seed's `relevance` grade in the ground truth, 1 to 3. The rubric is in
   `demo-shop/ground-truth/README.md` ("Ranking relevance"). The grades were committed before any ranking was
-  computed, in their own commit.
+  computed, in their own commit. One sentence of the rubric was corrected after the first result was seen:
+  grade 3 now counts a committed credential when it gives access to code, data, infrastructure or the supply
+  chain (#121 review). No grade changed. With the two secrets it leaves at 2 and 1 (GT-SECRET-004, GT-SECRET-005)
+  graded 3 instead, NDCG@10 on all categories would be 0.416 for the risk score and 0.353 for CVSS by advisory,
+  and 0.573 and 0.400 by package; SCA alone is unchanged. The ground truth's README says the same.
 - **A seed is ranked once,** at the best place any finding of its item reaches. The report gives two
   definitions of that item, side by side:
   - **advisory:** the findings that detect the seed, by `eval/detection/score.py`'s rules. This is the
