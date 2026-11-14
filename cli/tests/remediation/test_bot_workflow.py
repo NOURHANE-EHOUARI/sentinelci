@@ -662,7 +662,6 @@ def test_one_run_proposes_publishes_verifies_and_reports(bot: Bot) -> None:
     manifest = bot.tmp / "opa-manifest.json"
     subprocess.run([sentinel, "tools", "verify", "opa", "--lock", lock, "--dest", str(tools), "--report",
                     str(manifest)], check=True, capture_output=True)  # fmt: skip
-
     checkout = bot.tmp / "checkout"  # the verify job's, as actions/checkout leaves it (fetch-depth: 1)
     subprocess.run(["git", "clone", "-q", "--depth=1", f"file://{bot.origin}", str(checkout)], check=True)
 
@@ -718,3 +717,17 @@ def test_a_failed_push_is_named_and_the_others_still_go(bot: Bot) -> None:
     done = bot.publish()
     assert done.returncode == 0 and not bot.gh() and bot.outputs() == {"opened": "[]", "refused": "2"}
     assert done.stdout.count("the push of") == 2, "both proposals were tried, and each failure is named"
+
+
+def test_verify_copies_the_scanned_commit_from_a_shallow_checkout(bot: Bot) -> None:
+    """actions/checkout leaves a depth-1 clone: the bare copy still gets the scanned commit (#125). Git and
+    bash only, so it runs where the end-to-end test is skipped (no SENTINEL_TOOLS_DIR: CI, `make check`)."""
+    run = step("verify", VERIFY_STEP)["run"]
+    start = run.index('repo="$WORK/repo.git"')
+    end = run.index("exit 1; }", run.index("fetch --quiet --no-tags")) + len("exit 1; }")
+    checkout = bot.tmp / "checkout"
+    subprocess.run(["git", "clone", "-q", "--depth=1", f"file://{bot.origin}", str(checkout)], check=True)
+    env = {**os.environ, "WORK": str(bot.tmp / "verify"), "CHECKOUT": str(checkout), "BASE_SHA": bot.base}
+    script = run[start:end] + '\ngit -C "$repo" rev-parse refs/sentinel/base\n'
+    done = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+    assert done.returncode == 0 and done.stdout.strip() == bot.base, done.stdout + done.stderr
