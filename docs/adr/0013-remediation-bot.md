@@ -33,6 +33,7 @@ VERIFYING → VERIFIED | REJECTED | FAILED, "never merges", "verification jobs g
      checkout, no Python, no package. Its one script uses the runner's git, jq and gh.
 2. **`publish` trusts nothing `propose` says.** It fetches the scanned commit and the bundle into an empty bare
    repository, and accepts a proposal only if all of these hold:
+   - its file name is a plain name, and every file it lists is under the scanned path;
    - the branch is under `sentinel/fix/`;
    - the bundle holds exactly that branch, at the commit `apply` reported;
    - that commit has exactly one parent, the scanned commit;
@@ -54,26 +55,47 @@ VERIFYING → VERIFIED | REJECTED | FAILED, "never merges", "verification jobs g
    is pushed or opened again.
 4. **The pull request is the job record** (PR_OPEN). The bot never merges and never approves. The repository
    setting "Allow GitHub Actions to create and approve pull requests" must be on, for creation only.
-5. **Verification is dispatched, not triggered (next step, with the A3 wiring).** The workflow token cannot
-   start the pull request's own checks. So `publish` will dispatch a verification run (`actions: write`, the
-   only extra permission) on the fix branch. That run:
-   - scans the base and the patched commit with the base commit's pipeline (ADR-0008);
-   - evaluates the patched scan in pr context;
-   - runs `sentinel remediate verify` with no secret;
-   - hands its VerificationResult to a job without repository code, which comments VERIFIED, REJECTED or
-     FAILED on the pull request.
+5. **Verification runs in the same run** (amended with A6e: dispatching it was the first plan). The workflow
+   token cannot start the pull request's own checks, and the proposals are already in this run, so two more
+   jobs follow `publish`:
+   - **`verify`** has a read-only token and no secret, and runs the scanned commit's pipeline (ADR-0008); the
+     pull requests are only data. It rebuilds each pull request's commit with `remediate apply` from the proposal
+     and the scanned commit and requires the same commit id (so the pull request is that proposal, whatever
+     `propose` handed over), scans both commits with the scanners the pr gate requires, builds and tests the
+     patch (`sentinel remediate check`), evaluates the gate on the patched commit in pr context with the
+     scanned commit as baseline, and runs `sentinel remediate verify`.
+   - **`report`** has `pull-requests` and `statuses` write and runs no repository code. It re-checks each result
+     against the gate's own invariant (VERIFIED only when every condition holds) and that it is the pull
+     request's own, comments it, and sets the `sentinelci/remediation` commit status. A pull request without a
+     trustworthy result is reported FAILED, and the run fails.
 
-   A REJECTED proposal is retried at most twice (attempts 2 and 3) by the next run, with the CI's feedback for
-   the LLM strategy (B6).
+   Dispatching a run would have needed `actions: write` on the job that pushes, and the proposals carried from
+   one run to another. A REJECTED proposal is retried at most twice (attempts 2 and 3) by the next run, with the
+   CI's feedback for the LLM strategy (B6).
+6. **Build and tests of an IaC patch** (`sentinel remediate check`). A manifest or a Dockerfile has no compiler
+   and no unit test, and the demo's are never built. Build: every edited file still parses into the same
+   resources (a manifest's documents, a Dockerfile's stages), since a scanner reports nothing in a file it cannot
+   parse. Tests: the patch changes only what its strategy may change, and the proposal is the fixer's own
+   output: the deterministic fixer is re-run on the scanned commit's whole tree and IaC findings, and must give
+   this proposal, field for field but its time. The line rules stay as a guard against a fixer bug; the re-run
+   catches any edit the fixer would not make (an ADD of a URL or an archive turned into COPY reads as a plain
+   line edit). Whether the new settings are right is the scanners' part: a weaker one is a new finding. A
+   strategy with no build or tests defined there is never verified.
 
 ## Consequences
 
-- The only code that holds a write token is about sixty lines of shell in the workflow file. They are tested by
-  running them, extracted from the YAML, against a local origin and a recording `gh`, including seven ways a
-  compromised propose job could change its output (`cli/tests/remediation/test_bot_workflow.py`).
+- The only code that holds a write token is two shell scripts in the workflow file (`publish`, `report`). They
+  are tested by running them, extracted from the YAML, against a local origin and a recording `gh`, including
+  nine ways a compromised propose job could change its output and six results `report` must not trust
+  (`cli/tests/remediation/test_bot_workflow.py`). `verify` is tested end to end with the real scanners and OPA.
+- `verify` runs the same code as `propose`: a compromised dependency could write a false result. It holds no
+  write token, so the most it can do is a wrong comment and status on a pull request that a reviewer still
+  judges; the bot never merges.
 - The bot opens pull requests against the default branch's infrastructure as code (demo-shop's seeds, for the
   demo). Those pull requests remove seeds, so they are never merged: they show the loop.
-- Until the verification run exists, a bot pull request stays PR_OPEN. Its checks run when someone starts
-  them by hand.
+- The pull request's own `pull_request` checks still do not start (workflow token); its verification is the
+  comment and the `sentinelci/remediation` status. Pushing to it starts them as usual.
+- `verify` must run the scanners the pr gate requires (`policies/required_tools.rego`); a test fails when the
+  gate requires one it does not run.
 - Not decided here: storing the remediation jobs in the platform (B1's job queue). The pull request and its
   verification comment are the record until then.
