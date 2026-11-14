@@ -525,7 +525,8 @@ uv run sentinel scan pipelines demo-shop --repo-root . --out out/pipelines.ndjso
 ```bash
 uv run sentinel remediate kubernetes --findings out/findings.ndjson --repo-root . --out out/proposal.json
 uv run sentinel remediate apply --proposal out/proposal.json --findings out/base.ndjson --repo-root .
-uv run sentinel remediate check --proposal out/proposal.json --base-root out/base --patched-root out/patched
+uv run sentinel remediate check --proposal out/proposal.json --base-root out/base --patched-root out/patched \
+  --findings out/base-iac.ndjson
 uv run sentinel remediate verify --proposal out/proposal.json --before out/base.ndjson \
   --after out/patched.ndjson --decision out/patched-decision.json --tool-status out/patched-tool-status.json \
   --build-ok --tests-ok --out out/result.json
@@ -600,9 +601,11 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
     tool status; for a `--tool-status` that is not the one the decision recorded, or that does not show the
     scanner of every target `ok`: a scan that failed, was skipped or never ran must not vouch for the patch;
   - `--out` can never be one of the inputs.
-- `check` builds and tests an infrastructure-as-code proposal for `verify`, on the trees of the base and the
-  patched commit (exported with `git archive`, never checked out), and prints `{proposal_id, strategy,
-  build_ok, tests_ok, problems}`. A manifest or a Dockerfile has no compiler or unit test of its own, so:
+- `check` builds and tests an infrastructure-as-code proposal for `verify`, on the trees of the base commit
+  (all of it: an ADD source may be at the repository root) and of the patched commit (exported with `git
+  archive`, never checked out), with `--findings`, the base commit's IaC findings, and prints `{proposal_id,
+  strategy, build_ok, tests_ok, problems}`. A manifest or a Dockerfile has no compiler or unit test of its
+  own, so:
   - **build**: every edited file still parses as what it was, into the same resources. A manifest keeps its
     documents, each with the same apiVersion, kind, name and namespace; a Dockerfile keeps its stages (the same
     FROM lines) and holds only Dockerfile instructions. A scanner reports nothing in a file it cannot parse,
@@ -611,14 +614,18 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
     the pod's and every container's `securityContext` and the pod's host namespaces are set aside; a Dockerfile
     is the same line for line once its added `USER 10001:10001` lines are skipped (each an instruction of its
     own after the final stage's last RUN), except ADD → COPY (on an ADD's first line, and only where the fixer
-    makes that edit: the same rule, on the base commit's whole tree, except that the check does not see the
-    other findings) and an added `--no-install-recommends`. A file the fixer never edits (a byte-order mark, an
-    `escape` parser directive, a heredoc) fails. Whether the new settings are right is the scanners' part: a weaker one is a
-    new finding;
+    makes that edit: the same rule, on the base commit's whole tree) and an added `--no-install-recommends`. A
+    file the fixer never edits (a byte-order mark, an `escape` parser directive, a heredoc) fails. Whether the
+    new settings are right is the scanners' part: a weaker one is a new finding;
+  - **the fixer's own proposal** (tests too): the deterministic fixer is re-run on the base tree and
+    `--findings`, and the proposal must be its output, field for field but `created_at`. That catches any
+    edit the fixer would not make, whatever its shape, and a proposal that claims other findings than the
+    fixer's;
   - manifests are read with a safe loader that refuses aliases and duplicate keys;
   - exit `0` when both hold, `1` when one does not (the problems name the file and why), `3` when they cannot
-    be checked honestly: a strategy with no build or tests defined here (an LLM code fix, B6), a file that is
-    not a regular file of both trees, a base file this check cannot read.
+    be checked honestly: a strategy with no build or tests defined here (an LLM code fix, B6) or no fixer to
+    re-run, a file that is not a regular file of both trees, a base file this check cannot read, findings that
+    cannot be read or that the fixer refuses.
 
 The bot (`.github/workflows/sentinel-remediate.yml`, ADR-0013) chains them: `propose` (read-only) scans, runs
 the fixers and `apply`; `publish` (no repository code) pushes each branch and opens its pull request; `verify`
