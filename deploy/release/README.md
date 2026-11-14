@@ -50,23 +50,36 @@ before the gate decides.
 SPEC principle P4, practice what we preach: the same release gate, on SentinelCI's own tree.
 
 ```bash
-make self-gate       # out/self-gate/evidence: the decision and every input it was made on
+git switch --detach v1.0.0     # the pipeline: the last release (or any reviewed commit of main, named)
+make self-gate                 # judges origin's main; out/self-gate/evidence: the decision and its inputs
+make self-gate PIPELINE=$(git rev-parse HEAD)   # when HEAD is no release tag, name it on purpose
 ```
 
-Like a release, it runs from a clean checkout of `main` as it is on GitHub. It scans the commit's own files
-(exported from the commit and checked blob by blob) without `demo-shop/`, the intentionally vulnerable target,
-which its own workflow gates. The five scanners of the gate run on them: Gitleaks, Opengrep, Trivy, zizmor, and
-Grype on the SBOM of the lockfiles (so it needs Grype's database, like a release). The waivers are the commit's
-`.sentinel/waivers.yaml`, never the working tree's. Nothing is signed. Exit codes: 0 PASS or WARN, 1 BLOCK,
-3 no decision.
+The commit judged is not the one that judges, as in the workflow (ADR-0008). The checkout is the **pipeline
+commit**: clean, a reviewed commit of `main` (an ancestor of `origin/main`), and a release tag `vX.Y.Z` or named
+with `PIPELINE=<HEAD>`. Its CLI, policies, `tools.lock.toml` and `.sentinel/self-gate-waivers.yaml` decide. The
+**target** is `origin/main`, fetched now. Its own files (exported from the commit and checked blob by blob)
+are scanned without `demo-shop/`, the intentionally vulnerable target, which its own workflow gates. The five
+scanners of the gate run on them: Gitleaks, Opengrep, Trivy, zizmor, and Grype on the SBOM of the lockfiles
+(so it needs Grype's database, like a release). So a change cannot bring the waiver, the policy or the lock
+entry that lets it through: those count once they are in a pipeline commit. The pipeline files changed between
+the two commits are printed and kept in `evidence/pipeline.json`. A target that is its own pipeline (named on
+purpose) says so: that decision shows the commit passes its own gate, not one it did not write.
 
-Its first run, on this branch, found five things in SentinelCI itself, now fixed or waived:
+The waivers are always named to `sentinel evaluate` and kept with the evidence (an empty file when the pipeline
+has none); they are apart from `.sentinel/waivers.yaml`, which demo-shop's gates read. The VEX is
+`.sentinel/self-gate-vex.json` when the pipeline has one. Nothing is signed. Exit codes: 0 PASS or WARN, 1
+BLOCK, 3 no decision.
+
+Its runs found these in SentinelCI itself, now fixed or waived:
 - four `CREATE DATABASE` statements built with f-strings in the API tests (`python-sql-built-from-strings`):
   now `psycopg.sql.Identifier`;
 - a test helper written with PEP 695 type parameters, which Opengrep cannot parse yet, so its SAST was not
-  done (`sentinel-sast-not-analysed`): now a `TypeVar`;
-- three fake, fingerprint-shaped values in test fixtures that Gitleaks reads as API keys: waived, each by
-  its fingerprint, with an owner and an expiry, in `.sentinel/waivers.yaml`.
+  done (`sentinel-sast-not-analysed`): now a `TypeVar`. Three more PEP 695 regions (`guardrails.py`,
+  `upload.py`) and a partial parse of `metrics.py` remain WARNs (SC-006), as the policy says;
+- seven fake values in test fixtures and tests that Gitleaks reads as keys (fingerprint-shaped values, a key
+  fingerprint, a `-----BEGIN ... PRIVATE KEY-----` header around `AAAA`, a test's unknown-shaped secret):
+  waived, each by its fingerprint, with an owner and an expiry, in `.sentinel/self-gate-waivers.yaml`.
 
 ## SentinelCI's own release (A10)
 
@@ -75,14 +88,17 @@ make release-sentinelci VERSION=1.0.0   # asks the key password; out/release/sen
 git push origin v1.0.0                  # publishing the tag is left to you
 ```
 
-The same discipline as shop-api's image, applied to SentinelCI itself:
-1. **Gated.** The self-gate runs first, and a BLOCK builds and signs nothing.
+The same discipline as shop-api's image, applied to SentinelCI itself, run from a pipeline commit like the
+self-gate (`PIPELINE=<HEAD>` when it is no release tag):
+1. **Gated.** The self-gate runs first on `origin/main`, and a BLOCK builds and signs nothing.
 2. **Reproducible.** It builds the wheel and source distribution of `sentinelci` and `sentinel-ai`, plus the
-   policy bundle (`policies/` and `tools.lock.toml`). Everything is built twice, from the commit's own files,
+   policy bundle (`policies/` and `tools.lock.toml`). Everything is built twice, from the target's own files,
    with the commit's time as `SOURCE_DATE_EPOCH`, and the release is refused unless both builds are byte for
-   byte the same.
+   byte the same. The build backend is pinned by hash: `uv build --build-constraints
+   deploy/release/build-constraints.txt --require-hashes`, that file read from the pipeline commit.
 3. **Signed and attested.** Each artifact and `SHA256SUMS` is signed with the release key. Each artifact is
-   attested twice: SLSA provenance v1 (the commit and the builder, no clock) and the self-gate's decision.
+   attested twice: SLSA provenance v1 (the commit, the build constraints' sha256, uv's version, the pipeline
+   commit and the builder, no clock) and the self-gate's decision.
 4. **Verified before it is kept.** Everything is verified with the committed public key only, offline, as
    anyone who downloads the release would. Only then is the release kept and the tag `vX.Y.Z` made, here.
 
@@ -96,6 +112,18 @@ cosign verify-blob --key deploy/keys/release.pub --insecure-ignore-tlog=true \
   --bundle sentinelci-1.0.0-py3-none-any.whl.sigstore.json sentinelci-1.0.0-py3-none-any.whl
 cosign verify-blob-attestation --key deploy/keys/release.pub --insecure-ignore-tlog=true --type slsaprovenance1 \
   --bundle sentinelci-1.0.0-py3-none-any.whl.provenance.sigstore.json sentinelci-1.0.0-py3-none-any.whl
+cosign verify-blob-attestation --key deploy/keys/release.pub --insecure-ignore-tlog=true \
+  --type https://github.com/NOURHANE-EHOUARI/sentinelci/specs/release-decision/v1 \
+  --bundle sentinelci-1.0.0-py3-none-any.whl.decision.sigstore.json sentinelci-1.0.0-py3-none-any.whl
+```
+
+The last one verifies the self-gate's decision attestation. Its predicate is the decision: once it verifies,
+read the verdict, which must be `PASS` or `WARN`, and the commit judged, which must be the one the tag names:
+
+```bash
+jq -r '.dsseEnvelope.payload | @base64d | fromjson | .predicate | .verdict, .subject.commit' \
+  sentinelci-1.0.0-py3-none-any.whl.decision.sigstore.json
+git rev-parse 'v1.0.0^{commit}'
 ```
 
 (`--insecure-ignore-tlog=true` because nothing goes to the public transparency log while the repository is

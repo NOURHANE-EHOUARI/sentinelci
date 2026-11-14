@@ -77,8 +77,8 @@ release-block: ## The demo's BLOCK image: the gate must block it, nothing is sig
 release-key: ## Make the release key pair (~/.sentinelci/release.key) and deploy/keys/release.pub, to commit
 	uv run --locked python deploy/release/release.py key $(if $(KEY),--key $(KEY))
 
-self-gate: ## SentinelCI's release gate on its own tree at main, without demo-shop (A10) -> out/self-gate
-	uv run --locked python deploy/release/release.py self-gate
+self-gate: ## SentinelCI's release gate on main, run from a pipeline commit (a vX.Y.Z tag, or PIPELINE=<HEAD>) (A10)
+	uv run --locked python deploy/release/release.py self-gate $(if $(PIPELINE),--pipeline $(PIPELINE))
 
-release-sentinelci: ## SentinelCI's own release VERSION=X.Y.Z: self-gate, build twice, sign, verify, tag (A10)
-	uv run --locked python deploy/release/release.py sentinelci --version $(VERSION) $(if $(KEY),--key $(KEY))
+release-sentinelci: ## SentinelCI's own release VERSION=X.Y.Z of main, judged from a pipeline commit (PIPELINE=) (A10)
+	uv run --locked python deploy/release/release.py sentinelci --version $(VERSION) $(if $(KEY),--key $(KEY)) $(if $(PIPELINE),--pipeline $(PIPELINE))
