@@ -120,7 +120,7 @@ rules:
               metavariable: $LOADER
               regex: ^C?(Full|Unsafe)?Loader$
       - patterns:
-          - pattern-either:
+          - pattern-either: &no-loader
               # No loader: pyyaml < 5.1 builds any object, 5.1 to 5.4 falls back to FullLoader with a warning
               # (6.0 refuses the call). Loader=None is the same fallback.
               - pattern: yaml.load($DATA)
@@ -129,11 +129,29 @@ rules:
               - pattern: yaml.load_all(stream=$DATA)
               - pattern: yaml.load(..., Loader=None, ...)
               - pattern: yaml.load_all(..., Loader=None, ...)
+              - pattern: yaml.load($DATA, None)
+              - pattern: yaml.load_all($DATA, None)
           # A local named yaml that holds what a call returned is not PyYAML: the ruamel.yaml idiom is
-          # `yaml = YAML()`, safe unless typ="unsafe". `yaml = None` (an import fallback) excludes nothing.
+          # `yaml = YAML()`. `yaml = None` (an import fallback) excludes nothing. The calls that do give PyYAML
+          # or an unsafe loader are put back just below.
           - pattern-not-inside: |
               yaml = $FACTORY(...)
               ...
+      # ...unless that call imports PyYAML (import_module, __import__, pytest.importorskip), or builds
+      # ruamel.yaml's unsafe loader, `YAML(typ="unsafe")`, which runs code (#84 review).
+      - patterns:
+          - pattern-either: *no-loader  # the same calls as above (a YAML alias, so the two lists never drift)
+          - pattern-either:
+              - patterns:
+                  - pattern-inside: |
+                      yaml = $FACTORY(...)
+                      ...
+                  - metavariable-regex:
+                      metavariable: $FACTORY
+                      regex: ^((importlib\.)?import_module|__import__|(pytest\.)?importorskip)$
+              - pattern-inside: |
+                  yaml = $FACTORY(..., typ="unsafe", ...)
+                  ...
 
   - id: python-tls-verification-disabled
     languages: [python]

@@ -231,6 +231,41 @@ CASES: list[tuple[str, str, bool, str]] = [
      'def f(text):\n'
      '    yaml = YAML()\n'
      '    return yaml.load(text), list(yaml.load_all(text))\n'),
+    # Built by a factory with arguments, as in remediation/kubernetes.py (#84 review).
+    ('python-unsafe-deserialization', 'de-ruamel-factory-ok.py', False,
+     'from ruamel.yaml import YAML\n'
+     'def _yaml(indent):\n'
+     '    yaml = YAML(typ="rt")\n'
+     '    yaml.indent(mapping=indent)\n'
+     '    return yaml\n'
+     'def f(text):\n'
+     '    yaml = _yaml(2)\n'
+     '    return list(yaml.load_all(text))\n'),
+    # A call's result is still unsafe when it imports PyYAML or builds ruamel.yaml's unsafe loader.
+    ('python-unsafe-deserialization', 'de-ruamel-unsafe.py', True,
+     'from ruamel.yaml import YAML\n'
+     'def f(text):\n'
+     '    yaml = YAML(typ="unsafe")\n'
+     '    return yaml.load(text)\n'),
+    ('python-unsafe-deserialization', 'de-import-module.py', True,
+     'import importlib\n'
+     'yaml = importlib.import_module("yaml")\n'
+     'def f(text):\n'
+     '    return yaml.load(text)\n'),
+    ('python-unsafe-deserialization', 'de-importorskip.py', True,
+     'import pytest\n'
+     'yaml = pytest.importorskip("yaml")\n'
+     'def test_f():\n'
+     '    assert yaml.load("a: 1")\n'),
+    # None as the second argument: the positional twin of Loader=None.
+    ('python-unsafe-deserialization', 'de-positional-none.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return yaml.load(text, None)\n'),
+    ('python-unsafe-deserialization', 'de-positional-none-all.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return list(yaml.load_all(text, None))\n'),
     # Only a call result excuses the name: an import fallback to None is still PyYAML where the call runs.
     ('python-unsafe-deserialization', 'de-import-fallback.py', True,
      'try:\n'
