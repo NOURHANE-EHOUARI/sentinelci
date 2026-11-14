@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -12,7 +13,7 @@ import psycopg.errors
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -34,6 +35,23 @@ _SHA256 = r"^[a-f0-9]{64}$"
 _LINE = r"^[^\r\n\u2028\u2029]*$"
 NDJSON_TYPE = "application/x-ndjson"
 MAX_OFFSET = 1_000_000
+
+# U+0000 (B1, the #86 review). PostgreSQL stores it neither in a text column nor in jsonb, so a string
+# that holds it is refused here with a 422, rather than reaching the database and failing as a 500.
+# In a JSON document it is the escape `\u0000` after an even number of backslashes (after an odd
+# number, the backslash itself is escaped and the text only spells it), or a raw NUL byte, which JSON
+# never allows in a string. Linear: a match cannot start inside a run of backslashes.
+_NUL_IN_JSON = re.compile(rb"(?<!\\)(?:\\\\)*\\u0000|\x00")
+NUL_REFUSED = "U+0000 cannot be stored (PostgreSQL refuses it in text and jsonb)"
+
+
+def _no_nul(value: str | None) -> str | None:
+    if value is not None and "\x00" in value:
+        raise ValueError(NUL_REFUSED)
+    return value
+
+
+NoNul = AfterValidator(_no_nul)  # for a free-text field or query parameter
 
 
 class ErrorOut(BaseModel):
@@ -61,8 +79,8 @@ class RunCreate(BaseModel):
     repo: str = Field(pattern=_REPO, max_length=200)
     commit: str = Field(pattern=_COMMIT)
     context: RunContext
-    ref: str | None = Field(default=None, pattern=_LINE, min_length=1, max_length=255)
-    run_id: str | None = Field(default=None, pattern=_LINE, min_length=1, max_length=255)
+    ref: Annotated[str | None, NoNul] = Field(default=None, pattern=_LINE, min_length=1, max_length=255)
+    run_id: Annotated[str | None, NoNul] = Field(default=None, pattern=_LINE, min_length=1, max_length=255)
 
 
 class RunOut(BaseModel):
@@ -209,7 +227,7 @@ def list_runs(
     session: SessionDep,
     repo: Annotated[str | None, Query(pattern=_REPO, max_length=200)] = None,
     context: RunContext | None = None,
-    ref: Annotated[str | None, Query(pattern=_LINE, min_length=1, max_length=255)] = None,
+    ref: Annotated[str | None, Query(pattern=_LINE, min_length=1, max_length=255), NoNul] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0, le=MAX_OFFSET)] = 0,
 ) -> RunPage:
@@ -251,7 +269,12 @@ async def _read_body(request: Request, limit: int) -> bytes:
         if size > limit:
             raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, f"the upload is larger than {limit} bytes")
         chunks.append(chunk)
-    return b"".join(chunks)
+    body = b"".join(chunks)
+    if _NUL_IN_JSON.search(body):
+        raise RequestValidationError(
+            [{"type": "nul_character", "loc": ("body",), "msg": NUL_REFUSED, "input": None}]
+        )
+    return body
 
 
 def _invalid(message: str, lineno: int | None = None) -> RequestValidationError:
@@ -392,7 +415,7 @@ def list_findings(
     run_id: uuid.UUID | None = None,
     category: Category | None = None,
     severity: Severity | None = None,
-    tool: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
+    tool: Annotated[str | None, Query(min_length=1, max_length=200), NoNul] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0, le=MAX_OFFSET)] = 0,
 ) -> FindingPage:
