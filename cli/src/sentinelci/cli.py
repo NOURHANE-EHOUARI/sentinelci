@@ -1896,20 +1896,30 @@ def remediate_check(
     patched_root: Annotated[
         Path, typer.Option(help="The tree of the patched commit (exported the same way).")
     ],
+    findings: Annotated[
+        Path,
+        typer.Option(
+            help="IaC findings NDJSON of the commit the proposal applies to: the fixer is re-run on them."
+        ),
+    ],
 ) -> None:
     """Build and test an infrastructure-as-code proposal for the verification gate, and print the result
     as JSON. Build: every edited file still parses into the same resources (a manifest's documents, a
-    Dockerfile's stages). Tests: the patch changes only what its strategy may change. Their results are what
-    `sentinel remediate verify` takes as --build-ok/--build-failed and --tests-ok/--tests-failed.
+    Dockerfile's stages). Tests: the patch changes only what its strategy may change, and the proposal is the
+    fixer's own: re-run on the base tree (the whole commit) and --findings, it proposes exactly this. Their
+    results are what `sentinel remediate verify` takes as --build-ok/--build-failed and
+    --tests-ok/--tests-failed.
 
     Exit code 0 when both hold, 1 when one does not (the JSON says which file and why), 3 when they cannot
-    be checked honestly (a strategy with no build or tests defined here, a file that is not a regular file
-    of both trees, a base file this check cannot read): nothing is verified then.
+    be checked honestly (a strategy with no build or tests defined here or no fixer to re-run, a file that is
+    not a regular file of both trees, a base file this check cannot read, findings that cannot be read or
+    that the fixer refuses): nothing is verified then.
     """
     try:
         applied = PatchProposal.model_validate_json(proposal.read_bytes())
-        checked = check_iac(applied, base_root, patched_root)
-    except (OSError, ValidationError, CheckError) as exc:
+        base_findings = list(_read_findings(findings, "base findings").values())
+        checked = check_iac(applied, base_root, patched_root, base_findings)
+    except (OSError, ValidationError, CheckError, RemediationError) as exc:
         typer.echo(f"sentinel remediate check: {exc}\nFAIL CLOSED: nothing is verified.", err=True)
         raise typer.Exit(EXIT_NO_DECISION) from exc
     typer.echo(
