@@ -3,11 +3,13 @@
 #
 # - The base is pinned by digest: a tag moved upstream cannot change what is built.
 # - Dependencies come from a hash-pinned requirements file (`--require-hashes`), with `--no-deps` so nothing
-#   unlisted is installed. A package built from source is built with the hash-pinned setuptools of
-#   requirements.build.txt (`--no-build-isolation`), installed apart and never in the final stage, so pip never
-#   fetches a build backend of the day. The demo's BLOCK image is this file with
-#   `--build-arg REQUIREMENTS=requirements.block.txt`: the same pins with the seeded pyyaml 5.3.1, built from
-#   its sdist (GT-SCA-001 in the source, GT-CONTAINER-001 in the image).
+#   unlisted is installed. A release installs wheels only (`--only-binary=:all:`): pip does not check the hashes
+#   of an sdist's build dependencies, so no setup.py runs in the release build and every byte installed is
+#   covered by a hash. The demo's BLOCK image is this file with `--build-arg REQUIREMENTS=requirements.block.txt
+#   --build-arg ONLY_BINARY=:none:`: the same pins with the seeded pyyaml 5.3.1 (GT-SCA-001 in the source,
+#   GT-CONTAINER-001 in the image), which has no wheel for this Python. It is built from its sdist with the
+#   hash-pinned setuptools of requirements.build.txt (`--no-build-isolation`), installed apart and never in the
+#   final stage, so pip never fetches a build backend of the day.
 # - The final stage runs no RUN, as UID 10001 (no shell step runs as root in it), listens on 8080, and writes
 #   only to /tmp, so a read-only root file system with all capabilities dropped holds.
 # - No HEALTHCHECK and no curl: the cluster checks GET /healthz through its probes.
@@ -18,12 +20,14 @@ ARG PYTHON=python:3.12.16-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093
 
 FROM ${PYTHON} AS dependencies
 ARG REQUIREMENTS=requirements.release.txt
+ARG ONLY_BINARY=:all:
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1 PYTHONDONTWRITEBYTECODE=1
 COPY ${REQUIREMENTS} /tmp/requirements.txt
 COPY requirements.build.txt /tmp/build.txt
 RUN python -m pip install --require-hashes --no-deps --target /opt/backend --requirement /tmp/build.txt \
     && python -m venv /opt/venv \
     && PYTHONPATH=/opt/backend /opt/venv/bin/pip install --no-build-isolation --require-hashes --no-deps \
+       --only-binary="${ONLY_BINARY}" \
        --requirement /tmp/requirements.txt
 
 FROM ${PYTHON}
