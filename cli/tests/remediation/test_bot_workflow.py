@@ -9,6 +9,7 @@ which, like GitHub, lets a client fetch a commit by its id) and a `gh` that reco
   real-tool tests): propose, publish, verify and report, as one run would.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -126,6 +127,29 @@ def test_verify_judges_with_the_scanned_commits_pipeline_and_the_scanners_the_pr
     assert '--db-dir "$RUNNER_TEMP/grype-db"' in database and run.count('--db-dir "$GRYPE_DB"') == 2
     assert "--context pr" in run and '--baseline "$WORK/before.ndjson"' in run
     assert '(cd "$PIPELINE" && "$SENTINEL" evaluate' in run, "waivers from the pipeline checkout"
+
+
+def test_every_scan_of_verify_reaches_the_gate() -> None:
+    """A scan whose findings no `combine` reads is one the gate never sees. Each scan's findings reach the
+    baseline and the patched findings, and each patched scan's status reaches the gate (Hiba, #116 review)."""
+    run = step("verify", VERIFY_STEP)["run"]
+    for name in ("secrets", "iac", "sast", "sca", "pipelines"):
+        for out in (f'"$WORK/base-{name}.ndjson"', f'"$out/{name}.ndjson"'):
+            assert f"--out {out}" in run and f"--findings {out}" in run, f"{name}: {out} reaches the gate"
+        assert f'--tool-status "$out/{name}-status.json"' in run, f"{name}: its status reaches the gate"
+
+
+def test_the_database_and_each_dependency_scan_are_handed_over_with_the_results() -> None:
+    """A verification is a decision: it is explained only with the database Grype matched against, so the
+    database's evidence and each `scan sca` report, with the SBOM it names, go into the results artifact."""
+    database = step("verify", GRYPE_DB_STEP)["run"]
+    assert '--report "$RUNNER_TEMP/verification/evidence/grype-db.json"' in database
+    run = step("verify", VERIFY_STEP)["run"]
+    for where in ('"$RESULTS/evidence/base-sca', '"$RESULTS/evidence/$name/sca'):
+        assert f'--report {where}-report.json" --sbom-out {where}-sbom.json"' in run, where
+    (upload,) = [s for s in workflow()["jobs"]["verify"]["steps"] if s.get("name") == "Hand the results over"]
+    assert upload["with"]["path"] == "${{ runner.temp }}/verification"
+    assert step("verify", VERIFY_STEP)["env"]["RESULTS"] == "${{ runner.temp }}/verification"
 
 
 def test_the_verify_job_outlives_every_scanner_run() -> None:
@@ -561,6 +585,12 @@ def test_one_run_proposes_publishes_verifies_and_reports(bot: Bot) -> None:
     done = verify(opened, "verify")
     assert done.returncode == 0, done.stdout + done.stderr
     result = json.loads((bot.tmp / "verify" / "results" / "kubernetes.json").read_text())
+    evidence = bot.tmp / "verify" / "results" / "evidence"
+    for report in (evidence / "base-sca-report.json", evidence / "kubernetes" / "sca-report.json"):
+        sbom = report.with_name(report.name.replace("report", "sbom"))
+        kept = json.loads(report.read_text())
+        assert kept["sbom_sha256"] == hashlib.sha256(sbom.read_bytes()).hexdigest(), report
+    assert json.loads((evidence / "base-sca-report.json").read_text())["database"] == kept["database"]
     assert result["outcome"] == "VERIFIED" and result["verdict"] in ("PASS", "WARN"), result
     assert result["pull_request"] == 1 and result["proposal_id"] == plan.proposal.proposal_id
     reported = bot.run(

@@ -16,10 +16,12 @@ name: sentinel-remediate
 #   running twice opens nothing new).
 # - `verify` judges each pull request it opened with the scanned commit's pipeline, read-only and with no secret
 #   (VERIFYING). It rebuilds the commit from the proposal and the scanned commit and requires the pull request's
-#   commit to be that one; scans both commits with the scanners the pr gate requires (Gitleaks, Opengrep,
-#   Syft and Grype, Trivy and zizmor: policies/required_tools.rego); builds and tests the patch (`sentinel remediate check`); evaluates the gate on the patched commit
-#   in pr context, the scanned commit as baseline; then applies the verification gate
-#   (`sentinel remediate verify`): VERIFIED, REJECTED or FAILED.
+#   commit to be that one; scans both commits with the scanners the pr gate requires (Gitleaks, Opengrep, Syft
+#   and Grype, Trivy and zizmor: policies/required_tools.rego), Grype against one database prepared in the job;
+#   builds and tests the patch (`sentinel remediate check`); evaluates the gate on the patched commit in pr
+#   context, the scanned commit as baseline; then applies the verification gate (`sentinel remediate verify`):
+#   VERIFIED, REJECTED or FAILED. The database's evidence and each dependency scan's report (with the SBOM it
+#   matched) are handed over with the results.
 # - `report` runs no repository code either. It re-checks each result against the gate's own invariant, comments
 #   it on its pull request, and sets the `sentinelci/remediation` commit status. A pull request without a
 #   trustworthy result is reported FAILED, and the run fails.
@@ -326,10 +328,11 @@ jobs:
         # FAILED (never verified on fewer scanners than the pr gate requires).
         run: |
           set -uo pipefail
-          mkdir -p "$RUNNER_TEMP/grype-db"
+          mkdir -p "$RUNNER_TEMP/grype-db" "$RUNNER_TEMP/verification/evidence"
           status=0
-          "$SENTINEL" tools grype-db --db-dir "$RUNNER_TEMP/grype-db" --report "$RUNNER_TEMP/grype-db.json" \
-            --timeout "$SCANNER_TIMEOUT_S" \
+          # Its evidence is handed over with the results: a decision is explained only with its database.
+          "$SENTINEL" tools grype-db --db-dir "$RUNNER_TEMP/grype-db" --timeout "$SCANNER_TIMEOUT_S" \
+            --report "$RUNNER_TEMP/verification/evidence/grype-db.json" \
             --lock pipeline/tools.lock.toml --tools-dir "$RUNNER_TEMP/sentinel-tools" || status=$?
           if [ "$status" -ne 0 ]; then
             echo "::warning::Grype's database could not be prepared (exit $status): every verification will fail"
@@ -390,6 +393,7 @@ jobs:
               --tool-status-out "$WORK/base-sast-status.json" "${common[@]}" \
             || ! "$SENTINEL" scan sca "$WORK/base/$SCAN_PATH" --repo-root "$WORK/base" --db-dir "$GRYPE_DB" \
               --commit "$BASE_SHA" --ref "$BASE_REF" --out "$WORK/base-sca.ndjson" \
+              --report "$RESULTS/evidence/base-sca-report.json" --sbom-out "$RESULTS/evidence/base-sca-sbom.json" \
               --tool-status-out "$WORK/base-sca-status.json" "${common[@]}" \
             || ! "$SENTINEL" scan pipelines "$WORK/base/$SCAN_PATH" --repo-root "$WORK/base" \
               --commit "$BASE_SHA" --ref "$BASE_REF" --out "$WORK/base-pipelines.ndjson" \
@@ -423,6 +427,7 @@ jobs:
                 --tool-status-out "$out/sast-status.json" "${common[@]}" \
               && "$SENTINEL" scan sca "$out/patched/$SCAN_PATH" --repo-root "$out/patched" --db-dir "$GRYPE_DB" \
                 --commit "$commit" --ref "refs/pull/$pr/head" --out "$out/sca.ndjson" \
+                --report "$RESULTS/evidence/$name/sca-report.json" --sbom-out "$RESULTS/evidence/$name/sca-sbom.json" \
                 --tool-status-out "$out/sca-status.json" "${common[@]}" \
               && "$SENTINEL" scan pipelines "$out/patched/$SCAN_PATH" --repo-root "$out/patched" \
                 --commit "$commit" --ref "refs/pull/$pr/head" --out "$out/pipelines.ndjson" \
