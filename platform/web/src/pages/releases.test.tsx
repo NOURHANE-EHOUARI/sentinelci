@@ -83,6 +83,7 @@ describe("Release detail", () => {
     fakeApi({ [`/api/v1/releases/${encodeURIComponent(BLOCKED)}/evidence`]: { body: block } });
     renderAt(`/releases/${encodeURIComponent(BLOCKED)}`);
     expect(await screen.findByText(/the gate blocked this image, so nothing was signed/)).toBeTruthy();
+    expect(screen.getByText("not signed")).toBeTruthy(); // the heading
   });
 
   it("says a PASS without a report was not verified, never that it was not signed", async () => {
