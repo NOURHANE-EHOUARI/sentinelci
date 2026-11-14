@@ -349,6 +349,27 @@ seeds:
       detections:
         - {tool: grype, rule: GHSA-35jh-r3h4-6jhm}
 
+  # ---------------------------------------------------------------- container image (A9)
+  # The BLOCK image (ADR-0011 decision 6): services/shop-api/Dockerfile.release built with the build argument
+  # REQUIREMENTS=requirements.block.txt. `sentinel scan image` reports its CONTAINER findings from the image's
+  # OCI layout archive; README.md ("Container seeds") gives the build and the opt-in check of the detection.
+  - id: GT-CONTAINER-001
+    owner: A9
+    category: CONTAINER
+    title: The shop-api BLOCK image installs pyyaml 5.3.1 (code execution through FullLoader)
+    location: {path: services/shop-api/requirements.block.txt, line: 352}
+    image:
+      dockerfile: services/shop-api/Dockerfile.release
+      build_args: {REQUIREMENTS: requirements.block.txt}
+    package: pkg:pypi/pyyaml@5.3.1
+    vulnerability: GHSA-8q59-q68h-6hv4
+    cve: CVE-2020-14343
+    kev: false
+    expected:
+      gate: SC-002
+      detections:
+        - {tool: grype, rule: GHSA-8q59-q68h-6hv4}
+
   # ---------------------------------------------------------------- application code (B9)
   # shop-api's routes (services/shop-api/app/main.py). Detections verified with the pinned Opengrep 1.33.1 and
   # SentinelCI's rules (PR #40); app/orders.py does the same things safely (GT-CLEAN-005). `gate` is what the

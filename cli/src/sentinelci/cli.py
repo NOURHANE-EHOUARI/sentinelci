@@ -28,6 +28,7 @@ from pydantic import ValidationError
 from sentinelci import __version__
 from sentinelci.contracts.decision import Decision
 from sentinelci.contracts.finding import Finding, Run, RunContext, Tool
+from sentinelci.contracts.release import TrustReport as TrustReportContract
 from sentinelci.contracts.remediation import PatchProposal
 from sentinelci.enrich import (
     EMPTY_SNAPSHOT,
@@ -84,6 +85,8 @@ from sentinelci.report.pr_comment import (
     render_no_decision,
     render_pr_comment,
 )
+from sentinelci.report.release_upload import release_evidence, upload_release
+from sentinelci.report.remediation_upload import remediation_attempt, upload_remediation
 from sentinelci.report.upload import (
     TOKEN_VARIABLE,
     DecisionNotRecorded,
@@ -96,7 +99,7 @@ from sentinelci.risk import RiskModel, RiskModelError, score_finding
 from sentinelci.scanners.combine import CombineError, combine_findings, combine_tool_statuses
 from sentinelci.scanners.errors import ScannerError, ToolIntegrityError
 from sentinelci.scanners.gitleaks import GitleaksMode, scan_secrets_with_run
-from sentinelci.scanners.grype import ImageScanFailure, scan_image, scan_sca, update_database
+from sentinelci.scanners.grype import SbomScanFailure, scan_image, scan_sca, update_database
 from sentinelci.scanners.installer import VerificationReport, detect_platform, install_tools, verify_tools
 from sentinelci.scanners.lock import LOCK_FILE_NAME, ToolLock, load_lock
 from sentinelci.scanners.opengrep import rule_ids, scan_sast_with_run
@@ -105,13 +108,20 @@ from sentinelci.scanners.runner import ToolRun
 from sentinelci.scanners.status import (
     outcome_from_error,
     outcome_from_run,
+    outcome_not_run,
     tool_status_document,
     write_tool_status,
 )
 from sentinelci.scanners.trivy import remote_modules, scan_iac_with_run
 from sentinelci.scanners.zizmor import scan_pipelines_with_run
 from sentinelci.supplychain.admission import render_policy
-from sentinelci.supplychain.attestations import KINDS, AttestationError, parse_image, release_predicates
+from sentinelci.supplychain.attestations import (
+    KINDS,
+    AttestationError,
+    contract_errors,
+    parse_image,
+    release_predicates,
+)
 from sentinelci.supplychain.cosign import (
     Signer,
     Verifier,
@@ -120,7 +130,13 @@ from sentinelci.supplychain.cosign import (
     registry_for,
 )
 from sentinelci.supplychain.sbom import SOURCE_KINDS, SourceKind, generate_sbom
-from sentinelci.supplychain.verify import ATTESTATIONS_DIR, verify_evidence, verify_registry
+from sentinelci.supplychain.verify import (
+    ATTESTATIONS_DIR,
+    public_key_sha256,
+    report_document,
+    verify_evidence,
+    verify_registry,
+)
 
 EXIT_UNTRUSTED_INPUT = 3
 DEFAULT_TOOLS_DIR = Path(".sentinel/tools")
@@ -662,6 +678,99 @@ def upload_command(
     typer.echo(json.dumps(printed))
 
 
+@app.command("upload-release")
+def upload_release_command(
+    decision: Annotated[
+        Path, typer.Option(help="The release decision (`sentinel evaluate --context release`).")
+    ],
+    api_url: Annotated[
+        str, typer.Option(help="The platform, https:// (or http://localhost for a local platform).")
+    ],
+    trust_report: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--trust-report",
+            help="A `sentinel verify --report-json` report of the image (repeatable: registry, evidence). "
+            "None for a BLOCK, which nothing signed.",
+        ),
+    ] = None,
+) -> None:
+    """Send one release's evidence to the SentinelCI platform (Releases & evidence page), after the release.
+
+    The token comes only from the SENTINEL_API_TOKEN environment variable. Exit code 0 when the platform
+    recorded exactly this evidence (also when it already had it), 4 when it did not: the release itself, its
+    decision and its signatures are unchanged either way.
+    """
+    try:
+        data = release_evidence(decision.read_bytes(), [path.read_bytes() for path in trust_report or []])
+        uploaded = upload_release(data, platform_from(api_url))
+    except (OSError, UploadError) as exc:
+        said, token = str(exc), os.environ.get(TOKEN_VARIABLE, "").strip()
+        said = said.replace(token, f"<{TOKEN_VARIABLE}>") if token else said
+        typer.echo(f"sentinel upload-release: {said}\nthe release evidence was not uploaded", err=True)
+        raise typer.Exit(EXIT_UPLOAD_FAILED) from exc
+    except Exception as exc:
+        # Last resort, as for `sentinel upload`: only the type, never an unexpected error's text.
+        typer.echo(
+            f"sentinel upload-release: unexpected {type(exc).__name__}\n"
+            "the release evidence was not uploaded",
+            err=True,
+        )
+        raise typer.Exit(EXIT_UPLOAD_FAILED) from None
+    typer.echo(
+        json.dumps(
+            {
+                "decision_id": uploaded.decision_id,
+                "image_digest": uploaded.image_digest,
+                "sha256": uploaded.sha256,
+                "already_recorded": uploaded.already_recorded,
+            }
+        )
+    )
+
+
+@app.command("upload-remediation")
+def upload_remediation_command(
+    proposal: Annotated[Path, typer.Option(help="The patch proposal (Patch proposal v1) of the attempt.")],
+    result: Annotated[Path, typer.Option(help="Its verification result (Verification result v1).")],
+    repo: Annotated[str, typer.Option(help="The repository the proposal was made for, owner/name.")],
+    api_url: Annotated[
+        str, typer.Option(help="The platform, https:// (or http://localhost for a local platform).")
+    ],
+) -> None:
+    """Send one attempt of the remediation loop to the SentinelCI platform (Remediation page).
+
+    The token comes only from the SENTINEL_API_TOKEN environment variable. Exit code 0 when the platform
+    recorded exactly this attempt (also when it already had it), 4 when it did not: the pull request and its
+    verification are unchanged either way.
+    """
+    try:
+        data = remediation_attempt(proposal.read_bytes(), result.read_bytes(), repo=repo)
+        uploaded = upload_remediation(data, platform_from(api_url))
+    except (OSError, UploadError) as exc:
+        said, token = str(exc), os.environ.get(TOKEN_VARIABLE, "").strip()
+        said = said.replace(token, f"<{TOKEN_VARIABLE}>") if token else said
+        typer.echo(f"sentinel upload-remediation: {said}\nthe attempt was not uploaded", err=True)
+        raise typer.Exit(EXIT_UPLOAD_FAILED) from exc
+    except Exception as exc:
+        # Last resort, as for `sentinel upload`: only the type, never an unexpected error's text.
+        typer.echo(
+            f"sentinel upload-remediation: unexpected {type(exc).__name__}\nthe attempt was not uploaded",
+            err=True,
+        )
+        raise typer.Exit(EXIT_UPLOAD_FAILED) from None
+    typer.echo(
+        json.dumps(
+            {
+                "proposal_id": uploaded.proposal_id,
+                "outcome": uploaded.outcome,
+                "sha256": uploaded.sha256,
+                "already_recorded": uploaded.already_recorded,
+            }
+        )
+    )
+
+
 @app.command("replay")
 def replay_command(
     decision: Annotated[
@@ -925,6 +1034,7 @@ def tools_grype_db(
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
     ] = DEFAULT_TOOLS_DIR,
     platform: PlatformOption = None,
+    timeout: ScanTimeoutOption = SCAN_TIMEOUT_DEFAULT_S,
 ) -> None:
     """Prepare Grype's vulnerability database with the verified Grype and SentinelCI's configuration.
 
@@ -941,6 +1051,7 @@ def tools_grype_db(
             platform=platform,
             archive=archive,
             allow_stale_db=allow_stale_db,
+            timeout_s=timeout,
         )
     except (ToolIntegrityError, ScannerError) as exc:
         raise _fail_closed(exc) from exc
@@ -1156,7 +1267,7 @@ def _scan_and_record(
         tool_lock = load_lock(lock)
         findings, tool_run = scan(tool_lock)
     except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
-        if tool_status_out is not None and tool_lock is not None:  # no lock: no status, the gate blocks
+        if tool_status_out is not None and tool_lock is not None:  # no lock: no status (SC-010 once required)
             outcome = outcome_from_error(tool, exc, lock=tool_lock)
             _write_status(tool_status_out, lock, platform or _host_platform(), {tool: outcome})
         raise _fail_closed(exc) from exc
@@ -1183,6 +1294,19 @@ def _write_status(
     typer.echo(f"tool status written to {destination}", err=True)
 
 
+def _sbom_scan_outcomes(
+    failure: SbomScanFailure, lock: ToolLock, platform: str | None, *, of: str = ""
+) -> dict[str, Any]:
+    """Syft's and Grype's outcomes when one of them failed: Grype never ran after a failed Syft (`of` names
+    what Syft read, for an image)."""
+    outcomes = {failure.tool: outcome_from_error(failure.tool, failure.error, lock=lock)}
+    if failure.sbom is not None:
+        outcomes["syft"] = outcome_from_run(failure.sbom.run, lock=lock, platform=platform)
+    else:
+        outcomes["grype"] = outcome_not_run("grype", f"not started: Syft produced no SBOM{of}", lock=lock)
+    return outcomes
+
+
 @scan_app.command("sast")
 def scan_sast_cmd(
     target: Annotated[Path, typer.Argument(help="Directory to scan with SentinelCI's SAST rules.")],
@@ -1200,14 +1324,23 @@ def scan_sast_cmd(
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
     ] = (DEFAULT_TOOLS_DIR),
     platform: PlatformOption = None,
+    timeout: ScanTimeoutOption = SCAN_TIMEOUT_DEFAULT_S,
+    tool_status_out: Annotated[
+        Path | None,
+        typer.Option(
+            help="Also write a tool status (schemas/tool-status.v1.json), on success and on failure, so the "
+            "gate can record a failed scan as SC-010."
+        ),
+    ] = None,
 ) -> None:
     """Static analysis with the verified Opengrep binary and SentinelCI's own rules (offline, never configured
     or silenced by the scanned repository): findings of category SAST."""
-    out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
+    _clear(out, tool_status_out)
     root = repo_root or target
-    try:
+
+    def scan(tool_lock: ToolLock) -> tuple[list[Finding], ToolRun]:
         scan = scan_sast_with_run(
-            target, lock=load_lock(lock), tools_dir=tools_dir, repo_root=root, platform=platform
+            target, lock=tool_lock, tools_dir=tools_dir, repo_root=root, platform=platform, timeout_s=timeout
         )
         findings = normalize_opengrep(
             scan.results,
@@ -1218,16 +1351,14 @@ def scan_sast_cmd(
             scan_root=scan.target.relative_to(root.resolve()).as_posix(),
             gaps=scan.gaps,
         )
-    except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
-        raise _fail_closed(exc) from exc
-    out.parent.mkdir(parents=True, exist_ok=True)
-    write_ndjson(findings, out)
-    if scan.warnings:  # analysed only in part: say where, in the job log
-        typer.echo(
-            f"warning: opengrep reported {len(scan.warnings)} problem(s): {'; '.join(scan.warnings)}",
-            err=True,
-        )
-    typer.echo(f"opengrep {scan.run.version}: {len(findings)} finding(s) written to {out}")
+        if scan.warnings:  # analysed only in part: say where, in the job log
+            typer.echo(
+                f"warning: opengrep reported {len(scan.warnings)} problem(s): {'; '.join(scan.warnings)}",
+                err=True,
+            )
+        return findings, scan.run
+
+    _scan_and_record("opengrep", scan, out=out, tool_status_out=tool_status_out, lock=lock, platform=platform)
 
 
 @scan_app.command("pipelines")
@@ -1326,36 +1457,103 @@ def scan_sca_cmd(
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
     ] = (DEFAULT_TOOLS_DIR),
     platform: PlatformOption = None,
+    timeout: ScanTimeoutOption = SCAN_TIMEOUT_DEFAULT_S,
+    tool_status_out: Annotated[
+        Path | None,
+        typer.Option(
+            help="Also write a tool status (schemas/tool-status.v1.json) for Syft and Grype, on success and "
+            "on failure, so the gate can record a failed scan as SC-010."
+        ),
+    ] = None,
+    report: Annotated[
+        Path | None,
+        typer.Option(
+            "--report",
+            help="Also write what this scan read (JSON): the Syft and Grype binaries, the database Grype "
+            "matched against and the sha256 of the SBOM it matched (kept with --sbom-out). Only on success.",
+        ),
+    ] = None,
+    sbom_out: Annotated[
+        Path | None,
+        typer.Option(
+            "--sbom-out",
+            help="Also keep the SBOM Grype matched (Syft's own JSON), the bytes the report's sbom_sha256 "
+            "names. Needed with --report. Only on success.",
+        ),
+    ] = None,
 ) -> None:
     """Vulnerable dependencies: the verified Syft's SBOM of the tree, matched by the verified Grype, offline.
 
     The scan never downloads: the database is the directory given in --db-dir. Exit code 3, with no findings
     file written, when a tool fails or is tampered with, the database is missing, invalid or stale, or the
-    report shows a silenced match.
+    report shows a silenced match. The tool status names each tool's own outcome: Grype is `not_run` when
+    Syft failed, and a report that cannot be trusted is Grype's failure.
     """
-    out.unlink(missing_ok=True)  # a failed scan must never leave an older findings file behind
+    _clear(out, tool_status_out)
+    for older in (report, sbom_out):
+        if older is not None:
+            older.unlink(missing_ok=True)  # an older report or SBOM must never describe this scan
+    if report is not None and sbom_out is None:  # the digest of bytes nobody keeps proves nothing (#80)
+        raise typer.BadParameter("--report needs --sbom-out: the SBOM its sbom_sha256 names is kept with it")
     root = repo_root or target
+    host = platform or _host_platform()
+    tool_lock: ToolLock | None = None
+    outcomes: dict[str, dict[str, Any]] = {}
     try:
+        tool_lock = load_lock(lock)
         scan = scan_sca(
             target,
             repo_root=root,
             name=repo,
             db_dir=db_dir,
-            lock=load_lock(lock),
+            lock=tool_lock,
             tools_dir=tools_dir,
             platform=platform,
             allow_stale_db=allow_stale_db,
+            timeout_s=timeout,
         )
+        outcomes = {
+            "syft": outcome_from_run(scan.sbom.run, lock=tool_lock, platform=host),
+            "grype": outcome_from_run(scan.grype, lock=tool_lock, platform=host),
+        }
         findings = normalize_grype(
             scan.report,
             run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
             scan_root=scan.scan_root,
         )
+    except SbomScanFailure as failure:
+        if tool_status_out is not None and tool_lock is not None:
+            _write_status(tool_status_out, lock, host, _sbom_scan_outcomes(failure, tool_lock, host))
+        raise _fail_closed(failure.error) from failure
     except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
+        if tool_status_out is not None and tool_lock is not None and outcomes:
+            outcomes["grype"] = outcome_from_error("grype", exc, lock=tool_lock)  # its report is not trusted
+            _write_status(tool_status_out, lock, host, outcomes)
         raise _fail_closed(exc) from exc
     out.parent.mkdir(parents=True, exist_ok=True)
     write_ndjson(findings, out)
     database = scan.database
+    if sbom_out is not None:  # before the report: it never names bytes not yet kept
+        sbom_out.parent.mkdir(parents=True, exist_ok=True)
+        sbom_out.write_bytes(scan.sbom.syft_json or b"")
+    if report is not None:  # the database the scan read, not the one a `tools grype-db` run prepared
+        evidence = {
+            "schema_version": 1,
+            "syft": {"version": scan.sbom.run.version, "binary_sha256": scan.sbom.run.binary_sha256},
+            "grype": {"version": scan.grype.version, "binary_sha256": scan.grype.binary_sha256},
+            "database": {
+                "schema_version": database.schema_version,
+                "built": database.built,
+                "checksum": database.checksum,
+            },
+            "sbom_sha256": hashlib.sha256(scan.sbom.syft_json or b"").hexdigest(),
+        }
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(
+            json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n"
+        )
+    if tool_status_out is not None:  # last: an `ok` status never vouches for a findings file not yet written
+        _write_status(tool_status_out, lock, host, outcomes)
     typer.echo(
         f"grype {scan.grype.version} on the SBOM of syft {scan.sbom.run.version} ({scan.sbom.packages} "
         f"package(s)), database {database.schema_version} built {database.built} "
@@ -1458,17 +1656,11 @@ def scan_image_cmd(
             run=Run(repo=repo, commit=commit, context=context, ref=ref, run_id=run_id),
             image=image,
         )
-    except ImageScanFailure as failure:
+    except SbomScanFailure as failure:
         if tool_status_out is not None and tool_lock is not None:
-            outcomes = {failure.tool: outcome_from_error(failure.tool, failure.error, lock=tool_lock)}
-            if failure.sbom is not None:
-                outcomes["syft"] = outcome_from_run(failure.sbom.run, lock=tool_lock, platform=host)
-            else:
-                outcomes["grype"] = {
-                    "version": tool_lock.tools["grype"].version, "status": "not_run",
-                    "detail": "not started: Syft produced no SBOM of the image",
-                }  # fmt: skip
-            _write_status(tool_status_out, lock, host, outcomes)
+            _write_status(
+                tool_status_out, lock, host, _sbom_scan_outcomes(failure, tool_lock, host, of=" of the image")
+            )
         raise _fail_closed(failure.error) from failure
     except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
         if tool_status_out is not None and tool_lock is not None:
@@ -1632,6 +1824,13 @@ def verify_command(
         ),
     ] = None,
     registry_http: RegistryHttpOption = False,
+    report_json: Annotated[
+        Path | None,
+        typer.Option(
+            help="Also write the trust report as JSON (schemas/trust-report.v1.json), trusted or not: what "
+            "`sentinel upload-release` sends to the platform. Not written when the verification cannot run."
+        ),
+    ] = None,
     lock: LockOption = Path(LOCK_FILE_NAME),
     tools_dir: Annotated[
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
@@ -1644,20 +1843,45 @@ def verify_command(
     (for example a Cosign binary that does not match tools.lock.toml). Both non-zero codes refuse the image.
     """
     try:
+        if report_json is not None:
+            # Refused before anything is removed: the key must survive a wrong option (review of #86).
+            if report_json.resolve() == key.resolve():
+                raise AttestationError("--report-json cannot be the public key")
+            report_json.unlink(missing_ok=True)  # an older report must never stand for this verification
         target = parse_image(image)
         check_public_key(key)  # a broken setup is "could not run" (3), not "this image is bad" (1)
+        key_sha256 = public_key_sha256(key)
         verifier = Verifier(key, load_lock(lock), tools_dir, platform)
         if evidence is not None:
             report = verify_evidence(target, evidence, verifier, repo=repo, builder_id=builder_id)
         else:
             registry = registry_for(target, allow_http=registry_http)
             report = verify_registry(target, verifier, registry, os.environ, repo=repo, builder_id=builder_id)
+        if report_json is not None:
+            document = report_document(
+                report, mode="evidence" if evidence is not None else "registry", repo=repo,
+                builder_id=builder_id, key_sha256=key_sha256, verified_at=datetime.now(UTC),
+            )  # fmt: skip
+            _write_trust_report(document, report_json)
     except (AttestationError, ToolIntegrityError, ScannerError) as exc:
         typer.echo(f"sentinel verify: {exc}\nFAIL CLOSED: the image is not trusted.", err=True)
         raise typer.Exit(EXIT_NO_DECISION) from exc
     typer.echo(report.render(), nl=False)
     if not report.trusted:
         raise typer.Exit(EXIT_UNTRUSTED)
+
+
+def _write_trust_report(document: dict[str, Any], destination: Path) -> None:
+    """Write a trust report the contract accepts, or refuse (a value the report cannot carry, such as a
+    repository or builder id outside the contract's shapes)."""
+    try:
+        parsed = TrustReportContract.model_validate_json(json.dumps(document))
+    except ValidationError as exc:
+        raise AttestationError(f"the trust report is not a trust report v1: {contract_errors(exc)}") from exc
+    if (problem := parsed.problem()) is not None:
+        raise AttestationError(f"the trust report contradicts itself: {problem}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
 
 @app.command("sbom")
