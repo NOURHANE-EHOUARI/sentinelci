@@ -588,10 +588,12 @@ def test_one_run_proposes_publishes_verifies_and_reports(bot: Bot) -> None:
     manifest = bot.tmp / "opa-manifest.json"
     subprocess.run([sentinel, "tools", "verify", "opa", "--lock", lock, "--dest", str(tools), "--report",
                     str(manifest)], check=True, capture_output=True)  # fmt: skip
+    checkout = bot.tmp / "checkout"  # the verify job's, as actions/checkout leaves it (fetch-depth: 1)
+    subprocess.run(["git", "clone", "-q", "--depth=1", f"file://{bot.origin}", str(checkout)], check=True)
 
     def verify(entries: list[dict[str, Any]], work: str) -> subprocess.CompletedProcess[str]:
         return bot.run(
-            "verify", VERIFY_STEP, SENTINEL=sentinel, PIPELINE=str(ROOT), CHECKOUT=str(bot.clone),
+            "verify", VERIFY_STEP, SENTINEL=sentinel, PIPELINE=str(ROOT), CHECKOUT=str(checkout),
             TOOLS=str(tools), OPA_MANIFEST=str(manifest), OPENED=json.dumps(entries),
             PROPOSALS=str(bot.artifact), WORK=str(bot.tmp / work), RESULTS=str(bot.tmp / work / "results"),
             BASE_SHA=bot.base, BASE_REF="refs/heads/main", RUN_ID="1", SCANNER_TIMEOUT_S="300",
