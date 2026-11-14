@@ -24,9 +24,11 @@ the patched code runs inside the pytest process, so it can end that process with
 or skip a test. A behaviour or patched run passes with exit 0 and a summary of passed tests and nothing else
 (no skip, xfail, deselection or error); the base run "fails" with exit 1 and a summary with failed tests (a
 test that ran and failed: exit 2 to 5 is a broken or empty test, which proves nothing). Any other answer, the
-time limit included, fails the tests, with the end of the output kept as the feedback for a retry. This raises
-the bar, it is not tamper-proof: code that prints a summary line of its own before it exits still passes, and
-a person reads every diff.
+time limit included, fails the tests, with the end of the output kept as the feedback for a retry. pytest
+prints one summary line, so a run with two (one printed by the code under test, at exit say) is refused too.
+This raises the bar, it is not tamper-proof: the patched code runs inside pytest, so it can end the run early,
+print its own summary or change what pytest reports (a hook); a person reads every diff, and #108's follow-up
+runs the app outside pytest's process.
 A container that could not run at all (no Docker, an image that is not there) is CodeCheckError: nothing is
 verified, which is not the same as a failed test.
 """
@@ -260,8 +262,13 @@ def check_code(
             )
             return _tests_failed(why, log)
         said, counts = summary_of(ran.output)
-        if not _answered(counts, expected):
-            shown = f"its summary says {said}" if said else "it printed no summary"
+        # pytest prints one summary line: a second one was printed by the code under test (at exit, say).
+        summaries = sum(1 for line in ran.output.splitlines() if SUMMARY.fullmatch(line.strip()))
+        if summaries > 1 or not _answered(counts, expected):
+            if summaries > 1:
+                shown = f"it printed {summaries} summary lines"
+            else:
+                shown = f"its summary says {said}" if said else "it printed no summary"
             return _tests_failed(
                 f"{label}: pytest's summary does not show that (exit {ran.returncode}, {shown}): an early "
                 "exit, a skip or a deselection proves nothing",

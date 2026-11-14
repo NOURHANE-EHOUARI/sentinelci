@@ -7,12 +7,16 @@ which are origin/main's:
 
 1. `sentinel remediate apply` commits it on its own `sentinel/fix/...` branch of a bare copy of the
    repository (plumbing only: nothing is checked out, no hook or filter runs);
-2. the patched commit is scanned like a pull request: Gitleaks on its commits, Opengrep and Trivy on its tree;
+2. the patched commit is scanned like a pull request: Gitleaks on its commits; Opengrep, Syft then Grype,
+   Trivy and zizmor on its tree;
 3. `sentinel remediate check --test-image` builds it, runs its service's behaviour tests on the patched code,
    and the target's security test on the base code (it must fail) and on the patched code (it must pass), in
    a sandboxed container;
 4. the gate is evaluated on the patched commit in pr context, the scanned commit as baseline;
 5. `sentinel remediate verify` applies the verification gate: VERIFIED, REJECTED or FAILED.
+
+Grype's database is prepared once per run in out/grype-db (`sentinel tools grype-db`, checked against its
+listing's checksum): the one download besides `git fetch`. If it cannot be prepared, nothing is scanned.
 
 A REJECTED attempt is proposed again with its diff and what rejected it, the reasons last, each new finding
 named (attempts 2 and 3, B6 redacts and clips both, and keeps the end); FAILED, or a fixer that sends nothing
@@ -456,6 +460,7 @@ class RemediateCode:
         self.run(["git", "-C", str(self.repo), "push", "--quiet", url, f"{attempt.commit}:{ref}"])
         decision = json.loads((work / "decision.json").read_text(encoding="utf-8"))
         place = target.location
+        check = work / "check.json"
         body = "\n\n".join([
             f"**SentinelCI remediation (llm:code, attempt {attempt.number}): VERIFIED by the tests and the "
             "scanners, not by a person.** Review it before merging; the bot never merges.",
@@ -463,7 +468,7 @@ class RemediateCode:
             f"**Proposal:** `{proposal.proposal_id}`, model `{proposal.model.name}`",
             "**The model's rationale:**\n" + fence(proposal.rationale),
             "**The patch:**\n" + fence(proposal.diff),
-            "**Tests (`sentinel remediate check`):**\n" + "\n".join(_test_summaries(work / "check.json")),
+            "**Tests (`sentinel remediate check`):**\n" + fence("\n".join(_test_summaries(check))),
             f"**Gate on the patched commit:** {decision.get('verdict')}",
         ])  # fmt: skip
         (work / "pull-request.md").write_text(body + "\n", encoding="utf-8")
@@ -486,8 +491,9 @@ def _test_summaries(check: Path) -> list[str]:
         if number == 0 and not header.startswith("$ pytest "):
             continue  # the start of a log clipped to its end
         said, _ = summary_of(output)
-        lines.append(f"- `$ pytest {header.removeprefix('$ pytest ')}`: {said or 'no summary'}")
-    return lines or ["- (no test log kept)"]
+        # The log is the patched code's output too: shown as text (fenced), like the rationale and the diff.
+        lines.append(f"$ pytest {header.removeprefix('$ pytest ')}: {said or 'no summary'}")
+    return lines or ["(no test log kept)"]
 
 
 def main(argv: Sequence[str] | None = None) -> int:

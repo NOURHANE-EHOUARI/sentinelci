@@ -227,6 +227,9 @@ SCRATCH = "/tmp:rw,noexec,nosuid,size=64m"  # noqa: S108 (the container's tmpfs,
         (Ran(1, "1 error in 0.20s\n"), 1, "its summary says 1 error"),
         (Ran(0, ""), 2, "it printed no summary"),
         (Ran(0, "2 passed, 1 xfailed in 0.10s\n"), 2, "its summary says 2 passed, 1 xfailed"),
+        # #100 review: a second summary, printed at exit by the code under test, and one inside another line.
+        (Ran(0, "9 passed, 3 skipped in 0.50s\n12 passed in 0.50s\n"), 0, "it printed 2 summary lines"),
+        (Ran(0, "E   assert '12 passed in 0.31s'\n"), 0, "it printed no summary"),
     ],
     ids=[
         "early-exit",
@@ -236,6 +239,8 @@ SCRATCH = "/tmp:rw,noexec,nosuid,size=64m"  # noqa: S108 (the container's tmpfs,
         "base-error",
         "patched-early-exit",
         "xfailed",
+        "two-summaries",
+        "summary-inside-a-line",
     ],
 )
 def test_a_run_counts_only_when_pytests_summary_agrees(tmp_path: Path, ran: Ran, at: int, shown: str) -> None:

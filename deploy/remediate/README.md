@@ -19,6 +19,9 @@ you ask for it.
    there: no network, read-only, no capability, as `nobody`, with limits (1 GiB of memory and no swap
    beyond it, 256 processes, 2 CPUs) and a time limit.
 4. Check out `main` as it is on GitHub, with a clean working tree. The run refuses anything else.
+5. Network for one download: each run prepares Grype's vulnerability database in `out/grype-db`
+   (`sentinel tools grype-db`, checked against its listing's checksum), the only download besides `git
+   fetch`. If it cannot be prepared, the run stops before anything is scanned or proposed.
 
 ## Run
 
@@ -41,7 +44,8 @@ model at all: it is recorded as `not verifiable`. The evidence of each step is i
 `PUBLISH=1` pushes only VERIFIED branches, with your own git credentials, and opens each pull request with your
 own `gh` login. The pull request says that it was verified by the tests and the scanners, not by a person, and
 shows each test run with pytest's summary (the behaviour tests, the security test on the base and on the
-patch): you or your reviewer still read it. The bot never merges and never approves.
+patch), as text in a code block, since the log is also the patched code's own output: you or your reviewer
+still read it. The bot never merges and never approves.
 
 `API_URL` sends every attempt to the platform's Remediation page; the token comes only from
 `SENTINEL_API_TOKEN`.
@@ -52,9 +56,11 @@ patch): you or your reviewer still read it. The bot never merges and never appro
   `security_tests/test_<rule>.py` (shop-api has one per SAST seed, B9);
 - a security test that does not fail on the base code (it proves nothing about the fix);
 - a run whose pytest summary does not show the tests passing (an early exit, a skip, a deselection, an
-  xfail) or, on the base code, failing. The patched code runs inside pytest, so this raises the bar without
-  making the run tamper-proof: code that prints a summary line of its own before it exits would still pass,
-  which is one more reason a person reads every diff;
+  xfail) or, on the base code, failing, or that holds more than one summary line (pytest prints one). This
+  raises the bar without making the run tamper-proof: the patched code runs inside pytest, so it can end the
+  run early, print its own summary or change what pytest reports (a hook turning a failure into a pass),
+  which is one more reason a person reads every diff. Running the app outside pytest's process is a
+  follow-up of #108;
 - a patch that edits `tests/` or `security_tests/` (both always come from the base commit);
 - a file that is not Python;
 - anything the test container could not run (no Docker, an image that is not there): nothing is verified
