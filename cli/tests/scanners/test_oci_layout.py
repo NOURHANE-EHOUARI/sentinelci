@@ -199,6 +199,51 @@ def test_a_directory_holds_no_link(tmp_path: Path) -> None:
         check(root, "oci-dir")
 
 
+def test_the_empty_ingest_directory_buildkit_leaves_passes(tmp_path: Path) -> None:
+    """#70 review: `--output type=oci,tar=false` writes an empty ingest/ next to blobs/."""
+    root = write(tmp_path, "oci-dir", LAYOUT)
+    (root / "ingest").mkdir()
+    check(root, "oci-dir")
+    (root / "ingest" / "partial").write_bytes(b"x")
+    with pytest.raises(ScannerError, match="is not part of an OCI image layout"):
+        check(root, "oci-dir")
+
+
+def _bad_header() -> bytes:
+    """A tar header block whose checksum is wrong: tarfile stops there, Go's reader refuses it."""
+    header = bytearray(tarfile.TarInfo("blobs/sha256/hidden").tobuf())
+    header[148:156] = b"0000000\0"
+    return bytes(header)
+
+
+@pytest.mark.parametrize("stop", [b"\0" * 512, _bad_header()], ids=["one-zero-block", "bad-checksum"])
+def test_nothing_may_follow_where_tarfile_stops(tmp_path: Path, stop: bytes) -> None:
+    """#70 review: what follows the point where tarfile stops must be zeros, or the layout checked is not the
+    one Go's reader (Syft's) would go on to read. Here, a second copy of the layer blob hides there."""
+    layout = _tar(list(LAYOUT.items())).rstrip(b"\0")
+    hidden = _tar([(LAYER, LAYOUT[LAYER])])
+    archive = tmp_path / "image.oci.tar"
+    archive.write_bytes(layout + b"\0" * (-len(layout) % 512) + stop + hidden)
+    with pytest.raises(ScannerError, match="data after the end of the archive"):
+        check(archive, "oci-archive")
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_index_json_larger_than_1_mib_is_refused(tmp_path: Path, kind: str) -> None:
+    padded = LAYOUT["index.json"] + b" " * (1 << 20)
+    with pytest.raises(ScannerError, match=r"index\.json is larger than 1 MiB"):
+        check(write(tmp_path, kind, changed(**{"index.json": padded})), kind)
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_a_manifest_larger_than_1_mib_is_refused(tmp_path: Path, kind: str) -> None:
+    manifest = LAYOUT[MANIFEST_BLOB] + b" " * (1 << 20)
+    digest = "sha256:" + hashlib.sha256(manifest).hexdigest()
+    layout = changed(**{"index.json": index_of(digest), "blobs/sha256/" + digest[7:]: manifest})
+    with pytest.raises(ScannerError, match="is larger than 1 MiB"):
+        check(write(tmp_path, kind, layout), kind, digest)
+
+
 def test_a_directory_holds_no_other_directory(tmp_path: Path) -> None:
     root = write(tmp_path, "oci-dir", LAYOUT)
     (root / "blobs" / "sha256" / "nested").mkdir()
