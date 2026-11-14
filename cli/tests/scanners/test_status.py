@@ -194,7 +194,8 @@ def test_cli_records_a_tampered_binary_that_never_ran(
 
 
 def test_cli_writes_no_status_without_a_lock(tmp_path: Path) -> None:
-    # Nothing to vouch for: no status at all, which the gate reports as SC-010 "Tool status missing".
+    # Nothing to vouch for: no status at all, which the gate blocks (SC-010) once required_tools.rego
+    # requires the tool.
     _stale_status(tmp_path)
     result, out, status = _scan(tmp_path, tmp_path / "tools", lock=tmp_path / "missing.lock.toml")
 
@@ -266,8 +267,10 @@ def test_every_scan_command_defaults_to_the_scanner_time_limit() -> None:
     from sentinelci.scanners.runner import DEFAULT_TIMEOUT_S as SCAN_DEFAULT
 
     defaults = _timeout_defaults()
-    scans = {path: value for path, value in defaults.items() if path.startswith("scan ")}
-    assert "scan secrets" in scans
+    # `tools grype-db` runs Grype like a scan does: its limit is a scanner run's.
+    runs_a_scanner = {path for path in defaults if path.startswith("scan ") or path == "tools grype-db"}
+    scans = {path: value for path, value in defaults.items() if path in runs_a_scanner}
+    assert {"scan secrets", "scan sast", "scan sca", "tools grype-db"} <= set(scans)
     assert scans == dict.fromkeys(scans, SCAN_DEFAULT)
-    others = {path: value for path, value in defaults.items() if not path.startswith("scan ")}
+    others = {path: value for path, value in defaults.items() if path not in runs_a_scanner}
     assert others and all(value == FETCH_DEFAULT for value in others.values()), others

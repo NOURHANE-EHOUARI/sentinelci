@@ -23,7 +23,7 @@ from sentinelci.cli import app
 from sentinelci.scanners.lock import load_lock
 from sentinelci.scanners.runner import run_verified_tool
 from sentinelci.supplychain.admission import DECISION_VERSIONS, POLICY_NAME, render_policy
-from sentinelci.supplychain.attestations import KINDS, AttestationError, parse_image
+from sentinelci.supplychain.attestations import KINDS, AttestationError, local_release_builder_id, parse_image
 from sentinelci.supplychain.cosign import SIGNATURE_TYPE
 
 from .conftest import BUILDER, GITHUB_ENV, REPO, ROOT, decision_bytes
@@ -86,6 +86,14 @@ def test_the_signatures_are_checked_before_any_payload_is_read(tmp_path: Path) -
         ({"repo": "o/r' || true || '"}, "--repo"),
         ({"builder_id": BUILDER + "' || true"}, "--builder-id"),
         ({"builder_id": "https://example.com/workflow"}, "--builder-id"),
+        (
+            {"builder_id": f"https://github.com/{REPO}/deploy/release/release.py@refs/heads/dev"},
+            "--builder-id",
+        ),
+        (
+            {"builder_id": f"https://github.com/{REPO}/deploy/release/other.py@refs/heads/main"},
+            "--builder-id",
+        ),
         ({"image_glob": "Kind-Registry/demo"}, "--image-glob"),
         ({"image_glob": "kind-registry:5000/demo' "}, "--image-glob"),
         ({"image_glob": "*"}, "--image-glob"),
@@ -98,6 +106,8 @@ def test_the_signatures_are_checked_before_any_payload_is_read(tmp_path: Path) -
         "quote-in-repo",
         "quote-in-builder",
         "not-a-workflow",
+        "release-script-off-main",
+        "another-script",
         "uppercase-glob",
         "quote-in-glob",
         "any-image",
@@ -112,6 +122,15 @@ def test_a_value_that_could_change_the_policy_is_refused(
 ) -> None:
     with pytest.raises(AttestationError, match=message):
         _render(tmp_path, **changes)
+
+
+def test_the_laptop_release_script_is_a_builder_the_policy_can_require(tmp_path: Path) -> None:
+    """ADR-0011: `make release` signs on the laptop, so the cluster requires the release script at main."""
+    local = local_release_builder_id(REPO)
+    expressions = " ".join(
+        v["expression"] for v in _render(tmp_path, builder_id=local)["spec"]["validations"]
+    )
+    assert f"runDetails.builder.id == '{local}'" in expressions and BUILDER not in expressions
 
 
 def test_the_decision_versions_are_the_contracts(tmp_path: Path) -> None:

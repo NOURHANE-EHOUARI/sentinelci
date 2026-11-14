@@ -221,9 +221,10 @@ waivers:
 
 ## `sentinel attest` and `sentinel verify` (release attestations, A4)
 
-ADR-0010. The attest job of the release workflow signs four in-toto statements about the image digest
-(release decision, CycloneDX SBOM, vulnerability scan, SLSA v1 provenance) with the pinned Cosign and a key pair,
-and writes them as Sigstore bundles under `<out>/attestations/`:
+ADR-0010. `sentinel attest` signs four in-toto statements about the image digest (release decision, CycloneDX
+SBOM, vulnerability scan, SLSA v1 provenance) with the pinned Cosign and a key pair, and writes them as Sigstore
+bundles under `<out>/attestations/`. In the private phase it runs only on the release laptop, inside
+`make release` (ADR-0011, `deploy/release/README.md`):
 
 ```bash
 uv run sentinel attest registry.local/demo-shop/shop-api@sha256:<digest> \
@@ -235,6 +236,13 @@ uv run sentinel attest registry.local/demo-shop/shop-api@sha256:<digest> \
   findings or an SBOM other than the ones the decision recorded (`inputs.findings_digest`, `inputs.sbom_digest`),
   an SBOM without a CycloneDX `serialNumber`, and a run outside GitHub Actions or on another repository or commit
   than the decision's. All four bundles are written, or none.
+- `--builder` says who built the image, and so what the provenance names: `github-actions` (the default: the
+  workflow run, from its GitHub Actions variables) or `local-release`, the laptop release (`make release`).
+  A `local-release` provenance names the release script at main as its builder
+  (`https://github.com/NOURHANE-EHOUARI/sentinelci/deploy/release/release.py@refs/heads/main`), the
+  decision's repository and commit as its source, and nothing about the machine; it is refused in GitHub
+  Actions, which holds no release key. `sentinel verify --builder-id` and `sentinel admission-policy
+  --builder-id` take that id for such a release.
 - `--key` is a key file or `env://VAR`; only that variable and `COSIGN_PASSWORD` reach Cosign. Private mode
   (ADR-0006): no transparency-log upload.
 
@@ -250,6 +258,13 @@ uv run sentinel verify registry.local/demo-shop/shop-api@sha256:<digest> --evide
 - Exit code `0` trusted, `1` not trusted (any check failed), `3` the verification could not run (for example
   a Cosign binary that does not match `tools.lock.toml`). Offline: the evidence directory and the public key
   are all it needs.
+- `--report-json <file>` also writes the report as `schemas/trust-report.v1.json`, trusted or not: the mode
+  (`registry` or `evidence`), the repository and builder id required, the sha256 of the public key (its DER
+  bytes, so a key file's line endings do not change it), the time, the `decision_id` of the decision it
+  verified (null without a valid decision attestation: the platform records a report only next to that
+  decision), and every check in order with a one-line detail. An older file at that path is removed first,
+  nothing is written when the verification cannot run (exit `3`), and a `--report-json` that is the public key
+  itself is refused before anything is removed. It is what `sentinel upload-release` sends to the platform.
 
 ## `sentinel scan sca` (dependency vulnerabilities, A1)
 
@@ -289,6 +304,21 @@ uv run sentinel normalize grype grype.json --scan-root demo-shop --out out/sca.n
   hides matches (ignore rules beyond Grype's built-in kernel-header rules, VEX, exclusions, `only-fixed`,
   `only-notfixed`, `ignore-wontfix`, a distro override, `by-cve`). An image report is refused by
   `normalize grype`: its findings are CONTAINER findings, from `sentinel scan image`.
+- **Tool status** (`--tool-status-out`, written on success and on failure, like the other scanners): one entry
+  for Syft and one for Grype. When Syft fails, Grype is `not_run` (it never starts); when Grype fails, or its
+  report cannot be trusted, Syft stays `ok` and Grype carries the failure. `--timeout` limits each run of both
+  tools, and `sentinel tools grype-db` takes the same `--timeout`. In `sentinel-scan.yml`, the database is
+  prepared once before the scans, which run on the head commit and on the PR baseline.
+- **Report** (`--report`, only on success): what this scan read, the Syft and Grype binaries, the database Grype
+  matched against (schema, build time, checksum, as Grype's report names it) and the sha256 of the SBOM it
+  matched. A decision can only be explained with its database: two databases give different findings on the same
+  tree. `--report` needs `--sbom-out`, which keeps that SBOM (Syft's JSON): a digest of bytes nobody keeps could
+  be checked against nothing. The same tree gives the same SBOM bytes, since `supplychain/configs/syft.yaml`
+  fixes the two directories Syft records in it. `sentinel-scan.yml` keeps both with the scan evidence
+  (`sca-report.json`, `sca-sbom.syft.json`).
+- **CPE matching is pinned too.** `scanners/configs/grype.yaml` sets the `match` block (which ecosystems Grype
+  also matches by CPE, Grype 0.121.0's defaults), and a report whose recorded block differs is refused: turning
+  CPE matching off for an ecosystem drops what only a CPE finds.
 
 **Registry mode.** With `--push`, `sentinel attest` also signs the image itself (`cosign sign`) and attaches
 the four statements to it in its registry (`cosign attest`), always by digest. That copy is what Kyverno reads
@@ -392,6 +422,41 @@ uv run sentinel sbom out/image-oci --source oci-dir --name demo-shop/shop-api \
   file for both, or a path that cannot be cleared is refused before anything is written.
 - The package count it prints leaves out the operating-system component Syft adds for an image.
 
+## `sentinel upload-release` (release evidence to the platform, A8)
+
+```bash
+SENTINEL_API_TOKEN=... uv run sentinel upload-release --decision out/release/evidence/decision.v1.json \
+  --trust-report out/release/evidence/trust-report.registry.json \
+  --trust-report out/release/evidence/trust-report.evidence.json --api-url http://localhost:8000
+```
+
+- Sends `schemas/release-evidence.v1.json` to `POST /api/v1/releases`: the release decision and the trust
+  reports of its image (none for a BLOCK, which nothing signed), registry mode first. The Releases & evidence
+  page shows it.
+- Checked first as the platform checks it (a release decision about an image; each report about that image
+  and repository, one per mode, `trusted` exactly when every check passed; no trusted report for a BLOCK), so a
+  document the platform would refuse is never sent. The same files always give the same bytes.
+- A release is recorded once: sending the same evidence again is "already recorded" (exit `0`); other
+  evidence for a recorded decision is refused (exit `4`), since a release never changes.
+- Like `sentinel upload`: the token only from `SENTINEL_API_TOKEN`, https or the loopback only, no redirect,
+  exit `4` on any failure with a line that names no secret. A report: the release, its decision and its
+  signatures are unchanged whatever happens.
+
+## `sentinel upload-remediation` (a remediation attempt to the platform, A8)
+
+```bash
+SENTINEL_API_TOKEN=... uv run sentinel upload-remediation --proposal proposal.json --result result.json \
+  --repo NOURHANE-EHOUARI/sentinelci --api-url http://localhost:8000
+```
+
+- Sends `schemas/remediation-attempt.v1.json` to `POST /api/v1/remediations`: the patch proposal, its
+  verification result (`sentinel remediate verify`) and the repository. The Remediation page shows it, and
+  `/metrics` counts it in `sentinel_remediation_attempts_total{strategy,outcome}`.
+- Checked first as the platform checks it: the contracts (VERIFIED only through the verification gate of SPEC
+  §9.2), the result the proposal's (same id and attempt), not verified before the proposal was made.
+- An attempt is recorded once: the same files again are "already recorded" (exit `0`), another document for a
+  recorded proposal is refused (exit `4`). Exit `4` on any failure, with the rules of `sentinel upload`.
+
 ## `sentinel upload` (findings to the platform, M1)
 
 Sends one run's findings to the SentinelCI platform (the B1 ingestion API, `schemas/openapi.yaml`): first
@@ -480,8 +545,9 @@ uv run sentinel scan pipelines demo-shop --repo-root . --out out/pipelines.ndjso
   (`[python_tools.zizmor]`, at the pinned version): another version, a replaced binary, or zizmor missing
   exits `3` (SC-010).
 - The scanned repository cannot configure or silence it: `--no-config`, `--no-ignores` (a finding covered by an
-  inline `# zizmor: ignore[...]` comment is kept, and its message says so), `--collect=all` (`.gitignore` is not
-  honoured), `--offline`, and a minimal environment.
+  inline `# zizmor: ignore[...]` comment is kept, and its message says so), `--ignore-lockfile` (a workflow
+  listed in the repository's `.github/workflows/actions.lock` keeps its `unpinned-uses` findings),
+  `--collect=all` (`.gitignore` is not honoured), `--offline`, and a minimal environment.
 - Inputs: what GitHub runs (every YAML file under `.github/workflows/`, every `action.yml` / `action.yaml`,
   `.github/dependabot.yml`) must load (`--strict-collection`), or exit `3`. Any other YAML file with a top-level
   `jobs:` key is audited too; one zizmor cannot load as a GitHub workflow (another CI's file) is skipped, named
@@ -498,7 +564,8 @@ uv run sentinel scan pipelines demo-shop --repo-root . --out out/pipelines.ndjso
 ```bash
 uv run sentinel remediate kubernetes --findings out/findings.ndjson --repo-root . --out out/proposal.json
 uv run sentinel remediate apply --proposal out/proposal.json --findings out/base.ndjson --repo-root .
-uv run sentinel remediate check --proposal out/proposal.json --base-root out/base --patched-root out/patched
+uv run sentinel remediate check --proposal out/proposal.json --base-root out/base --patched-root out/patched \
+  --findings out/base-iac.ndjson
 uv run sentinel remediate verify --proposal out/proposal.json --before out/base.ndjson \
   --after out/patched.ndjson --decision out/patched-decision.json --tool-status out/patched-tool-status.json \
   --build-ok --tests-ok --out out/result.json
@@ -530,8 +597,8 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
     Trivy names a Dockerfile finding by its instruction's text, so the other finding would get a new
     fingerprint. Only the findings an edit resolved are claimed; a file where nothing could be resolved is
     reported as "nothing this fixer can resolve". The base image's tag or digest, a HEALTHCHECK and a script
-    piped to a shell are left alone too, and so is a file with an `escape` directive, a heredoc or CRLF line
-    endings.
+    piped to a shell are left alone too, and so is a file with a byte-order mark, an `escape` directive, a
+    heredoc or CRLF line endings.
   - **It can change what the image does**: files it writes at run time must be writable by UID 10001, and an
     image that needs root at run time breaks. The rationale says so.
 - `apply` turns a proposal into one commit on a new `sentinel/fix/<id>` branch of a local clone, and prints
@@ -573,9 +640,11 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
     tool status; for a `--tool-status` that is not the one the decision recorded, or that does not show the
     scanner of every target `ok`: a scan that failed, was skipped or never ran must not vouch for the patch;
   - `--out` can never be one of the inputs.
-- `check` builds and tests an infrastructure-as-code proposal for `verify`, on the trees of the base and the
-  patched commit (exported with `git archive`, never checked out), and prints `{proposal_id, strategy,
-  build_ok, tests_ok, problems}`. A manifest or a Dockerfile has no compiler or unit test of its own, so:
+- `check` builds and tests an infrastructure-as-code proposal for `verify`, on the trees of the base commit
+  (all of it: an ADD source may be at the repository root) and of the patched commit (exported with `git
+  archive`, never checked out), with `--findings`, the base commit's IaC findings, and prints `{proposal_id,
+  strategy, build_ok, tests_ok, problems}`. A manifest or a Dockerfile has no compiler or unit test of its
+  own, so:
   - **build**: every edited file still parses as what it was, into the same resources. A manifest keeps its
     documents, each with the same apiVersion, kind, name and namespace; a Dockerfile keeps its stages (the same
     FROM lines) and holds only Dockerfile instructions. A scanner reports nothing in a file it cannot parse,
@@ -583,12 +652,19 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
   - **tests**: the patch changes only what its strategy may change. A manifest read as data is the same once
     the pod's and every container's `securityContext` and the pod's host namespaces are set aside; a Dockerfile
     is the same line for line once its added `USER 10001:10001` lines are skipped (each an instruction of its
-    own after the final stage's last RUN), except ADD → COPY and an added `--no-install-recommends`. Whether
-    the new settings are right is the scanners' part: a weaker one is a new finding;
+    own after the final stage's last RUN), except ADD → COPY (on an ADD's first line, and only where the fixer
+    makes that edit: the same rule, on the base commit's whole tree) and an added `--no-install-recommends`. A
+    file the fixer never edits (a byte-order mark, an `escape` parser directive, a heredoc) fails. Whether the
+    new settings are right is the scanners' part: a weaker one is a new finding;
+  - **the fixer's own proposal** (tests too): the deterministic fixer is re-run on the base tree and
+    `--findings`, and the proposal must be its output, field for field but `created_at`. That catches any
+    edit the fixer would not make, whatever its shape, and a proposal that claims other findings than the
+    fixer's;
   - manifests are read with a safe loader that refuses aliases and duplicate keys;
   - exit `0` when both hold, `1` when one does not (the problems name the file and why), `3` when they cannot
-    be checked honestly: a strategy with no build or tests defined here (an LLM code fix, B6), a file that is
-    not a regular file of both trees, a base file this check cannot read.
+    be checked honestly: a strategy with no build or tests defined here (an LLM code fix, B6) or no fixer to
+    re-run, a file that is not a regular file of both trees, a base file this check cannot read, findings that
+    cannot be read or that the fixer refuses.
 
 The bot (`.github/workflows/sentinel-remediate.yml`, ADR-0013) chains them: `propose` (read-only) scans, runs
 the fixers and `apply`; `publish` (no repository code) pushes each branch and opens its pull request; `verify`
@@ -685,3 +761,7 @@ uv run sentinel scan sast demo-shop --repo-root . --out out/sast.ndjson \
   (`Opengrep did not analyse lines 12-19 of app.py (PartialParsing). ...`). Valid modern syntax Opengrep cannot
   parse yet (a PEP 695 `def f[T]`, some TypeScript) shows up this way until Opengrep catches up: waive it with
   a reviewed expiry, never with a scanner flag. The job log still names each file and counts its lines.
+- **Tool status** (`--tool-status-out`, written on success and on failure, like the other scanners) and a time
+  limit (`--timeout`): an Opengrep that fails, times out, reports what cannot be trusted or does not match the
+  lock is recorded, so the gate blocks with SC-010 and its reason. `sentinel-scan.yml` runs the scan on the head
+  commit and on the PR baseline.

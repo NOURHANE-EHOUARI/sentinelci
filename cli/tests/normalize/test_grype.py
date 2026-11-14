@@ -10,10 +10,12 @@ import hashlib
 import json
 import os
 import random
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from jsonschema import Draft202012Validator
 from typer.testing import CliRunner
 
@@ -24,6 +26,7 @@ from sentinelci.normalize.fingerprint import package_fingerprint
 from sentinelci.normalize.grype import (
     BUILTIN_IGNORE_RULES,
     MAX_TITLE,
+    PINNED_MATCH,
     GrypeDatabase,
     check_grype_report,
     load_grype_report,
@@ -330,6 +333,7 @@ SILENCING = [
     ("vex-documents", ["vex.json"]),
     ("vex-add", ["fixed"]),
     ("distro", "debian:12"),
+    ("match", PINNED_MATCH | {"stock": {"using-cpes": False}}),  # drops what only a CPE finds
 ]
 
 
@@ -345,6 +349,28 @@ def test_a_report_that_does_not_show_a_setting_fails_closed(key: str, _value: ob
     del report["descriptor"]["configuration"][key]
     with pytest.raises(NormalizationError, match=f"{key} = '\\(absent\\)'"):
         normalize_grype(report, run=RUN)
+
+
+@pytest.mark.parametrize(
+    "match",
+    [
+        PINNED_MATCH | {"jvm": {"using-cpes": False}},
+        PINNED_MATCH | {"golang": {**PINNED_MATCH["golang"], "always-use-cpe-for-stdlib": True}},
+        {key: value for key, value in PINNED_MATCH.items() if key != "python"},
+        PINNED_MATCH | {"new-ecosystem": {"using-cpes": False}},
+    ],
+    ids=["jvm-cpes-off", "golang-setting", "an-ecosystem-missing", "an-unknown-ecosystem"],
+)
+def test_any_other_match_block_fails_closed(match: dict[str, object]) -> None:
+    """Exactly the pinned block: the report can only show what SentinelCI's configuration says."""
+    with pytest.raises(NormalizationError, match="made with match = "):
+        normalize_grype(_configured(match=match), run=RUN)
+
+
+def test_the_pinned_match_block_is_the_one_the_configuration_passes() -> None:
+    config = yaml.safe_load(files("sentinelci.scanners.configs").joinpath("grype.yaml").read_text("utf-8"))
+    assert config["match"] == PINNED_MATCH
+    assert _report()["descriptor"]["configuration"]["match"] == PINNED_MATCH, "what Grype 0.121.0 records"
 
 
 def test_an_ignore_rule_of_the_repository_fails_closed() -> None:
