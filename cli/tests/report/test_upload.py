@@ -28,6 +28,13 @@ RUN_CREATE = Draft202012Validator(CONTRACT["components"]["schemas"]["RunCreate"]
 RUN_EXISTS = Draft202012Validator(
     {"$ref": "#/components/schemas/RunExists", "components": CONTRACT["components"]}
 )
+# API 1.6.0: the answers of POST /runs/{id}/decision.
+DECISION_OUT = Draft202012Validator(
+    {"$ref": "#/components/schemas/DecisionOut", "components": CONTRACT["components"]}
+)
+DECISION_EXISTS = Draft202012Validator(
+    {"$ref": "#/components/schemas/DecisionExists", "components": CONTRACT["components"]}
+)
 TOKEN = "fake-ingestion-token-for-tests-only"  # noqa: S105 (a fake, for the fake platform)
 REPO, COMMIT = "NOURHANE-EHOUARI/sentinelci", "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 FINDING = json.loads(
@@ -54,6 +61,9 @@ class Fake:
         self.redirect_to: str | None = None
         self.lie_about_digest = False
         self.contract_errors: list[str] = []  # answers of the fake that the contract would not allow
+        self.decisions: dict[str, dict[str, Any]] = {}  # run id -> DecisionOut
+        self.decision_status: int | None = None  # force an answer to the decision
+        self.lie_about_decision = False
 
 
 def handler(fake: Fake) -> type[BaseHTTPRequestHandler]:
@@ -119,7 +129,38 @@ def handler(fake: Fake) -> type[BaseHTTPRequestHandler]:
                 return self._answer(
                     201, {"run_id": parts[3], "finding_count": count, "findings_sha256": reported}
                 )
+            if len(parts) == 5 and parts[4] == "decision" and method == "POST":
+                return self._decision(parts[3], body)
             return self._answer(404, {"detail": "not found"})
+
+        def _decision(self, run_id: str, body: bytes) -> None:
+            """API 1.6.0, as far as the CLI can tell: one decision per run, after its findings."""
+            run = fake.runs.get(run_id)
+            if run is None:
+                return self._answer(404, {"detail": "no such run"})
+            if self.headers.get("Content-Type") != "application/json":
+                return self._answer(415, {"detail": "a decision is posted as application/json"})
+            if fake.decision_status is not None:
+                return self._answer(fake.decision_status, {"detail": "forced"})
+            if run["findings_sha256"] is None:
+                return self._answer(409, {"detail": "no findings recorded for this run yet"})
+            digest = hashlib.sha256(body).hexdigest()
+            document = json.loads(body)
+            if document["inputs"]["findings_digest"] != f"sha256:{run['findings_sha256']}":
+                return self._answer(422, {"detail": [{"msg": "made on other findings"}]})
+            elsewhere = [d for d in fake.decisions.values() if d["decision_id"] == document["decision_id"]]
+            recorded = fake.decisions.get(run_id) or (elsewhere[0] if elsewhere else None)
+            if recorded is not None:
+                exists = {"detail": "recorded already", "decision": recorded}
+                fake.contract_errors += [e.message for e in DECISION_EXISTS.iter_errors(exists)]
+                return self._answer(409, exists)
+            out = {"run_id": run_id, "sha256": digest, "decision_id": document["decision_id"],
+                   "verdict": document["verdict"], "evaluated_at": document["evaluated_at"],
+                   "engine_version": document["engine_version"],
+                   "created_at": "2026-11-01T20:00:02Z"}  # fmt: skip
+            fake.contract_errors += [e.message for e in DECISION_OUT.iter_errors(out)]
+            fake.decisions[run_id] = out
+            return self._answer(201, out | ({"sha256": "0" * 64} if fake.lie_about_decision else {}))
 
         def do_GET(self) -> None:
             self._handle("GET")
