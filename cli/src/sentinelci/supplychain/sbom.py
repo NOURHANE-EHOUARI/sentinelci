@@ -12,7 +12,8 @@ reconstruction of the manifest, which no registry knows, so its SBOM would name 
 The output is checked before anyone uses it: a CycloneDX document with a `serialNumber` (what binds the signed
 SBOM to the vulnerability attestation, ADR-0010) and an SPDX document. For an image, both must name the
 manifest digest the build produced (`image_digest`): an SBOM of another image, or of an image Syft read
-differently, never passes for this one. Anything else fails closed.
+differently, never passes for this one. Before Syft runs, every blob of the layout must hold the content its
+digest names (`layout.py`): Syft checks the manifest, not the layers. Anything else fails closed.
 """
 
 import json
@@ -26,6 +27,7 @@ from typing import Literal
 from sentinelci.scanners.errors import ScannerError
 from sentinelci.scanners.lock import ToolLock
 from sentinelci.scanners.runner import DEFAULT_TIMEOUT_S, ToolRun, run_verified_tool
+from sentinelci.supplychain.layout import check_oci_layout
 
 SourceKind = Literal["dir", "oci-dir", "oci-archive"]
 SOURCE_KINDS: tuple[SourceKind, ...] = ("dir", "oci-dir", "oci-archive")
@@ -147,6 +149,8 @@ def generate_sbom(
         raise ScannerError(f"{target} is not a directory")
     if kind == "oci-archive" and not source.is_file():
         raise ScannerError(f"{target} is not a file")
+    if image_digest is not None:  # Syft does not check the layer blobs: every byte of the image is, first
+        check_oci_layout(source, archive=kind == "oci-archive", image_digest=image_digest)
     with tempfile.TemporaryDirectory(prefix="sentinel-syft-") as private:
         work = Path(private)
         cwd = work / "cwd"  # empty: Syft finds no .syft.yaml here
