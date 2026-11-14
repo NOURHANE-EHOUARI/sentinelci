@@ -12,6 +12,7 @@ updates:
         patterns: ["*"]
 
   # Python workspace (uv.lock). demo-shop/ is intentionally vulnerable and deliberately NOT listed here.
+  # Minor and patch updates come grouped; a major version comes in its own pull request, to be judged alone.
   - package-ecosystem: uv
     directory: /
     schedule:
@@ -21,8 +22,11 @@ updates:
     groups:
       python:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   # The dashboard (platform/web/package-lock.json). Exact versions; npm never runs package scripts there.
+  # Minor and patch updates come grouped; a major version comes in its own pull request (#96 grouped TypeScript 7,
+  # which openapi-typescript 7 does not accept as a peer, with two updates that pass, so `npm ci` failed for all).
   - package-ecosystem: npm
     directory: /platform/web
     schedule:
@@ -32,6 +36,11 @@ updates:
     groups:
       dashboard:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # The typed client's generator (openapi-typescript 7) requires TypeScript 5 as a peer.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
 
   # Local platform images (deploy/compose), pinned by tag and digest.
   - package-ecosystem: docker-compose
@@ -44,7 +53,9 @@ updates:
       compose:
         patterns: ["*"]
 
-  # Base images of the platform Dockerfiles.
+  # Base images of the platform Dockerfiles. Python stays on 3.12 (the version every workflow sets up),
+  # and uv on the version CI pins (setup-uv in the workflows): moving either is a deliberate change of its own,
+  # in every place at once, never a bump of one Dockerfile (#7 proposed python 3.15 and uv 0.13). Patches come.
   - package-ecosystem: docker
     directory: /platform/api
     schedule:
@@ -54,3 +65,8 @@ updates:
     groups:
       docker:
         patterns: ["*"]
+    ignore:
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: astral-sh/uv
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
