@@ -14,6 +14,9 @@ seeds:
     owner: A9
     category: SECRET
     title: GitHub token in the shop-api settings
+    relevance: 3  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      a GitHub token in the repository: whoever reads the code can push to it (supply chain)
     location: {path: services/shop-api/config/settings.yaml, line: 8}
     fake: true
     expected:
@@ -25,6 +28,9 @@ seeds:
     owner: A9
     category: SECRET
     title: npm publish token in the web app's .npmrc
+    relevance: 3  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      an npm publish token: whoever reads the code can publish the web app's packages (supply chain)
     location: {path: services/web/.npmrc, line: 3}
     fake: true
     expected:
@@ -36,6 +42,9 @@ seeds:
     owner: A9
     category: SECRET
     title: AWS access key hard-coded in the Terraform provider
+    relevance: 3  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      an AWS access key: whoever reads the code acts as the provider's account
     location: {path: infra/terraform/providers.tf, line: 14}
     fake: true
     expected:
@@ -47,6 +56,9 @@ seeds:
     owner: A9
     category: SECRET
     title: TLS private key committed in a Kubernetes Secret
+    relevance: 2  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      the shop's TLS key: impersonating the shop also needs a network position
     location: {path: infra/k8s/shop-tls-secret.yaml, line: 15}
     fake: true
     expected:
@@ -58,6 +70,9 @@ seeds:
     owner: A9
     category: SECRET
     title: Slack webhook in the production GitOps values
+    relevance: 1  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      a Slack webhook: posts messages to one channel, no data read
     location: {path: gitops/values-prod.yaml, line: 7}
     fake: true
     expected:
@@ -70,6 +85,9 @@ seeds:
     owner: A9
     category: IAC
     title: Product-images bucket public through its ACL and public-access block
+    relevance: 1  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      the product-images bucket is public: product images are public content anyway
     location: {path: infra/terraform/storage.tf, line: 8}
     expected:
       detections:
@@ -80,6 +98,9 @@ seeds:
     owner: A9
     category: IAC
     title: SSH open to 0.0.0.0/0
+    relevance: 2  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      SSH open to the internet: an attacker still needs a key or a password
     location: {path: infra/terraform/network.tf, line: 11}
     expected:
       detections:
@@ -89,6 +110,9 @@ seeds:
     owner: A9
     category: IAC
     title: Orders database publicly accessible and not encrypted
+    relevance: 3  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      the orders database is reachable from the internet and unencrypted: customer data exposed
     location: {path: infra/terraform/database.tf, line: 10}
     expected:
       detections:
@@ -99,6 +123,9 @@ seeds:
     owner: A9
     category: IAC
     title: IAM policy allowing every action on every resource
+    relevance: 2  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      an IAM policy allowing everything: it needs a foothold that uses it
     location: {path: infra/terraform/iam.tf, line: 8}
     # Trivy 0.76.1's embedded checks do not flag this policy (jsonencode or aws_iam_policy_document); SentinelCI's
     # own Trivy check SENTINEL-AWS-0001 (cli/src/sentinelci/scanners/configs/trivy-checks) does.
@@ -110,6 +137,10 @@ seeds:
     owner: A9
     category: IAC
     title: Privileged root container with host network and the host filesystem mounted
+    relevance: 2  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      a privileged root container with the host's network and file system: a compromise of shop-api becomes
+      the node's, but it needs that compromise first
     location: {path: infra/k8s/shop-api.yaml, line: 25}
     expected:
       detections:
@@ -121,6 +152,9 @@ seeds:
     owner: A9
     category: IAC
     title: Container image runs as root (end-of-life base by mutable tag, remote script piped to sh)
+    relevance: 1  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      the image runs as root on an end-of-life base: hardening, no direct path
     location: {path: services/shop-api/Dockerfile, line: 3}
     expected:
       detections:
@@ -131,6 +165,9 @@ seeds:
     owner: A9
     category: PIPELINE
     title: pull_request_target builds the untrusted head with secrets (pwn request)
+    relevance: 3  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      pwn request: any fork's pull request runs with the repository's secrets
     location: {path: examples/bad-workflows/pwn-request.yml, line: 7}
     expected:
       gate: SC-009
@@ -141,6 +178,9 @@ seeds:
     owner: A9
     category: PIPELINE
     title: Issue title injected into a shell script
+    relevance: 3  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      any user who opens an issue runs a shell command in CI
     location: {path: examples/bad-workflows/issue-title-injection.yml, line: 18}
     expected:
       gate: SC-009
@@ -151,6 +191,9 @@ seeds:
     owner: A9
     category: PIPELINE
     title: write-all token, actions on mutable refs, secrets inherited by a remote workflow
+    relevance: 2  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      write-all token, unpinned actions and inherited secrets: exploited through an upstream compromise
     location: {path: examples/bad-workflows/overprivileged-unpinned.yml, line: 10}
     expected:
       gate: SC-009
@@ -167,6 +210,10 @@ seeds:
     owner: A9
     category: SCA
     title: PyYAML 5.3.1, arbitrary code execution through full_load
+    relevance: 3  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      PyYAML 5.3.1 is imported and loads untrusted input with FullLoader on the internet-facing shop-api (GT-
+      SAST-003): remote code execution
     location: {path: services/shop-api/requirements.txt, line: 20}
     package: pkg:pypi/pyyaml@5.3.1
     vulnerability: GHSA-8q59-q68h-6hv4
@@ -184,6 +231,9 @@ seeds:
     owner: A9
     category: SCA
     title: requests 2.30.0 leaks the Proxy-Authorization header on an HTTPS redirect
+    relevance: 1  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      the leak needs a proxy with credentials and an HTTPS redirect
     location: {path: services/shop-api/requirements.txt, line: 22}
     package: pkg:pypi/requests@2.30.0
     vulnerability: GHSA-j8r2-6x86-q33q
@@ -198,6 +248,9 @@ seeds:
     owner: A9
     category: SCA
     title: lxml 4.6.2 HTML cleaner XSS, in a dependency the service never imports
+    relevance: 1  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      lxml is never imported
     location: {path: services/shop-api/requirements.txt, line: 18}
     package: pkg:pypi/lxml@4.6.2
     vulnerability: GHSA-jq4v-f5q6-mjqq
@@ -212,6 +265,9 @@ seeds:
     owner: A9
     category: SCA
     title: lodash 4.17.20 command injection through template
+    relevance: 1  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      lodash's template injection needs an attacker-controlled template, in the browser front end
     location: {path: services/web/package.json, line: 8}
     package: pkg:npm/lodash@4.17.20
     vulnerability: GHSA-35jh-r3h4-6jhm
@@ -226,6 +282,9 @@ seeds:
     owner: A9
     category: SCA
     title: minimist 1.2.5 prototype pollution, in a dependency the front end never imports
+    relevance: 1  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      minimist is never imported
     location: {path: services/web/package.json, line: 10}
     package: pkg:npm/minimist@1.2.5
     vulnerability: GHSA-xvch-5gv4-984h
@@ -241,6 +300,9 @@ seeds:
     owner: A9
     category: SCA
     title: log4j-core 2.14.1 remote code execution (Log4Shell), listed in CISA KEV
+    relevance: 2  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      Log4Shell, exploited in the wild, but the reports service has no deployment manifest in demo-shop
     location: {path: services/reports/pom.xml, line: 27}
     package: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
     vulnerability: GHSA-jfh8-c2jp-5v3q
@@ -255,6 +317,10 @@ seeds:
     owner: A9
     category: SCA
     title: spring-beans 5.3.17 remote code execution (Spring4Shell), listed in CISA KEV
+    relevance: 2  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      Spring4Shell, exploited in the wild, but it needs Tomcat with a WAR deployment, and the reports service
+      has no deployment manifest in demo-shop
     location: {path: services/reports/pom.xml, line: 32}
     package: pkg:maven/org.springframework/spring-beans@5.3.17
     vulnerability: GHSA-36p3-wjmg-h94x
@@ -269,6 +335,9 @@ seeds:
     owner: A9
     category: SCA
     title: lodash-es 4.17.20 command injection through template, left over and never imported
+    relevance: 1  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      lodash-es is never imported
     location: {path: services/web/package.json, line: 9}
     package: pkg:npm/lodash-es@4.17.20
     vulnerability: GHSA-35jh-r3h4-6jhm
@@ -288,6 +357,9 @@ seeds:
     owner: B9
     category: SAST
     title: Product search builds its SQL from the query string
+    relevance: 3  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      SQL injection in a public route of the internet-facing shop-api
     location: {path: services/shop-api/app/main.py, line: 31}
     expected:  # HIGH, P1: a warning
       gate: SC-006
@@ -298,6 +370,9 @@ seeds:
     owner: B9
     category: SAST
     title: Supplier ping runs a shell command built from a query parameter
+    relevance: 3  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      command injection in a public route of the internet-facing shop-api
     location: {path: services/shop-api/app/main.py, line: 46}
     expected:  # HIGH, P1: a warning
       gate: SC-006
@@ -308,6 +383,9 @@ seeds:
     owner: B9
     category: SAST
     title: Order import loads untrusted YAML with FullLoader (pyyaml 5.3.1, GT-SCA-001)
+    relevance: 3  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      untrusted YAML loaded with FullLoader in a public route: remote code execution (GT-SCA-001)
     location: {path: services/shop-api/app/main.py, line: 60}
     expected:  # HIGH, P1: a warning
       gate: SC-006
@@ -318,6 +396,10 @@ seeds:
     owner: B9
     category: SAST
     title: Price-list proxy fetches any URL with TLS verification turned off
+    relevance: 2  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      server-side requests to any URL with TLS verification off: reaches internal services, but not code
+      execution
     location: {path: services/shop-api/app/main.py, line: 67}
     expected:  # MEDIUM, P2: no gate rule
       detections:
@@ -327,6 +409,9 @@ seeds:
     owner: B9
     category: SAST
     title: Discount rule evaluated as Python from a query parameter
+    relevance: 3  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      Python evaluated from a query parameter in a public route: remote code execution
     location: {path: services/shop-api/app/main.py, line: 75}
     expected:  # HIGH, P1: a warning
       gate: SC-006
@@ -337,6 +422,9 @@ seeds:
     owner: B9
     category: SAST
     title: FastAPI debug mode shows stack traces to any client
+    relevance: 1  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      debug mode shows stack traces: information disclosure
     location: {path: services/shop-api/app/main.py, line: 15}
     expected:  # MEDIUM, P2: no gate rule
       detections:

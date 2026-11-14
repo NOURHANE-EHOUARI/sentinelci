@@ -96,6 +96,16 @@ def test_ground_truth_is_well_formed() -> None:
     assert set(TRUTH) <= {"version", "seeds", "canaries", "controls"}
 
 
+def test_every_seed_has_a_ranking_relevance_and_its_reason() -> None:
+    """B8's ranking is scored with these grades (README, "Ranking relevance"); a seed without one could not be
+    ranked, and a control is never relevant."""
+    for seed in SEEDS:
+        assert seed.get("relevance") in {1, 2, 3}, f"{seed['id']}: relevance 1, 2 or 3"
+        assert str(seed.get("relevance_why", "")).strip(), f"{seed['id']}: say why"
+    for entry in [*CONTROLS, *TRUTH.get("canaries", [])]:
+        assert "relevance" not in entry, f"{entry['id']}: only seeds are ranked"
+
+
 # ---------------------------------------------------------------- prompt-injection canaries (B9)
 
 
