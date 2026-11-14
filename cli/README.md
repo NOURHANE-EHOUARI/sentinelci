@@ -400,8 +400,10 @@ SENTINEL_API_TOKEN=... uv run sentinel upload --findings out/findings.ndjson --a
 - **CI runs resume themselves.** With `--run-id`, the platform answers the same CI run again with 409 and the
   run it has (API 1.1.0), so the same command again finishes or confirms that run, with no `--resume`. The run
   id is free text: in GitHub Actions it is `<run id>/<run attempt>` (the scan's `--run-id` too, since the
-  findings carry it), so a re-run of the job is a new run, as it is a new scan and a new decision. A run with no
-  `--run-id` (a local run) is recorded anew each time.
+  findings carry it), so a re-run of the job is a new run, as it is a new scan and a new decision. After a
+  BLOCK, re-run **all** jobs: "Re-run failed jobs" runs only the gate, in a new attempt but on the scan of the
+  first one, so its findings name another run id and the upload refuses them before sending anything (#87
+  review). A run with no `--run-id` (a local run) is recorded anew each time.
 - **The decision (`--decision`, API 1.6.0)** is sent last, once the findings are recorded: the Decision v1
   record `sentinel evaluate` wrote, byte for byte (`POST /api/v1/runs/{id}/decision`). The platform keeps one
   decision per run, and only the one made on exactly the findings it recorded. So `--findings` must then be

@@ -286,6 +286,9 @@ def test_a_lost_answer_to_the_decision_names_the_run_and_the_same_command_confir
     failed = upload_with(tmp_path, platform, data, record, "--run-id", "7/1")
     (run_id,) = fake.runs
     assert failed.exit_code == 4 and f"--resume {run_id}" in failed.output
+    # The platform may hold the decision (it does here): the CLI must not say it does not (#87 review).
+    assert "the decision was not recorded" not in failed.output
+    assert f"the decision may be recorded or not (the findings are, in run {run_id})" in failed.output
     monkeypatch.setattr(Platform, "post_decision", sent)
     again = upload_with(tmp_path, platform, data, record, "--run-id", "7/1")
     assert again.exit_code == 0, again.output

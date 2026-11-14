@@ -65,11 +65,12 @@ class UploadError(Exception):
 
 
 class DecisionNotRecorded(UploadError):
-    """The findings are recorded, in `run_id`, but the decision is not (the verdict is unaffected)."""
+    """The findings are recorded, in `run_id`, but the decision is not, or, when `unconfirmed` (its answer was
+    lost), may not be (the verdict is unaffected)."""
 
-    def __init__(self, message: str, run_id: str) -> None:
+    def __init__(self, message: str, run_id: str, *, unconfirmed: bool = False) -> None:
         super().__init__(message)
-        self.run_id = run_id
+        self.run_id, self.unconfirmed = run_id, unconfirmed
 
 
 @dataclass(frozen=True)
@@ -386,8 +387,8 @@ def _record_decision(uploaded: Uploaded, data: bytes, record: Decision, platform
     except UploadError as exc:
         try:
             _name_the_run(run_id, exc)
-        except UploadError as named:
-            raise refused(str(named)) from exc
+        except UploadError as named:  # the answer was lost: the platform may hold the decision (#87 review)
+            raise DecisionNotRecorded(str(named), run_id, unconfirmed=True) from exc
     done = replace(uploaded, decision_sha256=digest, verdict=record.verdict)
     if status == 201 and isinstance(body, dict):
         if body.get("sha256") != digest or str(body.get("run_id")) != run_id:

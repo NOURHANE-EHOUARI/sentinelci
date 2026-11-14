@@ -636,7 +636,8 @@ def upload_command(
         said, token = str(exc), os.environ.get(TOKEN_VARIABLE, "").strip()
         said = said.replace(token, f"<{TOKEN_VARIABLE}>") if token else said
         if isinstance(exc, DecisionNotRecorded):
-            what = f"the decision was not recorded (the findings are, in run {exc.run_id})"
+            state = "may be recorded or not" if exc.unconfirmed else "was not recorded"
+            what = f"the decision {state} (the findings are, in run {exc.run_id})"
         typer.echo(f"sentinel upload: {said}\n{what} (the verdict is unchanged)", err=True)
         raise typer.Exit(EXIT_UPLOAD_FAILED) from exc
     except Exception as exc:
