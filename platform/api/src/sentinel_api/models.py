@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -139,4 +140,82 @@ class RunDecision(Base):
     evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     engine_version: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    document: Mapped[bytes] = deferred(mapped_column(LargeBinary, nullable=False))
+
+
+class Release(Base):
+    """One release decision and what `sentinel verify` found about its image (Release evidence v1, A4 and A8),
+    kept byte for byte. A decision is recorded once: its evidence never changes. The columns repeat what the
+    document says, for listing and filtering; the document is the record."""
+
+    __tablename__ = "releases"
+    __table_args__ = (
+        CheckConstraint("sha256 ~ '^[a-f0-9]{64}$'", name="releases_sha256"),
+        CheckConstraint("encode(sha256(document), 'hex') = sha256", name="releases_bytes_match"),
+        CheckConstraint("commit ~ '^[a-f0-9]{40}$'", name="releases_commit"),
+        CheckConstraint("image_digest ~ '^sha256:[a-f0-9]{64}$'", name="releases_image_digest"),
+        CheckConstraint("verdict IN ('PASS', 'WARN', 'BLOCK')", name="releases_verdict"),
+        # The gate blocked it: nothing was signed, so nothing can have been verified as trusted.
+        CheckConstraint("verdict <> 'BLOCK' OR trusted IS NULL", name="releases_block_never_trusted"),
+    )
+
+    decision_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    # The order of recording, for "the latest release of an image": created_at can tie.
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(always=True), unique=True)
+    repo: Mapped[str] = mapped_column(String(200), index=True)
+    commit: Mapped[str] = mapped_column(String(40))
+    ref: Mapped[str | None] = mapped_column(String(255))
+    image_digest: Mapped[str] = mapped_column(String(71), index=True)
+    verdict: Mapped[str] = mapped_column(String(5))
+    # Every trust report trusts the image (True), one does not (False), or none was sent (None: a BLOCK).
+    trusted: Mapped[bool | None] = mapped_column(Boolean)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    sha256: Mapped[str] = mapped_column(String(64))
+    document: Mapped[bytes] = deferred(mapped_column(LargeBinary, nullable=False))
+
+
+class Remediation(Base):
+    """One attempt of the remediation loop (Remediation attempt v1, A6 and A8): the proposal and its
+    verification result, kept byte for byte, once. A retry is another proposal, so another row. The columns
+    repeat what the document says, for listing, filtering and the metric; the document is the record."""
+
+    __tablename__ = "remediations"
+    __table_args__ = (
+        CheckConstraint("sha256 ~ '^[a-f0-9]{64}$'", name="remediations_sha256"),
+        CheckConstraint("encode(sha256(document), 'hex') = sha256", name="remediations_bytes_match"),
+        CheckConstraint(
+            "strategy IN ('deterministic:dependency-bump', 'deterministic:dockerfile', "
+            "'deterministic:kubernetes', 'llm:code')",
+            name="remediations_strategy",
+        ),
+        CheckConstraint("outcome IN ('VERIFIED', 'REJECTED', 'FAILED')", name="remediations_outcome"),
+        CheckConstraint("verdict IN ('PASS', 'WARN', 'BLOCK')", name="remediations_verdict"),
+        CheckConstraint("attempt BETWEEN 1 AND 3", name="remediations_attempt"),
+        # The verification gate of SPEC section 9.2, again: VERIFIED only when every condition holds.
+        CheckConstraint(
+            "outcome <> 'VERIFIED' OR (build_ok AND tests_ok AND target_resolved AND new_finding_count = 0 "
+            "AND verdict <> 'BLOCK')",
+            name="remediations_verified_gate",
+        ),
+    )
+
+    proposal_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    # The order of recording, for "newest first": created_at can tie.
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(always=True), unique=True)
+    repo: Mapped[str] = mapped_column(String(200), index=True)
+    strategy: Mapped[str] = mapped_column(String(40))
+    attempt: Mapped[int] = mapped_column(Integer)
+    finding_count: Mapped[int] = mapped_column(Integer)
+    outcome: Mapped[str] = mapped_column(String(8))
+    verdict: Mapped[str] = mapped_column(String(5))
+    build_ok: Mapped[bool] = mapped_column(Boolean)
+    tests_ok: Mapped[bool] = mapped_column(Boolean)
+    target_resolved: Mapped[bool] = mapped_column(Boolean)
+    new_finding_count: Mapped[int] = mapped_column(Integer)
+    pull_request: Mapped[int | None] = mapped_column(Integer)
+    proposed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    sha256: Mapped[str] = mapped_column(String(64))
     document: Mapped[bytes] = deferred(mapped_column(LargeBinary, nullable=False))

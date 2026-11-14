@@ -28,6 +28,7 @@ from pydantic import ValidationError
 from sentinelci import __version__
 from sentinelci.contracts.decision import Decision
 from sentinelci.contracts.finding import Finding, Run, RunContext, Tool
+from sentinelci.contracts.release import TrustReport as TrustReportContract
 from sentinelci.contracts.remediation import PatchProposal
 from sentinelci.enrich import (
     EMPTY_SNAPSHOT,
@@ -84,6 +85,8 @@ from sentinelci.report.pr_comment import (
     render_no_decision,
     render_pr_comment,
 )
+from sentinelci.report.release_upload import release_evidence, upload_release
+from sentinelci.report.remediation_upload import remediation_attempt, upload_remediation
 from sentinelci.report.upload import (
     TOKEN_VARIABLE,
     DecisionNotRecorded,
@@ -112,7 +115,13 @@ from sentinelci.scanners.status import (
 from sentinelci.scanners.trivy import remote_modules, scan_iac_with_run
 from sentinelci.scanners.zizmor import scan_pipelines_with_run
 from sentinelci.supplychain.admission import render_policy
-from sentinelci.supplychain.attestations import KINDS, AttestationError, parse_image, release_predicates
+from sentinelci.supplychain.attestations import (
+    KINDS,
+    AttestationError,
+    contract_errors,
+    parse_image,
+    release_predicates,
+)
 from sentinelci.supplychain.cosign import (
     Signer,
     Verifier,
@@ -121,7 +130,13 @@ from sentinelci.supplychain.cosign import (
     registry_for,
 )
 from sentinelci.supplychain.sbom import SOURCE_KINDS, SourceKind, generate_sbom
-from sentinelci.supplychain.verify import ATTESTATIONS_DIR, verify_evidence, verify_registry
+from sentinelci.supplychain.verify import (
+    ATTESTATIONS_DIR,
+    public_key_sha256,
+    report_document,
+    verify_evidence,
+    verify_registry,
+)
 
 EXIT_UNTRUSTED_INPUT = 3
 DEFAULT_TOOLS_DIR = Path(".sentinel/tools")
@@ -661,6 +676,99 @@ def upload_command(
             "decision_already_recorded": uploaded.decision_already_recorded,
         }
     typer.echo(json.dumps(printed))
+
+
+@app.command("upload-release")
+def upload_release_command(
+    decision: Annotated[
+        Path, typer.Option(help="The release decision (`sentinel evaluate --context release`).")
+    ],
+    api_url: Annotated[
+        str, typer.Option(help="The platform, https:// (or http://localhost for a local platform).")
+    ],
+    trust_report: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--trust-report",
+            help="A `sentinel verify --report-json` report of the image (repeatable: registry, evidence). "
+            "None for a BLOCK, which nothing signed.",
+        ),
+    ] = None,
+) -> None:
+    """Send one release's evidence to the SentinelCI platform (Releases & evidence page), after the release.
+
+    The token comes only from the SENTINEL_API_TOKEN environment variable. Exit code 0 when the platform
+    recorded exactly this evidence (also when it already had it), 4 when it did not: the release itself, its
+    decision and its signatures are unchanged either way.
+    """
+    try:
+        data = release_evidence(decision.read_bytes(), [path.read_bytes() for path in trust_report or []])
+        uploaded = upload_release(data, platform_from(api_url))
+    except (OSError, UploadError) as exc:
+        said, token = str(exc), os.environ.get(TOKEN_VARIABLE, "").strip()
+        said = said.replace(token, f"<{TOKEN_VARIABLE}>") if token else said
+        typer.echo(f"sentinel upload-release: {said}\nthe release evidence was not uploaded", err=True)
+        raise typer.Exit(EXIT_UPLOAD_FAILED) from exc
+    except Exception as exc:
+        # Last resort, as for `sentinel upload`: only the type, never an unexpected error's text.
+        typer.echo(
+            f"sentinel upload-release: unexpected {type(exc).__name__}\n"
+            "the release evidence was not uploaded",
+            err=True,
+        )
+        raise typer.Exit(EXIT_UPLOAD_FAILED) from None
+    typer.echo(
+        json.dumps(
+            {
+                "decision_id": uploaded.decision_id,
+                "image_digest": uploaded.image_digest,
+                "sha256": uploaded.sha256,
+                "already_recorded": uploaded.already_recorded,
+            }
+        )
+    )
+
+
+@app.command("upload-remediation")
+def upload_remediation_command(
+    proposal: Annotated[Path, typer.Option(help="The patch proposal (Patch proposal v1) of the attempt.")],
+    result: Annotated[Path, typer.Option(help="Its verification result (Verification result v1).")],
+    repo: Annotated[str, typer.Option(help="The repository the proposal was made for, owner/name.")],
+    api_url: Annotated[
+        str, typer.Option(help="The platform, https:// (or http://localhost for a local platform).")
+    ],
+) -> None:
+    """Send one attempt of the remediation loop to the SentinelCI platform (Remediation page).
+
+    The token comes only from the SENTINEL_API_TOKEN environment variable. Exit code 0 when the platform
+    recorded exactly this attempt (also when it already had it), 4 when it did not: the pull request and its
+    verification are unchanged either way.
+    """
+    try:
+        data = remediation_attempt(proposal.read_bytes(), result.read_bytes(), repo=repo)
+        uploaded = upload_remediation(data, platform_from(api_url))
+    except (OSError, UploadError) as exc:
+        said, token = str(exc), os.environ.get(TOKEN_VARIABLE, "").strip()
+        said = said.replace(token, f"<{TOKEN_VARIABLE}>") if token else said
+        typer.echo(f"sentinel upload-remediation: {said}\nthe attempt was not uploaded", err=True)
+        raise typer.Exit(EXIT_UPLOAD_FAILED) from exc
+    except Exception as exc:
+        # Last resort, as for `sentinel upload`: only the type, never an unexpected error's text.
+        typer.echo(
+            f"sentinel upload-remediation: unexpected {type(exc).__name__}\nthe attempt was not uploaded",
+            err=True,
+        )
+        raise typer.Exit(EXIT_UPLOAD_FAILED) from None
+    typer.echo(
+        json.dumps(
+            {
+                "proposal_id": uploaded.proposal_id,
+                "outcome": uploaded.outcome,
+                "sha256": uploaded.sha256,
+                "already_recorded": uploaded.already_recorded,
+            }
+        )
+    )
 
 
 @app.command("replay")
@@ -1727,6 +1835,13 @@ def verify_command(
         ),
     ] = None,
     registry_http: RegistryHttpOption = False,
+    report_json: Annotated[
+        Path | None,
+        typer.Option(
+            help="Also write the trust report as JSON (schemas/trust-report.v1.json), trusted or not: what "
+            "`sentinel upload-release` sends to the platform. Not written when the verification cannot run."
+        ),
+    ] = None,
     lock: LockOption = Path(LOCK_FILE_NAME),
     tools_dir: Annotated[
         Path, typer.Option("--tools-dir", help="Where `sentinel tools install` put the tools.")
@@ -1739,20 +1854,45 @@ def verify_command(
     (for example a Cosign binary that does not match tools.lock.toml). Both non-zero codes refuse the image.
     """
     try:
+        if report_json is not None:
+            # Refused before anything is removed: the key must survive a wrong option (review of #86).
+            if report_json.resolve() == key.resolve():
+                raise AttestationError("--report-json cannot be the public key")
+            report_json.unlink(missing_ok=True)  # an older report must never stand for this verification
         target = parse_image(image)
         check_public_key(key)  # a broken setup is "could not run" (3), not "this image is bad" (1)
+        key_sha256 = public_key_sha256(key)
         verifier = Verifier(key, load_lock(lock), tools_dir, platform)
         if evidence is not None:
             report = verify_evidence(target, evidence, verifier, repo=repo, builder_id=builder_id)
         else:
             registry = registry_for(target, allow_http=registry_http)
             report = verify_registry(target, verifier, registry, os.environ, repo=repo, builder_id=builder_id)
+        if report_json is not None:
+            document = report_document(
+                report, mode="evidence" if evidence is not None else "registry", repo=repo,
+                builder_id=builder_id, key_sha256=key_sha256, verified_at=datetime.now(UTC),
+            )  # fmt: skip
+            _write_trust_report(document, report_json)
     except (AttestationError, ToolIntegrityError, ScannerError) as exc:
         typer.echo(f"sentinel verify: {exc}\nFAIL CLOSED: the image is not trusted.", err=True)
         raise typer.Exit(EXIT_NO_DECISION) from exc
     typer.echo(report.render(), nl=False)
     if not report.trusted:
         raise typer.Exit(EXIT_UNTRUSTED)
+
+
+def _write_trust_report(document: dict[str, Any], destination: Path) -> None:
+    """Write a trust report the contract accepts, or refuse (a value the report cannot carry, such as a
+    repository or builder id outside the contract's shapes)."""
+    try:
+        parsed = TrustReportContract.model_validate_json(json.dumps(document))
+    except ValidationError as exc:
+        raise AttestationError(f"the trust report is not a trust report v1: {contract_errors(exc)}") from exc
+    if (problem := parsed.problem()) is not None:
+        raise AttestationError(f"the trust report contradicts itself: {problem}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
 
 @app.command("sbom")

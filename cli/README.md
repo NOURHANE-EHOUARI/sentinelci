@@ -258,6 +258,13 @@ uv run sentinel verify registry.local/demo-shop/shop-api@sha256:<digest> --evide
 - Exit code `0` trusted, `1` not trusted (any check failed), `3` the verification could not run (for example
   a Cosign binary that does not match `tools.lock.toml`). Offline: the evidence directory and the public key
   are all it needs.
+- `--report-json <file>` also writes the report as `schemas/trust-report.v1.json`, trusted or not: the mode
+  (`registry` or `evidence`), the repository and builder id required, the sha256 of the public key (its DER
+  bytes, so a key file's line endings do not change it), the time, the `decision_id` of the decision it
+  verified (null without a valid decision attestation: the platform records a report only next to that
+  decision), and every check in order with a one-line detail. An older file at that path is removed first,
+  nothing is written when the verification cannot run (exit `3`), and a `--report-json` that is the public key
+  itself is refused before anything is removed. It is what `sentinel upload-release` sends to the platform.
 
 ## `sentinel scan sca` (dependency vulnerabilities, A1)
 
@@ -414,6 +421,41 @@ uv run sentinel sbom out/image-oci --source oci-dir --name demo-shop/shop-api \
   `sentinel attest` binds, ADR-0010) and an SPDX document. An output inside the target, a directory, the same
   file for both, or a path that cannot be cleared is refused before anything is written.
 - The package count it prints leaves out the operating-system component Syft adds for an image.
+
+## `sentinel upload-release` (release evidence to the platform, A8)
+
+```bash
+SENTINEL_API_TOKEN=... uv run sentinel upload-release --decision out/release/evidence/decision.v1.json \
+  --trust-report out/release/evidence/trust-report.registry.json \
+  --trust-report out/release/evidence/trust-report.evidence.json --api-url http://localhost:8000
+```
+
+- Sends `schemas/release-evidence.v1.json` to `POST /api/v1/releases`: the release decision and the trust
+  reports of its image (none for a BLOCK, which nothing signed), registry mode first. The Releases & evidence
+  page shows it.
+- Checked first as the platform checks it (a release decision about an image; each report about that image
+  and repository, one per mode, `trusted` exactly when every check passed; no trusted report for a BLOCK), so a
+  document the platform would refuse is never sent. The same files always give the same bytes.
+- A release is recorded once: sending the same evidence again is "already recorded" (exit `0`); other
+  evidence for a recorded decision is refused (exit `4`), since a release never changes.
+- Like `sentinel upload`: the token only from `SENTINEL_API_TOKEN`, https or the loopback only, no redirect,
+  exit `4` on any failure with a line that names no secret. A report: the release, its decision and its
+  signatures are unchanged whatever happens.
+
+## `sentinel upload-remediation` (a remediation attempt to the platform, A8)
+
+```bash
+SENTINEL_API_TOKEN=... uv run sentinel upload-remediation --proposal proposal.json --result result.json \
+  --repo NOURHANE-EHOUARI/sentinelci --api-url http://localhost:8000
+```
+
+- Sends `schemas/remediation-attempt.v1.json` to `POST /api/v1/remediations`: the patch proposal, its
+  verification result (`sentinel remediate verify`) and the repository. The Remediation page shows it, and
+  `/metrics` counts it in `sentinel_remediation_attempts_total{strategy,outcome}`.
+- Checked first as the platform checks it: the contracts (VERIFIED only through the verification gate of SPEC
+  §9.2), the result the proposal's (same id and attempt), not verified before the proposal was made.
+- An attempt is recorded once: the same files again are "already recorded" (exit `0`), another document for a
+  recorded proposal is refused (exit `4`). Exit `4` on any failure, with the rules of `sentinel upload`.
 
 ## `sentinel upload` (findings to the platform, M1)
 
