@@ -21,8 +21,10 @@ GitHub. In order, and nothing past a failed step runs:
 4. Decide (ADR-0011, decision 3), in the release context: the SBOM of the image (`sentinel sbom`), Grype's
    database (`sentinel tools grype-db`), the source scans of the build context (secrets, SAST, IaC, CI
    workflows), the image's own scan (CONTAINER findings: the dependencies it ships), then `sentinel score` and
-   `sentinel evaluate --context release --image-digest --sbom`. A scan that fails is recorded in the tool
-   status and blocks (SC-010); the empty findings file it leaves never passes alone. The requirements files
+   `sentinel evaluate --context release --image-digest --sbom`. A scan that fails with a status is recorded
+   in the tool status and blocks (SC-010); the empty findings file it leaves never passes alone. A scan that
+   leaves no status (killed, crashed) stops the release before anything is decided: every scanner of the
+   release must have reported, whatever `required_tools` lists. The requirements files
    are not scanned as source: the image scan reads what was installed from the selected one (hash-pinned,
    `--no-deps`), and the context also holds the other one, which this build does not install.
    A BLOCK stops here, with nothing signed: the image's OCI layout goes to `<out>/block-image` (for
@@ -51,6 +53,7 @@ import binascii
 import functools
 import getpass
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -80,6 +83,9 @@ PUBLIC_KEY = Path("deploy") / "keys" / "release.pub"  # in the repository
 DEFAULT_KEY = Path.home() / ".sentinelci" / "release.key"
 WORK_MARKER = ".sentinel-release-work"
 SCANS = ("secrets", "sast", "iac", "pipelines", "container")
+# Every scanner those scans run. `required_tools` asks only some of them in `release`, so the script checks
+# that each one reported (ok or not) before the gate decides (#82 review).
+RELEASE_TOOLS = frozenset({"gitleaks", "opengrep", "trivy", "zizmor", "syft", "grype"})
 # With --expect-block, 0 is "blocked as expected" and 1 "not blocked": nothing is signed in either case.
 EXIT_RELEASED, EXIT_BLOCKED, EXIT_FAILED = 0, 1, 3
 COSIGN_IMAGE = "dev.cosignproject.cosign/image"
@@ -133,8 +139,15 @@ def run_command(
         raise ReleaseError(f"{args[0]} could not run: {type(exc).__name__}") from exc
     if check and done.returncode != 0:
         last = ((done.stderr or "").strip().splitlines() or ["see the output above"])[-1]
-        raise ReleaseError(f"{' '.join(args[:3])} failed ({done.returncode}): {last}")
+        raise ReleaseError(f"{_named(args)} failed ({done.returncode}): {last}")
     return done
+
+
+def _named(args: Sequence[str]) -> str:
+    """How a failure names its command: `sentinel scan combine` for the CLI, not the interpreter's path."""
+    if list(args[1:3]) == ["-m", "sentinelci.cli"]:
+        return " ".join(["sentinel", *itertools.takewhile(lambda arg: not arg.startswith("-"), args[3:5])])
+    return " ".join(args[:3])
 
 
 def sentinel(*args: str) -> list[str]:
@@ -186,14 +199,25 @@ def preconditions(run: Runner, *, fetch: bool, environ: Mapping[str, str]) -> st
             "COSIGN_PASSWORD is set: unset it. The key password is asked on the terminal and given only to "
             "the processes that use the key (ADR-0011, decision 4)"
         )
-    origin = run(["git", "config", "--get", "remote.origin.url"], check=False)
+    origin = run(["git", "config", "--get-all", "remote.origin.url"], check=False)
     if origin.returncode != 0:
         raise ReleaseError("this checkout has no `origin` remote")
-    check_origin(origin.stdout)
+    urls = origin.stdout.split()
+    if len(urls) != 1:  # git reads the last, but fetches from the first (#82 review)
+        raise ReleaseError(f"origin has {len(urls)} URLs: give it exactly one, github.com/{REPO}")
+    check_origin(urls[0])
     dirty = run(["git", "status", "--porcelain=v1", "--untracked-files=all"]).stdout.splitlines()
     if dirty:
         shown = ", ".join(line[3:] for line in dirty[:5]) + (", ..." if len(dirty) > 5 else "")
         raise ReleaseError(f"the working tree is not clean ({shown}): release only what main holds")
+    # The gate loads every file under policies/, ignored ones too (a `build/` or `__pycache__/` left by
+    # another branch survives `git checkout main`): none may be there (#82 review).
+    stray = run(
+        ["git", "status", "--porcelain=v1", "--ignored=matching", "--untracked-files=all", "--", "policies"]
+    ).stdout.splitlines()
+    if stray:
+        shown = ", ".join(line[3:] for line in stray[:5]) + (", ..." if len(stray) > 5 else "")
+        raise ReleaseError(f"policies/ holds files git ignores ({shown}): the gate would load them")
     if fetch:
         run(["git", "fetch", "--quiet", "--no-tags", "origin", f"+{MAIN}:refs/remotes/origin/main"])
     head = run(["git", "rev-parse", "--verify", "HEAD^{commit}"]).stdout.strip()
@@ -541,6 +565,20 @@ def tool_versions(*documents: Path) -> list[str]:
     return [f"--tool-version={name}={version}" for name, version in sorted(versions.items())]
 
 
+def check_reported(tool_status: Path) -> None:
+    """Every scanner of the release reported, ok or not. A scan killed or crashed before it wrote its status
+    is left out by `scan combine`, and the gate blocks a missing tool only if `required_tools` lists it."""
+    try:
+        tools = json.loads(tool_status.read_text(encoding="utf-8")).get("tools") or {}
+    except (OSError, ValueError, AttributeError) as exc:
+        raise ReleaseError(f"no combined tool status ({exc}): nothing is decided") from exc
+    missing = sorted(RELEASE_TOOLS - set(tools))
+    if missing:
+        raise ReleaseError(
+            f"no tool status for {', '.join(missing)}: a scan ended without reporting, nothing is decided"
+        )
+
+
 @dataclass(frozen=True)
 class Decided:
     verdict: str
@@ -576,7 +614,7 @@ def decide(commit: str, target: Path, digest: str, paths: Paths, settings: Setti
               "fails, and the gate blocks (SC-010)", file=sys.stderr)  # fmt: skip
     for name, command in scan_commands(commit, target, paths.source, digest, paths, settings).items():
         if run(command, check=False, capture=False).returncode != 0:
-            print(f"release: the {name} scan failed: recorded for the gate (SC-010)", file=sys.stderr)
+            print(f"release: the {name} scan failed: left to the gate", file=sys.stderr)
             (paths.scans / f"{name}.ndjson").write_text("", encoding="utf-8")  # its status says why
     combined = paths.work / "combined.ndjson"
     combine = sentinel("scan", "combine", "--out", str(combined), "--tool-status-out", str(paths.tool_status))
@@ -584,18 +622,18 @@ def decide(commit: str, target: Path, digest: str, paths: Paths, settings: Setti
         combine += ["--findings", str(paths.scans / f"{name}.ndjson")]
         combine += ["--tool-status", str(paths.scans / f"{name}-status.json")]
     run(combine)
+    check_reported(paths.tool_status)
     opa_manifest = paths.work / "opa-manifest.json"
     run(sentinel("tools", "verify", "opa", "--lock", str(settings.lock), "--dest", str(settings.tools_dir),
                  "--report", str(opa_manifest)))  # fmt: skip
     run(sentinel("score", "--findings", str(combined), "--policy-dir", str(settings.policies),
                  "--out", str(paths.findings)))  # fmt: skip
-    status = ["--tool-status", str(paths.tool_status)] if paths.tool_status.is_file() else []
     evaluated = run(
         sentinel(
             "evaluate", "--findings", str(paths.findings), "--repo", REPO, "--commit", commit,
             "--context", "release", "--ref", MAIN, "--image-digest", digest, "--sbom", str(paths.sbom),
             "--policy-dir", str(settings.policies), "--opa", str(settings.tools_dir / "bin" / "opa"),
-            *tool_versions(paths.tool_status, opa_manifest), *status,
+            *tool_versions(paths.tool_status, opa_manifest), "--tool-status", str(paths.tool_status),
             "--store", str(paths.evidence / "store"), "--output", str(paths.decision),
         ),
         check=False,
