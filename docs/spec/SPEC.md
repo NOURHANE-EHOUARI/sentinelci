@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.80 | A6 verification (§9, ADR-0013 decision 6): `sentinel remediate check` takes `--findings`, the scanned commit's IaC findings, and re-runs the deterministic fixer on them and the base tree, now the whole commit (an ADD source may be at the repository root): a proposal that is not the fixer's own output, field for field but `created_at`, fails the tests: it catches any edit the fixer would not make, whatever its shape, on top of 1.1.52's line rule. The verify job exports every tree with `git archive --worktree-attributes` from its bare repository, whose `attr.tree` is the empty tree (#98 review: git reads a bare repository's `HEAD:.gitattributes` once HEAD resolves), so the commit's `.gitattributes` (export-ignore, export-subst, ident, eol, -diff) cannot change what is scanned and checked, nor what Gitleaks' `git log` shows. A result of `check` that is not whole (a crash also exits 1) is refused, so the pull request is FAILED, not REJECTED; a strategy with no fixer to re-run is a CheckError (exit 3). Round 2 (#85 review, nit 2): the patched commit is exported whole too, like the base, since Trivy loads local Terraform modules outside the scan path; `remediate check --help` names every exit-3 case. |
 | 1.1.66 | Platform API 1.6.1 (B1, #78 and #79 reviews): the 409 of `POST /api/v1/runs/{id}/decision` and of `POST /api/v1/runs/{id}/correlations` is documented with both of its shapes (`DecisionExists` or `CorrelationExists` when one is recorded, `ErrorOut` when the run's findings are not recorded yet), so a generated client never assumes the recorded one is there. `GET /api/v1/runs` says that offset pages are stable for a fixed set of runs only. The decisions table says which copied columns the database checks against the document (`decision_id` and `verdict`, which are listed and counted) and which the API only copies for display (`evaluated_at`, `engine_version`). |
 | 1.1.65 | B5b (§8, §13.2): explanations and triage hints. Two contracts, `explanation.v1.json` and `triage-hint.v1.json` (advisory: never read by the gate; a hint is never a waiver), each naming its model and the sha256 of its prompt and input. `sentinel_ai.explain` and `sentinel_ai.triage` send the finding (no id, snippet, evidence or run) and the code around it, redacted then clipped, in escaped data blocks; never a secret's finding, and no code from a file in which the scan found a secret. An explanation cites only the finding's own CWE, CVE and advisory ids and their canonical pages; a triage hint may read the justifications of past waivers of the same rule. One repair retry, an answer that quotes a secret refused, then "unavailable". The shared guardrails are in `sentinel_ai.guardrails`. |
 | 1.1.63 | A8 MTTR and alert reduction (§10): `GET /metrics` adds `sentinel_findings_fixed{priority}` and `sentinel_findings_fix_seconds{priority}` (fixes on each repository's default branch, from its release runs with a recorded decision and no SC-010) and `sentinel_correlated_findings{category}` and `sentinel_root_cause_groups{category}` (each repository's latest correlation). One REPEATABLE READ snapshot per scrape, so a scrape never pairs the count of one set of fixes with the seconds of another. Grafana: MTTR by priority and alert reduction by category, both queries pinned by a test. |
@@ -727,9 +728,16 @@ reported FAILED. For the IaC strategies, `sentinel remediate check` defines the 
 parses into the same resources: a manifest's documents, a Dockerfile's stages) and the tests (the patch changes only
 what its strategy may change: a manifest's pod and container security settings; a Dockerfile's added `USER
 10001:10001` after the final stage's last RUN, ADD → COPY only where the fixer makes it (COPY's flags, plain local
-sources of the base commit's whole tree: never a URL, an archive or a link; the check does not see the other
-findings), `--no-install-recommends`; a file the fixer never edits fails). A strategy with no build or tests defined
-there (the LLM code fixer, B6) is never verified until it has them.
+sources of the base commit's whole tree: never a URL, an archive or a link), `--no-install-recommends`; a file the
+fixer never edits fails). The tests also re-run the deterministic fixer on the scanned commit's whole tree and IaC
+findings: the proposal must be its output, field for field but `created_at` (a deterministic fixer gives the same
+proposal on the same input), which catches any edit the fixer would not make, whatever its shape, including an ADD
+it left alone because another finding sits on it, or one that claims fewer findings. `verify` fetches the scanned
+commit into a bare repository whose `attr.tree` is the empty tree and exports every tree whole with `git archive
+--worktree-attributes`, so the scanned commit's `.gitattributes` cannot drop or rewrite what is scanned and checked,
+or hide a diff from Gitleaks, whatever HEAD becomes, and the base and the patched commit are scanned on trees of the
+same shape. A strategy with no build or tests defined there (the LLM code fixer, B6) is never verified until it has
+them.
 
 ## 10. Dashboard and observability
 

@@ -17,21 +17,26 @@ base and of the patched commit (exported with `git archive`, never checked out):
     tree, never a URL, an archive or a link) and an `apt-get install` may have gained
     `--no-install-recommends`. An added USER line is an instruction of its own in the final stage, with no RUN
     after it: every RUN still runs as the user it ran as. A file the fixer never edits (a byte-order mark, an
-    `escape` parser directive, a heredoc) fails. The check does not see the other findings, so an ADD the
-    fixer left alone because another finding sits on it may still become COPY: that finding's new fingerprint
-    is the gate's to count.
+    `escape` parser directive, a heredoc) fails. These line rules do not see the other findings, so alone they
+    would let an ADD the fixer left alone because another finding sits on it become COPY; the fixer's own
+    proposal, below, does see them.
 
   Whether the new settings are right is the scanners' part: a weaker one is a new finding, which the gate
   counts.
+- **The fixer's own proposal**: a deterministic fixer gives the same proposal on the same tree and findings,
+  so it is re-run on the base tree with the base commit's findings, and the proposal must be its output,
+  field for field (all but `created_at`). The line rules above stay as a guard against a fixer bug and say
+  which line is wrong; this one catches any edit the fixer would not make, whatever its shape. The base tree
+  is then the whole commit: an ADD source may be at the repository root.
 
 Manifests are read with a safe loader that refuses aliases (an alias can make a small file a huge value) and
 duplicate keys (a parser that keeps the first one would read another manifest than this one). What cannot be
 checked honestly raises CheckError, and nothing is verified: a strategy with no build or tests defined here
 (an LLM code fix, B6, will be built and tested with the application), a file that is not a regular file of
-both trees, or a base file this check cannot read.
+both trees, a base file this check cannot read, or base findings the fixer refuses.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -39,6 +44,7 @@ from typing import Any
 
 import yaml
 
+from sentinelci.contracts.finding import Finding
 from sentinelci.contracts.remediation import PatchProposal
 from sentinelci.remediation.dockerfile import (
     NON_ROOT_USER,
@@ -47,8 +53,10 @@ from sentinelci.remediation.dockerfile import (
     check_editable,
     parse_instructions,
 )
+from sentinelci.remediation.dockerfile import propose as propose_dockerfile
 from sentinelci.remediation.kubernetes import POD_SPEC_PATHS
-from sentinelci.remediation.proposal import FixContext, NotFixable
+from sentinelci.remediation.kubernetes import propose as propose_kubernetes
+from sentinelci.remediation.proposal import FixContext, NotFixable, Plan, RemediationError, lines_of
 from sentinelci.scanners.runner import is_within
 
 KUBERNETES = "deterministic:kubernetes"
@@ -71,7 +79,7 @@ class CheckError(Exception):
 class Checked:
     build_ok: bool
     tests_ok: bool
-    problems: list[str]  # "build: <file>: <why>" and "tests: <file>: <why>", in file order
+    problems: list[str]  # "build: <file>: <why>" and "tests: <file>: <why>" in file order, then the replay
 
 
 # ---------------------------------------------------------------- reading the trees
@@ -241,7 +249,7 @@ def _dockerfile_tests(path: str, before: list[str], after: list[str], base_root:
 def _check_dockerfile(
     path: str, before_text: str, after_text: str, base_root: Path
 ) -> tuple[list[str], list[str]]:
-    before, after = before_text.splitlines(keepends=True), after_text.splitlines(keepends=True)
+    before, after = lines_of(before_text), lines_of(after_text)
     build = _dockerfile_build(path, before, after)
     if build:
         return build, []
@@ -250,6 +258,36 @@ def _check_dockerfile(
     except NotFixable as exc:
         return [], [f"{path}: the Dockerfile fixer does not edit this file ({exc})"]
     return [], _dockerfile_tests(path, before, after, base_root)
+
+
+# ---------------------------------------------------------------- the fixer's own proposal
+
+
+Fixer = Callable[..., Plan]
+FIXERS: dict[str, Fixer] = {KUBERNETES: propose_kubernetes, DOCKERFILE: propose_dockerfile}
+
+
+def _replayed(proposal: PatchProposal, base_root: Path, findings: Sequence[Finding]) -> list[str]:
+    """The fixer re-run on the base tree and findings: its proposal must be this one, field for field."""
+    fixer = FIXERS.get(proposal.strategy)
+    if fixer is None:  # a strategy checked here before it has a deterministic fixer: nothing can be replayed
+        raise CheckError(f"no deterministic fixer to re-run for {proposal.strategy}")
+    try:
+        plan = fixer(findings, base_root, attempt=proposal.attempt, created_at=proposal.created_at)
+    except RemediationError as exc:
+        raise CheckError(f"the fixer cannot be re-run on the base findings: {exc}") from exc
+    own = plan.proposal
+    if own is None:
+        return ["not the fixer's own proposal: on the base tree and findings it proposes nothing"]
+    if own != proposal:
+        differ = [
+            field for field in PatchProposal.model_fields if getattr(own, field) != getattr(proposal, field)
+        ]
+        return [
+            f"not the fixer's own proposal: on the base tree and findings it proposes {own.proposal_id} "
+            f"({', '.join(differ)} differ)"
+        ]
+    return []
 
 
 # ---------------------------------------------------------------- the check
@@ -261,9 +299,12 @@ CHECKS: dict[str, Callable[[str, str, str, Path], tuple[list[str], list[str]]]] 
 }
 
 
-def check_iac(proposal: PatchProposal, base_root: Path, patched_root: Path) -> Checked:
-    """Build and test the proposal's files: `base_root` holds the base commit's tree, `patched_root` the
-    patched commit's. CheckError when it cannot be done honestly."""
+def check_iac(
+    proposal: PatchProposal, base_root: Path, patched_root: Path, findings: Sequence[Finding]
+) -> Checked:
+    """Build and test the proposal's files: `base_root` holds the base commit's whole tree, `patched_root` the
+    patched commit's, and `findings` are the base commit's IaC findings the proposal was made from.
+    CheckError when it cannot be done honestly."""
     check = CHECKS.get(proposal.strategy)
     if check is None:
         raise CheckError(f"no build or tests are defined here for strategy {proposal.strategy}")
@@ -282,6 +323,7 @@ def check_iac(proposal: PatchProposal, base_root: Path, patched_root: Path) -> C
             failed, failed_tests = check(path, before, after, base_root)
         build += failed
         tests += [f"{path}: not run, the build failed"] if failed else failed_tests
+    tests += _replayed(proposal, base_root, findings)
     return Checked(
         build_ok=not build,
         tests_ok=not tests,
