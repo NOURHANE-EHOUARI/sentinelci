@@ -719,15 +719,26 @@ def test_a_failed_push_is_named_and_the_others_still_go(bot: Bot) -> None:
     assert done.stdout.count("the push of") == 2, "both proposals were tried, and each failure is named"
 
 
-def test_verify_copies_the_scanned_commit_from_a_shallow_checkout(bot: Bot) -> None:
-    """actions/checkout leaves a depth-1 clone: the bare copy still gets the scanned commit (#125). Git and
-    bash only, so it runs where the end-to-end test is skipped (no SENTINEL_TOOLS_DIR: CI, `make check`)."""
-    run = step("verify", VERIFY_STEP)["run"]
-    start = run.index('repo="$WORK/repo.git"')
-    end = run.index("exit 1; }", run.index("fetch --quiet --no-tags")) + len("exit 1; }")
+@pytest.mark.parametrize(
+    ("job", "name", "start", "end"),
+    [
+        ("propose", PROPOSE_STEP, 'work="$RUNNER_TEMP/propose"', '= "$SHA" ]\n'),
+        ("verify", VERIFY_STEP, 'repo="$WORK/repo.git"', "exit 1; }\n"),
+    ],
+)
+def test_each_bare_copy_gets_the_scanned_commit_from_a_shallow_checkout(
+    bot: Bot, job: str, name: str, start: str, end: str
+) -> None:
+    """actions/checkout leaves a depth-1 clone: each job's bare copy still gets the scanned commit (#118,
+    #125). Git and bash only, so it runs where the end-to-end test is skipped (no SENTINEL_TOOLS_DIR: CI,
+    `make check`)."""
+    run = step(job, name)["run"]
+    begin = run.index(start)
+    lines = run[begin : run.index(end, run.index("fetch --quiet --no-tags", begin)) + len(end)]
     checkout = bot.tmp / "checkout"
     subprocess.run(["git", "clone", "-q", "--depth=1", f"file://{bot.origin}", str(checkout)], check=True)
-    env = {**os.environ, "WORK": str(bot.tmp / "verify"), "CHECKOUT": str(checkout), "BASE_SHA": bot.base}
-    script = run[start:end] + '\ngit -C "$repo" rev-parse refs/sentinel/base\n'
+    env = {**os.environ, "RUNNER_TEMP": str(bot.tmp), "GITHUB_WORKSPACE": str(checkout), "SHA": bot.base,
+           "WORK": str(bot.tmp / "verify"), "CHECKOUT": str(checkout), "BASE_SHA": bot.base}  # fmt: skip
+    script = "set -euo pipefail\n" + lines + 'git -C "$repo" rev-parse refs/sentinel/base\n'
     done = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
     assert done.returncode == 0 and done.stdout.strip() == bot.base, done.stdout + done.stderr
