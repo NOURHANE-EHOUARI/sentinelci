@@ -75,9 +75,12 @@ VERIFYING → VERIFIED | REJECTED | FAILED, "never merges", "verification jobs g
 6. **Build and tests of an IaC patch** (`sentinel remediate check`). A manifest or a Dockerfile has no compiler
    and no unit test, and the demo's are never built. Build: every edited file still parses into the same
    resources (a manifest's documents, a Dockerfile's stages), since a scanner reports nothing in a file it cannot
-   parse. Tests: the patch changes only what its strategy may change. Whether the new settings are right is the
-   scanners' part: a weaker one is a new finding. A strategy with no build or tests defined there is never
-   verified.
+   parse. Tests: the patch changes only what its strategy may change, and the proposal is the fixer's own
+   output: the deterministic fixer is re-run on the scanned commit's whole tree and IaC findings, and must give
+   this proposal, field for field but its time. The line rules stay as a guard against a fixer bug; the re-run
+   catches any edit the fixer would not make (an ADD of a URL or an archive turned into COPY reads as a plain
+   line edit). Whether the new settings are right is the scanners' part: a weaker one is a new finding. A
+   strategy with no build or tests defined there is never verified.
 
 ## Consequences
 

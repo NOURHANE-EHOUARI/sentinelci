@@ -309,6 +309,9 @@ class Platform:
     def upload(self, run_id: str, data: bytes) -> tuple[int, Any]:
         return self._request("POST", f"/api/v1/runs/{run_id}/findings", data, NDJSON)
 
+    def post_release(self, data: bytes) -> tuple[int, Any]:
+        return self.post_json("/api/v1/releases", data)
+
     def post_decision(self, run_id: str, data: bytes) -> tuple[int, Any]:
         return self._request("POST", f"/api/v1/runs/{run_id}/decision", data, JSON)
 
@@ -324,6 +327,9 @@ class Platform:
     def post_json(self, path: str, data: bytes) -> tuple[int, Any]:
         """POST a JSON document's bytes, as they are, to `path` (an API path); the status and the answer."""
         return self._request("POST", path, data, "application/json")
+
+    def post_remediation(self, data: bytes) -> tuple[int, Any]:
+        return self.post_json("/api/v1/remediations", data)
 
 
 def _json(raw: bytes) -> Any:
