@@ -215,7 +215,7 @@ jobs:
           HEAD_SHA: ${{ steps.context.outputs.head_sha }}
           REF: ${{ steps.context.outputs.ref }}
           REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}/${{ github.run_attempt }}  # a re-run is a new run on the platform
           SCAN_PATH: ${{ inputs.path }}
         # The whole tree at the head commit, in both modes, like the IaC scan. Only SentinelCI's rules run: the
         # change cannot add, silence or configure one. Failures are recorded like the other scans'.
@@ -239,7 +239,7 @@ jobs:
           HEAD_SHA: ${{ steps.context.outputs.head_sha }}
           REF: ${{ steps.context.outputs.ref }}
           REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}/${{ github.run_attempt }}  # a re-run is a new run on the platform
           SCAN_PATH: ${{ inputs.path }}
         # The whole tree at the head commit, in both modes; the baseline keeps the base branch's vulnerable
         # dependencies from blocking. The tool status names Syft and Grype apart (Grype `not_run` after a failed

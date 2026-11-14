@@ -1186,13 +1186,16 @@ def _write_status(
     typer.echo(f"tool status written to {destination}", err=True)
 
 
-def _sbom_scan_outcomes(failure: SbomScanFailure, lock: ToolLock, platform: str | None) -> dict[str, Any]:
-    """Syft's and Grype's outcomes when one of them failed: Grype never ran after a failed Syft."""
+def _sbom_scan_outcomes(
+    failure: SbomScanFailure, lock: ToolLock, platform: str | None, *, of: str = ""
+) -> dict[str, Any]:
+    """Syft's and Grype's outcomes when one of them failed: Grype never ran after a failed Syft (`of` names
+    what Syft read, for an image)."""
     outcomes = {failure.tool: outcome_from_error(failure.tool, failure.error, lock=lock)}
     if failure.sbom is not None:
         outcomes["syft"] = outcome_from_run(failure.sbom.run, lock=lock, platform=platform)
     else:
-        outcomes["grype"] = outcome_not_run("grype", "not started: Syft produced no SBOM", lock=lock)
+        outcomes["grype"] = outcome_not_run("grype", f"not started: Syft produced no SBOM{of}", lock=lock)
     return outcomes
 
 
@@ -1547,7 +1550,9 @@ def scan_image_cmd(
         )
     except SbomScanFailure as failure:
         if tool_status_out is not None and tool_lock is not None:
-            _write_status(tool_status_out, lock, host, _sbom_scan_outcomes(failure, tool_lock, host))
+            _write_status(
+                tool_status_out, lock, host, _sbom_scan_outcomes(failure, tool_lock, host, of=" of the image")
+            )
         raise _fail_closed(failure.error) from failure
     except (ToolIntegrityError, ScannerError, NormalizationError) as exc:
         if tool_status_out is not None and tool_lock is not None:
