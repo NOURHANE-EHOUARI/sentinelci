@@ -168,8 +168,16 @@ class Platform:
     token: str = field(repr=False)
 
     def _request(
-        self, method: str, path: str, body: bytes | None, content_type: str | None
+        self,
+        method: str,
+        path: str,
+        body: bytes | None,
+        content_type: str | None,
+        *,
+        limit: int | None = None,
     ) -> tuple[int, Any]:
+        """(status, the answer as JSON, or None when it is not). With `limit`, a 200's body is returned as
+        bytes instead, up to `limit` (one byte more means it was longer); every other answer stays JSON."""
         # base_url passed check_api_url: https, or http on the loopback; never file: or a custom scheme.
         request = urllib.request.Request(self.base_url + path, data=body, method=method)  # noqa: S310
         request.add_header("Authorization", f"Bearer {self.token}")
@@ -183,6 +191,8 @@ class Platform:
         def send() -> tuple[int, Any]:
             try:
                 with opener.open(request, timeout=TIMEOUT_S) as response:
+                    if limit is not None and response.status == 200:
+                        return response.status, response.read(limit + 1)
                     return response.status, _json(response.read(MAX_RESPONSE_BYTES + 1))
             except urllib.error.HTTPError as exc:
                 return exc.code, _json(exc.read(MAX_RESPONSE_BYTES + 1))
@@ -225,6 +235,19 @@ class Platform:
     def upload(self, run_id: str, data: bytes) -> tuple[int, Any]:
         return self._request("POST", f"/api/v1/runs/{run_id}/findings", data, NDJSON)
 
+    def get_bytes(self, path: str, *, limit: int) -> bytes:
+        """The exact bytes of a 200 answer to GET `path` (an API path), at most `limit` of them."""
+        status, body = self._request("GET", path, None, None, limit=limit)
+        if status != 200 or not isinstance(body, bytes):
+            raise UploadError(f"reading {path} failed: {_why(status, body)}")
+        if len(body) > limit:
+            raise UploadError(f"{path} is larger than {limit} bytes: refused")
+        return body
+
+    def post_json(self, path: str, data: bytes) -> tuple[int, Any]:
+        """POST a JSON document's bytes, as they are, to `path` (an API path); the status and the answer."""
+        return self._request("POST", path, data, "application/json")
+
 
 def _json(raw: bytes) -> Any:
     if len(raw) > MAX_RESPONSE_BYTES:
@@ -233,6 +256,12 @@ def _json(raw: bytes) -> Any:
         return json.loads(raw)
     except ValueError:
         return None
+
+
+def answer_summary(status: int, body: Any) -> str:
+    """`HTTP <status>`, and the platform's own words quoted, cut, and with the token masked: for any client of
+    the platform that reports its answer (the correlator's store, A7)."""
+    return _why(status, body)
 
 
 def _why(status: int, body: Any) -> str:
