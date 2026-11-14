@@ -498,7 +498,7 @@ def test_a_threshold_file_that_cannot_be_read_is_refused(text: str, message: str
         run.read_threshold(text, MODEL)
 
 
-@pytest.mark.parametrize("failed", ["grype", "opengrep"])
+@pytest.mark.parametrize("failed", ["gitleaks", "grype", "opengrep", "trivy", "zizmor"])
 def test_a_run_without_a_scanners_findings_is_refused(
     findings_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], failed: str
 ) -> None:
@@ -508,6 +508,29 @@ def test_a_run_without_a_scanners_findings_is_refused(
     assert run.main(["--findings", str(findings_dir), "--no-embedding", "--out", str(tmp_path / "out")]) == 2
     assert f"{failed}.ndjson missing in" in capsys.readouterr().err
     assert not (tmp_path / "out").exists()
+
+
+def test_the_scanners_required_are_those_make_eval_runs() -> None:
+    """#90 review, nit 1: a scanner `make eval` runs but this measurement does not require would be left out
+    quietly, the smaller-run case the guard is for."""
+    path = Path(__file__).resolve().parents[2] / "eval" / "detection" / "run.py"
+    spec = importlib.util.spec_from_file_location("sentinel_eval_detection_run_for_correlation", path)
+    assert spec is not None and spec.loader is not None
+    detection = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(detection)
+    assert sorted(run.SCANNERS) == sorted(detection.SCANS)
+
+
+def test_the_whole_run_sentence_takes_each_sca_count_from_its_own_part(
+    findings_dir: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#90 review, nit 2: the fixture has no SCA finding, so each part gets its own count, read back."""
+    monkeypatch.setattr(run, "THRESHOLD", tmp_path / "none.json")
+    out = tmp_path / "out"
+    assert run.main(["--findings", str(findings_dir), "--out", str(out), "--no-embedding"]) == 0
+    report = json.loads((out / "correlation.json").read_text(encoding="utf-8"))
+    report["test"]["sca_findings"], report["whole_run"]["sca_findings"] = 3, 7
+    assert "and 3 of the 7 SCA ones" in run.markdown(report)
 
 
 def test_no_findings_is_an_error_that_says_what_to_run(

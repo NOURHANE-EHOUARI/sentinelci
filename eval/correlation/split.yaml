@@ -4,6 +4,7 @@
 # id go to calibration, test, calibration, ... A new seed is added here, by that rule, in the commit that adds it
 # (`run.py` refuses a ground truth with a seed in neither list, or in both).
 calibration:
+  - GT-CONTAINER-001
   - GT-IAC-001
   - GT-IAC-003
   - GT-IAC-005
