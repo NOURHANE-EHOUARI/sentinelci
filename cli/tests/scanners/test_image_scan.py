@@ -135,7 +135,7 @@ def test_an_archive_without_that_image_fails_syft_and_grype_never_runs(tmp_path:
     assert tools["syft"]["status"] == "failed"
     assert tools["grype"] == {
         "version": "0.121.0", "status": "not_run",
-        "detail": "not started: Syft produced no SBOM",
+        "detail": "not started: Syft produced no SBOM of the image",
     }  # fmt: skip
 
 
