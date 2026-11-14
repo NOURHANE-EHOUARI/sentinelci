@@ -1,7 +1,11 @@
 """`make eval-replay`: replay identity, measured (task B8, SPEC sections 3 and 17).
 
-SPEC section 3 asks for "replay determinism: 100% identical". The nightly job (`replay-nightly.yml`) checks it
-on GitHub; this measures it locally and writes it as a report, like B8's other measurements:
+SPEC section 3 asks for "replay determinism: 100% identical". This measures a narrower property than the
+nightly job (`replay-nightly.yml`): it records and replays in the same run, with the same engine, OPA and
+policies, so it shows that the store holds every input of a decision and that the engine decides the same way
+twice in this environment. It cannot catch drift between the engine, OPA or policies that recorded a decision
+and the ones that replay it later: that is the nightly's job. It writes the result as a report, like B8's
+other measurements:
 
 1. records the replay corpus (corpus.py: every gate case it covers, with its expected verdict);
 2. with `--findings DIR` (what `make eval` wrote), also records a decision on demo-shop's real findings, in
@@ -167,6 +171,10 @@ def markdown(data: Mapping[str, Any]) -> str:
         f"**{data['identical']} of {data['total']} decisions replay identically ({identity}).** "
         "SPEC section 3 asks for 100%. Each decision was recorded with `sentinel evaluate --store` and "
         "replayed with this checkout's engine (`sentinel replay --all`).",
+        "",
+        "Same checkout, same tools: this shows that the store holds every input and that the engine is "
+        "deterministic here. A decision recorded with another engine, OPA or policy version is the nightly "
+        "job's to replay (`replay-nightly.yml`).",
         "",
         "| Decision | Verdict | Replay |",
         "|---|---|---|",

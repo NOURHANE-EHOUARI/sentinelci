@@ -23,6 +23,12 @@ empty store under `out/eval/replay/`, so only that run's decisions are replayed.
 
 Today: 10 of 10 decisions replay identically (100.0%).
 
-The nightly job (`.github/workflows/replay-nightly.yml`) replays the previous night's corpus with the next day's
-engine; this measures the same property on one checkout, which is what B8's report needs. The same inputs give
-the same report: decisions use fixed evaluation times, and demo-shop's findings are named by their digests.
+**What it shows, and what it doesn't.** Every decision is recorded and replayed in the same run, with the same
+engine, OPA and policies. So 100% shows that the store holds every input of a decision and that the engine
+decides the same way twice in this environment. It cannot catch drift between the engine, OPA or policies that
+recorded a decision and the ones that replay it later. That is what the nightly job
+(`.github/workflows/replay-nightly.yml`) is for: it replays the previous night's corpus with the next day's
+engine. `replay.md` says the same under its number.
+
+The same inputs give the same report: decisions use fixed evaluation times, and demo-shop's findings are named
+by their digests.

@@ -71,6 +71,17 @@ def test_a_decision_the_replay_did_not_report_is_not_counted_as_identical() -> N
     assert "**1 of 2 decisions replay identically (50.0%).**" in run.markdown(data)
 
 
+def test_the_report_says_what_one_checkout_cannot_show() -> None:
+    """Recorded and replayed with one engine: drift between versions is the nightly job's (#124 review)."""
+    replayed = {
+        "results": {A: "identical"},
+        "summary": {"identical": 1, "skipped": 0, "differ": 0, "cannot": 0},
+    }
+    text = run.markdown(run.report({"one": {"decision_id": A, "verdict": "BLOCK"}}, replayed))
+    assert "Same checkout, same tools" in text
+    assert "replay-nightly.yml" in text
+
+
 def test_the_corpus_replays_identically(opa_binary: Path, tmp_path: Path) -> None:
     out = tmp_path / "out"
     assert run.main(["--out", str(out), "--opa", str(opa_binary)]) == 0
