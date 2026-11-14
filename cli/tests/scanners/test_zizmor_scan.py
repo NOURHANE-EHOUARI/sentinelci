@@ -124,11 +124,39 @@ def test_ignore_comments_and_repository_config_are_not_honoured(tmp_path: Path) 
         "--offline",
         "--no-config",
         "--no-ignores",
+        "--ignore-lockfile",
         "--collect=all",
         "--strict-collection",
         "--format=json",
     ):
         assert flag in run.args
+
+
+UNPINNED = """name: build
+on: push
+permissions: {}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+"""
+
+
+def test_a_workflow_lockfile_of_the_scanned_repository_silences_nothing(tmp_path: Path) -> None:
+    """zizmor 1.32 drops unpinned-uses for every workflow listed in `.github/workflows/actions.lock` at the
+    Git root, whatever it pins. That file belongs to the scanned repository, which never configures the
+    scanner: `--ignore-lockfile` (Hiba, review of #119)."""
+    repo = tmp_path / "repo"
+    (repo / ".github" / "workflows").mkdir(parents=True)
+    (repo / ".git").mkdir()  # zizmor reads the lockfile at the Git root only
+    (repo / ".github" / "workflows" / "build.yml").write_text(UNPINNED, encoding="utf-8")
+    (repo / ".github" / "workflows" / "actions.lock").write_text(
+        "version: v0.0.3\nworkflows:\n  .github/workflows/build.yml: []\ndependencies: {}\n", encoding="utf-8"
+    )
+    scan = scan_pipelines_with_run(repo, lock=LOCK)
+    assert scan.audited == [".github/workflows/build.yml"]
+    assert "unpinned-uses" in _rules(scan.results)
 
 
 def test_dependabot_is_audited(tmp_path: Path) -> None:

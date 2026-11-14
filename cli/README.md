@@ -423,8 +423,9 @@ uv run sentinel scan pipelines demo-shop --repo-root . --out out/pipelines.ndjso
   (`[python_tools.zizmor]`, at the pinned version): another version, a replaced binary, or zizmor missing
   exits `3` (SC-010).
 - The scanned repository cannot configure or silence it: `--no-config`, `--no-ignores` (a finding covered by an
-  inline `# zizmor: ignore[...]` comment is kept, and its message says so), `--collect=all` (`.gitignore` is not
-  honoured), `--offline`, and a minimal environment.
+  inline `# zizmor: ignore[...]` comment is kept, and its message says so), `--ignore-lockfile` (a workflow
+  listed in the repository's `.github/workflows/actions.lock` keeps its `unpinned-uses` findings),
+  `--collect=all` (`.gitignore` is not honoured), `--offline`, and a minimal environment.
 - Inputs: what GitHub runs (every YAML file under `.github/workflows/`, every `action.yml` / `action.yaml`,
   `.github/dependabot.yml`) must load (`--strict-collection`), or exit `3`. Any other YAML file with a top-level
   `jobs:` key is audited too; one zizmor cannot load as a GitHub workflow (another CI's file) is skipped, named

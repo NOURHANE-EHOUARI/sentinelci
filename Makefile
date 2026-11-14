@@ -40,7 +40,7 @@ test: ## Unit and contract tests
 	uv run pytest
 
 zizmor: ## Static security audit of GitHub Actions workflows
-	uv run zizmor --offline --min-severity low .github/workflows
+	uv run zizmor --offline --ignore-lockfile --min-severity low .github/workflows
 
 web: ## Dashboard: locked install (no package scripts), typed client up to date, types, tests, build
 	cd platform/web && npm ci && npm run check
