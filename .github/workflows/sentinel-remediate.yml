@@ -374,14 +374,16 @@ jobs:
           audit=(--repo "$REPO" --context pr --run-id "$RUN_ID" --timeout "$SCANNER_TIMEOUT_S"
             --lock "$PIPELINE/tools.lock.toml")
           common=("${audit[@]}" --tools-dir "$TOOLS")
-          # The scanned commit, fetched from the checkout into a bare repository: nothing is ever checked out.
+          # The scanned commit, fetched from the checkout into a bare repository: nothing is ever checked out. One
+          # commit (--depth=1): actions/checkout leaves a shallow clone, and git refuses to set a ref to a shallow
+          # root otherwise (a warning, exit 0, and no ref: every pull request would be FAILED).
           repo="$WORK/repo.git"
           git init --quiet --bare "$repo"
           # Attributes come from no tree, whatever HEAD becomes: the commit never configures git archive or
           # Gitleaks' git log (export-ignore, export-subst, ident, eol, -diff). git reads a bare repository's
           # HEAD:.gitattributes once HEAD resolves; attr.tree names the empty tree instead.
           git -C "$repo" config attr.tree "$(git hash-object -t tree /dev/null)"
-          git -C "$repo" fetch --quiet --no-tags "$CHECKOUT" "+HEAD:refs/sentinel/base" \
+          git -C "$repo" fetch --quiet --no-tags --depth=1 "$CHECKOUT" "+HEAD:refs/sentinel/base" \
             && [ "$(git -C "$repo" rev-parse refs/sentinel/base)" = "$BASE_SHA" ] \
             || { echo "::error::the checkout is not the scanned commit $BASE_SHA"; exit 1; }
           # Its whole tree (the fixers look for an ADD source at the repository root too) and its findings: the
