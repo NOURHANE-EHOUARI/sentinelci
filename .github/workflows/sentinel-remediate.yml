@@ -395,9 +395,9 @@ jobs:
             [ "$(jq -r .commit "$out/applied.json")" = "$commit" ] \
               || refuse "$name" "#$pr's commit is not the proposal applied to $BASE_SHA" || return 1
             # 2. The patched commit, scanned like a pull request: its commits for secrets, its tree for IaC and
-            #    for its CI workflows (the pr gate requires gitleaks, trivy and zizmor).
-            { git -C "$repo" archive --worktree-attributes --format=tar "$commit" -- "$SCAN_PATH" \
-              | tar -x -C "$out/patched"; } \
+            #    for its CI workflows (the pr gate requires gitleaks, trivy and zizmor). Its whole tree, as the
+            #    base's: Trivy loads local Terraform modules outside the scan path, so both sides must hold them.
+            { git -C "$repo" archive --worktree-attributes --format=tar "$commit" | tar -x -C "$out/patched"; } \
               && "$SENTINEL" scan secrets "$repo" --mode git --log-opts "$BASE_SHA..$commit -- $SCAN_PATH" \
                 --repo-root "$repo" --commit "$commit" --ref "refs/pull/$pr/head" --out "$out/secrets.ndjson" \
                 --tool-status-out "$out/secrets-status.json" "${common[@]}" \

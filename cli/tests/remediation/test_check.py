@@ -348,9 +348,22 @@ SPACED = "svc/my app.tgz"  # one name, as BuildKit reads it
         ("ADD ../app.py /app/\n", {"app.py": "plain", "svc/app.py": "tar"}),
         ('ADD ["my app.tgz", "/app/"]\n', {"svc/my": "plain", "svc/app.tgz": "plain", SPACED: "tar"}),
         ("ADD deploy@example.invalid:repo.git /app/\n", {"svc/deploy@example.invalid:repo.git": "plain"}),
+        # BuildKit splits a quoted name with a space and the build fails; the quotes are not stripped here.
         ('ADD "my app.tgz" /app/\n', {"svc/my": "plain", "svc/app.tgz": "plain", SPACED: "tar"}),
+        # #85 review: a one-word source is unquoted or unescaped by BuildKit, which then unpacks the tar.
+        ('ADD "app.tgz" /app/\n', {'svc/"app.tgz"': "plain", "svc/app.tgz": "tar"}),
+        ("ADD 'app.tgz' /app/\n", {"svc/'app.tgz'": "plain", "svc/app.tgz": "tar"}),
+        ("ADD app\\.tgz /app/\n", {"svc/app\\.tgz": "plain", "svc/app.tgz": "tar"}),
     ],
-    ids=["dotdot", "json-space", "ssh-git", "shell-quoted"],
+    ids=[
+        "dotdot",
+        "json-space",
+        "ssh-git",
+        "quotes-not-stripped",
+        "double-quoted",
+        "single-quoted",
+        "escaped",
+    ],
 )
 def test_add_stays_where_buildkit_reads_the_source_otherwise(
     tmp_path: Path, line: str, files: dict[str, str]

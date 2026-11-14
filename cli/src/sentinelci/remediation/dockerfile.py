@@ -81,9 +81,12 @@ def parse_instructions(lines: list[str]) -> list[Instruction]:
 
 def check_editable(lines: list[str]) -> None:
     """Raise NotFixable for a file the fixer never edits, as its instructions cannot be told apart safely: no
-    final newline, an `escape` parser directive, a heredoc. `sentinel remediate check` asks the same."""
+    final newline, a byte-order mark, an `escape` parser directive, a heredoc. `sentinel remediate check` asks
+    the same."""
     if not lines or not lines[-1].endswith("\n"):
         raise NotFixable("the file does not end with a newline")
+    if lines[0].startswith("\ufeff"):  # #85 review: BuildKit drops it and reads `# escape=` after it
+        raise NotFixable("a byte-order mark: Docker reads the parser directives after it")
     for line in lines:
         if line.strip() and not line.strip().startswith("#"):
             break  # parser directives only come first
