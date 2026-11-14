@@ -16,10 +16,10 @@ base and of the patched commit (exported with `git archive`, never checked out):
     edit: COPY's flags only, and every source a plain local file or directory of the base commit's whole
     tree, never a URL, an archive or a link) and an `apt-get install` may have gained
     `--no-install-recommends`. An added USER line is an instruction of its own in the final stage, with no RUN
-    after it: every RUN still runs as the user it ran as. A file the fixer never edits (an `escape` parser
-    directive, a heredoc) fails. These line rules do not see the other findings, so alone they would let an
-    ADD the fixer left alone because another finding sits on it become COPY; the fixer's own proposal, below,
-    does see them.
+    after it: every RUN still runs as the user it ran as. A file the fixer never edits (a byte-order mark, an
+    `escape` parser directive, a heredoc) fails. These line rules do not see the other findings, so alone they
+    would let an ADD the fixer left alone because another finding sits on it become COPY; the fixer's own
+    proposal, below, does see them.
 
   Whether the new settings are right is the scanners' part: a weaker one is a new finding, which the gate
   counts.
@@ -254,7 +254,7 @@ def _check_dockerfile(
     if build:
         return build, []
     try:
-        check_editable(before)  # what the fixer never edits: an `escape` directive, a heredoc
+        check_editable(before)  # what the fixer never edits: a BOM, an `escape` directive, a heredoc
     except NotFixable as exc:
         return [], [f"{path}: the Dockerfile fixer does not edit this file ({exc})"]
     return [], _dockerfile_tests(path, before, after, base_root)

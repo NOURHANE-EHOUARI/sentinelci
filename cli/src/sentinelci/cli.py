@@ -1788,9 +1788,10 @@ def remediate_check(
     a time limit); the JSON then carries the end of their output as `log`.
 
     Exit code 0 when both hold, 1 when one does not (the JSON says which file and why), 3 when they cannot
-    be checked honestly (a strategy with no build or tests defined here, a file that is not a regular file
-    of both trees, a base file this check cannot read, findings that cannot be read, a test image not pinned
-    by digest, a test container that could not run): nothing is verified then.
+    be checked honestly (a strategy with no build or tests defined here or no fixer to re-run, a file that is
+    not a regular file of both trees, a base file this check cannot read, findings that cannot be read or
+    that the fixer refuses, a test image not pinned by digest, a test container that could not run): nothing
+    is verified then.
     """
     try:
         applied = PatchProposal.model_validate_json(proposal.read_bytes())
