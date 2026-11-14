@@ -6,7 +6,11 @@ requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.10",
     "sentinelci",
+    "typer>=0.15",
 ]
+
+[project.scripts]
+sentinel-ai = "sentinel_ai.cli:app"
 
 [build-system]
 requires = ["hatchling>=1.27"]
