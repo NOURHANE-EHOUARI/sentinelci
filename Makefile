@@ -1,5 +1,6 @@
 .DEFAULT_GOAL := help
-.PHONY: help setup check lint format typecheck imports policy test zizmor web eval tools tools-verify compose-env up down eval-ranking
+.PHONY: help setup check lint format typecheck imports policy test zizmor web eval tools tools-verify compose-env up down \
+	release release-block release-key eval-ranking
 
 # OPA is a pinned binary, not a Python package: `uv run sentinel tools install opa` (tools.lock.toml).
 OPA ?= $(or $(SENTINEL_OPA),opa)
@@ -67,3 +68,14 @@ up: compose-env ## Start the local platform; COMPOSE_PROFILES=ai,observability a
 
 down: ## Stop the local platform (volumes are kept; `docker compose ... down --volumes` wipes them)
 	$(COMPOSE) down
+
+# Releases are made on the laptop that holds the release key (ADR-0011, deploy/release/release.py): from a clean
+# checkout of origin/main, with Docker (buildx) and the pinned tools (`make tools`). The password is asked.
+release: ## Build, decide on and sign shop-api's release image (KEY=~/.sentinelci/release.key) -> out/release/bundle
+	uv run --locked python deploy/release/release.py $(if $(KEY),--key $(KEY))
+
+release-block: ## The demo's BLOCK image: the gate must block it, nothing is signed -> out/release/block-image
+	uv run --locked python deploy/release/release.py --requirements requirements.block.txt --expect-block
+
+release-key: ## Make the release key pair (~/.sentinelci/release.key) and deploy/keys/release.pub, to commit
+	uv run --locked python deploy/release/release.py key $(if $(KEY),--key $(KEY))
