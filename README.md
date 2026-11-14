@@ -25,10 +25,11 @@ pull request / release
   │
   ├─ 1. Scan ─── Gitleaks (secrets) · Opengrep (SAST) · Trivy (IaC) · Syft + Grype (SBOM, SCA, images)
   │              · zizmor (CI workflows). Binaries pinned by sha256 in tools.lock.toml, run offline,
-  │              never configured or silenced by the scanned repository. A failed or missing scanner is a
-  │              BLOCK (SC-010), never an empty pass.
+  │              never configured or silenced by the scanned repository. A failed or missing required
+  │              scanner is a BLOCK (SC-010), never an empty pass.
   ├─ 2. Normalize ─ one Finding v1 per issue, with a stable fingerprint, so "new in this PR" is exact
-  ├─ 3. Score ─── CVSS × exploitability (EPSS, CISA KEV) × reachability × exposure → priority P0–P4
+  ├─ 3. Score ─── severity × exploitability (EPSS, CISA KEV) × exposure × reachability → priority P0–P4,
+  │              benchmarked against a CVSS-only ranking
   ├─ 4. Decide ── OPA/Rego rules → PASS / WARN / BLOCK with rule ids; a Decision v1 record holds the digest of
   │              every input and replays bit for bit (`sentinel replay`)
   ├─ 5. Sign ──── image + CycloneDX/SPDX SBOMs + SLSA provenance + the decision, as Cosign attestations
@@ -58,7 +59,7 @@ Around that deterministic core:
 | SC-001 | BLOCK | A secret, new in the PR or anywhere in a release image |
 | SC-002 | BLOCK | A P0 finding without a valid waiver |
 | SC-003 | BLOCK | A KEV-listed vulnerability with a fix, in an internet-facing service |
-| SC-004 | BLOCK | A release image without its signature, SBOM or provenance |
+| SC-004 | BLOCK | A release image without its signature, SBOM or provenance (enforced by `sentinel verify` and at admission, ADR-0010, not by the pull request gate) |
 | SC-005 | BLOCK | An invalid waiver (no owner, justification or expiry, or more than 90 days) |
 | SC-006 | WARN | P1 findings (BLOCK above a threshold in the strict profile) |
 | SC-009 | BLOCK | A high-severity CI workflow issue introduced by the PR |
@@ -70,7 +71,7 @@ own ignore files and inline comments are never read.
 
 ## How it is verified
 
-- **About 5,200 tests** (`make check`): unit, contract and end-to-end. They include runs of the real pinned
+- **More than 5,000 tests** (`make check`): unit, contract and end-to-end. They include runs of the real pinned
   scanners and OPA, the remediation workflow's scripts executed against a local origin, and the API on a real
   PostgreSQL.
 - **Contracts first.** A JSON Schema for every contract between the two tracks (findings, decisions, tool
@@ -84,7 +85,8 @@ own ignore files and inline comments are never read.
   seeds cover secrets, SAST, SCA, containers, IaC, CI workflows and prompt-injection canaries, plus clean
   controls. `make eval` measures recall per category and false positives, and `make eval-correlation` measures
   the root-cause grouping (ARI, alert reduction). On 14 November 2026, with the pinned scanners and that day's
-  Grype database, all 28 seeds were detected and no clean control gave a false positive.
+  Grype database, all 28 seeds that `make eval` measures were detected (the container seed is checked by the
+  image scan of `make release-block`) and no clean control gave a false positive.
 
 ## Try it
 
