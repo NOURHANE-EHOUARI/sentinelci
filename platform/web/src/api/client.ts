@@ -6,6 +6,9 @@ export type FindingDetail = components["schemas"]["FindingDetail"];
 export type CorrelationVersion = components["schemas"]["CorrelationOut"];
 export type ReleasePage = components["schemas"]["ReleasePage"];
 export type ReleaseSummary = components["schemas"]["ReleaseOut"];
+export type RunSummary = components["schemas"]["RunOut"];
+export type RemediationPage = components["schemas"]["RemediationPage"];
+export type RemediationSummary = components["schemas"]["RemediationOut"];
 
 export class ApiError extends Error {
   constructor(
@@ -64,6 +67,10 @@ export async function getCorrelation(runId: string): Promise<unknown> {
   }
 }
 
+export async function getRun(runId: string): Promise<RunSummary> {
+  return (await get(`/api/v1/runs/${encodeURIComponent(runId)}`)).json() as Promise<RunSummary>;
+}
+
 /** GET /metrics: Prometheus text. */
 export async function getMetrics(): Promise<string> {
   return (await get("/metrics", {}, "text/plain")).text();
@@ -84,4 +91,20 @@ export async function listReleases(filters: ReleaseFilters): Promise<ReleasePage
 export async function getReleaseEvidence(imageDigest: string, decisionId?: string): Promise<unknown> {
   const path = `/api/v1/releases/${encodeURIComponent(imageDigest)}/evidence`;
   return (await get(path, { decision_id: decisionId })).json();
+}
+
+export interface RemediationFilters {
+  strategy?: string | undefined;
+  outcome?: string | undefined;
+  limit?: number | undefined;
+  offset?: number | undefined;
+}
+
+export async function listRemediations(filters: RemediationFilters): Promise<RemediationPage> {
+  return (await get("/api/v1/remediations", { ...filters })).json() as Promise<RemediationPage>;
+}
+
+/** One attempt of the remediation loop (Remediation attempt v1), as recorded. */
+export async function getRemediation(proposalId: string): Promise<unknown> {
+  return (await get(`/api/v1/remediations/${encodeURIComponent(proposalId)}`)).json();
 }

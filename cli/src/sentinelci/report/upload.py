@@ -328,6 +328,9 @@ class Platform:
         """POST a JSON document's bytes, as they are, to `path` (an API path); the status and the answer."""
         return self._request("POST", path, data, "application/json")
 
+    def post_remediation(self, data: bytes) -> tuple[int, Any]:
+        return self.post_json("/api/v1/remediations", data)
+
 
 def _json(raw: bytes) -> Any:
     if len(raw) > MAX_RESPONSE_BYTES:

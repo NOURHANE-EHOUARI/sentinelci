@@ -419,6 +419,21 @@ SENTINEL_API_TOKEN=... uv run sentinel upload-release --decision out/release/evi
   exit `4` on any failure with a line that names no secret. A report: the release, its decision and its
   signatures are unchanged whatever happens.
 
+## `sentinel upload-remediation` (a remediation attempt to the platform, A8)
+
+```bash
+SENTINEL_API_TOKEN=... uv run sentinel upload-remediation --proposal proposal.json --result result.json \
+  --repo NOURHANE-EHOUARI/sentinelci --api-url http://localhost:8000
+```
+
+- Sends `schemas/remediation-attempt.v1.json` to `POST /api/v1/remediations`: the patch proposal, its
+  verification result (`sentinel remediate verify`) and the repository. The Remediation page shows it, and
+  `/metrics` counts it in `sentinel_remediation_attempts_total{strategy,outcome}`.
+- Checked first as the platform checks it: the contracts (VERIFIED only through the verification gate of SPEC
+  §9.2), the result the proposal's (same id and attempt), not verified before the proposal was made.
+- An attempt is recorded once: the same files again are "already recorded" (exit `0`), another document for a
+  recorded proposal is refused (exit `4`). Exit `4` on any failure, with the rules of `sentinel upload`.
+
 ## `sentinel upload` (findings to the platform, M1)
 
 Sends one run's findings to the SentinelCI platform (the B1 ingestion API, `schemas/openapi.yaml`): first
