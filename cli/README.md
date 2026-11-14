@@ -288,7 +288,7 @@ uv run sentinel normalize grype grype.json --scan-root demo-shop --out out/sca.n
   invalid or stale, the report names another Grype version, or its recorded configuration shows anything that
   hides matches (ignore rules beyond Grype's built-in kernel-header rules, VEX, exclusions, `only-fixed`,
   `only-notfixed`, `ignore-wontfix`, a distro override, `by-cve`). An image report is refused by
-  `normalize grype` (CONTAINER findings need the image digest: the image adapter).
+  `normalize grype`: its findings are CONTAINER findings, from `sentinel scan image`.
 
 **Registry mode.** With `--push`, `sentinel attest` also signs the image itself (`cosign sign`) and attaches
 the four statements to it in its registry (`cosign attest`), always by digest. That copy is what Kyverno reads
@@ -333,6 +333,34 @@ uv run sentinel verify <registry>/demo-shop/shop-api@sha256:<digest> --key cosig
   Both refuse the image.
 
 
+## `sentinel scan image` (container vulnerabilities, A1)
+
+```bash
+docker buildx build --output type=oci,dest=out/image.oci.tar --provenance=false --sbom=false \
+  --metadata-file out/build.json -f demo-shop/services/shop-api/Dockerfile.release demo-shop/services/shop-api
+uv run sentinel scan image out/image.oci.tar --image-digest "$(jq -r '."containerimage.digest"' out/build.json)" \
+  --image-ref kind-registry:5000/demo-shop/shop-api --db-dir .sentinel/grype-db --out out/container.ndjson \
+  --tool-status-out out/container-status.json \
+  --repo NOURHANE-EHOUARI/sentinelci --commit "$(git rev-parse HEAD)" --context release
+```
+
+- The same Syft run as `sentinel sbom` on the image's OCI layout archive, which must hold the image of
+  `--image-digest` (both SBOMs name it), then the same Grype, database and checks as `scan sca`: offline, from a
+  private directory, SentinelCI's configuration, nothing that hides a match.
+- `--image-digest` is what the build recorded (`--metadata-file`, `containerimage.digest`), not what the
+  layout's `index.json` claims. Before Syft runs, every blob of the layout must hold the content its digest names,
+  the layout holds nothing else (no link, no other file, no entry twice), and the manifest's config and layers are
+  all there: Syft checks the manifest, not the layer bytes.
+- Findings (category CONTAINER): one per (vulnerability id, purl base), with `package` and `image` (the digest,
+  `--image-ref`, and the layer of the package's first place in the image, by path). The layer is its `diff_id`
+  (the digest of the uncompressed layer tar, as the image config and Trivy name it), not the compressed blob's.
+  Paths inside the image are not repository paths, so there is no `location`. The report must be about
+  `--image-digest`. `--image-ref` is a repository (`kind-registry:5000/demo-shop/shop-api`): a tag or a digest in
+  it is refused, so a finding never names two images.
+- `--tool-status-out` names `syft` and `grype`: a Syft failure leaves Grype `not_run`; a Grype failure, or a
+  report that cannot be trusted, keeps Syft `ok` and records Grype's failure. Exit code `3` and no findings file
+  in every failure.
+
 ## `sentinel sbom` (SBOMs, A4)
 
 ```bash
@@ -350,7 +378,8 @@ uv run sentinel sbom out/image-oci --source oci-dir --name demo-shop/shop-api \
 - `--source`: `dir` (default; `--base-path` stops links above the tree), or the OCI image layout the build wrote,
   with one image manifest: `oci-dir` (a directory) or `oci-archive` (a tar of one). Never a registry pull.
   - An image needs `--image-digest`, its manifest digest, and both SBOMs must name it (CycloneDX
-    `metadata.component.version`, the SPDX root package's `versionInfo`), or exit `3`.
+    `metadata.component.version`, the SPDX root package's `versionInfo`), or exit `3`. Before Syft runs, every
+    blob of the layout must hold the content its digest names (as `scan image` checks).
   - A Docker archive is not accepted: Syft names it by a digest it computes itself, which no registry knows.
   - A plain `docker save` tar from Docker's containerd image store holds a nested index that Syft cannot read as
     an `oci-archive`. The release workflow (A4c) is to write the layout with BuildKit's OCI exporter.
