@@ -50,6 +50,9 @@ GROUND_TRUTH = ROOT / "demo-shop" / "ground-truth" / "findings.yaml"
 SNAPSHOT = ROOT / "eval" / "feeds" / "snapshot.json"
 POLICIES = ROOT / "policies"
 TOOLS = ("gitleaks", "trivy", "zizmor", "opengrep", "grype")
+# The category each `make eval` scan measures. CONTAINER needs an image scanned, which `make eval` does not
+# do, so its seeds are not measured (never ranked as missed), as in the detection report.
+CATEGORY_OF = {"gitleaks": "SECRET", "trivy": "IAC", "zizmor": "PIPELINE", "opengrep": "SAST", "grype": "SCA"}
 K = 10
 
 
@@ -79,8 +82,11 @@ def sentinel(*args: str) -> None:
         raise EvalError(f"sentinel {args[0]} failed (exit {done.returncode}): {tail}")
 
 
-def scored_findings(findings_dir: Path, work: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """The findings of `make eval`, enriched offline and scored, and the digests of what they came from."""
+def scored_findings(
+    findings_dir: Path, work: Path
+) -> tuple[list[dict[str, Any]], dict[str, Any], frozenset[str]]:
+    """The findings of `make eval`, enriched offline and scored, the digests of what they came from, and the
+    categories its scans measured."""
     files = {
         tool: findings_dir / f"{tool}.ndjson" for tool in TOOLS if (findings_dir / f"{tool}.ndjson").is_file()
     }
@@ -102,7 +108,7 @@ def scored_findings(findings_dir: Path, work: Path) -> tuple[list[dict[str, Any]
         "snapshot_sha256": sha256(SNAPSHOT.read_bytes()),
         "risk_model_sha256": sha256((POLICIES / "risk-model.yaml").read_bytes()),
     }
-    return read_ndjson(scored), inputs
+    return read_ndjson(scored), inputs, frozenset(CATEGORY_OF[tool] for tool in files)
 
 
 def coverage(findings: Sequence[Mapping[str, Any]]) -> dict[str, int]:
@@ -150,12 +156,19 @@ def _round(value: float | None) -> float | None:
 
 
 def report(
-    truth_bytes: bytes, findings: Sequence[Mapping[str, Any]], inputs: Mapping[str, Any]
+    truth_bytes: bytes,
+    findings: Sequence[Mapping[str, Any]],
+    inputs: Mapping[str, Any],
+    measured: frozenset[str] | None = None,
 ) -> dict[str, Any]:
+    """The report. A seed of a category no scan measured (`measured`; None: every category) is left out of
+    both orders and of the ideal one, and listed: no scan could have found it, so it is not a miss."""
     truth = yaml.safe_load(truth_bytes)
-    seeds = [seed for seed in truth["seeds"] if "relevance" in seed]
-    if len(seeds) != len(truth["seeds"]):
+    graded = [seed for seed in truth["seeds"] if "relevance" in seed]
+    if len(graded) != len(truth["seeds"]):
         raise EvalError("every seed needs a relevance grade (demo-shop/ground-truth/README.md)")
+    seeds = [seed for seed in graded if measured is None or seed["category"] in measured]
+    not_measured = sorted(str(seed["id"]) for seed in graded if seed not in seeds)
     unscored = [str(f.get("id")) for f in findings if not isinstance(f.get("risk"), Mapping)]
     if unscored:
         raise EvalError(
@@ -168,6 +181,7 @@ def report(
         "coverage": coverage(findings),
         "inputs": {"ground_truth_sha256": sha256(truth_bytes), **inputs},
         "k": K,
+        "not_measured": not_measured,
         "rubric": "demo-shop/ground-truth/README.md, Ranking relevance (grades fixed before any ranking)",
     }
 
@@ -208,6 +222,9 @@ def markdown(data: Mapping[str, Any]) -> str:
         lines += ["", heading, "", "| Places | Item | Grade | Score |", "|---|---|---|---|"]
         for row in data["all"][order]["top"]:
             lines.append(f"| {row['places']} | {row['item']} | {row['gain']} | {row['score']} |")
+    if data["not_measured"]:
+        lines += ["", "Not measured (no scan of their category ran, so they are left out of every order): "
+                  + ", ".join(data["not_measured"]) + "."]  # fmt: skip
     lines += ["", "Inputs by sha256: " + ", ".join(f"{k} {v}" for k, v in _flat(data["inputs"]))]
     return "\n".join(lines) + "\n"
 
@@ -228,8 +245,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=ROOT / "out" / "eval")
     args = parser.parse_args(argv)
     try:
-        findings, inputs = scored_findings(args.findings, args.out / "ranking")
-        data = report(GROUND_TRUTH.read_bytes(), findings, inputs)
+        findings, inputs, measured = scored_findings(args.findings, args.out / "ranking")
+        data = report(GROUND_TRUTH.read_bytes(), findings, inputs, measured)
     except EvalError as exc:
         print(f"eval-ranking: {exc}", file=sys.stderr)
         return 2

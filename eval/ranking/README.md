@@ -34,6 +34,9 @@ uv run python eval/ranking/run.py --findings out/eval/findings --out out/eval
   truth does not grade, so it can only push graded seeds down.
 - **A seed no finding detects** is missing from both orders, but it stays in the ideal order. So it lowers
   both the same way.
+- **A seed of a category no scan measured** is left out of both orders and of the ideal one, and the report
+  lists it as not measured. `make eval` scans no image, so a CONTAINER seed could not have been found. It is
+  not a miss, the same rule as the detection report.
 - **Ties share their places:** each item in a tie gets the mean discount of the places the tie spans
   (McSherry and Najork, 2008). No arbitrary order inside a tie changes the result, and the report prints the
   places a tie spans.

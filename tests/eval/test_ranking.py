@@ -178,6 +178,21 @@ def test_the_report_is_the_same_for_the_same_inputs() -> None:
     assert "| SCA only | 0 (0) | not measured |" in run.markdown(first)
 
 
+def test_a_seed_of_a_category_no_scan_measured_is_left_out_and_listed() -> None:
+    """`make eval` scans no image: a CONTAINER seed could not have been found, so it is not ranked as a miss
+    (it would lower both orders), and the report lists it, as the detection report says "not measured"."""
+    truth = truth_of(
+        seed("GT-SAST-001", 3, "app/a.py"), seed("GT-CONTAINER-001", 2, "Dockerfile", "CONTAINER")
+    )
+    findings = [finding("f1", "app/a.py", 90, cvss=9.0)]
+    data = run.report(truth, findings, {}, frozenset({"SAST"}))
+    assert data["not_measured"] == ["GT-CONTAINER-001"] and data["all"]["seeds"] == 1
+    assert data["all"]["risk"]["ndcg_at_10"] == 1.0
+    assert "Not measured (no scan of their category ran" in run.markdown(data)
+    everything = run.report(truth, findings, {})
+    assert everything["not_measured"] == [] and everything["all"]["risk"]["ndcg_at_10"] < 1.0
+
+
 def test_every_ground_truth_seed_is_graded() -> None:
     truth = yaml.safe_load(run.GROUND_TRUTH.read_text(encoding="utf-8"))
     assert all(s.get("relevance") in {1, 2, 3} for s in truth["seeds"])
