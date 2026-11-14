@@ -443,10 +443,14 @@ def test_the_embedder_reads_redacted_text() -> None:
         ('token_type = "bearer", next', 'token_type = "[REDACTED]", next'),
         ('{"password": "hunter22", "user": "bob"}', '{"password": "[REDACTED]", "user": "bob"}'),
         ("Hardcoded password: 'admin' found", "Hardcoded password: '[REDACTED]' found"),
+        # No closing quote (a value cut by a scanner or a clip): redacted to the end of the line.
+        ('DB_PASSWORD="Zq9WvZq9Wv Zq9Wv', 'DB_PASSWORD="[REDACTED]'),
+        ("password: 'Zq9WvZq9Wv\nnext line", "password: '[REDACTED]\nnext line"),
     ],
 )
 def test_a_quoted_value_keeps_its_closing_quote(text: str, expected: str) -> None:
-    """#99 review, nit 1: the closing quote stays, so the model never gets unbalanced quotes."""
+    """#99 review, nit 1: the closing quote stays, so the model never gets unbalanced quotes; a value without
+    one is redacted whole (#99 review, round 4)."""
     assert redact(text) == expected
 
 
