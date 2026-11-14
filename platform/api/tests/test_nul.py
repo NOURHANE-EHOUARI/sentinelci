@@ -209,3 +209,45 @@ def test_text_that_only_spells_u0000_is_kept(client: TestClient, headers: dict[s
     response = client.post(f"/api/v1/runs/{run_id}/findings", content=body, headers={**headers, **NDJSON})
     assert response.status_code == 201, response.text
     assert client.get(f"/api/v1/runs/{run_id}/findings").content == body
+
+
+# A lone UTF-16 surrogate is the other string PostgreSQL cannot store (#126 review): JSON can spell one
+# (`"\ud800"`), Python's json reads it, and it cannot be encoded as UTF-8.
+@pytest.mark.parametrize("surrogate", ["\ud800", "\udc00"], ids=["high", "low"])
+def test_findings_with_a_lone_surrogate_are_refused(
+    client: TestClient, headers: dict[str, str], surrogate: str
+) -> None:
+    run_id = create_run(client, headers)
+    bad = SECRET | {"title": f"Hard-coded{surrogate} API key"}
+    body = "".join(json.dumps(f) + "\n" for f in (SCA, bad)).encode("utf-8")
+    assert b"\\ud" in body or b"\\udc" in body  # the escape, as json.dumps writes it
+    response = client.post(f"/api/v1/runs/{run_id}/findings", content=body, headers={**headers, **NDJSON})
+    assert response.status_code == 422, response.text
+    assert "surrogate" in response.text and response.json()["detail"][0]["loc"] == ["body", 2]
+    assert client.get(f"/api/v1/runs/{run_id}").json()["findings_sha256"] is None
+
+
+def test_a_valid_surrogate_pair_is_kept_byte_for_byte(client: TestClient, headers: dict[str, str]) -> None:
+    run_id = create_run(client, headers)
+    body = (json.dumps(SECRET | {"title": "Hard-coded API key \U0001f511"}) + "\n").encode("utf-8")
+    assert b"\\ud83d\\udd11" in body  # one character, written as its surrogate pair
+    response = client.post(f"/api/v1/runs/{run_id}/findings", content=body, headers={**headers, **NDJSON})
+    assert response.status_code == 201, response.text
+    assert client.get(f"/api/v1/runs/{run_id}/findings").content == body
+
+
+def test_a_run_with_a_lone_surrogate_gets_a_422_not_a_500(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    """The model refuses the string, and the 422 must still render: it echoes the input it refused."""
+    body = json.dumps(RUN | {"run_id": "ci\ud8001"}).encode("ascii")
+    response = client.post("/api/v1/runs", content=body, headers={**headers, **JSON})
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"][0]["loc"] == ["body", "run_id"]
+
+
+def test_a_refused_decision_says_it_is_a_decision(client: TestClient, headers: dict[str, str]) -> None:
+    run_id, _ = recorded_run(client, headers)
+    response = client.post(f"/api/v1/runs/{run_id}/decision", content=b"{}", headers={**headers, **JSON})
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"][0]["type"] == "decision_invalid"

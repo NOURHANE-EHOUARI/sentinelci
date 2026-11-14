@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import uuid
 from collections.abc import Iterator
@@ -295,6 +296,15 @@ def _parse(body: bytes, run: Run) -> list[dict[str, Any]]:
     optional = {"ref": run.ref, "run_id": run.ci_run_id}
     seen: dict[str, int] = {}
     for lineno, finding in zip(lines, findings, strict=True):
+        # JSON can spell a lone UTF-16 surrogate (`"\ud800"`) and json.loads reads it, but it is not text:
+        # it cannot be encoded as UTF-8, and PostgreSQL's jsonb refuses it (a 500 before, #126 review).
+        try:
+            json.dumps(finding, ensure_ascii=False).encode("utf-8")
+        except UnicodeEncodeError:
+            raise _invalid(
+                f"findings line {lineno}: a string holds a lone UTF-16 surrogate, which cannot be stored",
+                lineno,
+            ) from None
         if (first := seen.setdefault(finding["id"], lineno)) != lineno:
             raise _invalid(
                 f"findings line {lineno}: finding {finding['id']} appears twice (first on line {first})",

@@ -95,10 +95,10 @@ def _exists(row: Correlation) -> JSONResponse:
     return JSONResponse(content.model_dump(mode="json"), status_code=status.HTTP_409_CONFLICT)
 
 
-def _invalid(message: str) -> RequestValidationError:
-    """A 422 with the API's usual body (FastAPI's list of validation errors)."""
+def _invalid(message: str, kind: str = "correlation_invalid") -> RequestValidationError:
+    """A 422 with the API's usual body (FastAPI's list of validation errors), of type `kind`."""
     return RequestValidationError(
-        [{"type": "correlation_invalid", "loc": ("body",), "msg": message[:MAX_REASON], "input": None}]
+        [{"type": kind, "loc": ("body",), "msg": message[:MAX_REASON], "input": None}]
     )
 
 

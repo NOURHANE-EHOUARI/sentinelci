@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import Response
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -41,6 +45,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(BodyLimit, upload_limit=lambda: settings.max_upload_bytes)
     app.state.settings = settings
     app.state.sessions = sessionmaker(engine, expire_on_commit=False) if engine is not None else None
+
+    @app.exception_handler(RequestValidationError)
+    async def unprocessable(_: Request, exc: RequestValidationError) -> Response:
+        """FastAPI's own 422 body, written as ASCII JSON: it echoes the input it refused, and a lone UTF-16
+        surrogate in that input cannot be encoded as UTF-8, so the default rendering failed as a 500."""
+        body = json.dumps({"detail": jsonable_encoder(exc.errors())}, ensure_ascii=True)
+        return Response(body, status_code=422, media_type="application/json")
 
     @app.get("/healthz", tags=["ops"])
     def healthz() -> dict[str, str]:
