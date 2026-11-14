@@ -6,6 +6,10 @@ import { Loading } from "./pages/common";
 const OverviewPage = lazy(() => import("./pages/Overview").then((m) => ({ default: m.OverviewPage })));
 const FindingsPage = lazy(() => import("./pages/Findings").then((m) => ({ default: m.FindingsPage })));
 const FindingDetailPage = lazy(() => import("./pages/FindingDetail").then((m) => ({ default: m.FindingDetailPage })));
+const GroupsPage = lazy(() => import("./pages/Groups").then((m) => ({ default: m.GroupsPage })));
+const RemediationsPage = lazy(() => import("./pages/Remediations").then((m) => ({ default: m.RemediationsPage })));
+const RemediationDetailPage = lazy(() => import("./pages/RemediationDetail").then((m) => ({ default: m.RemediationDetailPage })));
+const SupplyChainPage = lazy(() => import("./pages/SupplyChain").then((m) => ({ default: m.SupplyChainPage })));
 const ReleasesPage = lazy(() => import("./pages/Releases").then((m) => ({ default: m.ReleasesPage })));
 const ReleaseDetailPage = lazy(() => import("./pages/ReleaseDetail").then((m) => ({ default: m.ReleaseDetailPage })));
 
@@ -27,6 +31,12 @@ export function App() {
           <NavLink to="/releases" className={link}>
             Releases
           </NavLink>
+          <NavLink to="/supply-chain" className={link}>
+            Supply chain
+          </NavLink>
+          <NavLink to="/remediations" className={link}>
+            Remediation
+          </NavLink>
         </nav>
       </header>
       <main className="mx-auto max-w-6xl px-4 py-6">
@@ -35,8 +45,12 @@ export function App() {
           <Route path="/" element={<OverviewPage />} />
           <Route path="/findings" element={<FindingsPage />} />
           <Route path="/findings/:findingId" element={<FindingDetailPage />} />
+          <Route path="/runs/:runId/groups" element={<GroupsPage />} />
           <Route path="/releases" element={<ReleasesPage />} />
           <Route path="/releases/:imageDigest" element={<ReleaseDetailPage />} />
+          <Route path="/supply-chain" element={<SupplyChainPage />} />
+          <Route path="/remediations" element={<RemediationsPage />} />
+          <Route path="/remediations/:proposalId" element={<RemediationDetailPage />} />
           <Route path="*" element={<p>No such page.</p>} />
         </Routes>
         </Suspense>

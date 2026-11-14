@@ -86,6 +86,7 @@ from sentinelci.report.pr_comment import (
     render_pr_comment,
 )
 from sentinelci.report.release_upload import release_evidence, upload_release
+from sentinelci.report.remediation_upload import remediation_attempt, upload_remediation
 from sentinelci.report.upload import (
     TOKEN_VARIABLE,
     DecisionNotRecorded,
@@ -720,6 +721,48 @@ def upload_release_command(
             {
                 "decision_id": uploaded.decision_id,
                 "image_digest": uploaded.image_digest,
+                "sha256": uploaded.sha256,
+                "already_recorded": uploaded.already_recorded,
+            }
+        )
+    )
+
+
+@app.command("upload-remediation")
+def upload_remediation_command(
+    proposal: Annotated[Path, typer.Option(help="The patch proposal (Patch proposal v1) of the attempt.")],
+    result: Annotated[Path, typer.Option(help="Its verification result (Verification result v1).")],
+    repo: Annotated[str, typer.Option(help="The repository the proposal was made for, owner/name.")],
+    api_url: Annotated[
+        str, typer.Option(help="The platform, https:// (or http://localhost for a local platform).")
+    ],
+) -> None:
+    """Send one attempt of the remediation loop to the SentinelCI platform (Remediation page).
+
+    The token comes only from the SENTINEL_API_TOKEN environment variable. Exit code 0 when the platform
+    recorded exactly this attempt (also when it already had it), 4 when it did not: the pull request and its
+    verification are unchanged either way.
+    """
+    try:
+        data = remediation_attempt(proposal.read_bytes(), result.read_bytes(), repo=repo)
+        uploaded = upload_remediation(data, platform_from(api_url))
+    except (OSError, UploadError) as exc:
+        said, token = str(exc), os.environ.get(TOKEN_VARIABLE, "").strip()
+        said = said.replace(token, f"<{TOKEN_VARIABLE}>") if token else said
+        typer.echo(f"sentinel upload-remediation: {said}\nthe attempt was not uploaded", err=True)
+        raise typer.Exit(EXIT_UPLOAD_FAILED) from exc
+    except Exception as exc:
+        # Last resort, as for `sentinel upload`: only the type, never an unexpected error's text.
+        typer.echo(
+            f"sentinel upload-remediation: unexpected {type(exc).__name__}\nthe attempt was not uploaded",
+            err=True,
+        )
+        raise typer.Exit(EXIT_UPLOAD_FAILED) from None
+    typer.echo(
+        json.dumps(
+            {
+                "proposal_id": uploaded.proposal_id,
+                "outcome": uploaded.outcome,
                 "sha256": uploaded.sha256,
                 "already_recorded": uploaded.already_recorded,
             }

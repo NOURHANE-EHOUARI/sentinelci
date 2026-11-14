@@ -177,6 +177,18 @@ def test_release_evidence_with_u0000_in_a_check_is_refused(
     assert client.get("/api/v1/releases").json()["total"] == 0
 
 
+def test_a_remediation_attempt_with_u0000_in_its_rationale_is_refused(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    path = ROOT / "schemas" / "fixtures" / "remediation-attempt" / "valid" / "kubernetes-verified.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["proposal"]["rationale"] = f"Run shop-api{NUL} as a non-root user."
+    body = json.dumps(document, indent=2).encode("utf-8")
+    response = client.post("/api/v1/remediations", content=body, headers={**headers, **JSON})
+    assert is_nul_refusal(response), response.text
+    assert client.get("/api/v1/remediations").json()["total"] == 0
+
+
 def test_a_raw_nul_byte_is_refused(client: TestClient, headers: dict[str, str]) -> None:
     """Not valid JSON in a string either; the 422 names U+0000 rather than a parse error."""
     run_id = create_run(client, headers)

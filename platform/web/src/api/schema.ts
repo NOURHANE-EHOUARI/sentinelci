@@ -249,6 +249,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/remediations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Remediations
+         * @description The attempts, newest first (as recorded), without their documents.
+         */
+        get: operations["list_remediations_api_v1_remediations_get"];
+        put?: never;
+        /**
+         * Record Remediation
+         * @description Record one attempt of the remediation loop (its proposal and result), byte for byte, once.
+         */
+        post: operations["record_remediation_api_v1_remediations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/remediations/{proposal_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Remediation
+         * @description One attempt, exactly as it was posted.
+         */
+        get: operations["get_remediation_api_v1_remediations__proposal_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/metrics": {
         parameters: {
             query?: never;
@@ -465,6 +509,83 @@ export interface components {
         ReleasePage: {
             /** Items */
             items: components["schemas"]["ReleaseOut"][];
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /**
+         * RemediationExists
+         * @description 409: this proposal's attempt is recorded already (`remediation`); with the same bytes when
+         *     `remediation.sha256` is theirs.
+         */
+        RemediationExists: {
+            /** Detail */
+            detail: string;
+            remediation: components["schemas"]["RemediationOut"];
+        };
+        /** RemediationOut */
+        RemediationOut: {
+            /**
+             * Proposal Id
+             * Format: uuid
+             */
+            proposal_id: string;
+            /** Repo */
+            repo: string;
+            /**
+             * Strategy
+             * @enum {string}
+             */
+            strategy: "deterministic:dependency-bump" | "deterministic:dockerfile" | "deterministic:kubernetes" | "llm:code";
+            /** Attempt */
+            attempt: number;
+            /** Finding Count */
+            finding_count: number;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "VERIFIED" | "REJECTED" | "FAILED";
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "PASS" | "WARN" | "BLOCK";
+            /** Build Ok */
+            build_ok: boolean;
+            /** Tests Ok */
+            tests_ok: boolean;
+            /** Target Resolved */
+            target_resolved: boolean;
+            /** New Finding Count */
+            new_finding_count: number;
+            /** Pull Request */
+            pull_request: number | null;
+            /**
+             * Proposed At
+             * Format: date-time
+             */
+            proposed_at: string;
+            /**
+             * Verified At
+             * Format: date-time
+             */
+            verified_at: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Sha256 */
+            sha256: string;
+        };
+        /** RemediationPage */
+        RemediationPage: {
+            /** Items */
+            items: components["schemas"]["RemediationOut"][];
             /** Total */
             total: number;
             /** Limit */
@@ -1553,6 +1674,196 @@ export interface operations {
                 };
             };
             /** @description No release recorded for this image (or this decision). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description The document is larger than the upload limit. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description No database is configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    list_remediations_api_v1_remediations_get: {
+        parameters: {
+            query?: {
+                repo?: string | null;
+                strategy?: ("deterministic:dependency-bump" | "deterministic:dockerfile" | "deterministic:kubernetes" | "llm:code") | null;
+                outcome?: ("VERIFIED" | "REJECTED" | "FAILED") | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemediationPage"];
+                };
+            };
+            /** @description The document is larger than the upload limit. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description No database is configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    record_remediation_api_v1_remediations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description One Remediation attempt v1 document (schemas/remediation-attempt.v1.json). */
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemediationOut"];
+                };
+            };
+            /** @description No valid ingestion token (`Authorization: Bearer <token>`). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description The proposal's attempt is recorded already (`remediation`): with these bytes, or with another document, which never changes. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemediationExists"];
+                };
+            };
+            /** @description The document is larger than the upload limit. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description The attempt is not `application/json`. */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Not a Remediation attempt v1 document (values of another JSON type included), or one that contradicts itself: a VERIFIED the gate refuses, a result about another proposal or attempt, verified before it was proposed (the reason is in `msg`). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description No database is configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_remediation_api_v1_remediations__proposal_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The Remediation attempt v1 document byte for byte: its sha256 is the ETag. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description No attempt recorded for this proposal. */
             404: {
                 headers: {
                     [name: string]: unknown;
