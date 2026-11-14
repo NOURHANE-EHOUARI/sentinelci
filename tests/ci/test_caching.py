@@ -4,7 +4,8 @@ A workflow may keep the scanners' release archives between runs, nothing else: e
 tools.lock.toml's sha256 before use, and the binary is extracted from it again
 (cli/tests/scanners/test_install_verify.py: a corrupted cache is downloaded again instead of trusted). The
 binaries and the package managers' caches are never kept: nothing checks them after a restore, and a pull
-request's own run could have written them.
+request's own run could have written them. The jobs that judge a change restore nothing in a pull request,
+since the restore itself writes the whole entry before any check (#105 review).
 """
 
 from pathlib import Path
@@ -40,8 +41,22 @@ def test_only_the_verified_release_archives_are_cached(workflow: Path) -> None:
             key = cache["with"]["key"]
             assert key.startswith(f"sentinel-tool-archives-{name}-") and "hashFiles('" in key, key
             assert "tools.lock.toml')" in key, f"{name}: a new lock is a new cache"
+            # A prefix would restore another job's entry, which the per-job key keeps apart.
+            assert "restore-keys" not in cache["with"], f"{name}: one exact key, no other job's entry"
             following = job["steps"][index + 1].get("run", "")
             assert "tools install" in following, f"{name}: the archives are verified right after the restore"
+
+
+def test_a_job_that_judges_restores_no_cache_in_a_pull_request() -> None:
+    """A pull request's own workflows can save any entry in its cache scope, under any key, and actions/cache
+    extracts an entry with `tar -P -C $GITHUB_WORKSPACE` before anything checks it: the restore itself could
+    overwrite the pipeline checkout or the CLI that judges the change (#105 review). The scan and the gate
+    restore only outside pull requests, where only the base branch's runs wrote the entry."""
+    judging = jobs(ROOT / ".github" / "workflows" / "sentinel-scan.yml")
+    assert {"scan", "gate"} <= set(judging)
+    for name, job in judging.items():
+        for _, cache in caches(job):
+            assert str(cache.get("if", "")).replace(" ", "") == "github.event_name!='pull_request'", name
 
 
 @pytest.mark.parametrize("workflow", WORKFLOWS, ids=lambda p: p.name)
