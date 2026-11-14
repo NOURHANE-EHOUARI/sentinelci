@@ -231,9 +231,11 @@ def _insert(conn: Any, document: dict[str, Any], **columns: Any) -> None:
         (WARN, {"commit": "c" * 40}),
         (WARN, {"ref": "refs/heads/other"}),
         (WARN, {"image_digest": "sha256:" + "cd" * 32}),
+        (WARN, {"verdict": "PASS"}),  # the verdict alone lies (#86 review, round 2)
     ],
     ids=["block-as-trusted-pass", "trusted-block", "verified-block", "warn-not-trusted", "warn-not-verified",
-         "another-decision", "another-repo", "another-commit", "another-ref", "another-image"],
+         "another-decision", "another-repo", "another-commit", "another-ref", "another-image",
+         "warn-as-pass"],
 )  # fmt: skip
 def test_the_database_refuses_columns_that_are_not_the_document_s(
     client: TestClient, database_url: str, document: dict[str, Any], columns: dict[str, Any]
@@ -246,6 +248,23 @@ def test_the_database_refuses_columns_that_are_not_the_document_s(
         assert conn.execute("SELECT count(*) FROM releases").fetchone() == (0,)
         _insert(conn, document)  # the same bytes with their own columns are kept
     assert client.get("/api/v1/releases").json()["total"] == 1
+
+
+def test_the_database_refuses_a_block_that_carries_a_report(client: TestClient, database_url: str) -> None:
+    """The API refuses this document; the check is the database's backstop, apart from the trigger (#86
+    review, round 2: going back to `IS NOT TRUE` passed every other test)."""
+    document = copy.deepcopy(BLOCK)
+    report = copy.deepcopy(WARN["trust_reports"][0])
+    report["image"]["digest"] = document["decision"]["subject"]["image_digest"]
+    report["decision_id"] = document["decision"]["decision_id"]
+    report["checks"][0] |= {"ok": False, "detail": "no signature"}
+    report["trusted"] = False
+    document["trust_reports"] = [report]
+    with (
+        psycopg.connect(database_url, autocommit=True) as conn,
+        pytest.raises(psycopg.errors.CheckViolation, match="releases_block_never_trusted"),
+    ):
+        _insert(conn, document)  # its own columns: BLOCK, trusted false
 
 
 def test_what_sentinel_upload_release_sends_is_recorded_as_sent(
