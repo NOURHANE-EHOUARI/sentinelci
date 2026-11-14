@@ -131,14 +131,20 @@ rules:
               - pattern: yaml.load_all(..., Loader=None, ...)
               - pattern: yaml.load($DATA, None)
               - pattern: yaml.load_all($DATA, None)
-          # A local named yaml that holds what a call returned is not PyYAML: the ruamel.yaml idiom is
-          # `yaml = YAML()`. `yaml = None` (an import fallback) excludes nothing. The calls that do give PyYAML
-          # or an unsafe loader are put back just below.
+          # In a file that imports ruamel.yaml, a local named yaml that holds what a call returned is not
+          # PyYAML: the ruamel.yaml idiom is `yaml = YAML()`. The import pattern also matches
+          # `import ruamel.yaml as ry` and `from ruamel.yaml import YAML [as Y]`. Anywhere else such a local is
+          # still PyYAML's (`im("yaml")`, `importlib.reload(yaml)`, a lazy import), and `yaml = None` (an
+          # import fallback) excludes nothing. The calls that give PyYAML or an unsafe loader in a ruamel file
+          # are put back just below (#84 review, round 3).
           - pattern-not-inside: |
+              import ruamel.yaml
+              ...
               yaml = $FACTORY(...)
               ...
       # ...unless that call imports PyYAML (import_module, __import__, pytest.importorskip), or builds
-      # ruamel.yaml's unsafe loader, `YAML(typ="unsafe")`, which runs code (#84 review).
+      # ruamel.yaml's unsafe loader, `YAML(typ="unsafe")` or a `typ` list naming "unsafe" (ruamel picks it when
+      # the list names no rt, safe or base), which runs code (#84 review, rounds 2 and 3).
       - patterns:
           - pattern-either: *no-loader  # the same calls as above (a YAML alias, so the two lists never drift)
           - pattern-either:
@@ -151,6 +157,9 @@ rules:
                       regex: ^((importlib\.)?import_module|__import__|(pytest\.)?importorskip)$
               - pattern-inside: |
                   yaml = $FACTORY(..., typ="unsafe", ...)
+                  ...
+              - pattern-inside: |
+                  yaml = $FACTORY(..., typ=[..., "unsafe", ...], ...)
                   ...
 
   - id: python-tls-verification-disabled

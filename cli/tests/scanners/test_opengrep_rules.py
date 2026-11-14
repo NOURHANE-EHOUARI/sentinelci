@@ -247,6 +247,53 @@ CASES: list[tuple[str, str, bool, str]] = [
      'def f(text):\n'
      '    yaml = YAML(typ="unsafe")\n'
      '    return yaml.load(text)\n'),
+    # typ as a list: ruamel.yaml picks the unsafe loader when the list names no rt, safe or base (#84).
+    ('python-unsafe-deserialization', 'de-ruamel-unsafe-list.py', True,
+     'from ruamel.yaml import YAML\n'
+     'def f(text):\n'
+     '    yaml = YAML(typ=["unsafe"])\n'
+     '    return list(yaml.load_all(text))\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-safe-list-ok.py', False,
+     'from ruamel.yaml import YAML\n'
+     'def f(text):\n'
+     '    yaml = YAML(typ=["safe"])\n'
+     '    return yaml.load(text)\n'),
+    ('python-unsafe-deserialization', 'de-dunder-import.py', True,
+     'yaml = __import__("yaml")\n'
+     'def f(text):\n'
+     '    return yaml.load(stream=text)\n'),
+    # Another call that returns PyYAML, in a file that does not import ruamel.yaml: still a finding (#84).
+    ('python-unsafe-deserialization', 'de-import-module-alias.py', True,
+     'from importlib import import_module as im\n'
+     'yaml = im("yaml")\n'
+     'def f(text):\n'
+     '    return yaml.load(text)\n'),
+    ('python-unsafe-deserialization', 'de-reload.py', True,
+     'import importlib\n'
+     'import yaml\n'
+     'yaml = importlib.reload(yaml)\n'
+     'def f(text):\n'
+     '    return yaml.load(text)\n'),
+    ('python-unsafe-deserialization', 'de-lazy-loader.py', True,
+     'from lazy import LazyLoader\n'
+     'yaml = LazyLoader("yaml", globals(), "yaml")\n'
+     'def f(text):\n'
+     '    return yaml.load(text)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-module-import-ok.py', False,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    yaml = ruamel.yaml.YAML()\n'
+     '    return yaml.load(text)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-module-alias-ok.py', False,
+     'import ruamel.yaml as ry\n'
+     'def f(text):\n'
+     '    yaml = ry.YAML()\n'
+     '    return yaml.load(text)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-alias-import-ok.py', False,
+     'from ruamel.yaml import YAML as Y\n'
+     'def f(text):\n'
+     '    yaml = Y(typ="rt")\n'
+     '    return yaml.load(text)\n'),
     ('python-unsafe-deserialization', 'de-import-module.py', True,
      'import importlib\n'
      'yaml = importlib.import_module("yaml")\n'
