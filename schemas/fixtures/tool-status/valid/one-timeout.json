@@ -9,6 +9,12 @@
       "binary_sha256": "88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e5509",
       "status": "ok"
     },
+    "grype": {
+      "version": "0.121.0",
+      "artifact_sha256": "64e07133d3486115de647a66581461dccf5c732748a0a3119077395565f15519",
+      "binary_sha256": "bd511334178bc3002eb9eb58880f89e01e35f7fed7cfbe671171127a8afa3596",
+      "status": "ok"
+    },
     "opa": {
       "version": "1.21.4",
       "artifact_sha256": "2ab571f367f293bb19523b76f92f1945bbf245003392c7f392903f95c2b9b630",
@@ -19,6 +25,12 @@
       "version": "1.6.0",
       "status": "timeout",
       "detail": "opengrep timed out after 900 s"
+    },
+    "syft": {
+      "version": "1.55.0",
+      "artifact_sha256": "bb65249542db5fedeeb4d3f9b018b75e7264dbfbbb10486f044581a92f90490d",
+      "binary_sha256": "64c9631c3560336c55c549df0de08cd577d02399c9de807ac390960a4ed5c351",
+      "status": "ok"
     },
     "trivy": {
       "version": "0.76.1",
