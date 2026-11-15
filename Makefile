@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help setup check lint format typecheck imports policy test zizmor web eval tools tools-verify compose-env up down \
 	eval-correlation eval-correlation-calibrate remediate-code release release-block release-key self-gate \
-	release-sentinelci eval-canaries eval-replay eval-ranking
+	release-sentinelci eval-canaries eval-replay eval-ranking eval-fixrate
 
 # OPA is a pinned binary, not a Python package: `uv run sentinel tools install opa` (tools.lock.toml).
 OPA ?= $(or $(SENTINEL_OPA),opa)
@@ -60,6 +60,13 @@ eval-replay: ## Replay identity (B8): record the corpus and make eval's decision
 
 eval-canaries: ## Injection canaries (B8): AI obedience and mislabels, verdict changes (OLLAMA_URL= for the real model)
 	uv run python eval/canaries/run.py --findings out/eval/findings $(if $(OLLAMA_URL),--ollama $(OLLAMA_URL))
+
+# The real strategies and the real verification gate on demo-shop's seeds, after `make eval` (a clean checkout):
+# Grype's database is prepared in GRYPE_DB (default out/grype-db), the code fixes need Docker, the shop-api test
+# image pinned by digest (TEST_IMAGE=) and the pinned model on Ollama. A step that cannot run: not measured, exit 2.
+eval-fixrate: ## Verified fix rate (B8): VERIFIED / attempted fixable seeds, after make eval (TEST_IMAGE=, OLLAMA_URL=)
+	uv run python eval/fixrate/run.py --tools-dir $(EVAL_TOOLS) $(if $(TEST_IMAGE),--test-image "$(TEST_IMAGE)") \
+		$(if $(GRYPE_DB),--grype-db $(GRYPE_DB)) $(if $(OLLAMA_URL),--ollama $(OLLAMA_URL))
 
 # The correlator on make eval's findings (A7), with the pinned embedding model on a local Ollama (ADR-0009).
 eval-correlation: ## Correlation on demo-shop's test half (A7): out/eval/correlation.json and .md, after make eval
