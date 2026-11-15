@@ -480,10 +480,19 @@ class RemediateCode:
 
 def _test_summaries(check: Path) -> list[str]:
     """Each test run of the check and what pytest's summary says (#100 review): the evidence a reviewer
-    wants, as `- $ pytest <selection> (<what>): <summary>`."""
+    wants, as `$ pytest <selection> (<what>): <summary>`. From the check's `runs` (every run, whatever the log
+    kept); from its clipped `log` only for a check written before `runs` existed, where a run the clip cut
+    into is left out (#100 review, nit 2)."""
     from sentinelci.remediation.code import summary_of
 
-    log = json.loads(check.read_text(encoding="utf-8")).get("log", "")
+    result = json.loads(check.read_text(encoding="utf-8"))
+    if isinstance(result.get("runs"), list):
+        return [
+            f"$ pytest {run.get('selection')} ({run.get('label')}): {run.get('summary') or 'no summary'}"
+            for run in result["runs"]
+            if isinstance(run, dict)
+        ] or ["(no test ran)"]
+    log = result.get("log", "")
     runs = [block for block in log.split("\n$ pytest ") if block]
     lines = []
     for number, block in enumerate(runs):

@@ -7,9 +7,10 @@
 - **Alert reduction** compares the raw tool reports (`out/raw/`, so that stage 1 merges the tools) with the
   groups: without that count, it compares the findings given, which already hold one finding per
   fingerprint, so stage 1 alone reduces nothing.
-- **Calibration** picks the threshold with the best ARI on a labelled set that is not demo-shop; a tie goes to
-  the highest threshold, which merges least. It is committed with the embedding model's digest before the
-  demo-shop run, where the curve (`sweep`) is reported as sensitivity only (SPEC section 17).
+- **Calibration** picks the threshold with the best ARI on a labelled set that is not the one it is tested on
+  (on demo-shop, the calibration half of a split of its seeds fixed before any score, SPEC section 17); a tie
+  goes to the highest threshold, which merges least. It is committed with the embedding model's digest before
+  the test half is measured, where the curve (`sweep`) is reported as sensitivity only.
 
 The embedder is called once per text whatever the number of thresholds tried (`cached`).
 """
@@ -139,9 +140,11 @@ def calibrate(
     thresholds: Iterable[float],
     *,
     structural: bool = True,
+    raw_alerts: int | None = None,
 ) -> Score:
-    """The threshold with the best ARI on a labelled set (never demo-shop's); a tie goes to the highest."""
-    scores = sweep(findings, truth, embed, thresholds, structural=structural)
+    """The threshold with the best ARI on a labelled set (never the one it is tested on); a tie goes to the
+    highest."""
+    scores = sweep(findings, truth, embed, thresholds, structural=structural, raw_alerts=raw_alerts)
     if not scores:
         raise CorrelationError("calibration needs at least one threshold")
     return max(scores, key=lambda s: (s.ari, s.threshold or 0.0))

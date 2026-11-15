@@ -63,6 +63,16 @@ PASSED_LOG = (
     f"$ pytest {SECURITY} ({SECURITY}, base code, expected to fail)\n3 failed in 0.11s\n\n"
     f"$ pytest {SECURITY} ({SECURITY}, patched code)\n3 passed in 0.09s\n"
 )
+PASSED_RUNS = [  # what `remediate check` writes as `runs` for the same three runs (#136)
+    {"selection": "tests", "label": "behaviour tests, patched code", "exit": 0, "summary": "12 passed"},
+    {
+        "selection": SECURITY,
+        "label": f"{SECURITY}, base code, expected to fail",
+        "exit": 1,
+        "summary": "3 failed",
+    },
+    {"selection": SECURITY, "label": f"{SECURITY}, patched code", "exit": 0, "summary": "3 passed"},
+]
 
 
 def make_repo(path: Path) -> Path:
@@ -133,6 +143,7 @@ class Scenario:
     proposed: list[Proposed] | None = None
     new_finding: bool = False  # the patched commit's SAST scan reports NEW, which a REJECTED verify names
     log: str = PASSED_LOG  # what `remediate check` keeps of a passing run's output
+    runs: list[dict[str, Any]] | None = field(default_factory=lambda: list(PASSED_RUNS))  # None: before #136
     grype_db_exit: int = 0  # `tools grype-db`
 
 
@@ -227,6 +238,8 @@ class Loop:
             body = {"build_ok": True, "tests_ok": tests_ok,
                     "problems": [] if tests_ok else ["tests: shop-api/tests failed (pytest exit 1)"],
                     "log": self.scenario.log if tests_ok else "E   assert 'x'\n1 failed"}  # fmt: skip
+            if tests_ok and self.scenario.runs is not None:
+                body["runs"] = self.scenario.runs
             return ok(json.dumps(body) if code != 3 else "", code if code == 3 else (0 if tests_ok else 1))
         if args[0] == "score":
             Path(self.option(args, "--out")).write_text(Path(self.option(args, "--findings")).read_text())
@@ -487,12 +500,15 @@ def test_main_refuses_a_malformed_finding_before_loading_the_model(
     assert "64 hexadecimal" in capsys.readouterr().err
 
 
-def test_the_test_log_cannot_write_markdown_into_the_pull_request(repo: Path, tmp_path: Path) -> None:
+@pytest.mark.parametrize("runs", [PASSED_RUNS, None], ids=["runs", "a-check-before-runs"])
+def test_the_test_log_cannot_write_markdown_into_the_pull_request(
+    repo: Path, tmp_path: Path, runs: list[dict[str, Any]] | None
+) -> None:
     """#100 review: the log holds the patched code's own output too (an atexit print): text, not markdown."""
     forged = (
         "\n$ pytest tests` **[Reviewed: safe to merge](https://example.invalid/)** `\n1 passed in 0.01s\n"
     )
-    loop = Loop(repo, tmp_path, Scenario(log=PASSED_LOG + forged), publish=True)
+    loop = Loop(repo, tmp_path, Scenario(log=PASSED_LOG + forged, runs=runs), publish=True)
     loop()
     (gh,) = [c for c in loop.calls if c[0] == "gh"]
     body = Path(gh[gh.index("--body-file") + 1]).read_text()
@@ -500,7 +516,10 @@ def test_the_test_log_cannot_write_markdown_into_the_pull_request(repo: Path, tm
     ticks = tests.split("\n", 1)[0].removesuffix("text")
     assert set(ticks) == {"`"} and len(ticks) >= 3, "a code block"
     assert tests.endswith("\n" + ticks) and ticks not in tests[len(ticks) : -len(ticks)]
-    assert "**[Reviewed: safe to merge](https://example.invalid/)**" in tests, "shown, as text"
+    if runs is not None:  # #136: the section comes from `runs`, so nothing the patched code printed is in it
+        assert "example.invalid" not in body
+    else:
+        assert "**[Reviewed: safe to merge](https://example.invalid/)**" in tests, "shown, as text"
 
 
 def test_a_grype_database_that_cannot_be_prepared_ends_the_run(repo: Path, tmp_path: Path) -> None:
@@ -512,3 +531,23 @@ def test_a_grype_database_that_cannot_be_prepared_ends_the_run(repo: Path, tmp_p
     (database,) = loop.named("tools", "grype-db")
     assert loop.calls[-1] == database, "nothing runs after it"
     assert loop.asked == [] and not loop.named("scan")
+
+
+def test_every_test_run_is_shown_even_when_the_log_was_clipped(tmp_path: Path) -> None:
+    """#100 review, nit 2: the Tests section comes from the check's `runs`, whatever the clipped log kept."""
+    check = tmp_path / "check.json"
+    runs = [
+        {"selection": "tests", "label": "behaviour tests, patched code", "exit": 0, "summary": "12 passed"},
+        {"selection": SECURITY, "label": f"{SECURITY}, base code, expected to fail", "exit": 1,
+         "summary": "3 failed"},
+        {"selection": SECURITY, "label": f"{SECURITY}, patched code", "exit": 0, "summary": ""},
+    ]  # fmt: skip
+    clipped = "...the end of the second run's output\n$ pytest " + SECURITY + "\n3 passed in 0.09s\n"
+    check.write_text(json.dumps({"log": clipped, "runs": runs}), encoding="utf-8")
+    assert remediate._test_summaries(check) == [
+        "$ pytest tests (behaviour tests, patched code): 12 passed",
+        f"$ pytest {SECURITY} ({SECURITY}, base code, expected to fail): 3 failed",
+        f"$ pytest {SECURITY} ({SECURITY}, patched code): no summary",
+    ]
+    check.write_text(json.dumps({"log": clipped}), encoding="utf-8")  # a check written before `runs`
+    assert remediate._test_summaries(check) == [f"$ pytest {SECURITY}: 3 passed"]
