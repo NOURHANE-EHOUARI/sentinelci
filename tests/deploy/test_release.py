@@ -299,7 +299,7 @@ class FakeTools:
     # Each scan's tools, as the real CLI names them in its tool status.
     TOOLS: ClassVar[dict[str, tuple[str, ...]]] = {
         "secrets": ("gitleaks",), "sast": ("opengrep",), "iac": ("trivy",), "pipelines": ("zizmor",),
-        "container": ("syft", "grype"),
+        "container": ("syft", "grype"), "sca": ("syft", "grype"),
     }  # fmt: skip
 
     def scan(self, call: Call) -> Any:

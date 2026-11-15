@@ -7,7 +7,7 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -27,6 +27,10 @@ from sentinel_ai.correlate.labels import (
 )
 from sentinel_ai.correlate.models import Correlation
 from sentinel_ai.providers import LLMProvider
+
+# A TypeVar rather than PEP 695's `def f[T](...)`: Opengrep cannot parse that syntax yet, and the self-gate
+# reports code SAST did not analyse (sentinel-sast-not-analysed).
+SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -89,7 +93,7 @@ class Provider:
         self.answers = list(answers)
         self.prompts: list[tuple[str, str]] = []
 
-    def complete[T: BaseModel](self, system: str, user: str, schema: type[T]) -> T:
+    def complete(self, system: str, user: str, schema: type[SchemaT]) -> SchemaT:
         self.prompts.append((system, user))
         answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
         if isinstance(answer, Exception):

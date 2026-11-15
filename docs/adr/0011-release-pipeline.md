@@ -117,6 +117,24 @@ registry (ADR-0006, decision 4). Facts checked with the pinned tools on 2026-11-
      key that matches its cluster.
    - Signing in CI comes with the public phase and keyless signing (ADR-0006), where the identity is the
      workflow at `refs/heads/main` rather than a stored key.
+8. **SentinelCI's own release is judged by a pipeline commit, not by itself (A10, amended 2026-11-14 after the
+   #95 review).** shop-api's release can let `main` judge itself, because the demo's pull requests are judged
+   by their base commit's pipeline (ADR-0008). SentinelCI's own pull requests have no such gate yet (the
+   self-gate workflow comes after Dec 1), so `release.py self-gate` and `release.py sentinelci` split the two
+   roles:
+   - the **pipeline commit** is the checkout: clean, on `origin/main`'s first-parent line (a commit `main` was
+     at, not one of a branch merged into it), and a release tag `vX.Y.Z` or named on purpose
+     (`--pipeline <HEAD>`). Its CLI, `policies/` and `tools.lock.toml` decide from its clean checkout (the
+     preconditions of `make release`: no index flag, no ignored gate input, every tracked file HEAD's blob);
+     `.sentinel/self-gate-waivers.yaml`, `.sentinel/self-gate-vex.json` and
+     `deploy/release/build-constraints.txt` are read from its blobs;
+   - the **target** is `origin/main`, fetched now, exported blob by blob, scanned, judged and, for a release,
+     built and tagged. A waiver, a policy or a lock entry added with a change counts only once it is in a
+     pipeline commit;
+   - the pipeline files changed between the two are printed and kept in the evidence (`pipeline.json`), and
+     the provenance names the pipeline commit. A target named as its own pipeline is allowed and recorded
+     (`target_is_its_own_pipeline`): that decision shows the commit passes its own gate, not one it did not
+     write. v1.0.0, with no earlier tag, is judged from the `main` before the version bump.
 
 ## Implementation (A4c, 2026-11-11)
 
