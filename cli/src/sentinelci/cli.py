@@ -2171,7 +2171,8 @@ def remediate_check(
     service's behaviour tests pass on the patched code, and the target finding's security test
     (`security_tests/test_<rule>.py`) fails on the base code and passes on the patched code, all from the base
     commit, in a sandboxed container from --test-image (no network, read-only, no capability, as nobody, with
-    a time limit); the JSON then carries the end of their output as `log`.
+    a time limit); the JSON then carries the end of their output as `log`, and each run that started
+    (selection, label, exit code, pytest's summary) as `runs`.
 
     Exit code 0 when both hold, 1 when one does not (the JSON says which file and why), 3 when they cannot
     be checked honestly (a strategy with no build or tests defined here or no fixer to re-run, a file that is

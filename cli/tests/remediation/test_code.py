@@ -146,6 +146,7 @@ def test_only_pytests_exit_0_is_a_pass(tmp_path: Path, ran: Ran, problem: str) -
     checked = check_code(proposal_of(OLD, NEW), base, patched, rule=RULE, test_image=IMAGE, run=Recorder(ran))
     assert (checked.build_ok, checked.tests_ok, checked.problems) == (True, False, [f"tests: {problem}"])
     assert checked.log.endswith(ran.output), "kept as the feedback for a retry"
+    assert [run["exit"] for run in checked.runs] == [ran.returncode], "the run that failed is kept too"
 
 
 @pytest.mark.parametrize("returncode", [125, 126, 127])
@@ -288,6 +289,7 @@ def test_a_run_counts_only_when_pytests_summary_agrees(tmp_path: Path, ran: Ran,
         f"tests: {label}: pytest's summary does not show that (exit {ran.returncode}, {shown}): an early "
         "exit, a skip or a deselection proves nothing"
     ]
+    assert [run["exit"] for run in checked.runs] == [r.returncode for r in [*PASSING[:at], ran]]
 
 
 @pytest.mark.parametrize(

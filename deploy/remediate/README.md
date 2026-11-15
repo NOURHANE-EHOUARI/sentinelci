@@ -38,8 +38,9 @@ it, redacted and clipped by the fixer, which keeps the end: the tests' log first
 severity and place), then the verification's summary, so the reasons are never cut. A finding that no patch
 could ever verify (no behaviour tests next to its file, no security test for its rule) is not sent to the
 model at all: it is recorded as `not verifiable`. The evidence of each step is in
-`out/remediate-code/<commit>/`: `proposal.json`, the scans, `check.json` (each test run's selection, exit code and pytest summary, and the end of the test output),
-`decision.json`, `result.json`, and `summary.json` for the whole run.
+`out/remediate-code/<commit>/`: `proposal.json`, the scans, `check.json` (each test run's selection, exit code
+and pytest summary, and the end of the test output), `decision.json`, `result.json`, and `summary.json` for the
+whole run.
 
 `PUBLISH=1` pushes only VERIFIED branches, with your own git credentials, and opens each pull request with your
 own `gh` login. The pull request says that it was verified by the tests and the scanners, not by a person, and
