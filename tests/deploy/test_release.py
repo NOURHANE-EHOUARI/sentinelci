@@ -618,6 +618,49 @@ def test_every_look_at_the_tree_bypasses_a_file_system_monitor(repo: Path) -> No
     assert len(looks) == 3 and all(args[:3] == ["git", "-c", "core.fsmonitor=false"] for args in looks), looks
 
 
+def test_an_edit_hidden_by_the_index_stat_data_is_refused(repo: Path) -> None:
+    """Same size, same time: one `git status` under core.checkStat=minimal caches the edited file's stat
+    data, and plain `git status` shows nothing afterwards. Every tracked file is compared with HEAD's blob
+    (#129 review)."""
+    path = repo / SERVICE / "app" / "main.py"
+    text = path.read_text()
+    old = path.stat().st_mtime_ns - 100 * 10**9  # well before the index, so git does not re-read a racy entry
+    os.utime(path, ns=(old, old))
+    support.git(repo, "update-index", "--refresh")
+    path.write_text(text.replace("ok", "no"))  # the same size
+    os.utime(path, ns=(old, old))  # and the same time
+    support.git(repo, "-c", "core.checkStat=minimal", "-c", "core.trustctime=false", "status", "--porcelain")
+    assert support.git(repo, "status", "--porcelain=v1", "--untracked-files=all").strip() == ""
+    with pytest.raises(release.ReleaseError, match=re.escape(f"{SERVICE}/app/main.py is not HEAD's blob")):
+        release.preconditions(runner(repo), fetch=False, environ={})
+
+
+def test_a_replace_ref_is_refused(repo: Path) -> None:
+    """With `git replace`, HEAD's id is still origin/main's, but every git command reads another tree."""
+    head = support.git(repo, "rev-parse", "HEAD").strip()
+    support.git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "--quiet",
+                "--allow-empty", "-m", "another")  # fmt: skip
+    other = support.git(repo, "rev-parse", "HEAD").strip()
+    support.git(repo, "reset", "--quiet", "--hard", head)
+    support.git(repo, "replace", head, other)
+    with pytest.raises(release.ReleaseError, match=re.escape("replace refs (refs/replace/)")):
+        release.preconditions(runner(repo), fetch=False, environ={})
+
+
+@pytest.mark.parametrize("variable", ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY"])
+def test_a_variable_that_points_git_elsewhere_is_refused(repo: Path, variable: str) -> None:
+    with pytest.raises(release.ReleaseError, match=re.escape(f"{variable} set: unset it")):
+        release.preconditions(runner(repo), fetch=False, environ={variable: "/somewhere/else"})
+
+
+def test_git_configuration_variables_are_left_alone(repo: Path) -> None:
+    """A laptop may set GIT_SSL_CAINFO, GIT_ASKPASS or GIT_CONFIG_* for a proxy: the byte comparison makes
+    them unable to hide an edit, so only the variables that point git elsewhere are refused."""
+    environ = {"GIT_SSL_CAINFO": "/etc/ssl/ca.pem", "GIT_ASKPASS": "/bin/true", "GIT_CONFIG_COUNT": "0"}
+    head = support.git(repo, "rev-parse", "HEAD").strip()
+    assert release.preconditions(runner(repo), fetch=False, environ=environ) == head
+
+
 def test_the_ignored_tools_and_outputs_still_let_a_clean_checkout_through(repo: Path) -> None:
     """.sentinel/tools/ and out/ are ignored and never read as gate inputs."""
     (repo / ".git" / "info").mkdir(exist_ok=True)

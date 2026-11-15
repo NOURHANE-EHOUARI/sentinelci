@@ -125,7 +125,12 @@ registry (ADR-0006, decision 4). Facts checked with the pinned tools on 2026-11-
 
 - **Preconditions.** `origin` must be `github.com/NOURHANE-EHOUARI/sentinelci`, with that one URL only, the working
   tree clean (untracked files included, ignored ones not, with no file-system monitor), no tracked file marked
-  skip-worktree or assume-unchanged (`git status` would believe the index), no file that git ignores among the
+  skip-worktree or assume-unchanged (`git status` would believe the index), every tracked file compared with
+  HEAD's blob, byte for byte (an edit that the index's stat data hides, with `core.checkStat=minimal` or
+  `core.trustctime=false`, is still seen), no replace ref (`refs/replace/`, which git reads for `HEAD`), none
+  of the variables that point git at another repository, work tree or index (`GIT_DIR`, `GIT_WORK_TREE`,
+  `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`,
+  `GIT_NAMESPACE`, `GIT_REPLACE_REF_BASE`), no file that git ignores among the
   gate's inputs (`policies/`, where the gate loads every file and an ignored one survives `git checkout main`,
   and `.sentinel/waivers.yaml`, `.sentinel/vex.json` and `tools.lock.toml`, which it reads when they exist,
   whether `.gitignore` or `.git/info/exclude` hides them), and `HEAD` the `main` fetched
