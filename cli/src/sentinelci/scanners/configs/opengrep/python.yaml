@@ -131,20 +131,26 @@ rules:
               - pattern: yaml.load_all(..., Loader=None, ...)
               - pattern: yaml.load($DATA, None)
               - pattern: yaml.load_all($DATA, None)
-          # In a file that imports ruamel.yaml, a local named yaml that holds what a call returned is not
-          # PyYAML: the ruamel.yaml idiom is `yaml = YAML()`. The import pattern also matches
-          # `import ruamel.yaml as ry` and `from ruamel.yaml import YAML [as Y]`. Anywhere else such a local is
-          # still PyYAML's (`im("yaml")`, `importlib.reload(yaml)`, a lazy import), and `yaml = None` (an
-          # import fallback) excludes nothing. The calls that give PyYAML or an unsafe loader in a ruamel file
-          # are put back just below (#84 review, round 3).
+          # A local named yaml that holds what a call returned is not PyYAML: the ruamel.yaml idiom is
+          # `yaml = YAML()`. The exclusion covers the statements after that binding, in the same function.
+          # `yaml = None` (an import fallback) excludes nothing.
+          - pattern-not-inside: |
+              yaml = $FACTORY(...)
+              ...
+      # ...in a file that imports ruamel.yaml only. Anywhere else such a local is still PyYAML's (`im("yaml")`,
+      # `importlib.reload(yaml)`, a lazy import). The import pattern also matches `import ruamel.yaml as ry`
+      # and `from ruamel.yaml import YAML [as Y]`, but not an import inside `try` (flagged, the safe side). It
+      # is a separate branch, not part of the exclusion above: `import ruamel.yaml` then `...` would reach
+      # every later function of the file (#84 review, round 4).
+      - patterns:
+          - pattern-either: *no-loader
           - pattern-not-inside: |
               import ruamel.yaml
               ...
-              yaml = $FACTORY(...)
-              ...
       # ...unless that call imports PyYAML (import_module, __import__, pytest.importorskip), or builds
       # ruamel.yaml's unsafe loader, `YAML(typ="unsafe")` or a `typ` list naming "unsafe" (ruamel picks it when
-      # the list names no rt, safe or base), which runs code (#84 review, rounds 2 and 3).
+      # the list names no rt, safe or base), which runs code, or takes `typ` from a name, whose value the rule
+      # cannot see (#84 review, rounds 2 to 4).
       - patterns:
           - pattern-either: *no-loader  # the same calls as above (a YAML alias, so the two lists never drift)
           - pattern-either:
@@ -161,6 +167,15 @@ rules:
               - pattern-inside: |
                   yaml = $FACTORY(..., typ=[..., "unsafe", ...], ...)
                   ...
+              # typ from a name (a constant or a parameter): `TYP = ["unsafe"]` runs code, `KIND = "safe"` is
+              # flagged too, as on main (a string constant is resolved by constant propagation, a list is not).
+              - patterns:
+                  - pattern-inside: |
+                      yaml = $FACTORY(..., typ=$TYP, ...)
+                      ...
+                  - metavariable-regex:
+                      metavariable: $TYP
+                      regex: ^[A-Za-z_][A-Za-z0-9_.]*$
 
   - id: python-tls-verification-disabled
     languages: [python]
