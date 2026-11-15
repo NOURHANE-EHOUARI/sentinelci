@@ -1,6 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help setup check lint format typecheck imports policy test zizmor web eval tools tools-verify compose-env up down \
-	eval-correlation eval-correlation-calibrate remediate-code release release-block release-key
+	eval-correlation eval-correlation-calibrate remediate-code release release-block release-key self-gate \
+	release-sentinelci
 
 # OPA is a pinned binary, not a Python package: `uv run sentinel tools install opa` (tools.lock.toml).
 OPA ?= $(or $(SENTINEL_OPA),opa)
@@ -87,3 +88,9 @@ release-block: ## The demo's BLOCK image: the gate must block it, nothing is sig
 
 release-key: ## Make the release key pair (~/.sentinelci/release.key) and deploy/keys/release.pub, to commit
 	uv run --locked python deploy/release/release.py key $(if $(KEY),--key $(KEY))
+
+self-gate: ## SentinelCI's release gate on main, run from a pipeline commit (a vX.Y.Z tag, or PIPELINE=<HEAD>) (A10)
+	uv run --locked python deploy/release/release.py self-gate $(if $(PIPELINE),--pipeline $(PIPELINE))
+
+release-sentinelci: ## SentinelCI's own release VERSION=X.Y.Z of main, judged from a pipeline commit (PIPELINE=) (A10)
+	uv run --locked python deploy/release/release.py sentinelci --version $(VERSION) $(if $(KEY),--key $(KEY)) $(if $(PIPELINE),--pipeline $(PIPELINE))
