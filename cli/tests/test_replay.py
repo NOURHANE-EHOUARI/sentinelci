@@ -220,7 +220,12 @@ def replay(tmp_path: Path, opa_binary: Path, decision: str) -> tuple[int, str]:
     return result.exit_code, result.output
 
 
-def test_evaluate_stores_every_input_and_the_decision(tmp_path: Path, opa_binary: Path) -> None:
+def test_evaluate_stores_every_input_and_the_decision(
+    tmp_path: Path, opa_binary: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Without --waivers, `evaluate` reads `.sentinel/waivers.yaml` from the working directory, where
+    # SentinelCI keeps its own self-gate waivers (A10): from tmp_path, this run has none.
+    monkeypatch.chdir(tmp_path)
     _, _, decision = evaluate(tmp_path, opa_binary, ndjson(SECRET))
     store = EvidenceStore(tmp_path / "store")
     inputs = decision["inputs"]
