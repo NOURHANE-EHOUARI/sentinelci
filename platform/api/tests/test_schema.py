@@ -22,7 +22,7 @@ from sentinel_api.models import Base
 
 ROOT = Path(__file__).resolve().parents[3]
 OPENAPI = ROOT / "schemas" / "openapi.yaml"
-HEAD = "0010"  # the latest migration: a downgrade that stops leaves the database there
+HEAD = "0011"  # the latest migration: a downgrade that stops leaves the database there
 
 
 def test_the_migrations_build_exactly_the_models(database_url: str) -> None:
@@ -125,7 +125,7 @@ def test_going_below_0005_stops_while_a_correlation_is_kept(postgres_server: str
             (run[0], document, document),
         )
     with pytest.raises(RuntimeError, match=r"1 correlation version\(s\) are kept"):
-        downgrade(url, "0004")  # 0010, 0009, 0008, 0007 and 0006 go down (nothing is kept there), 0005 stops
+        downgrade(url, "0004")  # 0011 down to 0006 go down (nothing is kept there), 0005 stops
     with psycopg.connect(url) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
         assert conn.execute("SELECT count(*) FROM correlations").fetchone() == (1,)
@@ -160,7 +160,7 @@ def test_going_below_0006_stops_while_a_decision_is_kept(postgres_server: str) -
             (run[0], document, decision_id, document),
         )
     with pytest.raises(RuntimeError, match=r"1 decision\(s\) are kept"):
-        downgrade(url, "0005")  # 0010, 0009, 0008 and 0007 go down (nothing is kept there), 0006 stops
+        downgrade(url, "0005")  # 0011, 0010, 0009, 0008 and 0007 go down (nothing is kept there), 0006 stops
     with psycopg.connect(url) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
         assert conn.execute("SELECT count(*) FROM decisions").fetchone() == (1,)
@@ -187,7 +187,7 @@ def test_going_below_0007_stops_while_a_release_is_kept(postgres_server: str) ->
              subject["image_digest"], document, document),
         )  # fmt: skip
     with pytest.raises(RuntimeError, match=r"1 release\(s\) are kept"):
-        downgrade(url, "0006")  # 0010, 0009 and 0008 go down (nothing is kept there), 0007 stops
+        downgrade(url, "0006")  # 0011, 0010, 0009 and 0008 go down (nothing is kept there), 0007 stops
     with psycopg.connect(url) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
         assert conn.execute("SELECT count(*) FROM releases").fetchone() == (1,)
@@ -211,7 +211,7 @@ def test_going_below_0008_stops_while_a_remediation_attempt_is_kept(postgres_ser
             (document, document),
         )
     with pytest.raises(RuntimeError, match=r"1 remediation attempt\(s\) are kept"):
-        downgrade(url, "0007")  # 0010 and 0009 go down (nothing is kept there), 0008 stops
+        downgrade(url, "0007")  # 0011, 0010 and 0009 go down (nothing is kept there), 0008 stops
     with psycopg.connect(url) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
         assert conn.execute("SELECT count(*) FROM remediations").fetchone() == (1,)
@@ -246,7 +246,7 @@ def test_going_below_0009_stops_while_a_waivers_file_is_kept(postgres_server: st
             (waivers, waivers),
         )
     with pytest.raises(RuntimeError, match=r"1 waivers file\(s\) are kept"):
-        downgrade(url, "0008")  # 0010 goes down (no explanation is kept), 0009 stops
+        downgrade(url, "0008")  # 0011 and 0010 go down (no explanation is kept), 0009 stops
     with psycopg.connect(url) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD,)
         assert conn.execute("SELECT count(*) FROM waivers_files").fetchone() == (1,)
