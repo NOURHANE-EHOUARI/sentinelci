@@ -48,6 +48,7 @@ jobs:
         with:
           version: "0.11.32"
           python-version: "3.12"
+          enable-cache: false
 
       - name: Install locked dependencies
         run: uv sync --locked
