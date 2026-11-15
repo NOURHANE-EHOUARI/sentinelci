@@ -81,13 +81,14 @@ base scan.
 
 ## Not measured, never 0%
 
-A step that could not run makes its seeds **not measured**: the headline is withheld and the run exits 2.
-This covers no detection report or another demo-shop tree, a dirty checkout, Grype's database that cannot be
-prepared, a scan that fails, no test image or one not pinned by digest, no Docker, a model server that is
-down (an attempt recorded with the cause "provider", or with no cause at all) or serves another digest, and any attempt that did not reach the gate (a check that could not run its
-container, no decision). A result that breaks the gate's invariant (VERIFIED with a failed condition, or the
-reverse) is not measured either. Once the code fixer hits such a step, the remaining SAST findings are not
-run. The run exits 0 when the rate was measured, whether the target is met or not: the report says which.
+A step that could not run makes its seeds **not measured**: the headline is withheld and the run exits 2. This
+covers no detection report or another demo-shop tree, a dirty checkout, Grype's database that cannot be
+prepared, a scan that fails, no test image or one not pinned by digest, no Docker, a model server that is down
+(an attempt recorded with the cause "provider", or with no cause at all) or serves another digest, and any
+attempt that did not reach the gate (a check that could not run its container, no decision). A result that
+breaks the gate's invariant (VERIFIED with a failed condition, or the reverse) is not measured either. Once
+the code fixer hits such a step, the remaining SAST findings are not run. The run exits 0 when the rate was
+measured, whether the target is met or not: the report says which.
 
 ## Evidence
 
