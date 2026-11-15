@@ -6,8 +6,9 @@ Advisory only: the gate never reads them, and nothing here changes a run, a find
   kept: the contract (the correlator's own model, which also checks what the schema cannot: sorted ids, each
   `group_id` the sha256 of its members, no finding in two groups), `findings_sha256` equal to the run's (the
   groups were computed from exactly the findings the run recorded), and the groups holding each of the run's
-  findings exactly once. The version is named by the sha256 of the bytes sent; the same bytes again are
-  answered 409 with that version. A different document is a new version: the correlator may run again
+  findings exactly once, each group within one category (the correlator builds them so, and the metrics
+  count a group in its category). The version is named by the sha256 of the bytes sent; the same bytes again
+  are answered 409 with that version. A different document is a new version: the correlator may run again
   (another model, another threshold) and every version is kept.
 - `GET /api/v1/runs/{run_id}/correlations`: the latest version, byte for byte (what to hash, or to compare
   with `findings_sha256`); `?sha256=` serves a given version. `GET .../correlations/versions` lists them.
@@ -95,10 +96,10 @@ def _exists(row: Correlation) -> JSONResponse:
     return JSONResponse(content.model_dump(mode="json"), status_code=status.HTTP_409_CONFLICT)
 
 
-def _invalid(message: str) -> RequestValidationError:
-    """A 422 with the API's usual body (FastAPI's list of validation errors)."""
+def _invalid(message: str, kind: str = "correlation_invalid") -> RequestValidationError:
+    """A 422 with the API's usual body (FastAPI's list of validation errors), of type `kind`."""
     return RequestValidationError(
-        [{"type": "correlation_invalid", "loc": ("body",), "msg": message[:MAX_REASON], "input": None}]
+        [{"type": kind, "loc": ("body",), "msg": message[:MAX_REASON], "input": None}]
     )
 
 
@@ -145,13 +146,24 @@ def _store(session: Session, run_id: uuid.UUID, body: bytes) -> CorrelationOut |
             f"{run.findings_sha256}"
         )
     grouped = {finding_id for group in document.groups for finding_id in group.finding_ids}
-    recorded = set(session.scalars(select(RunFinding.finding_id).where(RunFinding.run_id == run_id)))
+    rows = session.execute(
+        select(RunFinding.finding_id, RunFinding.category).where(RunFinding.run_id == run_id)
+    )
+    category = {finding_id: kind for finding_id, kind in rows}  # a Result has .keys(): no dict(rows)
+    recorded = set(category)
     if grouped != recorded:
         missing, unknown = len(recorded - grouped), len(grouped - recorded)
         raise _invalid(
             f"the groups must hold each of the run's {len(recorded)} findings exactly once: {missing} "
             f"missing, {unknown} not the run's"
         )
+    for group in document.groups:
+        categories = sorted({category[finding_id] for finding_id in group.finding_ids})
+        if len(categories) > 1:
+            raise _invalid(
+                f"group {group.group_id} holds findings of {len(categories)} categories "
+                f"({', '.join(categories)}): a group is one category"
+            )
     digest = hashlib.sha256(body).hexdigest()
     existing = session.get(Correlation, (run_id, digest))
     if existing is not None:

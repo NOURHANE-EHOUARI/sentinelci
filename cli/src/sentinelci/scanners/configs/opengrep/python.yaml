@@ -97,13 +97,85 @@ rules:
       - pattern: pickle.loads(...)
       - pattern: pickle.load(...)
       - pattern: marshal.loads(...)
+      - pattern: marshal.load(...)
+      # PyYAML's loaders that can build arbitrary Python objects: the full and unsafe ones, by name, by keyword
+      # or as the second argument, for one document or for all of them (FullLoader runs code in pyyaml < 5.4).
       - pattern: yaml.unsafe_load(...)
-      - pattern: yaml.load(..., Loader=yaml.Loader, ...)
-      - pattern: yaml.load(..., Loader=yaml.UnsafeLoader, ...)
-      - pattern: yaml.load(..., Loader=yaml.FullLoader, ...)
+      - pattern: yaml.unsafe_load_all(...)
+      - pattern: yaml.full_load(...)
+      - pattern: yaml.full_load_all(...)
       - patterns:
-          - pattern: yaml.load($DATA)
-          - pattern-not: yaml.load(..., Loader=..., ...)
+          - pattern-either:
+              - pattern: yaml.$LOAD(..., Loader=yaml.$LOADER, ...)
+              - pattern: yaml.$LOAD(..., Loader=yaml.$MODULE.$LOADER, ...)
+              - pattern: yaml.$LOAD($DATA, yaml.$LOADER, ...)
+              - pattern: yaml.$LOAD($DATA, yaml.$MODULE.$LOADER, ...)
+          # load and load_all only: add_constructor, compose and parse take a Loader but build no object.
+          - metavariable-regex:
+              metavariable: $LOAD
+              regex: ^load(_all)?$
+          # Loader, FullLoader, UnsafeLoader and their libyaml twins (CLoader, CFullLoader, CUnsafeLoader), from
+          # yaml or from its yaml.loader and yaml.cyaml modules.
+          - metavariable-regex:
+              metavariable: $LOADER
+              regex: ^C?(Full|Unsafe)?Loader$
+      - patterns:
+          - pattern-either: &no-loader
+              # No loader: pyyaml < 5.1 builds any object, 5.1 to 5.4 falls back to FullLoader with a warning
+              # (6.0 refuses the call). Loader=None is the same fallback.
+              - pattern: yaml.load($DATA)
+              - pattern: yaml.load_all($DATA)
+              - pattern: yaml.load(stream=$DATA)
+              - pattern: yaml.load_all(stream=$DATA)
+              - pattern: yaml.load(..., Loader=None, ...)
+              - pattern: yaml.load_all(..., Loader=None, ...)
+              - pattern: yaml.load($DATA, None)
+              - pattern: yaml.load_all($DATA, None)
+          # A local named yaml that holds what a call returned is not PyYAML: the ruamel.yaml idiom is
+          # `yaml = YAML()`. The exclusion covers the statements after that binding, in the same function.
+          # `yaml = None` (an import fallback) excludes nothing.
+          - pattern-not-inside: |
+              yaml = $FACTORY(...)
+              ...
+      # ...in a file that imports ruamel.yaml only. Anywhere else such a local is still PyYAML's (`im("yaml")`,
+      # `importlib.reload(yaml)`, a lazy import). The import pattern also matches `import ruamel.yaml as ry`
+      # and `from ruamel.yaml import YAML [as Y]`, but not an import inside `try` (flagged, the safe side). It
+      # is a separate branch, not part of the exclusion above: `import ruamel.yaml` then `...` would reach
+      # every later function of the file (#84 review, round 4).
+      - patterns:
+          - pattern-either: *no-loader
+          - pattern-not-inside: |
+              import ruamel.yaml
+              ...
+      # ...unless that call imports PyYAML (import_module, __import__, pytest.importorskip), or builds
+      # ruamel.yaml's unsafe loader, `YAML(typ="unsafe")` or a `typ` list naming "unsafe" (ruamel picks it when
+      # the list names no rt, safe or base), which runs code, or takes `typ` from a name, whose value the rule
+      # cannot see (#84 review, rounds 2 to 4).
+      - patterns:
+          - pattern-either: *no-loader  # the same calls as above (a YAML alias, so the two lists never drift)
+          - pattern-either:
+              - patterns:
+                  - pattern-inside: |
+                      yaml = $FACTORY(...)
+                      ...
+                  - metavariable-regex:
+                      metavariable: $FACTORY
+                      regex: ^((importlib\.)?import_module|__import__|(pytest\.)?importorskip)$
+              - pattern-inside: |
+                  yaml = $FACTORY(..., typ="unsafe", ...)
+                  ...
+              - pattern-inside: |
+                  yaml = $FACTORY(..., typ=[..., "unsafe", ...], ...)
+                  ...
+              # typ from a name (a constant or a parameter): `TYP = ["unsafe"]` runs code, `KIND = "safe"` is
+              # flagged too, as on main (a string constant is resolved by constant propagation, a list is not).
+              - patterns:
+                  - pattern-inside: |
+                      yaml = $FACTORY(..., typ=$TYP, ...)
+                      ...
+                  - metavariable-regex:
+                      metavariable: $TYP
+                      regex: ^[A-Za-z_][A-Za-z0-9_.]*$
 
   - id: python-tls-verification-disabled
     languages: [python]
