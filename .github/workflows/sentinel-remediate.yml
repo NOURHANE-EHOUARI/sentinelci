@@ -1,21 +1,32 @@
 name: sentinel-remediate
 
 # The remediation bot (task A6, SPEC section 9, ADR-0013): it proposes deterministic fixes for the
-# infrastructure-as-code findings of the default branch, and opens one pull request per proposal. It never merges.
+# infrastructure-as-code findings of the default branch, opens one pull request per proposal, and verifies each
+# one. It never merges.
 #
 # Trust model
-# - `propose` runs the repository's code (the CLI, the fixers) with a read-only token and no secret. It scans the
-#   commit, writes the proposals, commits each one on its own `sentinel/fix/...` branch of its clone with
+# - `propose` runs the repository's code (the CLI, the fixers) with a read-only token and no secret. It copies
+#   the commit into a bare repository (one commit, fetched from the shallow checkout), scans the tree exported
+#   from it, writes the proposals, commits each one on its own `sentinel/fix/...` branch of that copy with
 #   `sentinel remediate apply` (nothing pushed), and hands over a git bundle per branch.
-# - `publish` holds the only write token, and runs no repository code: no checkout, no Python, no package. Its
-#   one script, below, uses the runner's git, jq and gh. It accepts a bundle only if it holds exactly one
-#   commit, on the branch the proposal names, whose parent is the scanned commit, that edits in place exactly
-#   the files the proposal lists, and says which proposal it is. Then it pushes that branch and opens the pull
-#   request, unless the branch already exists (the same proposal is the same branch: running twice opens
-#   nothing new).
-# - The pull request is a change like any other: scanned, then judged by `sentinel remediate verify` (VERIFIED,
-#   REJECTED or FAILED). Opened with the workflow token, it does not start other workflows by itself: the
-#   verification run is dispatched with the A3 wiring (ADR-0013).
+# - `publish` holds the only token that can push, and runs no repository code: no checkout, no Python, no
+#   package. Its one script, below, uses the runner's git, jq and gh. It accepts a bundle only if it holds exactly
+#   one commit, on the branch the proposal names, whose parent is the scanned commit, that edits in place exactly
+#   the files the proposal lists, all under the scanned path, and says which proposal it is. Then it pushes that
+#   branch and opens the pull request, unless the branch already exists (the same proposal is the same branch:
+#   running twice opens nothing new).
+# - `verify` judges each pull request it opened with the scanned commit's pipeline, read-only and with no secret
+#   (VERIFYING). It rebuilds the commit from the proposal and the scanned commit and requires the pull request's
+#   commit to be that one; scans both commits with the scanners the pr gate requires (Gitleaks, Opengrep, Syft
+#   and Grype, Trivy and zizmor: policies/required_tools.rego), Grype against one database prepared in the job;
+#   builds and tests the patch and re-runs the fixer, whose output the proposal must be (`sentinel remediate
+#   check`); evaluates the gate on the patched commit in pr context, the scanned commit as baseline; then applies
+#   the verification gate (`sentinel remediate verify`): VERIFIED, REJECTED or FAILED. The database's evidence
+#   and each dependency scan's report (with the SBOM it matched) are handed over with the results.
+# - `report` runs no repository code either. It re-checks each result against the gate's own invariant, comments
+#   it on its pull request, and sets the `sentinelci/remediation` commit status. A pull request without a
+#   trustworthy result is reported FAILED, and the run fails.
+# A pull request opened with the workflow token starts no workflow by itself, so the verification runs here.
 #
 # Runs by hand only (GitHub Free minutes). The repository setting "Allow GitHub Actions to create and approve pull
 # requests" must be on for `publish` to open pull requests (it never approves one).
@@ -37,6 +48,9 @@ concurrency:
 env:
   UV_VERSION: "0.11.32"
   PYTHON_VERSION: "3.12"
+  # Time limit of one scanner run in `verify`; its timeout-minutes must outlive every run it may make
+  # (cli/tests/remediation/test_bot_workflow.py checks the sum).
+  SCANNER_TIMEOUT_S: "300"
 
 jobs:
   propose:
@@ -83,28 +97,48 @@ jobs:
           set -euo pipefail
           out="$RUNNER_TEMP/remediation"
           mkdir -p "$out/proposals" "$out/bundles"
+          # The scanned commit as it is committed, not as the checkout wrote it: a bare copy whose attributes
+          # come from no tree (attr.tree), exported with --worktree-attributes. Its .gitattributes (eol, ident,
+          # export-ignore, filters) cannot change what is scanned and fixed, so a proposal's diff always applies
+          # to the commit's own blobs, as verify reads them. The CLI still runs from the checkout. One commit is
+          # fetched (--depth=1): actions/checkout leaves a shallow clone, and git refuses to set a ref to a
+          # shallow root otherwise (a warning, exit 0, and no ref: #118 review).
+          work="$RUNNER_TEMP/propose"
+          repo="$work/repo.git"
+          tree="$work/tree"
+          mkdir -p "$tree"
+          if [ "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" != "$SHA" ]; then
+            echo "::error::the checkout is not $SHA"; exit 1
+          fi
+          git init --quiet --bare "$repo"
+          git -C "$repo" config attr.tree "$(git hash-object -t tree /dev/null)"
+          git -C "$repo" fetch --quiet --no-tags --depth=1 "$GITHUB_WORKSPACE" "+HEAD:refs/sentinel/base"
+          [ "$(git -C "$repo" rev-parse refs/sentinel/base)" = "$SHA" ]
+          git -C "$repo" archive --worktree-attributes --format=tar "$SHA" | tar -x -C "$tree"
           # A scan that fails proposes nothing: the job fails, and nothing is published.
-          uv run sentinel scan iac "$SCAN_PATH" --repo-root . --out "$RUNNER_TEMP/findings.ndjson" \
+          uv run sentinel scan iac "$tree/$SCAN_PATH" --repo-root "$tree" --out "$RUNNER_TEMP/findings.ndjson" \
             --repo "$REPO" --commit "$SHA" --ref "$REF" --run-id "$RUN_ID" --context release \
             --tools-dir "$RUNNER_TEMP/sentinel-tools" --tool-status-out "$RUNNER_TEMP/tool-status.json"
           for strategy in kubernetes dockerfile; do
             uv run sentinel remediate "$strategy" --findings "$RUNNER_TEMP/findings.ndjson" \
-              --out "$out/proposals/$strategy.json" --repo-root .
+              --out "$out/proposals/$strategy.json" --repo-root "$tree"
             [ -f "$out/proposals/$strategy.json" ] || { echo "$strategy: nothing to propose"; continue; }
             uv run sentinel remediate apply --proposal "$out/proposals/$strategy.json" \
-              --findings "$RUNNER_TEMP/findings.ndjson" --repo-root . --base "$SHA" \
+              --findings "$RUNNER_TEMP/findings.ndjson" --repo-root "$repo" --base "$SHA" \
               > "$out/proposals/$strategy.applied.json"
             branch="$(jq -r .branch "$out/proposals/$strategy.applied.json")"
-            git bundle create "$out/bundles/$strategy.bundle" "refs/heads/$branch" "^$SHA"
+            git -C "$repo" bundle create "$out/bundles/$strategy.bundle" "refs/heads/$branch" "^$SHA"
             echo "$strategy: $branch"
           done
+          # Always written, so the artifact exists and `publish` downloads it even when nothing was proposed.
+          echo "proposals: $(find "$out/proposals" -name '*.applied.json' | wc -l)" > "$out/summary.txt"
 
       - name: Hand the proposals over
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sentinel-remediation
           path: ${{ runner.temp }}/remediation
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7
 
   publish:
@@ -115,6 +149,8 @@ jobs:
     permissions:
       contents: write # push the sentinel/fix/ branches
       pull-requests: write # open their pull requests
+    outputs:
+      opened: ${{ steps.publish.outputs.opened }}
     steps:
       - name: Download the proposals
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -123,20 +159,23 @@ jobs:
           path: ${{ runner.temp }}/remediation
 
       - name: Push each verified branch and open its pull request
+        id: publish
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           REMOTE: ${{ github.server_url }}/${{ github.repository }}.git
           BASE_SHA: ${{ github.sha }}
           BASE_BRANCH: ${{ github.ref_name }}
+          SCAN_PATH: ${{ inputs.path }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PROPOSALS: ${{ runner.temp }}/remediation
           WORK: ${{ runner.temp }}/publish
-          SCAN_PATH: ${{ inputs.path }}
+        # A refused proposal is named and counted (`refused`), and the next step fails the job: the others are
+        # still published, and `opened` lists what was opened for `verify`.
         run: |
           set -euo pipefail
           shopt -s nullglob
-          fail() { echo "::error::$1: $2"; failed=1; }
+          fail() { echo "::error::$1: $2"; failed=$((failed + 1)); }
           failed=0
           # The scanned directory is the dispatcher's input, checked again here: a proposal edits files in it only.
           if [[ ! "$SCAN_PATH" =~ ^[A-Za-z0-9._/-]+$ || "$SCAN_PATH" == *..* || "$SCAN_PATH" == /* ]]; then
@@ -145,6 +184,7 @@ jobs:
           scope="${SCAN_PATH%/}/"
           [ "$scope" = "./" ] && scope=""
           mkdir -p "$WORK"
+          : > "$WORK/opened.ndjson"
           repo="$WORK/remote.git"
           git init --quiet --bare "$repo"
           # The token goes in a header for this repository's URL only, read by git from the environment.
@@ -155,6 +195,9 @@ jobs:
           git -C "$repo" fetch --quiet --depth=1 "$REMOTE" "$BASE_SHA"
           for applied in "$PROPOSALS"/proposals/*.applied.json; do
             name="$(basename "$applied" .applied.json)"
+            if [[ ! "$name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]]; then
+              fail "proposal" "a proposal's file name must be lower-case letters, digits and -"; continue
+            fi
             proposal="$PROPOSALS/proposals/$name.json"
             bundle="$PROPOSALS/bundles/$name.bundle"
             branch="$(jq -r '.branch' "$applied")"
@@ -234,12 +277,337 @@ jobs:
               + (.rationale | tostring | gsub("`"; "'"'"'") | .[0:2000]) + "\n```\n\n"
               + "**Findings it resolves:**\n" + ([.finding_ids[] | "- `" + . + "`"] | join("\n")) + "\n\n"
               + "**Files:** " + ([.files[] | "`" + . + "`"] | join(", ")) + "\n\n"
-              + "This pull request is judged like any change: scanned, then `sentinel remediate verify` says"
-              + " VERIFIED, REJECTED or FAILED. The bot never merges it."' "$proposal" > "$WORK/$name.md"
-            if ! gh pr create --repo "$REPO" --base "$BASE_BRANCH" --head "$branch" \
+              + "This pull request is judged like any change: the same run verifies it with the pipeline of the"
+              + " scanned commit and comments VERIFIED, REJECTED or FAILED. The bot never merges it."' "$proposal" > "$WORK/$name.md"
+            if ! url="$(gh pr create --repo "$REPO" --base "$BASE_BRANCH" --head "$branch" \
               --title "fix(remediation): ${strategy#deterministic:} hardening for $count finding(s)" \
-              --body-file "$WORK/$name.md"; then
+              --body-file "$WORK/$name.md")"; then
               fail "$name" "$branch is pushed, but its pull request could not be opened"; continue
             fi
+            number="${url##*/}"
+            if [[ ! "$number" =~ ^[0-9]+$ ]]; then
+              fail "$name" "gh did not answer with the pull request's URL"; continue
+            fi
+            echo "$name: $branch opened as #$number"
+            jq -cn --arg name "$name" --arg branch "$branch" --arg commit "$commit" --arg id "$id" \
+              --argjson pr "$number" \
+              '{name: $name, branch: $branch, commit: $commit, proposal_id: $id, pull_request: $pr}' \
+              >> "$WORK/opened.ndjson"
           done
-          exit "$failed"
+          {
+            echo "opened=$(jq -cs . "$WORK/opened.ndjson")"
+            echo "refused=$failed"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Fail if a proposal was refused
+        if: steps.publish.outputs.refused != '0'
+        env:
+          REFUSED: ${{ steps.publish.outputs.refused }}
+        run: |
+          echo "::error::$REFUSED proposal(s) refused: the step above names each one and why"
+          exit 1
+
+  verify:
+    name: verify (no secrets, read-only)
+    needs: [propose, publish]
+    if: ${{ !cancelled() && needs.publish.outputs.opened != '' && needs.publish.outputs.opened != '[]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read # check out the scanned commit's pipeline; nothing else
+    steps:
+      - name: Check out the pipeline (the scanned commit, trusted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: pipeline
+          persist-credentials: false
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: false
+
+      - name: Install the SentinelCI CLI, the pinned scanners and OPA
+        env:
+          SENTINEL: ${{ github.workspace }}/pipeline/.venv/bin/sentinel
+        run: |
+          set -euo pipefail
+          (cd pipeline && uv sync --locked --no-dev --package sentinelci)
+          "$SENTINEL" tools install gitleaks opengrep syft grype trivy opa --lock pipeline/tools.lock.toml \
+            --dest "$RUNNER_TEMP/sentinel-tools"
+          "$SENTINEL" tools verify opa --lock pipeline/tools.lock.toml --dest "$RUNNER_TEMP/sentinel-tools" \
+            --report "$RUNNER_TEMP/opa-manifest.json"
+
+      - name: Prepare Grype's vulnerability database (the only download, checked against its listing's checksum)
+        env:
+          SENTINEL: ${{ github.workspace }}/pipeline/.venv/bin/sentinel
+        # Without a valid database the dependency scans below fail, and each pull request is then reported
+        # FAILED (never verified on fewer scanners than the pr gate requires).
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/grype-db" "$RUNNER_TEMP/verification/evidence"
+          status=0
+          # Its evidence is handed over with the results: a decision is explained only with its database.
+          "$SENTINEL" tools grype-db --db-dir "$RUNNER_TEMP/grype-db" --timeout "$SCANNER_TIMEOUT_S" \
+            --report "$RUNNER_TEMP/verification/evidence/grype-db.json" \
+            --lock pipeline/tools.lock.toml --tools-dir "$RUNNER_TEMP/sentinel-tools" || status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "::warning::Grype's database could not be prepared (exit $status): every verification will fail"
+          fi
+
+      - name: Download the proposals
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sentinel-remediation
+          path: ${{ runner.temp }}/remediation
+          digest-mismatch: error
+
+      - name: Verify each pull request the bot opened
+        env:
+          SENTINEL: ${{ github.workspace }}/pipeline/.venv/bin/sentinel
+          PIPELINE: ${{ github.workspace }}/pipeline
+          CHECKOUT: ${{ github.workspace }}/pipeline
+          TOOLS: ${{ runner.temp }}/sentinel-tools
+          GRYPE_DB: ${{ runner.temp }}/grype-db
+          OPA_MANIFEST: ${{ runner.temp }}/opa-manifest.json
+          OPENED: ${{ needs.publish.outputs.opened }}
+          PROPOSALS: ${{ runner.temp }}/remediation
+          WORK: ${{ runner.temp }}/verify
+          RESULTS: ${{ runner.temp }}/verification
+          SCAN_PATH: ${{ inputs.path }}
+          REPO: ${{ github.repository }}
+          BASE_SHA: ${{ github.sha }}
+          BASE_REF: ${{ github.ref }}
+          RUN_ID: ${{ github.run_id }}
+        # The scanned commit's pipeline (CLI, tools.lock.toml, policies, waivers) judges every pull request; the
+        # pull requests are only data. Each result is written only when every step could be done honestly; a
+        # pull request without one is reported FAILED, and the job fails.
+        run: |
+          set -uo pipefail
+          mkdir -p "$WORK/base" "$RESULTS"
+          status=0
+          refuse() { echo "::error::$1: $2"; return 1; }
+          # zizmor is the CLI's own (a Python dependency), not a lock binary: its audit takes no --tools-dir.
+          audit=(--repo "$REPO" --context pr --run-id "$RUN_ID" --timeout "$SCANNER_TIMEOUT_S"
+            --lock "$PIPELINE/tools.lock.toml")
+          common=("${audit[@]}" --tools-dir "$TOOLS")
+          # The scanned commit, fetched from the checkout into a bare repository: nothing is ever checked out. One
+          # commit (--depth=1): actions/checkout leaves a shallow clone, and git refuses to set a ref to a shallow
+          # root otherwise (a warning, exit 0, and no ref: every pull request would be FAILED).
+          repo="$WORK/repo.git"
+          git init --quiet --bare "$repo"
+          # Attributes come from no tree, whatever HEAD becomes: the commit never configures git archive or
+          # Gitleaks' git log (export-ignore, export-subst, ident, eol, -diff). git reads a bare repository's
+          # HEAD:.gitattributes once HEAD resolves; attr.tree names the empty tree instead.
+          git -C "$repo" config attr.tree "$(git hash-object -t tree /dev/null)"
+          git -C "$repo" fetch --quiet --no-tags --depth=1 "$CHECKOUT" "+HEAD:refs/sentinel/base" \
+            && [ "$(git -C "$repo" rev-parse refs/sentinel/base)" = "$BASE_SHA" ] \
+            || { echo "::error::the checkout is not the scanned commit $BASE_SHA"; exit 1; }
+          # Its whole tree (the fixers look for an ADD source at the repository root too) and its findings: the
+          # before side of every proposal, and the baseline of every decision. Every tree is exported with
+          # --worktree-attributes (without it, git archive reads the archived tree's own attributes) from this
+          # bare repository, whose attr.tree is empty: the commit's .gitattributes cannot drop (export-ignore)
+          # or rewrite (export-subst, ident, eol) what is scanned and checked.
+          if ! { git -C "$repo" archive --worktree-attributes --format=tar "$BASE_SHA" | tar -x -C "$WORK/base"; } \
+            || ! "$SENTINEL" scan secrets "$WORK/base/$SCAN_PATH" --mode dir --repo-root "$WORK/base" \
+              --commit "$BASE_SHA" --ref "$BASE_REF" --out "$WORK/base-secrets.ndjson" \
+              --tool-status-out "$WORK/base-secrets-status.json" "${common[@]}" \
+            || ! "$SENTINEL" scan iac "$WORK/base/$SCAN_PATH" --repo-root "$WORK/base" \
+              --commit "$BASE_SHA" --ref "$BASE_REF" --out "$WORK/base-iac.ndjson" \
+              --tool-status-out "$WORK/base-iac-status.json" "${common[@]}" \
+            || ! "$SENTINEL" scan sast "$WORK/base/$SCAN_PATH" --repo-root "$WORK/base" \
+              --commit "$BASE_SHA" --ref "$BASE_REF" --out "$WORK/base-sast.ndjson" \
+              --tool-status-out "$WORK/base-sast-status.json" "${common[@]}" \
+            || ! "$SENTINEL" scan sca "$WORK/base/$SCAN_PATH" --repo-root "$WORK/base" --db-dir "$GRYPE_DB" \
+              --commit "$BASE_SHA" --ref "$BASE_REF" --out "$WORK/base-sca.ndjson" \
+              --report "$RESULTS/evidence/base-sca-report.json" --sbom-out "$RESULTS/evidence/base-sca-sbom.json" \
+              --tool-status-out "$WORK/base-sca-status.json" "${common[@]}" \
+            || ! "$SENTINEL" scan pipelines "$WORK/base/$SCAN_PATH" --repo-root "$WORK/base" \
+              --commit "$BASE_SHA" --ref "$BASE_REF" --out "$WORK/base-pipelines.ndjson" \
+              --tool-status-out "$WORK/base-pipelines-status.json" "${audit[@]}" \
+            || ! "$SENTINEL" scan combine --findings "$WORK/base-secrets.ndjson" --findings "$WORK/base-iac.ndjson" \
+              --findings "$WORK/base-sast.ndjson" --findings "$WORK/base-sca.ndjson" \
+              --findings "$WORK/base-pipelines.ndjson" --out "$WORK/before.ndjson"; then
+            echo "::error::the scanned commit could not be scanned: nothing is verified"
+            exit 1
+          fi
+          verify_one() {
+            local out="$WORK/$name" proposal="$PROPOSALS/proposals/$name.json" code
+            mkdir -p "$out/patched"
+            # 1. The pull request's commit is this proposal applied to the scanned commit, rebuilt here.
+            "$SENTINEL" remediate apply --proposal "$proposal" --findings "$WORK/before.ndjson" \
+              --repo-root "$repo" --base "$BASE_SHA" --branch "$branch" > "$out/applied.json" \
+              || refuse "$name" "the proposal does not apply to the scanned commit" || return 1
+            [ "$(jq -r .commit "$out/applied.json")" = "$commit" ] \
+              || refuse "$name" "#$pr's commit is not the proposal applied to $BASE_SHA" || return 1
+            # 2. The patched commit, scanned like a pull request: its commits for secrets, its tree for IaC, code,
+            #    dependencies and CI workflows (every scanner the pr gate requires: policies/required_tools.rego).
+            #    Its whole tree, as the base's: Trivy loads local Terraform modules outside the scan path, so both
+            #    sides must hold them.
+            { git -C "$repo" archive --worktree-attributes --format=tar "$commit" | tar -x -C "$out/patched"; } \
+              && "$SENTINEL" scan secrets "$repo" --mode git --log-opts "$BASE_SHA..$commit -- $SCAN_PATH" \
+                --repo-root "$repo" --commit "$commit" --ref "refs/pull/$pr/head" --out "$out/secrets.ndjson" \
+                --tool-status-out "$out/secrets-status.json" "${common[@]}" \
+              && "$SENTINEL" scan iac "$out/patched/$SCAN_PATH" --repo-root "$out/patched" \
+                --commit "$commit" --ref "refs/pull/$pr/head" --out "$out/iac.ndjson" \
+                --tool-status-out "$out/iac-status.json" "${common[@]}" \
+              && "$SENTINEL" scan sast "$out/patched/$SCAN_PATH" --repo-root "$out/patched" \
+                --commit "$commit" --ref "refs/pull/$pr/head" --out "$out/sast.ndjson" \
+                --tool-status-out "$out/sast-status.json" "${common[@]}" \
+              && "$SENTINEL" scan sca "$out/patched/$SCAN_PATH" --repo-root "$out/patched" --db-dir "$GRYPE_DB" \
+                --commit "$commit" --ref "refs/pull/$pr/head" --out "$out/sca.ndjson" \
+                --report "$RESULTS/evidence/$name/sca-report.json" --sbom-out "$RESULTS/evidence/$name/sca-sbom.json" \
+                --tool-status-out "$out/sca-status.json" "${common[@]}" \
+              && "$SENTINEL" scan pipelines "$out/patched/$SCAN_PATH" --repo-root "$out/patched" \
+                --commit "$commit" --ref "refs/pull/$pr/head" --out "$out/pipelines.ndjson" \
+                --tool-status-out "$out/pipelines-status.json" "${audit[@]}" \
+              && "$SENTINEL" scan combine --findings "$out/secrets.ndjson" --findings "$out/iac.ndjson" \
+                --findings "$out/sast.ndjson" --findings "$out/sca.ndjson" \
+                --findings "$out/pipelines.ndjson" --tool-status "$out/secrets-status.json" \
+                --tool-status "$out/iac-status.json" --tool-status "$out/sast-status.json" \
+                --tool-status "$out/sca-status.json" --tool-status "$out/pipelines-status.json" \
+                --out "$out/after.ndjson" --tool-status-out "$out/after-status.json" \
+              || refuse "$name" "the patched commit could not be scanned" || return 1
+            # 3. Build and tests of the patch, and the fixer re-run on the scanned commit's IaC findings: the
+            #    proposal must be its own output.
+            code=0
+            "$SENTINEL" remediate check --proposal "$proposal" --base-root "$WORK/base" \
+              --patched-root "$out/patched" --findings "$WORK/base-iac.ndjson" > "$out/check.json" || code=$?
+            [ "$code" -le 1 ] || refuse "$name" "its build and tests could not be checked" || return 1
+            # A crash also exits 1: only a whole result is one (else FAILED, never REJECTED).
+            jq -e '(.build_ok | type == "boolean") and (.tests_ok | type == "boolean")
+              and (.problems | type == "array")' "$out/check.json" > /dev/null 2>&1 \
+              || refuse "$name" "its build and tests could not be checked" || return 1
+            jq -r '.problems[]' "$out/check.json" | sed "s/^/$name: /"
+            build=--build-ok; [ "$(jq -r .build_ok "$out/check.json")" = true ] || build=--build-failed
+            tests=--tests-ok; [ "$(jq -r .tests_ok "$out/check.json")" = true ] || tests=--tests-failed
+            # 4. The gate on the patched commit, scored with the scanned commit's risk model, in pr context,
+            #    the scanned commit as baseline, its waivers read from the pipeline checkout.
+            "$SENTINEL" score --findings "$out/after.ndjson" --policy-dir "$PIPELINE/policies" \
+              --out "$out/scored.ndjson" || refuse "$name" "the patched findings could not be scored" || return 1
+            mapfile -t versions < <(jq -r '.tools | to_entries[] | "--tool-version=\(.key)=\(.value.version)"' \
+              "$OPA_MANIFEST" "$out/after-status.json")
+            code=0
+            (cd "$PIPELINE" && "$SENTINEL" evaluate --findings "$out/scored.ndjson" --repo "$REPO" \
+              --commit "$commit" --context pr --ref "refs/pull/$pr/head" --policy-dir policies \
+              --opa "$TOOLS/bin/opa" "${versions[@]}" --tool-status "$out/after-status.json" \
+              --baseline "$WORK/before.ndjson" --output "$out/decision.json") || code=$?
+            [ "$code" -le 1 ] || refuse "$name" "no decision on the patched commit" || return 1
+            # 5. The verification gate: the result is written for VERIFIED, REJECTED and FAILED alike.
+            code=0
+            "$SENTINEL" remediate verify --proposal "$proposal" --before "$WORK/before.ndjson" \
+              --after "$out/scored.ndjson" --decision "$out/decision.json" \
+              --tool-status "$out/after-status.json" "$build" "$tests" --pull-request "$pr" \
+              --out "$RESULTS/$name.json" || code=$?
+            [ "$code" -le 1 ] || refuse "$name" "the verification gate refused its inputs" || return 1
+          }
+          while IFS= read -r entry; do
+            name="$(jq -r .name <<< "$entry")" branch="$(jq -r .branch <<< "$entry")"
+            commit="$(jq -r .commit <<< "$entry")" pr="$(jq -r .pull_request <<< "$entry")"
+            if [[ ! "$name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ || ! "$commit" =~ ^[0-9a-f]{40}$ || ! "$pr" =~ ^[0-9]+$
+              || ! "$branch" =~ ^sentinel/fix/[a-z0-9][a-z0-9._-]{0,63}$ ]]; then
+              echo "::error::an opened pull request is not described the way publish describes one"
+              status=1
+              continue
+            fi
+            verify_one || status=1
+          done < <(jq -c '.[]' <<< "$OPENED")
+          exit "$status"
+
+      - name: Hand the results over
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sentinel-verification
+          path: ${{ runner.temp }}/verification
+          if-no-files-found: warn
+          retention-days: 14
+
+  report:
+    name: report (comment and status, no repository code)
+    needs: [publish, verify]
+    if: ${{ !cancelled() && needs.publish.outputs.opened != '' && needs.publish.outputs.opened != '[]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write # comment each verification result on its pull request
+      statuses: write # set the sentinelci/remediation status of each fix commit
+    steps:
+      - name: Download the results (whatever exists)
+        id: results
+        continue-on-error: true # no results: every pull request is reported FAILED below
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sentinel-verification
+          path: ${{ runner.temp }}/verification
+          digest-mismatch: error
+
+      - name: Comment each result and set its commit status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          OPENED: ${{ needs.publish.outputs.opened }}
+          RESULTS: ${{ runner.temp }}/verification
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WORK: ${{ runner.temp }}/report
+        # A result is trusted only if it is the pull request's own and keeps the gate's invariant: VERIFIED only
+        # when every condition holds. Anything else is reported FAILED.
+        run: |
+          set -euo pipefail
+          mkdir -p "$WORK"
+          untrusted=0
+          while IFS= read -r entry; do
+            name="$(jq -r .name <<< "$entry")" commit="$(jq -r .commit <<< "$entry")"
+            pr="$(jq -r .pull_request <<< "$entry")" id="$(jq -r .proposal_id <<< "$entry")"
+            if [[ ! "$name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ || ! "$commit" =~ ^[0-9a-f]{40}$ || ! "$pr" =~ ^[0-9]+$ ]]; then
+              echo "::error::an opened pull request is not described the way publish describes one"
+              untrusted=1
+              continue
+            fi
+            result="$RESULTS/$name.json"
+            if [ -f "$result" ] && jq -e --arg id "$id" --argjson pr "$pr" '
+                .schema_version == "1.0" and .proposal_id == $id and .pull_request == $pr
+                and ([.build_ok, .tests_ok, .target_resolved] | all(type == "boolean"))
+                and (.new_findings | type == "array" and all(type == "string" and test("^[a-f0-9]{64}$")))
+                and (.attempt | IN(1, 2, 3)) and (.verdict | IN("PASS", "WARN", "BLOCK"))
+                and (.outcome | IN("VERIFIED", "REJECTED", "FAILED"))
+                and (.outcome != "VERIFIED" or (.build_ok and .tests_ok and .target_resolved
+                  and (.new_findings | length) == 0 and .verdict != "BLOCK"))' "$result" > /dev/null; then
+              outcome="$(jq -r .outcome "$result")"
+              jq -r --arg run "$RUN_URL" '
+                def mark(ok): if ok then "ok" else "**failed**" end;
+                "<!-- sentinelci:remediation-verification -->\n"
+                + "**SentinelCI verification: " + .outcome + "** (attempt " + (.attempt | tostring)
+                + ", proposal `" + .proposal_id + "`, [run](" + $run + "))\n\n"
+                + "| Condition | Result |\n|---|---|\n"
+                + "| Build: the edited files still parse into the same resources | " + mark(.build_ok) + " |\n"
+                + "| Tests: the patch changes only what its strategy may change | " + mark(.tests_ok) + " |\n"
+                + "| Every finding it claims is gone | " + mark(.target_resolved) + " |\n"
+                + "| No new finding of severity MEDIUM or higher | "
+                + (if (.new_findings | length) == 0 then "ok" else "**" + (.new_findings | length | tostring) + " new**" end)
+                + " |\n"
+                + "| Gate verdict on the patched commit (pr context) | " + .verdict + " |\n\n"
+                + (if .outcome == "VERIFIED" then "Every condition of the verification gate holds."
+                   else "A condition of the verification gate does not hold: see the run for why." end)
+                + " A reviewer decides; the bot never merges."' "$result" > "$WORK/$name.md"
+            else
+              outcome="FAILED"
+              untrusted=1
+              printf '%s\n' "<!-- sentinelci:remediation-verification -->" \
+                "**SentinelCI verification: FAILED**: no trustworthy result for this pull request ([run]($RUN_URL))." \
+                "" "Nothing is verified. The bot never merges." > "$WORK/$name.md"
+            fi
+            gh api --method POST "repos/$REPO/issues/$pr/comments" -F "body=@$WORK/$name.md" > /dev/null
+            state=failure
+            [ "$outcome" != "VERIFIED" ] || state=success
+            gh api --method POST "repos/$REPO/statuses/$commit" -f "state=$state" \
+              -f "context=sentinelci/remediation" -f "description=Verification: $outcome" \
+              -f "target_url=$RUN_URL" > /dev/null
+            echo "$name: #$pr $outcome"
+          done < <(jq -c '.[]' <<< "$OPENED")
+          if [ "$untrusted" -ne 0 ]; then
+            echo "::error::a pull request has no trustworthy verification result: it is reported FAILED"
+            exit 1
+          fi

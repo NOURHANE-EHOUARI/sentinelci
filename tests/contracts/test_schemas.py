@@ -27,6 +27,11 @@ CONTRACTS = {
     "vuln-result": "vuln-result.v1.json",
     "root-cause-group": "root-cause-group.v1.json",
     "correlation": "correlation.v1.json",
+    "trust-report": "trust-report.v1.json",
+    "release-evidence": "release-evidence.v1.json",
+    "remediation-attempt": "remediation-attempt.v1.json",
+    "explanation": "explanation.v1.json",
+    "triage-hint": "triage-hint.v1.json",
 }
 
 

@@ -26,7 +26,74 @@ from .conftest import FakeReleases
 from .test_runner import PLATFORM, install_script
 
 SERIAL = "urn:uuid:3e671687-395b-41f5-a30f-a58921a69b79"
-DIGEST = "sha256:" + "7" * 64
+
+
+def _tar(entries: list[tuple[str, bytes]]) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        for name, data in entries:
+            info = tarfile.TarInfo(name)
+            info.size, info.mtime, info.mode = len(data), 0, 0o644
+            tar.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def _layout_files() -> tuple[dict[str, bytes], str]:
+    """A one-layer OCI image layout, written by hand (no registry, no Docker): one Python package and an
+    os-release. Its files by path in the layout, and the manifest digest, the image's identity."""
+    blobs: dict[str, bytes] = {}
+
+    def blob(data: bytes) -> dict[str, object]:
+        hexdigest = hashlib.sha256(data).hexdigest()
+        blobs[f"blobs/sha256/{hexdigest}"] = data
+        return {"digest": f"sha256:{hexdigest}", "size": len(data)}
+
+    layer = blob(
+        _tar([
+            ("etc/os-release", b'ID=debian\nVERSION_ID="12"\nNAME="Debian GNU/Linux"\n'),
+            ("usr/lib/python3.12/site-packages/tinypkg-1.0.dist-info/METADATA",
+             b"Metadata-Version: 2.1\nName: tinypkg\nVersion: 1.0\n"),
+        ])
+    )  # fmt: skip
+    config = blob(
+        json.dumps(
+            {"architecture": "amd64", "os": "linux", "config": {},
+             "rootfs": {"type": "layers", "diff_ids": [layer["digest"]]}}
+        ).encode()
+    )  # fmt: skip
+    manifest = blob(
+        json.dumps(
+            {"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+             "config": {"mediaType": "application/vnd.oci.image.config.v1+json", **config},
+             "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar", **layer}]}
+        ).encode()
+    )  # fmt: skip
+    index = json.dumps({"schemaVersion": 2, "manifests": [
+        {"mediaType": "application/vnd.oci.image.manifest.v1+json", **manifest}]}).encode()  # fmt: skip
+    return {"oci-layout": b'{"imageLayoutVersion": "1.0.0"}', "index.json": index, **blobs}, str(
+        manifest["digest"]
+    )
+
+
+# The image every image test reads: the fake Syft's SBOMs name its digest, and the layout check
+# (supplychain/layout.py) runs on its real bytes before any Syft does.
+LAYOUT, DIGEST = _layout_files()
+
+
+def oci_layout(root: Path, layout: dict[str, bytes] = LAYOUT) -> str:
+    """Write the layout as a directory; return the manifest digest."""
+    for name, data in layout.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_bytes(data)
+    return DIGEST
+
+
+def oci_archive(path: Path, layout: dict[str, bytes] = LAYOUT) -> Path:
+    """Write the layout as a tar, as `docker buildx build --output type=oci` does; return its path."""
+    path.write_bytes(_tar(list(layout.items())))
+    return path
+
+
 CYCLONEDX = {
     "bomFormat": "CycloneDX",
     "specVersion": "1.6",
@@ -141,6 +208,8 @@ def test_the_configuration_keeps_syft_offline_and_reports_packages_only() -> Non
         "enrich: []",
         "  search-remote-licenses: false",
         "  use-network: false",
+        "  local-mod-cache-dir: /nonexistent/go/pkg/mod",
+        "  maven-local-repository-dir: /nonexistent/.m2/repository",
         "  use-packages-lib: false",
         "  vcpkg-allow-git-clone: false",
         "    selection: none",
@@ -155,9 +224,9 @@ def test_images_are_read_from_the_file_the_build_wrote(
     dest, record = fake_syft(tmp_path, releases, write_lock)
     image = tmp_path / "image"
     if kind == "oci-dir":
-        image.mkdir()
+        oci_layout(image)
     else:
-        image.write_bytes(b"not really a tar")
+        oci_archive(image)
     _generate(tmp_path, dest, image, kind=kind, image_digest=DIGEST)
     argv = (record / "argv").read_text().splitlines()
     assert argv[0] == f"{kind}:{image.resolve()}" and "--base-path" not in argv
@@ -186,8 +255,7 @@ def test_an_image_sbom_must_name_the_image_that_was_built(
 ) -> None:
     """Review of #36, should fix 2: a Docker archive came out named by a digest no registry knows."""
     dest, _ = fake_syft(tmp_path, releases, write_lock, cyclonedx=cyclonedx, spdx=spdx)
-    image = tmp_path / "image.tar"
-    image.write_bytes(b"not really a tar")
+    image = oci_archive(tmp_path / "image.tar")
     with pytest.raises(ScannerError, match=f"not {DIGEST}: the file is not an OCI layout"):
         _generate(tmp_path, dest, image, kind="oci-archive", image_digest=DIGEST)
 
@@ -372,8 +440,7 @@ def test_cli_image_needs_its_digest(
     tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
 ) -> None:
     dest, record = fake_syft(tmp_path, releases, write_lock)
-    image = tmp_path / "image.tar"
-    image.write_bytes(b"not really a tar")
+    image = oci_archive(tmp_path / "image.tar")
     out = tmp_path / "out"
     code, output = _cli(tmp_path, dest, image, out / "c.json", out / "s.json", "--source", "oci-archive")
     assert code == 3 and "needs its manifest digest" in output and not (record / "argv").exists()
@@ -481,55 +548,6 @@ def test_real_syft_ignores_the_repository_configuration_and_links_out(
     assert sbom.serial_number == document["serialNumber"]
 
 
-def _tar(entries: list[tuple[str, bytes]]) -> bytes:
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as tar:
-        for name, data in entries:
-            info = tarfile.TarInfo(name)
-            info.size, info.mtime, info.mode = len(data), 0, 0o644
-            tar.addfile(info, io.BytesIO(data))
-    return buffer.getvalue()
-
-
-def oci_layout(root: Path) -> str:
-    """A one-layer OCI image layout, written by hand (no registry, no Docker): one Python package and an
-    os-release. Returns the manifest digest, the image's identity."""
-    blobs = root / "blobs" / "sha256"
-    blobs.mkdir(parents=True)
-
-    def blob(data: bytes) -> dict[str, object]:
-        hexdigest = hashlib.sha256(data).hexdigest()
-        (blobs / hexdigest).write_bytes(data)
-        return {"digest": f"sha256:{hexdigest}", "size": len(data)}
-
-    layer = blob(
-        _tar([
-            ("etc/os-release", b'ID=debian\nVERSION_ID="12"\nNAME="Debian GNU/Linux"\n'),
-            ("usr/lib/python3.12/site-packages/tinypkg-1.0.dist-info/METADATA",
-             b"Metadata-Version: 2.1\nName: tinypkg\nVersion: 1.0\n"),
-        ])
-    )  # fmt: skip
-    config = blob(
-        json.dumps(
-            {"architecture": "amd64", "os": "linux", "config": {},
-             "rootfs": {"type": "layers", "diff_ids": [layer["digest"]]}}
-        ).encode()
-    )  # fmt: skip
-    manifest = blob(
-        json.dumps(
-            {"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
-             "config": {"mediaType": "application/vnd.oci.image.config.v1+json", **config},
-             "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar", **layer}]}
-        ).encode()
-    )  # fmt: skip
-    (root / "oci-layout").write_text('{"imageLayoutVersion": "1.0.0"}')
-    (root / "index.json").write_text(
-        json.dumps({"schemaVersion": 2, "manifests": [
-            {"mediaType": "application/vnd.oci.image.manifest.v1+json", **manifest}]})
-    )  # fmt: skip
-    return str(manifest["digest"])
-
-
 @real
 @pytest.mark.integration
 @pytest.mark.parametrize("kind", ["oci-dir", "oci-archive"])
@@ -563,5 +581,32 @@ def test_real_syft_names_the_image_by_its_manifest_digest(tmp_path: Path, kind: 
     types = {(c["type"], c["name"]) for c in document["components"]}
     assert ("library", "tinypkg") in types and ("operating-system", "debian") in types
     assert sbom.packages == len(document["components"]) - 1, "the operating system is not a package"
-    with pytest.raises(ScannerError, match="not an OCI layout of the image that was built"):
+    # Another digest is refused before Syft runs: the layout's index.json does not name it. That both SBOMs
+    # must name the image is checked with the fake Syft (test_an_image_sbom_must_name_the_image...).
+    with pytest.raises(ScannerError, match=r"index\.json does not name the image"):
         generate("sha256:" + "0" * 64)
+
+
+@real
+@pytest.mark.integration
+def test_real_syft_writes_the_same_sbom_bytes_for_the_same_tree(tmp_path: Path) -> None:
+    """Review of #80, should fix 1: Syft records its configuration in the syft-json SBOM, and two of its
+    directories defaulted to the private home, a new one each run, so the SBOM's sha256 changed every time."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "requirements.txt").write_text("pyyaml==5.3.1\n")
+    (tree / "go.mod").write_text("module example.com/demo\n\ngo 1.22\n\nrequire golang.org/x/text v0.3.7\n")
+
+    def native() -> bytes:
+        sbom = generate_sbom(
+            tree, kind="dir", name="demo-shop", lock=load_lock(REPO_LOCK), tools_dir=Path(str(TOOLS_DIR)),
+            syft_json=True,
+        )  # fmt: skip
+        assert sbom.syft_json is not None
+        return sbom.syft_json
+
+    first = native()
+    assert first == native()
+    packages = json.loads(first)["descriptor"]["configuration"]["packages"]
+    assert packages["golang"]["local-mod-cache-dir"] == "/nonexistent/go/pkg/mod"
+    assert packages["java-archive"]["maven-localrepository-dir"] == "/nonexistent/.m2/repository"
