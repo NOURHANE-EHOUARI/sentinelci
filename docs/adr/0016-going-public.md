@@ -1,4 +1,4 @@
-# ADR-0016: Going public on 22 November, in two steps
+# ADR-0016: Going public right after the merge train, in two steps
 
 - Status: proposed (needs both signatures)
 - Date: 2026-11-15
@@ -11,19 +11,24 @@ ADR-0006 keeps the repository private "until the project is complete", and lists
 branch protection, keyless signing, GitHub artifact attestations, SARIF upload to code scanning, public images.
 
 The roadmap now ends on 30 November (SPEC §16), and GitHub Actions cannot run on this private repository until
-1 December. Public repositories get Actions without the Free plan's cap. Going public on 22 November, right after
-the merge train, gives us CI on GitHub for the last week, on every pull request, and branch protection on `main`.
+1 December. Public repositories get Actions without the Free plan's cap. Going public right after the merge
+train (22 November at the latest) gives us CI on GitHub for every remaining pull request, and branch protection on
+`main`. Until then, every push waits for a local `make check` of about 15 minutes, one branch at a time.
 
-Switching everything at once on 22 November would put the signing change (keyless, a new attestor in Kyverno and
+Switching everything at once at that point would put the signing change (keyless, a new attestor in Kyverno and
 `sentinel verify`) in the same week as the feature freeze. That is the riskiest part, and nothing in the project's
 acceptance needs it before v1.0.0.
 
 ## Decision
 
-The repository goes public on **22 November**, in two steps.
+The repository goes public **right after the merge train is merged, on 22 November at the latest** (both of us,
+15 November), in two steps.
 
-**Step 1, on 22 November (the switch):**
+**Step 1, the switch:**
 1. **Before the switch** (all of it, with its result in the switch PR):
+   - **The logs and artifacts of past Actions runs** become public too: each failed run since Actions was blocked
+     is checked (it holds no log, but its artifacts and its run page do), and anything that must not be public is
+     deleted first (Nourhane, 15 November).
    - Gitleaks (the pinned version, SentinelCI's configuration) over the **whole history: every branch and every
      pull request's head**, since GitHub publishes `refs/pull/*/head` too. On a fresh clone:
      `git fetch origin '+refs/heads/*:refs/remotes/origin/*' '+refs/pull/*/head:refs/remotes/pull/*'`, then
@@ -46,6 +51,9 @@ The repository goes public on **22 November**, in two steps.
      "intentionally vulnerable demo target (`demo-shop/ground-truth/`)". A closed alert is not a waiver;
    - push protection: a push that adds a new fake seed is bypassed as "used in tests", and the value goes into
      `demo-shop/ground-truth/` in the same pull request, as today.
+   - **Right after, one workflow is started by hand** (`workflow_dispatch`), to see that Actions really runs now
+     that the repository is public, despite the billing block of the private phase (Nourhane, 15 November). If it
+     does not start, the local `make check` reports stay the rule until it does.
 3. **What stays as in the private phase for now:** signing with the Cosign key pair on the laptop (ADR-0011), the
    SLSA provenance as a Cosign in-toto attestation, scan results in PR comments, artifacts and the dashboard, and
    the kind cluster's local registry.
@@ -71,11 +79,11 @@ the same 11 findings, nothing new.
 
 ## Consequences
 
-- CI on GitHub runs on every pull request from 22 November, and `main` is protected server-side: the convention of
+- CI on GitHub runs on every pull request from the switch on, and `main` is protected server-side: the convention of
   ADR-0006 decision 6 becomes a rule.
 - The signing key stays long-lived until step 2; it is rotated when keyless signing replaces it, as ADR-0006 says.
-- **This ADR and the switch are two pull requests.** This one records the decision and can merge before the 22nd.
-  The switch PR, on the 22nd, changes `CLAUDE.md`'s "Repository status" section, so that agents follow the
+- **This ADR and the switch are two pull requests.** This one records the decision and can merge before the switch.
+  The switch PR, right after the merge train, changes `CLAUDE.md`'s "Repository status" section, so that agents follow the
   public rules, and carries the history scan of that day. Until it merges, `CLAUDE.md` describes the private
   phase, which is still true.
 - **The one residual risk of the switch:** once public, GitHub still serves a commit that a force-push removed
