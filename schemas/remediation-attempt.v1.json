@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/NOURHANE-EHOUARI/sentinelci/schemas/remediation-attempt.v1.json",
+  "title": "SentinelCI remediation attempt v1",
+  "description": "One attempt of the remediation loop (A6, SPEC section 9): the patch proposal, its verification result, and the repository it was made for. What `sentinel upload-remediation` sends to the platform (`POST /api/v1/remediations`) for the Remediation page and `sentinel_remediation_attempts_total`. Rules JSON Schema cannot express, checked by the producer and the platform: the result is the proposal's (the same proposal_id and attempt), and it was not verified before the proposal was made.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "repo",
+    "proposal",
+    "result"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Minor versions only add (schemas/README.md).",
+      "enum": [
+        "1.0"
+      ]
+    },
+    "repo": {
+      "description": "The repository the proposal was made for, owner/name.",
+      "type": "string",
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "proposal": {
+      "$ref": "patch-proposal.v1.json"
+    },
+    "result": {
+      "$ref": "verification-result.v1.json"
+    }
+  }
+}

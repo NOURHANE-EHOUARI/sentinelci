@@ -259,6 +259,7 @@ CASES: list[tuple[str, str, bool, str]] = [
      '    yaml = YAML(typ=["safe"])\n'
      '    return yaml.load(text)\n'),
     ('python-unsafe-deserialization', 'de-dunder-import.py', True,
+     'from ruamel.yaml import YAML\n'
      'yaml = __import__("yaml")\n'
      'def f(text):\n'
      '    return yaml.load(stream=text)\n'),
@@ -278,7 +279,7 @@ CASES: list[tuple[str, str, bool, str]] = [
      'from lazy import LazyLoader\n'
      'yaml = LazyLoader("yaml", globals(), "yaml")\n'
      'def f(text):\n'
-     '    return yaml.load(text)\n'),
+     '    return yaml.load(stream=text)\n'),
     ('python-unsafe-deserialization', 'de-ruamel-module-import-ok.py', False,
      'import ruamel.yaml\n'
      'def f(text):\n'
@@ -293,6 +294,22 @@ CASES: list[tuple[str, str, bool, str]] = [
      'from ruamel.yaml import YAML as Y\n'
      'def f(text):\n'
      '    yaml = Y(typ="rt")\n'
+     '    return yaml.load(text)\n'),
+    # The exclusion stays in the scope of the ruamel binding: another function's yaml is PyYAML's (#84).
+    ('python-unsafe-deserialization', 'de-ruamel-then-pyyaml.py', True,
+     'import yaml\n'
+     'from ruamel.yaml import YAML\n'
+     'def a(text):\n'
+     '    yaml = YAML()\n'
+     '    return yaml.load(text)\n'
+     'def b(text):\n'
+     '    return yaml.load(text)\n'),
+    # typ from a name: the value is not seen, so the instance is not excluded (a list constant runs code).
+    ('python-unsafe-deserialization', 'de-ruamel-typ-constant.py', True,
+     'from ruamel.yaml import YAML\n'
+     'TYP = ["unsafe"]\n'
+     'def f(text):\n'
+     '    yaml = YAML(typ=TYP)\n'
      '    return yaml.load(text)\n'),
     # ruamel.yaml's old module-level API (gone in 0.18): with no Loader, it used the unsafe one (#84, nit 2).
     ('python-unsafe-deserialization', 'de-ruamel-old-load.py', True,
@@ -332,11 +349,13 @@ CASES: list[tuple[str, str, bool, str]] = [
      'def f(text):\n'
      '    return ruamel.yaml.load(text, Loader=ruamel.yaml.RoundTripLoader)\n'),
     ('python-unsafe-deserialization', 'de-import-module.py', True,
+     'from ruamel.yaml import YAML\n'
      'import importlib\n'
      'yaml = importlib.import_module("yaml")\n'
      'def f(text):\n'
      '    return yaml.load(text)\n'),
     ('python-unsafe-deserialization', 'de-importorskip.py', True,
+     'from ruamel.yaml import YAML\n'
      'import pytest\n'
      'yaml = pytest.importorskip("yaml")\n'
      'def test_f():\n'
@@ -352,6 +371,7 @@ CASES: list[tuple[str, str, bool, str]] = [
      '    return list(yaml.load_all(text, None))\n'),
     # Only a call result excuses the name: an import fallback to None is still PyYAML where the call runs.
     ('python-unsafe-deserialization', 'de-import-fallback.py', True,
+     'from ruamel.yaml import YAML\n'
      'try:\n'
      '    import yaml\n'
      'except ImportError:\n'
@@ -359,6 +379,7 @@ CASES: list[tuple[str, str, bool, str]] = [
      'def f(text):\n'
      '    return yaml.load(text)\n'),
     ('python-unsafe-deserialization', 'de-module-rebound.py', True,
+     'from ruamel.yaml import YAML\n'
      'import yaml as pyyaml\n'
      'yaml = pyyaml\n'
      'def f(text):\n'

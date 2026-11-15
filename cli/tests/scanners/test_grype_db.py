@@ -369,6 +369,26 @@ def test_cli_prepares_the_database_and_writes_its_evidence(
     }
 
 
+def test_cli_passes_its_time_limit_to_every_grype_run(
+    tmp_path: Path, grype: tuple[ToolLock, Path, FakeGrype], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sentinelci.scanners import runner
+
+    seen: list[int] = []
+    real = runner.subprocess.run
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs["timeout"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(runner.subprocess, "run", spy)
+    archive = tmp_path / "db.tar.zst"
+    archive.write_bytes(b"fake archive")
+    result = _cli(grype[1], tmp_path / "db", "--archive", str(archive), "--timeout", "1234")
+    assert result.exit_code == 0, result.output
+    assert len(seen) >= 2 and set(seen) == {1234}, "the import and Grype's status check"
+
+
 def test_cli_fails_closed_and_removes_an_older_report(
     tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
 ) -> None:
