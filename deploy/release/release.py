@@ -8,9 +8,12 @@ During the private phase the laptop is the only signer (ADR-0011, decision 7): t
 GitHub. In order, and nothing past a failed step runs:
 
 1. Preconditions, the laptop analog of ADR-0008 (the CLI, lock, policies and waivers that decide, and this
-   script, are the reviewed ones): the working tree is clean, `origin` is the release repository, and HEAD is
-   its `main`, fetched now. COSIGN_PASSWORD must not be set: the key password is asked on the terminal,
-   checked against deploy/keys/release.pub, and given only to the processes that use the key.
+   script, are the reviewed ones): the working tree is clean, no tracked file is hidden from `git status` by
+   an index flag, every tracked file is compared with HEAD's blob, byte for byte (the index's stat data and
+   a replace ref cannot hide an edit), no variable points git at another repository or index, no gate input
+   is a file git ignores, `origin` is the release repository, and HEAD is its `main`, fetched now.
+   COSIGN_PASSWORD must not be set: the key password is asked on the terminal, checked against
+   deploy/keys/release.pub, and given only to the processes that use the key.
 2. The build context comes from the commit, not the working tree: `git archive HEAD` of the release
    Dockerfile, its `.dockerignore` allow-list and exactly the files that list admits (no link, nothing git
    ignores).
@@ -98,6 +101,20 @@ _ORIGIN = re.compile(
 _ALLOWED = re.compile(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/?")
 _IMAGE_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
 _STEP_TIMEOUT_S = 3600
+
+
+# The files the gate reads from the checkout, beside the CLI and this script (#82 review, round 3).
+GATE_INPUTS = ("policies", ".sentinel/waivers.yaml", ".sentinel/vex.json", "tools.lock.toml")
+# git with no file-system monitor: a configured core.fsmonitor hook answers which files changed, so it could
+# hide an edit from `git status`.
+GIT_STATUS = ("git", "-c", "core.fsmonitor=false")
+# Variables that point git at another repository, index or object store: with one set, every check below would
+# look at something else than this checkout (#129 review). Config variables are not refused: the byte
+# comparison of every tracked file makes them unable to hide an edit.
+GIT_ELSEWHERE = (
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_REPLACE_REF_BASE",
+)  # fmt: skip
 
 
 class ReleaseError(Exception):
@@ -206,18 +223,61 @@ def preconditions(run: Runner, *, fetch: bool, environ: Mapping[str, str]) -> st
     if len(urls) != 1:  # git reads the last, but fetches from the first (#82 review)
         raise ReleaseError(f"origin has {len(urls)} URLs: give it exactly one, github.com/{REPO}")
     check_origin(urls[0])
-    dirty = run(["git", "status", "--porcelain=v1", "--untracked-files=all"]).stdout.splitlines()
+    told = sorted(key for key in GIT_ELSEWHERE if key in environ)
+    if told:
+        raise ReleaseError(f"{', '.join(told)} set: unset it, git must look at this checkout (#129 review)")
+    if run(["git", "for-each-ref", "--count=1", "refs/replace/"]).stdout.strip():
+        raise ReleaseError(
+            "this checkout has replace refs (refs/replace/): remove them, git reads them for HEAD"
+        )
+    # `git status` believes the index: a file marked skip-worktree or assume-unchanged may differ from the
+    # commit and still look clean. Any tracked file counts, this script and the CLI included (#82 review,
+    # round 3).
+    flagged = [
+        line[2:] for line in run([*GIT_STATUS, "ls-files", "-v"]).stdout.splitlines() if line[:2] != "H "
+    ]
+    if flagged:
+        shown = ", ".join(flagged[:5]) + (", ..." if len(flagged) > 5 else "")
+        raise ReleaseError(
+            f"git is told not to look at {shown}: clear the skip-worktree or assume-unchanged flag"
+        )
+    dirty = run([*GIT_STATUS, "status", "--porcelain=v1", "--untracked-files=all"]).stdout.splitlines()
     if dirty:
         shown = ", ".join(line[3:] for line in dirty[:5]) + (", ..." if len(dirty) > 5 else "")
         raise ReleaseError(f"the working tree is not clean ({shown}): release only what main holds")
-    # The gate loads every file under policies/, ignored ones too (a `build/` or `__pycache__/` left by
-    # another branch survives `git checkout main`): none may be there (#82 review).
+    # The gate reads these from the checkout, ignored files too: OPA loads every file under policies/ (a
+    # `build/` or `__pycache__/` left by another branch survives `git checkout main`), and `sentinel evaluate`
+    # reads the waivers and VEX files when they exist. An ignored one, through .gitignore or
+    # .git/info/exclude, would decide without being in the commit (#82 review, rounds 2 and 3).
     stray = run(
-        ["git", "status", "--porcelain=v1", "--ignored=matching", "--untracked-files=all", "--", "policies"]
+        # `traditional` with every untracked file lists each ignored file, even inside a wholly ignored
+        # directory (`matching` would name `.sentinel/` for its tools alone).
+        [
+            *GIT_STATUS,
+            "status",
+            "--porcelain=v1",
+            "--ignored=traditional",
+            "--untracked-files=all",
+            "--",
+            *GATE_INPUTS,
+        ]
     ).stdout.splitlines()
     if stray:
         shown = ", ".join(line[3:] for line in stray[:5]) + (", ..." if len(stray) > 5 else "")
-        raise ReleaseError(f"policies/ holds files git ignores ({shown}): the gate would load them")
+        raise ReleaseError(f"the gate's inputs hold files git ignores ({shown}): the gate would read them")
+    # `git status` also believes the index's stat data: an edit with the same size and time, cached once
+    # under core.checkStat=minimal, stays hidden afterwards. So every tracked file is compared with HEAD's
+    # blob, byte for byte (#129 review).
+    top = Path(run(["git", "rev-parse", "--show-toplevel"]).stdout.strip())
+    for record in filter(None, run(["git", "ls-tree", "-r", "-z", "HEAD"]).stdout.split("\0")):
+        meta, _, path = record.partition("\t")
+        mode, kind, blob = meta.split()
+        if kind != "blob":
+            continue
+        file = top / path
+        data = os.readlink(file).encode() if mode == "120000" else file.read_bytes()
+        if hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest() != blob:
+            raise ReleaseError(f"{path} is not HEAD's blob {blob}, though git status says it is")
     if fetch:
         run(["git", "fetch", "--quiet", "--no-tags", "origin", f"+{MAIN}:refs/remotes/origin/main"])
     head = run(["git", "rev-parse", "--verify", "HEAD^{commit}"]).stdout.strip()
