@@ -72,6 +72,10 @@ def test_dependencies_are_hash_pinned_and_nothing_unlisted_is_installed() -> Non
     assert "--target /opt/backend --requirement /tmp/build.txt" in installs[0]
     assert "PYTHONPATH=/opt/backend /opt/venv/bin/pip" in runs[0] and "--no-build-isolation" in installs[1]
     assert "ARG REQUIREMENTS=requirements.release.txt" in DOCKERFILE.read_text(encoding="utf-8")
+    # Wheels only by default (Hiba's review of #69): no setup.py runs, and an sdist's build dependencies,
+    # whose hashes pip does not check, never enter the release image. Only the BLOCK build turns it off.
+    assert '--only-binary="${ONLY_BINARY}"' in runs[0]
+    assert ("ARG", "ONLY_BINARY=:all:") in found
     assert not any(tool in run for run in runs for tool in ("curl", "wget", "apt-get", "| sh"))
     assert not [keyword for keyword, _ in found if keyword in ("ADD", "HEALTHCHECK")]
 
