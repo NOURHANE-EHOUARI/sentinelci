@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/NOURHANE-EHOUARI/sentinelci/schemas/trust-report.v1.json",
+  "title": "SentinelCI trust report v1",
+  "description": "What `sentinel verify` found about one image digest (A4, ADR-0010), written with `--report-json`: every check of the trust report, in its fixed order, and the verdict. It records a verification made where the release key's public key was; the platform shows it, and Kyverno re-verifies at admission (A5): carrying a report adds no trust.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "image",
+    "mode",
+    "repo",
+    "builder_id",
+    "decision_id",
+    "key_sha256",
+    "verified_at",
+    "trusted",
+    "checks"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Minor versions only add (schemas/README.md).",
+      "enum": [
+        "1.0"
+      ]
+    },
+    "image": {
+      "description": "The image verified, by digest (the name is where it was read from, informational).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "digest"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[a-z0-9][a-z0-9._/:-]{0,254}$"
+        },
+        "digest": {
+          "$ref": "#/$defs/prefixed_sha256"
+        }
+      }
+    },
+    "mode": {
+      "description": "`registry`: the image's signature and attestations read from its registry (what Kyverno reads). `evidence`: the Sigstore bundles of the evidence directory, offline.",
+      "enum": [
+        "registry",
+        "evidence"
+      ]
+    },
+    "repo": {
+      "description": "The repository the release had to come from (`--repo`).",
+      "type": "string",
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "builder_id": {
+      "description": "The builder the provenance had to name (`--builder-id`).",
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])https://\\S+$"
+    },
+    "decision_id": {
+      "description": "The decision the verified decision attestation holds (Decision v1 `decision_id`), or null when no valid decision attestation was found. A trusted report always names one, and a release records a report only next to the decision it names (review of #86: a report of another release of the same digest is not this decision's).",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "key_sha256": {
+      "description": "sha256 of the public key every attestation had to be signed by (its DER SubjectPublicKeyInfo, as in the PEM file): which key was trusted.",
+      "$ref": "#/$defs/sha256_hex"
+    },
+    "verified_at": {
+      "description": "When the verification ran (UTC). A report is a statement about that moment.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+    },
+    "trusted": {
+      "description": "True exactly when every check passed (checked by the producer and the platform; JSON Schema cannot).",
+      "type": "boolean"
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "ok",
+          "detail"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029]).+$"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "detail": {
+            "description": "One line, as the trust report prints it (at most 300 characters).",
+            "type": "string",
+            "maxLength": 300,
+            "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029]).*$"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "prefixed_sha256": {
+      "type": "string",
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])sha256:[a-f0-9]{64}$"
+    },
+    "sha256_hex": {
+      "type": "string",
+      "pattern": "^(?![^\\r\\n\\u2028\\u2029]*[\\r\\n\\u2028\\u2029])[a-f0-9]{64}$"
+    }
+  }
+}

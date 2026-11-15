@@ -97,6 +97,28 @@ def test_unreadable_waivers_file_fails_the_evaluation(data: bytes) -> None:
         load_waivers(data)
 
 
+# Anchors of anchors: 3 levels are 1,000 values here; 7 levels are ten million from 413 bytes (#110 review).
+ALIASES = b"""version: 1
+waivers:
+  - &a [x, x, x, x, x, x, x, x, x, x]
+  - &b [*a, *a, *a, *a, *a, *a, *a, *a, *a, *a]
+  - &c [*b, *b, *b, *b, *b, *b, *b, *b, *b, *b]
+"""
+
+
+def test_a_yaml_alias_is_refused_so_a_small_file_cannot_expand() -> None:
+    """A reviewed waivers file never needs an alias, and one lets a few hundred bytes expand to millions of
+    values: refused, so the gate fails closed with a reason instead of running until its time limit."""
+    with pytest.raises(EvaluationError, match="not valid YAML: a waivers file uses no YAML alias"):
+        load_waivers(ALIASES)
+    with pytest.raises(EvaluationError, match="no YAML alias"):
+        load_waivers(b"version: 1\nwaivers:\n  - &w {id: a}\n  - *w\n")
+
+
+def test_an_anchor_that_is_never_used_still_loads() -> None:
+    assert load_waivers(b"version: 1\nwaivers:\n  - &w {id: a}\n") == [{"id": "a"}]
+
+
 # ---------------------------------------------------------------- schema and policy agree
 
 
@@ -115,6 +137,11 @@ def gate(opa_binary: Path, waivers: bytes | None, findings: bytes = b"") -> dict
 def fixture_waivers(path: Path) -> bytes:
     # JSON is YAML: the fixtures go through the same loader as a real waivers file.
     return path.read_bytes()
+
+
+def test_the_gate_fails_closed_on_a_waivers_file_with_an_alias(opa_binary: Path) -> None:
+    with pytest.raises(EvaluationError, match="no YAML alias"):
+        gate(opa_binary, ALIASES)
 
 
 @pytest.mark.parametrize("path", sorted((FIXTURES / "valid").glob("*.json")), ids=lambda p: p.stem)

@@ -20,8 +20,9 @@ resolves every member (each a package with known fixed versions). Stage 3 (`labe
 labels the groups it is given; it never forms them) runs on the document `correlate_run` writes. Everything
 here is advisory: the release gate never reads it, and the same findings in any order give the same groups.
 
-`DEFAULT_THRESHOLD` is provisional: it is calibrated on a labelled set other than demo-shop (SPEC section 17),
-then committed with the embedding model's digest before the demo-shop run.
+`DEFAULT_THRESHOLD` is provisional: it is calibrated on a labelled set other than the one it is tested on (the
+calibration half of demo-shop's seeds, split before any score, SPEC section 17), then committed with the
+embedding model's digest before the test half is measured.
 """
 
 import hashlib
@@ -34,6 +35,7 @@ from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
 
+from sentinel_ai.correlate.labels import redact
 from sentinel_ai.correlate.models import (
     MAX_KEY,
     Correlation,
@@ -49,7 +51,7 @@ from sentinel_ai.correlate.models import (
 Finding = Mapping[str, Any]
 Embedder = Callable[[list[str]], list[list[float]]]
 DEFAULT_THRESHOLD = 0.8  # provisional: see the module docstring
-CORRELATOR_VERSION = "0.1.0"
+CORRELATOR_VERSION = "0.1.1"  # 0.1.1: template texts are redacted before they are clipped
 PACKAGE_CATEGORIES = frozenset({"SCA", "CONTAINER"})
 LOCATED_CATEGORIES = frozenset({"SAST", "IAC", "PIPELINE"})
 _FINGERPRINT = re.compile(r"[a-f0-9]{64}")
@@ -64,7 +66,9 @@ class EmbedderError(CorrelationError):
 
 
 def _one_line(text: str, limit: int) -> str:
-    flat = " ".join(str(text).split())
+    """Redacted, then clipped, as in stage 3: a template text is sent to the model, and a token cut here
+    would no longer match its pattern there (review of #99)."""
+    flat = " ".join(redact(str(text)).split())
     return flat if len(flat) <= limit else flat[: limit - 3].rstrip() + "..."
 
 
@@ -125,7 +129,8 @@ class Alert:
             parts.append(f"{self.package.get('name')} {self.package.get('version')}")
         if self.path is not None:
             parts.append(f"({self.path})")
-        return " ".join(part for part in parts if part)
+        # Redacted like everything sent to a model (SPEC 8): the embedder may be remote (`allow_remote`).
+        return " ".join(redact(part) for part in parts if part)
 
 
 def dedup(findings: Iterable[Finding]) -> list[Alert]:
