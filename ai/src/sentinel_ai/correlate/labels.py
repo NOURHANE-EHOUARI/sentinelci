@@ -77,8 +77,12 @@ _SECRETS = [
 ]
 # `password = value`, `DB_PASSWORD=value`, `dbPassword: 'value'`: the name stays, the value goes.
 _ASSIGNED = re.compile(
-    r"(?i)\b([a-z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key"
-    r"|account[_-]?key|credential)[a-z0-9_.-]*)(['\"]?\s*[:=]\s*['\"]?)[^\s\"',;]{4,}"
+    # The whole name, once, from its start (#99 review): a lookahead checks that it holds a keyword, then a
+    # possessive `++` takes it without backtracking. The `\b...*...*` form was quadratic on `a.a.a...`.
+    r"(?i)(?<![a-z0-9_.-])"
+    r"(?=[a-z0-9_.-]*?(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key"
+    r"|account[_-]?key|credential))([a-z0-9_.-]++)(['\"]?\s*[:=]\s*)"
+    r"(?:(['\"])(?:(?!\3).)+(\3?)|[^\s\"',;]{4,})"  # a quoted value up to its closing quote, or a bare word
 )
 # A URL's password: `scheme://user:password@host` keeps its user and host.
 _USERINFO = re.compile(r"(://[^/\s:@]+:)[^/\s@]+@")
@@ -108,11 +112,18 @@ def redact(text: str) -> str:
     for pattern in _SECRETS:
         text = pattern.sub(REDACTED, text)
     text = _USERINFO.sub(lambda match: f"{match.group(1)}{REDACTED}@", text)
-    return _ASSIGNED.sub(lambda match: f"{match.group(1)}{match.group(2)}{REDACTED}", text)
+    return _ASSIGNED.sub(
+        lambda match: (  # the closing quote is kept, so the model never gets unbalanced quotes
+            f"{match.group(1)}{match.group(2)}{match.group(3) or ''}{REDACTED}{match.group(4) or ''}"
+        ),
+        text,
+    )
 
 
 def _clip(value: object) -> str:
-    text = " ".join(str(value).split())
+    """Redacted first, then clipped: a token cut by the clip would no longer match its pattern, and its start
+    would be sent."""
+    text = " ".join(redact(str(value)).split())
     return text if len(text) <= MAX_FIELD else text[: MAX_FIELD - 3] + "..."
 
 
@@ -134,8 +145,8 @@ def _described(finding: Mapping[str, Any]) -> dict[str, Any]:
         "cwe": list(finding.get("cwe") or [])[:5],
     }
     return {
-        key: (redact(_clip(value)) if isinstance(value, str) else
-              [redact(_clip(v)) for v in value] if isinstance(value, list) else value)
+        key: (_clip(value) if isinstance(value, str) else
+              [_clip(v) for v in value] if isinstance(value, list) else value)
         for key, value in described.items()
         if value not in (None, [], "")
     }  # fmt: skip
