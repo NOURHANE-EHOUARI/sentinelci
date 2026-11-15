@@ -58,7 +58,8 @@ def _ids(tmp_path: Path, path: str, text: str) -> dict[str, set[str]]:
     (repo / path).write_text(text)
     scan = scan_pipelines_with_run(repo, lock=LOCK)
     ids: dict[str, set[str]] = defaultdict(set)
-    for finding in normalize_zizmor(scan.results, run=RUN, tool=Tool(name="zizmor", version="1.31.1")):
+    tool = Tool(name="zizmor", version=LOCK.python_tools["zizmor"].version)
+    for finding in normalize_zizmor(scan.results, run=RUN, tool=tool):
         ids[finding.rule_id].add(finding.id)
     return ids
 

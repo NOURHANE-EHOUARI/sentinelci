@@ -30,7 +30,7 @@ from sentinel_ai.correlate import (
     labels_of,
     structural_keys,
 )
-from sentinel_ai.correlate.stages import embedding_groups, purl_base
+from sentinel_ai.correlate.stages import CORRELATOR_VERSION, embedding_groups, purl_base
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = Draft202012Validator(json.loads((ROOT / "schemas" / "root-cause-group.v1.json").read_text("utf-8")))
@@ -557,7 +557,8 @@ def test_with_no_findings_the_embedder_is_not_called_and_not_recorded() -> None:
         return [[1.0] for _ in texts]
 
     document = correlate_run(b"", embed=embed, embedding_model=MODEL).document()
-    assert not calls and document["correlator"] == {"version": "0.1.0", "stages": ["dedup", "structural"]}
+    assert not calls
+    assert document["correlator"] == {"version": CORRELATOR_VERSION, "stages": ["dedup", "structural"]}
     assert not [e.message for e in RUN_SCHEMA.iter_errors(document)]
 
 
