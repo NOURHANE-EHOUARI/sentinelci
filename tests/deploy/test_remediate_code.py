@@ -512,3 +512,23 @@ def test_a_grype_database_that_cannot_be_prepared_ends_the_run(repo: Path, tmp_p
     (database,) = loop.named("tools", "grype-db")
     assert loop.calls[-1] == database, "nothing runs after it"
     assert loop.asked == [] and not loop.named("scan")
+
+
+def test_every_test_run_is_shown_even_when_the_log_was_clipped(tmp_path: Path) -> None:
+    """#100 review, nit 2: the Tests section comes from the check's `runs`, whatever the clipped log kept."""
+    check = tmp_path / "check.json"
+    runs = [
+        {"selection": "tests", "label": "behaviour tests, patched code", "exit": 0, "summary": "12 passed"},
+        {"selection": SECURITY, "label": f"{SECURITY}, base code, expected to fail", "exit": 1,
+         "summary": "3 failed"},
+        {"selection": SECURITY, "label": f"{SECURITY}, patched code", "exit": 0, "summary": ""},
+    ]  # fmt: skip
+    clipped = "...the end of the second run's output\n$ pytest " + SECURITY + "\n3 passed in 0.09s\n"
+    check.write_text(json.dumps({"log": clipped, "runs": runs}), encoding="utf-8")
+    assert remediate._test_summaries(check) == [
+        "$ pytest tests (behaviour tests, patched code): 12 passed",
+        f"$ pytest {SECURITY} ({SECURITY}, base code, expected to fail): 3 failed",
+        f"$ pytest {SECURITY} ({SECURITY}, patched code): no summary",
+    ]
+    check.write_text(json.dumps({"log": clipped}), encoding="utf-8")  # a check written before `runs`
+    assert remediate._test_summaries(check) == [f"$ pytest {SECURITY}: 3 passed"]
