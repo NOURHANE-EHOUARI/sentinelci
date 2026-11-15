@@ -63,6 +63,31 @@ def test_the_split_places_every_seed_once_and_the_root_causes_agree_with_it() ->
             assert rules, cause.id
 
 
+def test_the_split_follows_its_own_rule() -> None:
+    """split.yaml's header: in each category, the seeds sorted by id go to calibration, test, calibration, ...
+    A seed placed in the other half, by mistake or to move a score, fails here (#90 review, round 4)."""
+    by_category: dict[str, list[str]] = {}
+    for seed in SEEDS:
+        by_category.setdefault(seed["category"], []).append(seed["id"])
+    expected = {
+        seed: ("calibration", "test")[i % 2]
+        for ids in by_category.values()
+        for i, seed in enumerate(sorted(ids))
+    }
+    assert expected == SPLIT
+
+
+def test_a_threshold_of_another_correlator_is_said() -> None:
+    """Stage 2b embeds the correlator's texts: a threshold calibrated on another version's is said."""
+    current = {key: "x" for key in run.HALVES_INPUTS}
+    current |= {"correlator_version": run.CORRELATOR_VERSION, "findings_sha256": {}}
+    older = {**current, "correlator_version": "0.0.9"}
+    assert run.calibrated_on(json.dumps({"inputs": older}), current).endswith(
+        f" with correlator 0.0.9, not {run.CORRELATOR_VERSION} (other embedded texts)"
+    )
+    assert "correlator" not in run.calibrated_on(json.dumps({"inputs": current}), current)
+
+
 def test_the_root_causes_alternate_halves_in_file_order_as_their_header_says() -> None:
     free = [cause for cause in CAUSES if not cause.seeds]
     assert [(c.matchers[0][1], min(c.matchers[0][2])) for c in free] == sorted(

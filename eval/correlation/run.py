@@ -49,7 +49,13 @@ from typing import Any
 import yaml
 
 from sentinel_ai.correlate.evaluation import CONFIGURATIONS, Score, ablation, cached, calibrate, grid, sweep
-from sentinel_ai.correlate.stages import CorrelationError, Embedder, EmbedderError, purl_base
+from sentinel_ai.correlate.stages import (
+    CORRELATOR_VERSION,
+    CorrelationError,
+    Embedder,
+    EmbedderError,
+    purl_base,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
@@ -330,8 +336,17 @@ def calibrated_on(text: str, inputs: Mapping[str, Any]) -> str:
             "again (`make eval-correlation-calibrate`) before measuring the test half"
         )
     same = calibrated.get("findings_sha256") == inputs["findings_sha256"]
-    return "threshold.json, calibrated on the calibration half" + (
-        "" if same else " of another `make eval` run (other findings)"
+    # Stage 2b embeds the correlator's texts: another version's threshold is said, like other findings, and
+    # not refused, since it does not leak the test half (#90 review, round 4, nit 2).
+    correlator = calibrated.get("correlator_version")
+    return (
+        "threshold.json, calibrated on the calibration half"
+        + ("" if same else " of another `make eval` run (other findings)")
+        + (
+            ""
+            if correlator == inputs["correlator_version"]
+            else f" with correlator {correlator}, not {inputs['correlator_version']} (other embedded texts)"
+        )
     )
 
 
@@ -548,6 +563,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     findings, digests = read_findings(args.findings)
     label_of = labels(findings, seeds, split, causes)
     inputs: dict[str, Any] = {
+        "correlator_version": CORRELATOR_VERSION,
         "findings_sha256": digests,
         "ground_truth_sha256": sha256(truth_text),
         "root_causes_sha256": sha256(causes_text),

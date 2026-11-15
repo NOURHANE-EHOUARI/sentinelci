@@ -39,8 +39,8 @@ section 3's 40 % is read on the whole run.
 ## No tuning on the test set
 
 The root causes are split once into a calibration half and a test half: [`split.yaml`](split.yaml) for the
-seeds (in each category, sorted by id, alternating), `half` in `root-causes.yaml` for the others (a joined
-seed's half, else alternating in file order). Each half is the run without the other half's labelled
+seeds (in each category, sorted by id, alternating; a test checks the file follows that rule), `half` in
+`root-causes.yaml` for the others (a joined seed's half, else alternating in file order). Each half is the run without the other half's labelled
 findings.
 
 1. **Calibrate** on the calibration half, with the pinned embedding model (ADR-0009) on a local Ollama:
@@ -62,8 +62,10 @@ findings.
    with another model or digest is refused, and so is one calibrated on other halves: another ground truth,
    split or root causes moves findings between them, so after a label edit, calibrate again. Findings of
    another `make eval` run (a new Grype database, say) give another calibration half but leak nothing of
-   the test half: the report says "of another `make eval` run". The ARI-vs-threshold curve on the test half
-   is reported as sensitivity only.
+   the test half: the report says "of another `make eval` run". So does a threshold calibrated with another
+   correlator version (`threshold.json` records it): stage 2b embeds that version's texts, and the report
+   says "with correlator X, not Y". The ARI-vs-threshold curve on the test half is reported as sensitivity
+   only.
 
 Without Ollama, or with `--no-embedding`, the stages without a model (dedup, structural) are still measured
 and the others say why they were not.
