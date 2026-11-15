@@ -1,0 +1,80 @@
+{
+  "at_grid_edge": false,
+  "calibration": {
+    "alert_reduction": 0.705882,
+    "ari": 0.644054,
+    "labelled": 50,
+    "root_causes": 24,
+    "same_root_pairs": 96
+  },
+  "curve": [
+    {
+      "ari": 0.249298,
+      "groups": 7,
+      "threshold": 0.5
+    },
+    {
+      "ari": 0.501851,
+      "groups": 9,
+      "threshold": 0.55
+    },
+    {
+      "ari": 0.511487,
+      "groups": 10,
+      "threshold": 0.6
+    },
+    {
+      "ari": 0.568571,
+      "groups": 12,
+      "threshold": 0.65
+    },
+    {
+      "ari": 0.638555,
+      "groups": 14,
+      "threshold": 0.7
+    },
+    {
+      "ari": 0.644054,
+      "groups": 15,
+      "threshold": 0.75
+    },
+    {
+      "ari": 0.62802,
+      "groups": 22,
+      "threshold": 0.8
+    },
+    {
+      "ari": 0.410381,
+      "groups": 30,
+      "threshold": 0.85
+    },
+    {
+      "ari": 0.346171,
+      "groups": 36,
+      "threshold": 0.9
+    },
+    {
+      "ari": 0.205329,
+      "groups": 41,
+      "threshold": 0.95
+    }
+  ],
+  "embedding_model": {
+    "digest": "sha256:ac6da0dfba84a81fdbfbaf330198c33cd77c4cdfc53e8bc50eb581914a15621d",
+    "name": "qwen3-embedding:0.6b"
+  },
+  "inputs": {
+    "correlator_version": "0.1.1",
+    "findings_sha256": {
+      "gitleaks": "c859f350147365e24e1f47c9e822daa192faef0315dd9c9e965687bc2530873a",
+      "grype": "85aba01de4964932968c0376da19c5d979197c0d9bd6a7cd880cc764ce9e4d55",
+      "opengrep": "8d6d8f2460d244e2f35cab3e438930592f41ea3c3b869cc51726cae507d4fb1a",
+      "trivy": "1afe96bcf96da563ac24135303a2ab2899fdab583bcf946efc061a915f0a65cf",
+      "zizmor": "14628d8e41c5a8296c37255c22d680f7e82c557549737a59fccc4b2b4a7cd47a"
+    },
+    "ground_truth_sha256": "bba899c548ad2e6de13515fbaa87d588edc5cbe8cb39cc88f99548a6068f0567",
+    "root_causes_sha256": "2f2fe3c290076de58c5a200ecd1aa19b16c4811f2482bebef353e3924488881a",
+    "split_sha256": "b43973f14cc00825d3c9503681114b192764d276c2002c24c13cdb157b87a659"
+  },
+  "threshold": 0.75
+}
