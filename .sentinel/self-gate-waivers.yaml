@@ -1,0 +1,50 @@
+# Waivers of SentinelCI's own release gate (the self-gate, A10). They are read from the pipeline commit, the
+# checkout that judges, never from the commit that is judged: a waiver applies once it is reviewed and merged,
+# never to the change that adds it (ADR-0008, #95 review). `release.py` always names this file to `sentinel
+# evaluate`; demo-shop's gates read .sentinel/waivers.yaml, so neither applies to the other. Each waiver names a
+# finding by its fingerprint, why it is not a risk, who answers for it, and when it expires. demo-shop is not
+# gated here (it is the intentionally vulnerable target): these are findings of SentinelCI's own tree.
+version: 1
+waivers:
+  - id: self-2026-001
+    finding_id: 42e6e54a4bdf5da5135117c45f95537705fa91ffd930d306ca1142e68393e25b
+    owner: "@NOURHANE-EHOUARI"
+    justification: >-
+      cli/tests/normalize/fixtures/gitleaks/expected.ndjson, line 1: the normalizer's golden output for a fake
+      demo secret. Gitleaks reads its fingerprint and redacted fields as a generic API key; no credential is in it.
+    expires_at: "2027-01-31T00:00:00Z"
+  - id: self-2026-002
+    finding_id: 684486840251697300ea952944eece7302824ffb709943d8ae7d0faa926985b9
+    owner: "@NOURHANE-EHOUARI"
+    justification: >-
+      cli/tests/normalize/fixtures/gitleaks/expected.ndjson, line 2: the same golden output, its second finding.
+    expires_at: "2027-01-31T00:00:00Z"
+  - id: self-2026-003
+    finding_id: 119eccb5e840d436f4f3a73904ab624aae5c0b56dc403d3a3c4ceace625aa6d6
+    owner: "@NOURHANE-EHOUARI"
+    justification: >-
+      schemas/fixtures/finding/invalid/other-locations-duplicate.json, line 23: an invalid Finding fixture whose
+      fingerprint-shaped values Gitleaks reads as a generic API key; no credential is in it.
+    expires_at: "2027-01-31T00:00:00Z"
+  - id: self-2026-004
+    finding_id: 302793eb5b30ed6d74fd9d3868b566425d54c4ac6e1c6d29c0d1144844774c91
+    owner: "@NOURHANE-EHOUARI"
+    justification: >-
+      schemas/fixtures/trust-report/invalid/key-sha256-uppercase.json, line 11: an invalid Trust report fixture
+      whose `key_sha256` is the sha256 of "test" in upper case; a key's fingerprint, not a key. Gitleaks reads it
+      as a generic API key.
+    expires_at: "2027-01-31T00:00:00Z"
+  - id: self-2026-005
+    finding_id: f26d569f84f210d05d012ad6a56bd4e888a1771bcd38872078b95e1870269e81
+    owner: "@NOURHANE-EHOUARI"
+    justification: >-
+      schemas/fixtures/release-evidence/invalid/decision-verdict-inconsistent.json, line 61: the same fingerprint
+      (sha256 of "test") as a release-evidence fixture's `key_sha256`; no credential is in it.
+    expires_at: "2027-01-31T00:00:00Z"
+  - id: self-2026-007
+    finding_id: 50c306fd0098a8a6f0bf1b5d5c842368840525a5d9712eff6c6c301807d7fced
+    owner: "@Hiba-elouazi"
+    justification: >-
+      ai/tests/test_analyst.py, line 395: `UNKNOWN_SECRET`, a fake value in a shape `redact` does not know, which
+      the test needs to look like a secret (the answer that quotes it is refused). No credential is in it.
+    expires_at: "2027-01-31T00:00:00Z"
