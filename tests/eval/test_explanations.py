@@ -13,6 +13,8 @@ from typing import Any
 import pytest
 import yaml
 
+from sentinel_ai.explain import prompt as explain_prompt
+
 ROOT = Path(__file__).resolve().parents[2]
 VALID = ROOT / "schemas" / "fixtures" / "finding" / "valid"
 
@@ -171,9 +173,10 @@ def test_the_judge_rates_every_item_with_the_rubric_and_writes_a_sheet(tmp_path:
     assert "untrusted" in system
 
 
-def test_the_sheet_and_the_judge_get_the_code_the_explainer_saw(tmp_path: Path) -> None:
-    """`grounded` and `fix` are judged against the code shown (#143 review): the sheet keeps the window the
-    explainer was sent, and the judge is sent the same block."""
+def test_the_sheet_and_the_judge_get_what_the_explainer_was_given(tmp_path: Path) -> None:
+    """`grounded` and `fix` are judged against what the explainer was given (#143 review): the finding as it
+    was sent, the code around it and the references it may cite. The sheet keeps all three, and the judge is
+    sent the same blocks, so its prompt holds the explainer's own, byte for byte."""
     repo = tmp_path / "repo"
     source = repo / SAST["location"]["path"]
     source.parent.mkdir(parents=True)
@@ -185,13 +188,19 @@ def test_the_sheet_and_the_judge_get_the_code_the_explainer_saw(tmp_path: Path) 
     code = sheet["items"][0]["code"]
     assert code == run.code_window(run.Finding.model_validate(SAST), repo, [run.Finding.model_validate(SAST)])
     assert {"n": 12, "text": "line_12 = 12", "flagged": True} in code
-    sent = run.block("code", code)
-    assert sent in explainer.calls[0][1], "the explainer was sent this block"
+    item = sheet["items"][0]
+    parsed = run.Finding.model_validate(SAST)
+    assert item["finding_id"] == SAST["id"]
+    assert item["finding"] == run.described(parsed), "the finding as the explainer was sent it"
+    assert item["references"] == run.allowed_references(parsed)
+    given = explain_prompt(parsed, [parsed], repo)
+    assert explainer.calls[0][1] == given
     judge = Scripted(YES)
     run.judge(out, judge, run.ModelInfo("judge-model"))
     system, user = judge.calls[0]
-    assert sent in user, "the judge is sent the same block"
-    assert "<code>" in system and "untrusted" in system
+    assert given in user, "the judge is sent what the explainer was given, byte for byte"
+    for name in ("<finding>", "<code>", "<references>", "untrusted"):
+        assert name in system
 
 
 def test_without_code_the_sheet_says_so_and_the_judge_gets_no_code_block(tmp_path: Path) -> None:
@@ -285,6 +294,18 @@ def test_a_sheet_rated_with_other_code_is_refused(tmp_path: Path) -> None:
     sheet["items"][1]["code"] = [{"n": 1, "text": "something else"}]
     (tmp_path / "ratings-nourhane.yaml").write_text(yaml.safe_dump(sheet), encoding="utf-8")
     with pytest.raises(run.EvalError, match="GT-SCA-901: nourhane rated it with other code"):
+        run.report(tmp_path, ["hiba", "nourhane"], None)
+
+
+@pytest.mark.parametrize("field", ["finding", "references"])
+def test_a_sheet_rated_with_another_input_is_refused(tmp_path: Path, field: str) -> None:
+    two_item_run(tmp_path)
+    write_sheet(tmp_path, "hiba", [YES, NO])
+    write_sheet(tmp_path, "nourhane", [YES, NO])
+    sheet = yaml.safe_load((tmp_path / "ratings-nourhane.yaml").read_text(encoding="utf-8"))
+    sheet["items"][0][field] = {"edited": True} if field == "finding" else ["https://example.invalid/"]
+    (tmp_path / "ratings-nourhane.yaml").write_text(yaml.safe_dump(sheet), encoding="utf-8")
+    with pytest.raises(run.EvalError, match=f"GT-SCA-900: nourhane rated it with another {field}"):
         run.report(tmp_path, ["hiba", "nourhane"], None)
 
 
