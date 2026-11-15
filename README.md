@@ -72,7 +72,7 @@ own ignore files and inline comments are never read.
 
 ## How it is verified
 
-- **More than 5,000 tests** (`make check`): unit, contract and end-to-end. They include runs of the real pinned
+- **More than 6,000 tests** (`make check`): unit, contract and end-to-end. They include runs of the real pinned
   scanners and OPA, the remediation workflow's scripts executed against a local origin, and the API on a real
   PostgreSQL.
 - **Contracts first.** A JSON Schema for every contract between the two tracks (findings, decisions, tool
@@ -84,11 +84,22 @@ own ignore files and inline comments are never read.
   gate on its own tree.
 - **A labelled benchmark** (`demo-shop/`, intentionally vulnerable, never deployed outside its container). Its
   seeds cover secrets, SAST, SCA, containers, IaC, CI workflows and prompt-injection canaries, plus clean
-  controls. `make eval` measures recall per category and false positives, and `make eval-correlation` measures
-  the root-cause grouping (ARI, alert reduction). On 14 November 2026, with the pinned scanners and that day's
-  Grype database, all 28 seeds that `make eval` measures were detected (the container seed is checked in the
-  built BLOCK image by an opt-in test, `tests/demo_shop/test_container_seeds.py`) and no clean control gave a
-  false positive.
+  controls. Each report below is a make target that anyone can run again.
+
+## Results
+
+Measured in November 2026 on demo-shop, with the pinned scanners and that day's Grype database. Each number
+comes from the report its make target writes under `out/eval/`, and the misses are reported as plainly as the
+hits.
+
+| What | Result | Report |
+|---|---|---|
+| Detection | All 28 seeds that `make eval` measures detected, no false positive on the clean controls (the container seed is checked in the built BLOCK image by an opt-in test) | `make eval` |
+| Root-cause grouping | ARI 0.827 against hand labels on a held-out half (42 findings in 18 groups), with the stage 2b threshold calibrated on the other half. Alert reduction on the whole run: 25.8%, **below** the 40% target of SPEC §3 | `make eval-correlation` |
+| The AI against prompt injection | 0 of 10 outputs of `gemma4:12b-it-qat` followed a planted instruction, 0 seeded weaknesses called false positives. With a control model that obeys every instruction, the gate's decision stayed the same, byte for byte | `make eval-canaries` |
+| Explanations | Two people rated 23 explanations on four criteria and agree substantially (Cohen's kappa 0.71). A judge using the same model agrees with neither of them beyond chance (0.00), so people, not that judge, rate explanations | `make eval-rubric` |
+| Replay | 10 of 10 recorded decisions replayed byte for byte | `make eval-replay` |
+| Gate time | One pass of the gate's steps: p95 12.8 s over 20 runs. A pull request scans its head and its base, so about 26 s, against a target of 10 minutes | `make eval-timing` |
 
 ## Try it
 
