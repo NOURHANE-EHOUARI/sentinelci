@@ -24,15 +24,21 @@ The repository goes public on **22 November**, in two steps.
 
 **Step 1, on 22 November (the switch):**
 1. **Before the switch** (all of it, with its result in the switch PR):
-   - Gitleaks (the pinned version, SentinelCI's configuration) over the **whole history, every branch**
-     (`sentinel scan secrets <repo> --mode git --log-opts=--all`). Each finding is one of `demo-shop/`'s listed
-     fakes, a known false positive of the rule (named), or it is fixed first. On 15 November: 11 findings, none a
-     real secret (below).
+   - Gitleaks (the pinned version, SentinelCI's configuration) over the **whole history: every branch and every
+     pull request's head**, since GitHub publishes `refs/pull/*/head` too. On a fresh clone:
+     `git fetch origin '+refs/heads/*:refs/remotes/origin/*' '+refs/pull/*/head:refs/remotes/pull/*'`, then
+     `sentinel scan secrets <clone> --mode git --log-opts=--all`. It runs **on the day**, after the last merge
+     before the switch. Each finding is one of `demo-shop/`'s listed fakes, a known false positive of the rule
+     (named), or it is fixed first. The scan of 15 November (below) shows what to expect; the switch PR replaces
+     it with that day's result.
    - The fakes of `demo-shop/ground-truth/` checked against what GitHub's secret scanning reports once public.
      Each alert on a listed fake is closed as "used in tests", naming its seed.
 2. **At the switch:** make the repository public, then at once:
-   - branch protection on `main`: pull requests only, one approving review, no force-push or deletion, and the
-     required checks once they have run green once;
+   - branch protection on `main`: pull requests only, one approving review, no force-push or deletion, the
+     required checks once they have run green once, and "Do not allow bypassing the above settings", so that it
+     binds the repository's admin too;
+   - Actions: the repository's default workflow permissions set to **read**. Every workflow already sets its
+     own `permissions:`, but the default is what a new or edited workflow gets if it forgets;
    - Actions: require approval for workflows from fork pull requests (outside collaborators);
    - Dependabot: version updates already exclude `demo-shop/` (`.github/dependabot.yml`, pinned by
      `test_the_intentionally_vulnerable_demo_is_never_updated`). Security updates stay **off** for the repository.
@@ -52,7 +58,9 @@ already plans.
 ## The history scan of 15 November
 
 `sentinel scan secrets` in git mode over every commit of every branch (891 commits on 142 remote branches), with the
-pinned Gitleaks 8.30.1: **11 findings, 59 places, no real secret.**
+pinned Gitleaks 8.30.1: **11 findings, 59 places, no real secret.** Re-run by Nourhane with the pull request refs
+too (#144 review: 122 branches and 144 PR refs, 893 commits, one of them reachable only from `refs/pull/59/head`):
+the same 11 findings, nothing new.
 
 | Kind | What it is |
 |---|---|
@@ -66,5 +74,12 @@ pinned Gitleaks 8.30.1: **11 findings, 59 places, no real secret.**
 - CI on GitHub runs on every pull request from 22 November, and `main` is protected server-side: the convention of
   ADR-0006 decision 6 becomes a rule.
 - The signing key stays long-lived until step 2; it is rotated when keyless signing replaces it, as ADR-0006 says.
-- `CLAUDE.md`'s "Repository status" section changes in the switch PR, so that agents follow the public rules.
+- **This ADR and the switch are two pull requests.** This one records the decision and can merge before the 22nd.
+  The switch PR, on the 22nd, changes `CLAUDE.md`'s "Repository status" section, so that agents follow the
+  public rules, and carries the history scan of that day. Until it merges, `CLAUDE.md` describes the private
+  phase, which is still true.
+- **The one residual risk of the switch:** once public, GitHub still serves a commit that a force-push removed
+  from every ref to anyone who has its SHA. No clone holds such a commit, so no scan can check it. Our
+  force-pushes were amends of our own branches, and a real secret was never allowed in the repository, so the
+  risk is small, but it is not zero.
 - If step 2 does not happen by 30 November, v1.0.0 ships key-signed, and the README says so.

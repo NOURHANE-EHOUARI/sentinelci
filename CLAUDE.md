@@ -29,20 +29,18 @@ fixes; it never decides.
 8. **Contracts first.** If a change needs a different data shape, update the schema version and its fixtures in
    the same PR; never silently diverge from `schemas/`.
 
-## Repository status: public, step 1 of ADR-0016
+## Repository status: private phase
 
-The repository is public since 22 November (ADR-0016, amending ADR-0006). What changed, and what did not yet:
-- `main` is protected server-side: pull requests only, one approving review, no force-push. Never commit or push
-  to `main` directly. Always work on a task branch and open a PR; the other team member reviews and merges only
-  with a green CI on GitHub.
-- GitHub Actions run on every pull request. Workflows from fork pull requests need approval first.
-- Signing still uses the Cosign **key pair** on the laptop (ADR-0011); keyless signing, GitHub artifact
-  attestations, code-scanning upload and public images are step 2 of ADR-0016, each in its own PR.
-- SLSA provenance is still a Cosign in-toto attestation; scan results still go to PR comments, workflow artifacts
-  and our dashboard; Kubernetes demos still use the kind cluster's local registry.
-- `demo-shop/` is public and intentionally vulnerable: its Dependabot alerts are closed as "intentionally
-  vulnerable demo target", security updates stay off, and a new fake secret is bypassed in push protection as
-  "used in tests" and listed in `demo-shop/ground-truth/` in the same PR. A closed alert is never a waiver.
+The repository stays private until the project is complete. Until then (see ADR-0006):
+- Signing uses Cosign **key pairs** with no upload to the public transparency log (no keyless signing, because the
+  keyless certificate would publish the repository identity).
+- SLSA provenance is produced as a Cosign in-toto attestation (GitHub artifact attestations require a public repo).
+- Scan results go to PR comments, workflow artifacts and our dashboard (no GitHub code-scanning upload).
+- Kubernetes demos use the local registry of the kind cluster.
+- GitHub Actions minutes are limited (Free plan): use path filters and caches; run the full image scan nightly on `main`.
+- `main` has no server-side protection: never commit or push to `main` directly. Always work on a task branch
+  and open a PR; the other team member reviews and merges only with
+  a green CI, or a local `make check` report on the PR head while Actions cannot run.
 
 ## Commands
 
