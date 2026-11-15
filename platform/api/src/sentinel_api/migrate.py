@@ -42,13 +42,16 @@ def downgrade(database_url: str, revision: str) -> None:
 
 
 def set_worker_password(database_url: str, password: str) -> None:
-    """Give the worker's role a login with this password (a literal, never part of the SQL text)."""
+    """Give the worker's role a login with this password, sent as its SCRAM verifier only."""
     if not password:
         raise ValueError(f"{WORKER_PASSWORD_VARIABLE} is empty: the worker's role needs a password")
-    statement = sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD {}").format(
-        sql.Identifier(WORKER_ROLE), sql.Literal(password)
-    )
     with psycopg.connect(database_url, autocommit=True) as conn:
+        # Hashed here (SCRAM, as libpq's PQencryptPasswordConn does): the clear password never reaches the
+        # server, so no statement log or pg_stat_statements can hold it (#140 review).
+        verifier = conn.pgconn.encrypt_password(password.encode(), WORKER_ROLE.encode(), b"scram-sha-256")
+        statement = sql.SQL("ALTER ROLE {} WITH LOGIN PASSWORD {}").format(
+            sql.Identifier(WORKER_ROLE), sql.Literal(verifier.decode())
+        )
         conn.execute(statement)
 
 

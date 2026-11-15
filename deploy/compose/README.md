@@ -30,7 +30,7 @@ Ports can be moved if one is taken, e.g. `POSTGRES_PORT=5433 make up` (also `RED
 
 **The worker's database role.** The worker logs in as `sentinel_worker`, not as the owner `sentinel`. Migration
 0011 gives that role only what the worker's jobs need: read runs and findings, claim and finish explanation
-requests, record explanations. It cannot write a run, a finding or a decision, read a decision, a waiver, a
+requests (their state only: `status`, `reason`, `explanation_sha256`, `updated_at`), record explanations. It cannot write a run, a finding or a decision, read a decision, a waiver, a
 release or an explanation's text, or change the schema. The migration holds no password: the API's migrate
 step gives the role its login with `WORKER_DATABASE_PASSWORD` from `.env` (`make compose-env` adds it to an
 older file). Outside Compose, the migrating user needs `CREATEROLE` the first time, and the worker's own

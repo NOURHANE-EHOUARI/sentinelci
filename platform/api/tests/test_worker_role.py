@@ -22,6 +22,7 @@ from urllib.parse import quote
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
+from psycopg import sql
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -120,6 +121,8 @@ def test_the_worker_role_does_the_workers_job(
         "SELECT * FROM correlations",
         "INSERT INTO explain_requests (id) VALUES (gen_random_uuid())",
         "DELETE FROM explain_requests",
+        "UPDATE explain_requests SET finding_id = repeat('0', 64)",
+        "UPDATE explain_requests SET run_id = gen_random_uuid()",
         "UPDATE explanations SET finding_id = finding_id",
         "SELECT document FROM explanations",
         "SELECT * FROM explanations",
@@ -194,3 +197,22 @@ def test_the_role_is_created_once_per_server(database_url: str, postgres_server:
             (migrate.WORKER_ROLE,),
         ).fetchone()
     assert row == (False, False, False, False)
+
+
+def test_the_server_never_sees_the_clear_password(database_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """migrate sends a SCRAM verifier, never the password: no statement log can hold it."""
+    sent: list[str] = []
+    execute = psycopg.Connection.execute
+
+    def spy(self: psycopg.Connection[Any], query: Any, *args: Any, **kwargs: Any) -> Any:
+        sent.append(query.as_string(self) if isinstance(query, sql.Composable) else str(query))
+        return execute(self, query, *args, **kwargs)
+
+    password = secrets.token_urlsafe(24)
+    monkeypatch.setattr(psycopg.Connection, "execute", spy)
+    migrate.set_worker_password(database_url, password)
+    monkeypatch.undo()
+    assert sent and not any(password in statement for statement in sent)
+    assert any("SCRAM-SHA-256$" in statement for statement in sent)
+    with psycopg.connect(as_worker(database_url, password)) as conn:
+        assert conn.execute("SELECT current_user").fetchone() == (migrate.WORKER_ROLE,)

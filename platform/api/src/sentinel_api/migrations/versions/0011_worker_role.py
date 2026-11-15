@@ -2,7 +2,8 @@
 
 The worker feeds the model a finding that a scanner wrote, so it gets the least it needs:
 - `SELECT` on `runs` and `findings` (the finding, and the run's other findings, for context);
-- `SELECT` and `UPDATE` on `explain_requests` (claim a queued request, record its outcome);
+- `SELECT` on `explain_requests`, and `UPDATE` on its state only (`status`, `reason`, `explanation_sha256`,
+  `updated_at`): claim a queued request and record its outcome, never move it to another finding or run;
 - `INSERT` on `explanations` (record one), and `SELECT` on its `seq` and `created_at` only: the insert reads
   back these two generated columns. It cannot read an explanation's document.
 Nothing else: no decision, waiver, release, remediation or correlation, no delete, no schema change.
@@ -29,7 +30,10 @@ ROLE = "sentinel_worker"
 GRANTS = (
     ("SELECT", "runs"),
     ("SELECT", "findings"),
-    ("SELECT, UPDATE", "explain_requests"),
+    # Claim and finish change a request's state only. Its finding and run stay the API's: the trigger
+    # `explanations_are_kept` binds an explanation to its request's finding and run, so the worker must not
+    # be able to point a request at another finding before it records an explanation (#140 review).
+    ("SELECT, UPDATE (status, reason, explanation_sha256, updated_at)", "explain_requests"),
     ("SELECT (seq, created_at), INSERT", "explanations"),
 )
 
