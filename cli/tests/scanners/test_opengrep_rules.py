@@ -294,6 +294,43 @@ CASES: list[tuple[str, str, bool, str]] = [
      'def f(text):\n'
      '    yaml = Y(typ="rt")\n'
      '    return yaml.load(text)\n'),
+    # ruamel.yaml's old module-level API (gone in 0.18): with no Loader, it used the unsafe one (#84, nit 2).
+    ('python-unsafe-deserialization', 'de-ruamel-old-load.py', True,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return ruamel.yaml.load(text)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-load-all-stream.py', True,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return list(ruamel.yaml.load_all(stream=text))\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-from-import.py', True,
+     'from ruamel.yaml import load\n'
+     'def f(text):\n'
+     '    return load(text, Loader=None)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-unsafe-loader.py', True,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return ruamel.yaml.load(text, Loader=ruamel.yaml.UnsafeLoader)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-positional-loader.py', True,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return ruamel.yaml.load(text, ruamel.yaml.Loader)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-positional-none.py', True,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return list(ruamel.yaml.load_all(text, None))\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-dump-ok.py', False,
+     'import ruamel.yaml\n'
+     'def f(data):\n'
+     '    return ruamel.yaml.dump(data)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-safe-ok.py', False,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return ruamel.yaml.load(text, Loader=ruamel.yaml.SafeLoader)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-round-trip-ok.py', False,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return ruamel.yaml.load(text, Loader=ruamel.yaml.RoundTripLoader)\n'),
     ('python-unsafe-deserialization', 'de-import-module.py', True,
      'import importlib\n'
      'yaml = importlib.import_module("yaml")\n'

@@ -119,6 +119,28 @@ rules:
           - metavariable-regex:
               metavariable: $LOADER
               regex: ^C?(Full|Unsafe)?Loader$
+      # ruamel.yaml's old module-level API (removed in 0.18): with no Loader, or Loader=None, it used the unsafe
+      # loader, with a warning; so did its Loader and UnsafeLoader. SafeLoader, BaseLoader and RoundTripLoader
+      # build no arbitrary object (#84 review, nit 2). `from ruamel.yaml import load` is matched too.
+      - patterns:
+          - pattern-either:
+              - pattern: ruamel.yaml.$LOAD($DATA)
+              - pattern: ruamel.yaml.$LOAD(stream=$DATA)
+              - pattern: ruamel.yaml.$LOAD(..., Loader=None, ...)
+              - pattern: ruamel.yaml.$LOAD($DATA, None, ...)
+          - metavariable-regex:
+              metavariable: $LOAD
+              regex: ^load(_all)?$
+      - patterns:
+          - pattern-either:
+              - pattern: ruamel.yaml.$LOAD(..., Loader=ruamel.yaml.$LOADER, ...)
+              - pattern: ruamel.yaml.$LOAD($DATA, ruamel.yaml.$LOADER, ...)
+          - metavariable-regex:
+              metavariable: $LOAD
+              regex: ^load(_all)?$
+          - metavariable-regex:
+              metavariable: $LOADER
+              regex: ^(Unsafe)?Loader$
       - patterns:
           - pattern-either: &no-loader
               # No loader: pyyaml < 5.1 builds any object, 5.1 to 5.4 falls back to FullLoader with a warning
