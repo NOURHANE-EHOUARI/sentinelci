@@ -126,7 +126,7 @@ def check_policy(key: Path, repo: str, builder_id: str, run: Run) -> None:
     from sentinelci.supplychain.admission import render_policy
 
     rendered = render_policy(
-        public_key=key, image_glob=cluster.IMAGE_GLOB, repo=repo, builder_id=builder_id, allow_http=True
+        public_key=key, image_glob=cluster.IMAGE_GLOB, repo=repo, builder_id=builder_id, allow_http=False
     )
     for document in yaml.safe_load_all(rendered):
         name = document["metadata"]["name"]
@@ -165,7 +165,7 @@ def sentinel_verify(
     verify = run(
         [
             sys.executable, "-m", "sentinelci.cli", "verify", reference, "--key", str(key),
-            "--repo", repo, "--builder-id", builder_id, "--registry-http",
+            "--repo", repo, "--builder-id", builder_id,
             "--lock", str(ROOT / "tools.lock.toml"), "--tools-dir", str(tools_dir),
         ],
         check=False,
@@ -179,10 +179,11 @@ def sentinel_verify(
 def load_and_verify(
     bundle: Path, digest: str, pins: Pins, *, key: Path, repo: str, builder_id: str, tools_dir: Path, run: Run
 ) -> str:
-    """Push the bundle into the cluster's registry with `cosign load`, then `sentinel verify` it there."""
+    """Push the bundle into the cluster's registry with `cosign load`, then `sentinel verify` it there. Both
+    reach the registry over TLS, trusting the cluster's CA through SSL_CERT_FILE (`cluster.trust_bundle`)."""
     repository = on_host(pins)
     cosign = verified_tool("cosign", tools_dir)
-    run([cosign, "load", "--allow-http-registry", "--dir", str(bundle), repository])
+    run([cosign, "load", "--dir", str(bundle), repository])
     verify = sentinel_verify(
         f"{repository}@{digest}", key=key, repo=repo, builder_id=builder_id, tools_dir=tools_dir, run=run
     )
@@ -417,9 +418,7 @@ def tamper(reference: str, pins: Pins, tools_dir: Path, run: Run) -> str:
             info.size, info.mode = len(content), 0o644
             archive.addfile(info, io.BytesIO(content))
         crane = verified_tool("crane", tools_dir)
-        pushed = run(
-            [crane, "mutate", reference, "--append", str(layer), "--repo", on_host(pins), "--insecure"]
-        )
+        pushed = run([crane, "mutate", reference, "--append", str(layer), "--repo", on_host(pins)])
     digest = _last_line(pushed.stdout).rpartition("@")[2]
     if not _DIGEST.fullmatch(digest):
         raise ClusterError(f"crane mutate did not print the tampered image's digest: {pushed.stdout!r}")
@@ -564,7 +563,7 @@ def attack(
         )
     else:
         block_digest = layout_digest(block)
-        run([verified_tool("crane", tools_dir), "push", str(block), f"{on_host(pins)}:block", "--insecure"])
+        run([verified_tool("crane", tools_dir), "push", str(block), f"{on_host(pins)}:block"])
         image = f"{pins.registry_in_cluster}/{IMAGE_PATH}@{block_digest}"
         refused, message = try_create(attack_deployment(live, "shop-api-block", image), run)
         record(Attack("the BLOCK image the release gate refused to sign", image, refused, "Kyverno", message))
@@ -584,8 +583,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--tools-dir", type=Path, default=Path(os.environ.get("SENTINEL_TOOLS_DIR", ".sentinel/tools"))
     )
     parser.add_argument("--timeout", type=float, default=300, help="seconds for Argo CD and the rollout")
+    parser.add_argument(
+        "--tls", type=Path, default=cluster.TLS_DIR, help="the registry's CA, from `make kind-up`"
+    )
     args = parser.parse_args(argv)
     try:
+        os.environ["SSL_CERT_FILE"] = str(
+            cluster.trust_bundle(args.tls)
+        )  # for cosign, crane, `sentinel verify`
         if args.command == "attack":
             results = attack(
                 key=args.key, repo=args.repo, builder_id=args.builder_id, tools_dir=args.tools_dir,

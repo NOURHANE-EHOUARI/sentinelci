@@ -5,7 +5,8 @@ repository, Argo CD and Kyverno; then every attack next to it is refused, and it
 The release is a real one for the test's key: an image that runs as the release image must (a static server on
 8080 as UID 10001, built with Go), attested by `sentinel attest --push` in a throwaway registry and saved with
 `cosign save`, as `make release` will. The admission policy is rendered from the test's key, so Kyverno and
-`sentinel verify` trust the same key.
+`sentinel verify` trust the same key. The cluster's registry is reached over TLS, trusting its CA through
+SSL_CERT_FILE (`cluster.trust_bundle`), as `make demo-release` does.
 
 Opt-in like test_kind_admission.py: SENTINEL_KIND_CONTEXT (a `make kind-up` cluster) and SENTINEL_TOOLS_DIR.
 It commits a test release to the cluster's GitOps repository (.sentinel/gitops/demo-shop.git), as
@@ -100,13 +101,15 @@ def released(
         run_verified_tool("crane", ["pull", "--format=oci", "--insecure", blocked, str(block)],
                           lock=load_lock(REPO_LOCK), tools_dir=Path(str(TOOLS_DIR)), cwd=work)  # fmt: skip
 
+    tls = pytest.MonkeyPatch()
+    tls.setenv("SSL_CERT_FILE", str(cluster.trust_bundle()))  # the cluster's registry: TLS, by its CA
     digest = parse_image(image).digest
     # Another module's policy of the same name may still be being deleted: applying it now would fail.
     for name in (POLICY_NAME, f"{POLICY_NAME}-ephemeral-containers"):
         kubectl("wait", "--for=delete", f"imagevalidatingpolicies/{name}", "--timeout=120s")
     cluster.policy(keys["release.pub"], work / "policy.yaml", builder_id=BUILDER)
     # Loaded once here so that the readiness check can admit it; `demo-release` loads it again (same digest).
-    load = ["load", "--allow-http-registry", "--dir", str(bundle), f"{host}/{demo.IMAGE_PATH}"]
+    load = ["load", "--dir", str(bundle), f"{host}/{demo.IMAGE_PATH}"]
     run_verified_tool("cosign", load, lock=load_lock(REPO_LOCK), tools_dir=Path(str(TOOLS_DIR)), cwd=work)
     in_cluster = f"{pins.registry_in_cluster}/{demo.IMAGE_PATH}@{digest}"
     unsigned_in_cluster = pins.registry_in_cluster + unsigned.removeprefix(host)
@@ -127,6 +130,7 @@ def released(
         kubectl("--namespace", demo.NAMESPACE, "delete", "deployment,service,serviceaccount",
                 "--selector", "app.kubernetes.io/part-of=demo-shop", "--wait=false")  # fmt: skip
         kubectl("delete", "--wait=false", "-f", str(work / "policy.yaml"))
+        tls.undo()
 
 
 def test_the_release_runs_by_its_digest_after_argo_cd_synced_it(released: dict[str, Any]) -> None:

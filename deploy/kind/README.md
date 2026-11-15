@@ -41,26 +41,38 @@ a bundle from `cosign save` do.
 
 ## What `make kind-up` does
 
-1. Starts the registry container (`kind-registry`), published on **127.0.0.1:5001 only**.
-2. Creates the GitOps repository, `.sentinel/gitops/demo-shop.git` (bare, branch `main`, empty), if it is
+1. Issues the registry's TLS certificate with OpenSSL 3, once: a CA made for this cluster only signs a
+   certificate for `kind-registry`, `localhost` and `127.0.0.1`, then its key is deleted. Both certificates
+   and the registry's key stay in `.sentinel/kind/tls/` (git-ignored, never committed).
+2. Starts the registry container (`kind-registry`), published on **127.0.0.1:5001 only**, serving TLS with
+   that certificate. A registry an older `make kind-up` started over plain HTTP is refused: `make kind-down`,
+   then `make kind-up`.
+3. Creates the GitOps repository, `.sentinel/gitops/demo-shop.git` (bare, branch `main`, empty), if it is
    missing.
-3. Creates the cluster `sentinel` from `kind-config.yaml` (kubectl context `kind-sentinel`). Its API server
+4. Creates the cluster `sentinel` from `kind-config.yaml` (kubectl context `kind-sentinel`). Its API server
    listens on 127.0.0.1. `.sentinel/gitops` is mounted **read-only** into the node at `/sentinel-gitops`; a
    cluster made by an older `make kind-up`, without that mount, is refused (`make kind-down` first).
-4. Tells containerd on each node that `kind-registry:5000` and `localhost:5001` are that registry, over plain
-   HTTP (`/etc/containerd/certs.d/<host>/hosts.toml`, pull and resolve only).
-5. Connects the registry to the cluster's network and documents it (KEP-1755's `local-registry-hosting`
+5. Tells containerd on each node that `kind-registry:5000` and `localhost:5001` are that registry, over HTTPS
+   with the cluster's CA (`/etc/containerd/certs.d/<host>/hosts.toml`, pull and resolve only).
+6. Connects the registry to the cluster's network and documents it (KEP-1755's `local-registry-hosting`
    ConfigMap).
-6. Installs Kyverno, then Argo CD core, from their pinned manifests, and waits until they are available. Both
-   manifests are checked before either is applied.
-7. Applies `deploy/argocd/git-server.yaml` (the GitOps git server) and `deploy/argocd/demo-shop-namespace.yaml`
+7. Installs Kyverno, gives its admission controller the cluster's CA (a ConfigMap mounted as `SSL_CERT_DIR`,
+   next to the system's CAs), then installs Argo CD core, from their pinned manifests, and waits until they
+   are available. Both manifests are checked before either is applied.
+8. Applies `deploy/argocd/git-server.yaml` (the GitOps git server) and `deploy/argocd/demo-shop-namespace.yaml`
    (Pod Security "restricted", and the API server's image policy, below), and waits for the git server.
 
+**Why TLS:** Kyverno 1.19 fetches cosign's bundles over HTTPS whatever `allowInsecureRegistry` says
+([kyverno/kyverno#18350](https://github.com/kyverno/kyverno/pull/18350), not merged). Over plain HTTP, it
+read no signature and denied every image, the good release too (Hiba's kind run, #60). With TLS, the policy
+needs no insecure flag at all.
+
 **Registry names:**
-- From the host, the registry is `127.0.0.1:5001`: that is where `sentinel attest --push --registry-http`
-  pushes and `cosign load` loads.
+- From the host, the registry is `127.0.0.1:5001`, over TLS: that is where `cosign load` loads and
+  `sentinel verify` reads, trusting the cluster's CA through `SSL_CERT_FILE` (a bundle of the system's CAs
+  and `.sentinel/kind/tls/ca.crt`, which `make demo-release` makes).
 - In the cluster, the same images are `kind-registry:5000/...`. The chart uses that name, and the admission
-  policy matches it, rendered with `--image-glob 'kind-registry:5000/demo-shop/*' --registry-http`.
+  policy matches it, rendered with `--image-glob 'kind-registry:5000/demo-shop/*'` and no insecure flag.
 - The attestations bind a release to its digest and its source repository, not to a registry host. So a
   release pushed from the host is verified by Kyverno under the cluster's name.
 
@@ -70,11 +82,12 @@ a bundle from `cosign save` do.
 
 1. **The bundle** (`out/release/bundle`, written by `make release` with `cosign save`) must name exactly one
    image, whose manifest is in it with that digest.
-2. **The cluster's policy** must be the one rendered from `--key` for this repository and release workflow
-   (the server's defaults aside). Otherwise: `make kind-policy KEY=...` first. So Kyverno trusts exactly what
-   step 4 trusts.
-3. **`cosign load`** pushes the bundle into the cluster's registry: the image, its signature and its four
-   attestations, digest unchanged.
+2. **The cluster's policy** must be the one rendered from `--key` for this repository and the laptop
+   release's builder (the server's defaults aside). Otherwise: `make kind-policy KEY=...` first. So Kyverno
+   trusts exactly what step 4 trusts.
+3. **`cosign load`** pushes the bundle into the cluster's registry, over TLS: the image, its signature and its
+   four attestations, digest unchanged. Without `.sentinel/kind/tls/ca.crt` (no `make kind-up` yet), nothing
+   runs.
 4. **`sentinel verify`** checks it there, in registry mode. Exit `1` if it is not trusted: nothing is
    committed.
 5. **The GitOps commit.** The chart (`deploy/helm/demo-shop`) and `release.yaml` (the digest) are committed to

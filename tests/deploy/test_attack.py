@@ -103,7 +103,7 @@ class Cluster:
         from sentinelci.supplychain.admission import render_policy
 
         text = render_policy(public_key=key, image_glob=cluster.IMAGE_GLOB, repo=REPO, builder_id=BUILDER,
-                             allow_http=True)  # fmt: skip
+                             allow_http=False)  # fmt: skip
         self.policies = {d["metadata"]["name"]: d for d in yaml.safe_load_all(text)}
         self.admitted, self.verify, self.running = set(admitted), verify, running
         self.argo_syncs_attack, self.argo_stuck, self.create_error = (
@@ -261,7 +261,9 @@ def test_every_attack_is_refused_by_the_check_that_must_refuse_it(
         f"127.0.0.1:5001/demo-shop/shop-api@{RELEASE}",
         "--append",
     ]
-    assert args[5:] == ["--repo", "127.0.0.1:5001/demo-shop/shop-api", "--insecure"]
+    assert args[5:] == ["--repo", "127.0.0.1:5001/demo-shop/shop-api"], (
+        "TLS by the cluster's CA, never --insecure"
+    )
     verify = next(i for i, c in enumerate(commands) if " verify " in c)
     assert commands[verify].split()[4] == f"127.0.0.1:5001/demo-shop/shop-api@{TAMPERED}"
     assert policy < mutate < verify
@@ -315,10 +317,7 @@ def test_the_block_image_is_pushed_and_refused(key: Path, gitops: Path, tmp_path
     assert (results[-1].name, results[-1].image, results[-1].refused, results[-1].by) == (
         "the BLOCK image the release gate refused to sign", f"{IN_CLUSTER}@{digest}", True, "Kyverno",
     )  # fmt: skip
-    assert (
-        f"/tools/bin/crane push {directory} 127.0.0.1:5001/demo-shop/shop-api:block --insecure"
-        in fake.commands()
-    )
+    assert f"/tools/bin/crane push {directory} 127.0.0.1:5001/demo-shop/shop-api:block" in fake.commands()
 
 
 # ---------------------------------------------------------------- an attack that is not refused
@@ -359,6 +358,8 @@ def test_the_exit_code_says_whether_every_attack_was_refused(
         demo.Attack("two", "i", refused, "x", "m"),
     ]
     monkeypatch.setattr(demo, "attack", lambda **kwargs: outcome)
+    monkeypatch.setattr(cluster, "trust_bundle", lambda tls: Path("/tls/trust.pem"))
+    monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")  # restored after the test
     assert demo.main(["attack"]) == code
 
 
