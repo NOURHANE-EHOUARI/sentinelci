@@ -336,6 +336,27 @@ CASES: list[tuple[str, str, bool, str]] = [
      'import ruamel.yaml\n'
      'def f(text):\n'
      '    return list(ruamel.yaml.load_all(text, None))\n'),
+    # Another keyword than Loader leaves Loader=None, and the C loader is unsafe too (#137 review).
+    ('python-unsafe-deserialization', 'de-ruamel-old-version.py', True,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return ruamel.yaml.load(text, version=(1, 1))\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-cloader.py', True,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return list(ruamel.yaml.load_all(text, Loader=ruamel.yaml.CLoader))\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-round-trip-positional-ok.py', False,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return ruamel.yaml.load(text, ruamel.yaml.RoundTripLoader, preserve_quotes=True)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-c-safe-ok.py', False,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return ruamel.yaml.load(text, Loader=ruamel.yaml.CSafeLoader)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-base-ok.py', False,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return ruamel.yaml.load(text, ruamel.yaml.BaseLoader)\n'),
     ('python-unsafe-deserialization', 'de-ruamel-old-dump-ok.py', False,
      'import ruamel.yaml\n'
      'def f(data):\n'
