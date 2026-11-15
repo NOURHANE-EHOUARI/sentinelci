@@ -117,6 +117,14 @@ def measure(runs: int, *, step: Step, clock: Callable[[], float], work: Path) ->
     }
 
 
+def _p95_rank(runs: int) -> str:
+    """Which run the p95 is: with fewer than 20, nearest-rank p95 is the slowest one."""
+    rank = max(math.ceil(0.95 * runs), 1)
+    if rank == runs:
+        return f"with {runs} run{'' if runs == 1 else 's'}, p95 is the slowest run (fewer than 20 runs)"
+    return f"p95 is run {rank} of {runs}, sorted from fastest to slowest"
+
+
 def _row(name: str, row: Mapping[str, float]) -> str:
     return f"| {name} | " + " | ".join(f"{row[key]:.1f}" for key in ("p50", "p95", "min", "max")) + " |"
 
@@ -137,9 +145,7 @@ def markdown(data: Mapping[str, Any]) -> str:
         f"`sentinel evaluate` on their findings. Machine: {env['platform']}, {env['cpus']} CPUs, Python "
         f"{env['python']}. This is not a CI measurement: a CI job also checks out the repository, and pays "
         "for tool downloads, the Grype database and artifact uploads, on another machine. Percentiles are "
-        f"nearest-rank, so each is one measured run. With {counted}, p95 is the slowest run"
-        + ("" if runs >= 20 else " (fewer than 20 runs)")
-        + ".",
+        f"nearest-rank, so each is one measured run: {_p95_rank(runs)}.",
         "",
         "| Step | p50 (s) | p95 (s) | min (s) | max (s) |",
         "|---|---|---|---|---|",

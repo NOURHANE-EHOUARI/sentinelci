@@ -11,7 +11,8 @@ make eval-timing DB_DIR=.sentinel/grype-db RUNS=5
 Each run does the gate's steps in order on demo-shop: the five scans `make eval` runs (the same commands and
 pinned tools), then `sentinel evaluate` on their findings (`local` context, the repository's policies). The
 report gives each step's p50, p95, min and max, and the total's. Percentiles are nearest-rank, so each one is
-a measured run; with fewer than 20 runs, p95 is the slowest run, and the report says so.
+a measured run. With 20 runs, p95 is the 19th fastest; with fewer than 20, it is the slowest, and the
+report says which.
 
 **What it doesn't measure.** It is not a CI run. A CI job also checks out the repository, installs the pinned
 tools, downloads the Grype database and uploads artifacts, on GitHub's runner. Those costs are not here. The

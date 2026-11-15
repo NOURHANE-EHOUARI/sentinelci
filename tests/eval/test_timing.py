@@ -113,7 +113,7 @@ def test_the_report_says_what_it_measures_and_what_it_does_not(tmp_path: Path) -
     assert "**PR feedback time on this machine: p50 6.0 s, p95 6.0 s over 5 runs.**" in text
     assert "not a CI measurement" in text
     assert "tool downloads" in text
-    assert "With 5 runs, p95 is the slowest run" in text
+    assert "with 5 runs, p95 is the slowest run (fewer than 20 runs)" in text
     assert "| gitleaks | 1.0 | 1.0 | 1.0 | 1.0 |" in text
     assert json.loads(json.dumps(data)) == data, "the report is JSON as it is"
 
@@ -150,6 +150,8 @@ def test_with_twenty_runs_the_p95_is_not_called_the_slowest_runs_only(tmp_path: 
     many = run.measure(20, step=ok, clock=Clock([1.0] * 20 * len(run.STEPS)), work=tmp_path)
     assert "(fewer than 20 runs)" in run.markdown(few)
     assert "(fewer than 20 runs)" not in run.markdown(many)
+    assert "p95 is run 19 of 20, sorted from fastest to slowest" in run.markdown(many)
+    assert "slowest run" not in run.markdown(many), "with 20 runs, p95 is not the slowest"
 
 
 class Done:
