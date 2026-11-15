@@ -4,11 +4,12 @@
 
 SentinelCI scans every change with pinned, integrity-checked scanners. A policy-as-code gate that anyone can
 replay decides whether the change or release may ship. The artifact is signed together with the evidence behind
-that decision, and Kubernetes refuses to run anything without it. AI explains findings, groups them by root
-cause and proposes fixes. It never decides: an architecture contract keeps it out of the decision path.
+that decision, and the demo cluster refuses to run an unsigned or unproven image in the application's
+namespace. AI explains findings, groups them by root cause and proposes fixes. It never decides: an architecture contract keeps it out of the decision path.
 
 > Status: v1.0.0 in preparation. The repository is private until then (ADR-0006), so signing and the runs that
-> need Docker or a local model happen on the maintainers' laptop (ADR-0011, ADR-0014).
+> need Docker or a local model happen on the maintainers' laptop (ADR-0011, ADR-0014). Signing uses a Cosign key
+> pair kept on that laptop, with nothing uploaded to the public Rekor log, until the repository is public.
 
 ## Why
 
@@ -34,8 +35,9 @@ pull request / release
   │              every input and replays bit for bit (`sentinel replay`)
   ├─ 5. Sign ──── image + the decision, the CycloneDX SBOM, the vulnerability scan and SLSA provenance, as
   │              four Cosign attestations (the SPDX SBOM is kept with the evidence)
-  └─ 6. Admit ─── Argo CD deploys by digest; Kyverno admits only an image signed with the release key and
-                 carrying its attestations, as `sentinel verify` would
+  └─ 6. Admit ─── Argo CD deploys by digest; in demo-shop's namespace, Kyverno admits a release image only if
+                 it is signed with the release key and carries its attestations (as `sentinel verify` would),
+                 and the API server refuses images from any other registry
 ```
 
 Around that deterministic core:
@@ -92,18 +94,20 @@ Measured in November 2026 on demo-shop, with the pinned scanners and that day's 
 comes from the report its make target writes under `out/eval/`, and the misses are reported as plainly as the
 hits.
 
-| What | Result | Report |
-|---|---|---|
-| Detection | All 28 seeds that `make eval` measures detected, no false positive on the clean controls (the container seed is checked in the built BLOCK image by an opt-in test) | `make eval` |
-| Root-cause grouping | ARI 0.827 against hand labels on a held-out half (42 findings in 18 groups), with the stage 2b threshold calibrated on the other half. Alert reduction on the whole run: 25.8%, **below** the 40% target of SPEC §3 | `make eval-correlation` |
-| The AI against prompt injection | 0 of 10 outputs of `gemma4:12b-it-qat` followed a planted instruction, 0 seeded weaknesses called false positives. With a control model that obeys every instruction, the gate's decision stayed the same, byte for byte | `make eval-canaries` |
-| Explanations | Two people rated 23 explanations on four criteria and agree substantially (Cohen's kappa 0.71). A judge using the same model agrees with neither of them beyond chance (0.00), so people, not that judge, rate explanations | `make eval-rubric` |
-| Replay | 10 of 10 recorded decisions replayed byte for byte | `make eval-replay` |
-| Gate time | One pass of the gate's steps: p95 12.8 s over 20 runs. A pull request scans its head and its base, so about 26 s, against a target of 10 minutes | `make eval-timing` |
+| What | Target (SPEC §3) | Result | Report |
+|---|---|---|---|
+| Detection | ≥ 90% of seeds | All 28 seeds that `make eval` measures detected, no false positive on the clean controls (the container seed is checked in the built BLOCK image by an opt-in test) | `make eval` |
+| Alert reduction | ≥ 40% | **Missed:** 25.8% on the whole run, with the stages that have no parameter. With stage 2b, the held-out half reaches an ARI of 0.827 against hand labels (42 findings in 18 groups), its threshold calibrated on the other half | `make eval-correlation` |
+| Prompt-injection robustness | 0 verdict changes | 0 of 10 outputs of `gemma4:12b-it-qat` followed a planted instruction, 0 seeded weaknesses called false positives. With a control model that obeys every instruction, the gate's decision stayed the same, byte for byte | `make eval-canaries` |
+| Explanations | (a rubric, §17) | Two people rated 23 explanations on four criteria and agree substantially (Cohen's kappa 0.71). A judge using the same model agrees with neither of them beyond chance (0.00), so people, not that judge, rate explanations | `make eval-rubric` |
+| Replay determinism | 100% identical | 10 of 10 recorded decisions replayed byte for byte | `make eval-replay` |
+| PR feedback time | p95 ≤ 10 min | One pass of the gate's steps: p95 12.8 s over 20 runs. A pull request scans its head and its base, so about 26 s | `make eval-timing` |
+| Verified fix rate | ≥ 60% | Not measured yet | `make eval-fixrate` |
 
 ## Try it
 
-Requirements: [uv](https://docs.astral.sh/uv/), Python 3.12, make; Docker for the platform and the demos.
+Requirements: [uv](https://docs.astral.sh/uv/), Python 3.12, make; Docker for the platform and the demos; kubectl,
+git and the pinned kind and Cosign (`uv run sentinel tools install kind cosign`) for the demo cluster.
 
 ```bash
 make setup          # the locked workspace and git hooks
@@ -116,7 +120,8 @@ make eval           # the detection report on demo-shop
 The release demo (the laptop, during the private phase) goes through these steps:
 1. `make release-block`: the gate blocks an image with a known-vulnerable dependency, and nothing is signed.
 2. `make release`: the release image is built, judged, signed and verified.
-3. `make kind-up` and `make demo-release`: Argo CD deploys the release into a local kind cluster.
+3. `make kind-up`, `make kind-policy` and `make demo-release`: Kyverno gets the release key's policy, and Argo CD
+   deploys the release into a local kind cluster.
 4. `make demo-attack`: five attacks (a tampered layer, the same image through GitOps or kubectl, an image from
    another registry, the blocked image) are each refused by the check that should refuse them.
 
