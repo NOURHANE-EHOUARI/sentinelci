@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
@@ -25,6 +26,11 @@ from sentinelci import __version__ as engine_version
 
 # The version of the API contract (schemas/openapi.yaml), not of the engine: it changes only with the API.
 API_VERSION = "1.8.2"
+
+
+def _json(errors: list[dict[str, Any]]) -> str:
+    """A 422 body as Starlette's JSONResponse writes it (compact, no NaN), but in ASCII."""
+    return json.dumps({"detail": errors}, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -49,8 +55,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.exception_handler(RequestValidationError)
     async def unprocessable(_: Request, exc: RequestValidationError) -> Response:
         """FastAPI's own 422 body, written as ASCII JSON: it echoes the input it refused, and a lone UTF-16
-        surrogate in that input cannot be encoded as UTF-8, so the default rendering failed as a 500."""
-        body = json.dumps({"detail": jsonable_encoder(exc.errors())}, ensure_ascii=True)
+        surrogate in that input cannot be encoded as UTF-8, so the default rendering failed as a 500. An
+        echoed NaN or Infinity, which JSON has not, is dropped from `input` (#126 review)."""
+        errors = jsonable_encoder(exc.errors())
+        try:
+            body = _json(errors)
+        except ValueError:
+            body = _json([error | {"input": None} for error in errors])
         return Response(body, status_code=422, media_type="application/json")
 
     @app.get("/healthz", tags=["ops"])

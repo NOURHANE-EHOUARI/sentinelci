@@ -296,15 +296,18 @@ def _parse(body: bytes, run: Run) -> list[dict[str, Any]]:
     optional = {"ref": run.ref, "run_id": run.ci_run_id}
     seen: dict[str, int] = {}
     for lineno, finding in zip(lines, findings, strict=True):
-        # JSON can spell a lone UTF-16 surrogate (`"\ud800"`) and json.loads reads it, but it is not text:
-        # it cannot be encoded as UTF-8, and PostgreSQL's jsonb refuses it (a 500 before, #126 review).
+        # json.loads reads two things PostgreSQL's jsonb refuses (each a 500 before, #126 reviews): a lone
+        # UTF-16 surrogate (`"\ud800"`), which is not text and cannot be encoded as UTF-8, and NaN, Infinity
+        # and -Infinity, which JSON has not. UnicodeEncodeError is a ValueError, so it is caught first.
         try:
-            json.dumps(finding, ensure_ascii=False).encode("utf-8")
+            json.dumps(finding, ensure_ascii=False, allow_nan=False).encode("utf-8")
         except UnicodeEncodeError:
             raise _invalid(
                 f"findings line {lineno}: a string holds a lone UTF-16 surrogate, which cannot be stored",
                 lineno,
             ) from None
+        except ValueError:
+            raise _invalid(f"findings line {lineno}: NaN or Infinity is not a JSON number", lineno) from None
         if (first := seen.setdefault(finding["id"], lineno)) != lineno:
             raise _invalid(
                 f"findings line {lineno}: finding {finding['id']} appears twice (first on line {first})",

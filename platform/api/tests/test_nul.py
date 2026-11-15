@@ -4,6 +4,9 @@ PostgreSQL cannot store U+0000: not in a text column (psycopg refuses the parame
 ("unsupported Unicode escape sequence"). Without a check at the boundary, a string holding it reached the
 database and came back as a 500: nothing was recorded, so it failed closed, but the client was told the server
 broke rather than that its document cannot be stored. Each test checks the 422 and that nothing was recorded.
+
+The same holds for the other values json.loads reads and PostgreSQL cannot store (#126 reviews): a lone UTF-16
+surrogate, and NaN, Infinity and -Infinity. A 422 that echoes one of them is still JSON.
 """
 
 from __future__ import annotations
@@ -251,3 +254,46 @@ def test_a_refused_decision_says_it_is_a_decision(client: TestClient, headers: d
     response = client.post(f"/api/v1/runs/{run_id}/decision", content=b"{}", headers={**headers, **JSON})
     assert response.status_code == 422, response.text
     assert response.json()["detail"][0]["type"] == "decision_invalid"
+
+
+# ---------------------------------------------------------------- NaN and Infinity (#126 review)
+
+
+def _strict(text: str) -> Any:
+    """JSON as RFC 8259 has it: no NaN or Infinity (httpx's .json() reads them)."""
+
+    def refuse(constant: str) -> None:
+        raise ValueError(f"{constant} is not JSON")
+
+    return json.loads(text, parse_constant=refuse)
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_findings_with_a_non_finite_number_are_refused(
+    client: TestClient, headers: dict[str, str], constant: str
+) -> None:
+    run_id = create_run(client, headers)
+    bad = json.dumps(SCA).replace('"score": 87.3', f'"score": {constant}')  # risk.score: dict[str, Any]
+    assert constant in bad
+    body = (json.dumps(SECRET) + "\n" + bad + "\n").encode("utf-8")
+    response = client.post(f"/api/v1/runs/{run_id}/findings", content=body, headers={**headers, **NDJSON})
+    assert response.status_code == 422, response.text
+    error = _strict(response.text)["detail"][0]
+    assert error["loc"] == ["body", 2]
+    assert error["msg"] == "findings line 2: NaN or Infinity is not a JSON number"
+    assert client.get(f"/api/v1/runs/{run_id}").json()["findings_sha256"] is None
+
+
+@pytest.mark.parametrize(
+    ("constant", "field"), [("NaN", "repo"), ("Infinity", "commit"), ("-Infinity", "ref")]
+)
+def test_a_run_with_a_non_finite_number_gets_a_422_in_json(
+    client: TestClient, headers: dict[str, str], constant: str, field: str
+) -> None:
+    body = json.dumps(RUN).replace(f'"{RUN[field]}"', constant).encode("ascii")
+    assert constant.encode() in body
+    response = client.post("/api/v1/runs", content=body, headers={**headers, **JSON})
+    assert response.status_code == 422, response.text
+    error = _strict(response.text)["detail"][0]
+    assert error["loc"] == ["body", field]
+    assert error["input"] is None, "an echoed NaN or Infinity is dropped: JSON has none"
