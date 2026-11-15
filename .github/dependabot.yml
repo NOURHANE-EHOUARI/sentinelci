@@ -10,8 +10,10 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   # Python workspace (uv.lock). demo-shop/ is intentionally vulnerable and deliberately NOT listed here.
+  # Minor and patch updates come grouped; a major version comes in its own pull request, to be judged alone.
   - package-ecosystem: uv
     directory: /
     schedule:
@@ -21,8 +23,11 @@ updates:
     groups:
       python:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   # The dashboard (platform/web/package-lock.json). Exact versions; npm never runs package scripts there.
+  # Minor and patch updates come grouped; a major version comes in its own pull request (#96 grouped TypeScript 7,
+  # which openapi-typescript 7 does not accept as a peer, with two updates that pass, so `npm ci` failed for all).
   - package-ecosystem: npm
     directory: /platform/web
     schedule:
@@ -32,6 +37,11 @@ updates:
     groups:
       dashboard:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # The typed client's generator (openapi-typescript 7) requires TypeScript 5 as a peer.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
 
   # Local platform images (deploy/compose), pinned by tag and digest.
   - package-ecosystem: docker-compose
@@ -43,8 +53,16 @@ updates:
     groups:
       compose:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
 
-  # Base images of the platform Dockerfiles.
+  # Base images of the platform Dockerfiles. Python stays on 3.12 (the version every workflow sets up), and its
+  # patches come, as the workflows float to the latest 3.12 too. uv stays exactly on the version CI pins
+  # (`UV_VERSION` and setup-uv's `version` in the workflows, which Dependabot does not update): any uv bump,
+  # a patch included, is a deliberate change made in every place at once, never in one Dockerfile (#7 proposed
+  # python 3.15 and uv 0.13; #115 review, nit 1).
+  # The cooldown does not apply here: the registry gives no publication date for an image (Dependabot says so
+  # on its pull request, #7), so an image patch comes without the 7-day wait. The images are pinned by digest,
+  # and a reviewer still merges each one (#115 review, nit 3).
   - package-ecosystem: docker
     directory: /platform/api
     schedule:
@@ -54,3 +72,9 @@ updates:
     groups:
       docker:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: astral-sh/uv
+        update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]

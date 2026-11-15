@@ -9,7 +9,7 @@ dependencies = [
     "pydantic>=2.10",
     "pyyaml>=6.0.2",
     "ruamel-yaml>=0.18",
-    "zizmor==1.31.1",
+    "zizmor==1.32.0",
 ]
 
 [project.scripts]

@@ -18,8 +18,10 @@ from sentinelci.supplychain.cosign import SIGNATURE_TYPE, check_local_registry, 
 
 POLICY_NAME = "sentinel-release-evidence"
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+# A release workflow, or the laptop's release script at main (ADR-0011): the builders `sentinel attest` names.
 _BUILDER = re.compile(
-    r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/\.github/workflows/[A-Za-z0-9_./-]+@[A-Za-z0-9_./-]+"
+    r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/"
+    r"(\.github/workflows/[A-Za-z0-9_./-]+@[A-Za-z0-9_./-]+|deploy/release/release\.py@refs/heads/main)"
 )
 # `<registry>/<path>*`: one trailing `*`. It is matched as a prefix of the lower-cased reference, since
 # registry host names ignore case (a glob would let `LOCALHOST:5000/...` through unchecked).
@@ -41,7 +43,8 @@ def render_policy(*, public_key: Path, image_glob: str, repo: str, builder_id: s
         raise AttestationError(f"--repo {repo!r} is not owner/name")
     if _BUILDER.fullmatch(builder_id) is None:
         raise AttestationError(
-            f"--builder-id {builder_id!r} is not https://github.com/<owner>/<repo>/.github/workflows/<file>@<ref>"
+            f"--builder-id {builder_id!r} is not https://github.com/<owner>/<repo>/.github/workflows/<file>"
+            "@<ref> or https://github.com/<owner>/<repo>/deploy/release/release.py@refs/heads/main"
         )
     glob = _GLOB.fullmatch(image_glob)
     if glob is None or "/" not in glob["prefix"]:
