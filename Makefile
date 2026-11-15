@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help setup check lint format typecheck imports policy test zizmor web eval tools tools-verify compose-env up down \
 	eval-correlation eval-correlation-calibrate remediate-code release release-block release-key self-gate \
-	release-sentinelci eval-canaries eval-replay eval-ranking eval-fixrate
+	release-sentinelci eval-canaries eval-replay eval-ranking eval-timing eval-explanations eval-rubric eval-fixrate
 
 # OPA is a pinned binary, not a Python package: `uv run sentinel tools install opa` (tools.lock.toml).
 OPA ?= $(or $(SENTINEL_OPA),opa)
@@ -51,6 +51,19 @@ web: ## Dashboard: locked install (no package scripts), typed client up to date,
 EVAL_TOOLS ?= $(or $(SENTINEL_TOOLS_DIR),.sentinel/tools)
 eval: ## Detection report of demo-shop (B8): out/eval/detection.json and detection.md
 	uv run python eval/detection/run.py --tools-dir $(EVAL_TOOLS) $(if $(DB_DIR),--db-dir $(DB_DIR))
+
+OLLAMA_URL ?= http://127.0.0.1:11434
+eval-explanations: ## Explanations of the seeds and the LLM judge's ratings (B8), after make eval: needs Ollama
+	uv run python eval/explanations/run.py generate --findings out/eval/findings --ollama $(OLLAMA_URL)
+	uv run python eval/explanations/run.py judge --ollama $(OLLAMA_URL)
+
+RATERS ?= hiba nourhane
+eval-rubric: ## Rubric pass rates and Cohen's kappa (B8), from out/eval/explanations/ratings-*.yaml
+	uv run python eval/explanations/run.py report --raters $(RATERS)
+
+RUNS ?= 20
+eval-timing: ## Pipeline timing (B8): the gate's steps on demo-shop, RUNS times, p50/p95 in out/eval/timing.md
+	uv run python eval/timing/run.py --runs $(RUNS) --tools-dir $(EVAL_TOOLS) $(if $(DB_DIR),--db-dir $(DB_DIR))
 
 eval-ranking: ## Ranking report of demo-shop (B8): NDCG@10 of the risk score vs CVSS, after `make eval`
 	uv run python eval/ranking/run.py
