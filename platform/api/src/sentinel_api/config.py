@@ -26,6 +26,8 @@ class Settings:
     token_sha256: frozenset[str]
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
     default_ref: str = DEFAULT_REF
+    # redis://... of the worker's job queue (Celery). None: explanations cannot be asked for (503).
+    redis_url: str | None = None
 
     @classmethod
     def from_env(cls) -> Self:
@@ -49,6 +51,7 @@ class Settings:
             token_sha256=hashes,
             max_upload_bytes=int(limit) if limit else DEFAULT_MAX_UPLOAD_BYTES,
             default_ref=default_ref,
+            redis_url=os.environ.get("SENTINEL_REDIS_URL") or None,
         )
 
 

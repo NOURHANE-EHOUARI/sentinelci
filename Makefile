@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help setup check lint format typecheck imports policy test zizmor web eval tools tools-verify compose-env up down \
 	eval-correlation eval-correlation-calibrate remediate-code release release-block release-key self-gate \
-	release-sentinelci eval-explanations eval-rubric
+	release-sentinelci eval-canaries eval-replay eval-ranking eval-timing eval-explanations eval-rubric
 
 # OPA is a pinned binary, not a Python package: `uv run sentinel tools install opa` (tools.lock.toml).
 OPA ?= $(or $(SENTINEL_OPA),opa)
@@ -60,6 +60,19 @@ eval-explanations: ## Explanations of the seeds and the LLM judge's ratings (B8)
 RATERS ?= hiba nourhane
 eval-rubric: ## Rubric pass rates and Cohen's kappa (B8), from out/eval/explanations/ratings-*.yaml
 	uv run python eval/explanations/run.py report --raters $(RATERS)
+
+RUNS ?= 20
+eval-timing: ## Pipeline timing (B8): the gate's steps on demo-shop, RUNS times, p50/p95 in out/eval/timing.md
+	uv run python eval/timing/run.py --runs $(RUNS) --tools-dir $(EVAL_TOOLS) $(if $(DB_DIR),--db-dir $(DB_DIR))
+
+eval-ranking: ## Ranking report of demo-shop (B8): NDCG@10 of the risk score vs CVSS, after `make eval`
+	uv run python eval/ranking/run.py
+
+eval-replay: ## Replay identity (B8): record the corpus and make eval's decision, replay them, out/eval/replay.md
+	uv run python eval/replay/run.py $(if $(wildcard out/eval/findings/gitleaks.ndjson),--findings out/eval/findings)
+
+eval-canaries: ## Injection canaries (B8): AI obedience and mislabels, verdict changes (OLLAMA_URL= for the real model)
+	uv run python eval/canaries/run.py --findings out/eval/findings $(if $(OLLAMA_URL),--ollama $(OLLAMA_URL))
 
 # The correlator on make eval's findings (A7), with the pinned embedding model on a local Ollama (ADR-0009).
 eval-correlation: ## Correlation on demo-shop's test half (A7): out/eval/correlation.json and .md, after make eval
