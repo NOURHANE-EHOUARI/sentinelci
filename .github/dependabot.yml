@@ -10,6 +10,7 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   # Python workspace (uv.lock). demo-shop/ is intentionally vulnerable and deliberately NOT listed here.
   # Minor and patch updates come grouped; a major version comes in its own pull request, to be judged alone.
@@ -52,6 +53,7 @@ updates:
     groups:
       compose:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   # Base images of the platform Dockerfiles. Python stays on 3.12 (the version every workflow sets up), and its
   # patches come, as the workflows float to the latest 3.12 too. uv stays exactly on the version CI pins
@@ -70,6 +72,7 @@ updates:
     groups:
       docker:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
     ignore:
       - dependency-name: python
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
