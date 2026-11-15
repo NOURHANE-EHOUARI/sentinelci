@@ -29,6 +29,11 @@ KINDS: dict[str, str] = {
     "provenance": PROVENANCE_TYPE,
 }
 GITHUB_ACTIONS_BUILD_TYPE = "https://actions.github.io/buildtypes/workflow/v1"
+# A release made on the release laptop by deploy/release/release.py (ADR-0011): its build type is ours.
+LOCAL_RELEASE_BUILD_TYPE = "https://github.com/NOURHANE-EHOUARI/sentinelci/specs/local-release/v1"
+RELEASE_SCRIPT = "deploy/release/release.py"
+RELEASE_REF = "refs/heads/main"
+BUILDERS = ("github-actions", "local-release")
 GITHUB = "https://github.com"
 ENGINE_PURL = "pkg:github/NOURHANE-EHOUARI/sentinelci"
 
@@ -235,6 +240,49 @@ class WorkflowRun:
         re-run must sign the same statements, or registry mode sees two releases (ambiguous, #44 review)."""
         return f"{GITHUB}/{self.repository}/actions/runs/{self.run_id}"
 
+    @property
+    def event_id(self) -> str:
+        return self.run_id
+
+
+def local_release_builder_id(repository: str) -> str:
+    """The builder of a release made on the laptop: the release script at main (what `sentinel verify` and the
+    admission policy are given for such a release)."""
+    return f"{GITHUB}/{repository}/{RELEASE_SCRIPT}@{RELEASE_REF}"
+
+
+@dataclass(frozen=True)
+class LocalRelease:
+    """A release made by `make release` (deploy/release/release.py) on the laptop that holds the release key
+    (ADR-0011, decisions 1 and 4). The script refuses unless the working tree is clean and HEAD is
+    origin/main, so the source is the decision's commit on main. Nothing about the machine is recorded: no
+    host, user or path is signed."""
+
+    repository: str
+    commit: str
+
+    @property
+    def builder_id(self) -> str:
+        return local_release_builder_id(self.repository)
+
+    @property
+    def invocation_id(self) -> str:
+        """The commit: releasing the same commit again signs the same statements."""
+        return f"{GITHUB}/{self.repository}/commit/{self.commit}"
+
+    @property
+    def event_id(self) -> str:
+        return self.commit
+
+
+def local_release(env: Mapping[str, str], decision: Decision) -> LocalRelease:
+    """The laptop release of the decision's commit; refused in GitHub Actions, which holds no release key."""
+    if env.get("GITHUB_ACTIONS") == "true":
+        raise AttestationError(
+            "a local release is made on the release laptop, not in GitHub Actions (ADR-0011, decision 7)"
+        )
+    return LocalRelease(repository=decision.subject.repo, commit=decision.subject.commit)
+
 
 def workflow_run(env: Mapping[str, str]) -> WorkflowRun:
     """Read the run from GitHub Actions variables; anything missing or malformed refuses the provenance."""
@@ -273,6 +321,32 @@ def workflow_run(env: Mapping[str, str]) -> WorkflowRun:
     return WorkflowRun(workflow_path=workflow["path"], workflow_ref=workflow["ref"], **values)
 
 
+def local_provenance(release: LocalRelease) -> dict[str, Any]:
+    """SLSA v1 provenance of a release built on the laptop by the release script, from main's commit."""
+    return {
+        "buildDefinition": {
+            "buildType": LOCAL_RELEASE_BUILD_TYPE,
+            "externalParameters": {
+                "script": {
+                    "repository": f"{GITHUB}/{release.repository}",
+                    "path": RELEASE_SCRIPT,
+                    "ref": RELEASE_REF,
+                }
+            },
+            "resolvedDependencies": [
+                {
+                    "uri": f"git+{GITHUB}/{release.repository}@{RELEASE_REF}",
+                    "digest": {"gitCommit": release.commit},
+                }
+            ],
+        },
+        "runDetails": {
+            "builder": {"id": release.builder_id},
+            "metadata": {"invocationId": release.invocation_id},
+        },
+    }
+
+
 def provenance(run: WorkflowRun, decision: Decision) -> dict[str, Any]:
     """SLSA v1 provenance of a release built by this workflow run from the decision's source commit."""
     if (run.repository, run.commit) != (decision.subject.repo, decision.subject.commit):
@@ -309,13 +383,15 @@ def provenance(run: WorkflowRun, decision: Decision) -> dict[str, Any]:
     }
 
 
-def vuln_predicate(decision: Decision, result: dict[str, Any], run: WorkflowRun) -> dict[str, Any]:
+def vuln_predicate(
+    decision: Decision, result: dict[str, Any], run: WorkflowRun | LocalRelease
+) -> dict[str, Any]:
     """Cosign's vulnerability predicate around the SentinelCI result. Its times are the decision's."""
     return {
         "invocation": {
             "parameters": [],
             "uri": run.invocation_id,
-            "event_id": run.run_id,
+            "event_id": run.event_id,
             "builder.id": run.builder_id,
         },
         "scanner": {
@@ -338,12 +414,24 @@ def release_predicates(
     findings_data: bytes,
     sbom_data: bytes,
     env: Mapping[str, str],
+    builder: str = "github-actions",
 ) -> dict[str, Any]:
     """The four predicates to sign for `image`, keyed by kind. Raises AttestationError when they don't belong
     together: a BLOCK or non-release decision, a decision about another image, findings or an SBOM that the
-    decision did not record, or a workflow run on another repository or commit."""
+    decision did not record, or a workflow run on another repository or commit. `builder` is who built it: a
+    GitHub Actions workflow run (read from `env`), or the release script on the laptop (`local-release`)."""
+    if builder not in BUILDERS:
+        raise AttestationError(f"builder {builder!r} is not {' or '.join(BUILDERS)}")
     decision = release_decision(decision_data, image)
     result = vuln_result(decision, findings_data, sbom_data)
+    if builder == "local-release":
+        release = local_release(env, decision)
+        return {
+            "decision": json.loads(decision_data),
+            "sbom": json.loads(sbom_data),
+            "vuln": vuln_predicate(decision, result, release),
+            "provenance": local_provenance(release),
+        }
     run = workflow_run(env)
     predicates = {
         "decision": json.loads(decision_data),

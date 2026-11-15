@@ -221,9 +221,10 @@ waivers:
 
 ## `sentinel attest` and `sentinel verify` (release attestations, A4)
 
-ADR-0010. The attest job of the release workflow signs four in-toto statements about the image digest
-(release decision, CycloneDX SBOM, vulnerability scan, SLSA v1 provenance) with the pinned Cosign and a key pair,
-and writes them as Sigstore bundles under `<out>/attestations/`:
+ADR-0010. `sentinel attest` signs four in-toto statements about the image digest (release decision, CycloneDX
+SBOM, vulnerability scan, SLSA v1 provenance) with the pinned Cosign and a key pair, and writes them as Sigstore
+bundles under `<out>/attestations/`. In the private phase it runs only on the release laptop, inside
+`make release` (ADR-0011, `deploy/release/README.md`):
 
 ```bash
 uv run sentinel attest registry.local/demo-shop/shop-api@sha256:<digest> \
@@ -235,6 +236,13 @@ uv run sentinel attest registry.local/demo-shop/shop-api@sha256:<digest> \
   findings or an SBOM other than the ones the decision recorded (`inputs.findings_digest`, `inputs.sbom_digest`),
   an SBOM without a CycloneDX `serialNumber`, and a run outside GitHub Actions or on another repository or commit
   than the decision's. All four bundles are written, or none.
+- `--builder` says who built the image, and so what the provenance names: `github-actions` (the default: the
+  workflow run, from its GitHub Actions variables) or `local-release`, the laptop release (`make release`).
+  A `local-release` provenance names the release script at main as its builder
+  (`https://github.com/NOURHANE-EHOUARI/sentinelci/deploy/release/release.py@refs/heads/main`), the
+  decision's repository and commit as its source, and nothing about the machine; it is refused in GitHub
+  Actions, which holds no release key. `sentinel verify --builder-id` and `sentinel admission-policy
+  --builder-id` take that id for such a release.
 - `--key` is a key file or `env://VAR`; only that variable and `COSIGN_PASSWORD` reach Cosign. Private mode
   (ADR-0006): no transparency-log upload.
 
@@ -537,8 +545,9 @@ uv run sentinel scan pipelines demo-shop --repo-root . --out out/pipelines.ndjso
   (`[python_tools.zizmor]`, at the pinned version): another version, a replaced binary, or zizmor missing
   exits `3` (SC-010).
 - The scanned repository cannot configure or silence it: `--no-config`, `--no-ignores` (a finding covered by an
-  inline `# zizmor: ignore[...]` comment is kept, and its message says so), `--collect=all` (`.gitignore` is not
-  honoured), `--offline`, and a minimal environment.
+  inline `# zizmor: ignore[...]` comment is kept, and its message says so), `--ignore-lockfile` (a workflow
+  listed in the repository's `.github/workflows/actions.lock` keeps its `unpinned-uses` findings),
+  `--collect=all` (`.gitignore` is not honoured), `--offline`, and a minimal environment.
 - Inputs: what GitHub runs (every YAML file under `.github/workflows/`, every `action.yml` / `action.yaml`,
   `.github/dependabot.yml`) must load (`--strict-collection`), or exit `3`. Any other YAML file with a top-level
   `jobs:` key is audited too; one zizmor cannot load as a GitHub workflow (another CI's file) is skipped, named
@@ -657,11 +666,13 @@ uv run sentinel remediate verify --proposal out/proposal.json --before out/base.
     re-run, a file that is not a regular file of both trees, a base file this check cannot read, findings that
     cannot be read or that the fixer refuses.
 
-The bot (`.github/workflows/sentinel-remediate.yml`, ADR-0013) chains them: `propose` (read-only) scans, runs
-the fixers and `apply`; `publish` (no repository code) pushes each branch and opens its pull request; `verify`
-(read-only, the scanned commit's pipeline) rebuilds each pull request's commit, scans both commits with the
-scanners the pr gate requires, runs `check`, the gate in pr context and `verify`; `report` (no repository code)
-comments each result and sets the `sentinelci/remediation` commit status.
+The bot (`.github/workflows/sentinel-remediate.yml`, ADR-0013) chains them: `propose` (read-only) scans the
+commit as it is committed (a bare copy with no attributes, one commit fetched from the shallow checkout, never
+the checkout itself), runs the fixers and `apply`; `publish` (no repository code) pushes each branch and opens
+its pull request; `verify` (read-only, the scanned commit's pipeline) rebuilds each pull request's commit in
+the same kind of copy, scans both commits with the scanners the pr gate requires, runs `check`, the gate in pr
+context and `verify`; `report` (no repository code) comments each result and sets the `sentinelci/remediation`
+commit status.
 
 ## `sentinel admission-policy` (Kyverno admission of releases, A5)
 
