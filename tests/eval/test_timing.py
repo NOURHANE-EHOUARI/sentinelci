@@ -77,7 +77,12 @@ def test_each_step_is_timed_and_the_report_has_p50_and_p95(tmp_path: Path) -> No
     assert data["steps"]["evaluate"] == {"p50": 0.5, "p95": 0.5, "min": 0.5, "max": 0.5}
     scans = len(steps) - 1
     assert data["total"]["p50"] == 2.0 * scans + 0.5 and data["total"]["p95"] == 3.0 * scans + 0.5
-    assert data["target"] == {"p95_seconds": 600, "met_here": True}
+    assert data["target"] == {
+        "p95_seconds": 600,
+        "passes_per_pull_request": 2,
+        "pull_request_p95_estimate": 2 * data["total"]["p95"],
+        "met_here": True,
+    }
     assert data["versions"]["gitleaks"] == "1.0.0"
 
 
@@ -87,6 +92,29 @@ def test_the_target_is_said_missed_when_the_p95_is_over_ten_minutes(tmp_path: Pa
     assert data["total"]["p95"] > 600
     assert data["target"]["met_here"] is False
     assert "not met on this machine" in run.markdown(data)
+
+
+def test_a_pull_request_scans_twice_so_the_target_takes_two_passes(tmp_path: Path) -> None:
+    """sentinel-scan.yml scans the head, then the base as the baseline (#145 review): one pass of 301 s
+    is under ten minutes, but a pull request's two passes are not."""
+    durations = [301.0 if step == "gitleaks" else 0.0 for step in run.STEPS]
+    data = run.measure(1, step=ok, clock=Clock(durations), work=tmp_path)
+    assert data["total"]["p95"] == 301.0
+    assert data["target"]["pull_request_p95_estimate"] == 602.0
+    assert data["target"]["met_here"] is False
+    text = run.markdown(data)
+    assert "**One pass of the gate's steps on this machine: p50 301.0 s, p95 301.0 s over 1 run.**" in text
+    assert "scans its head and then its base" in text
+    assert "about 602.0 s" in text
+
+
+def test_the_first_run_is_reported_on_its_own(tmp_path: Path) -> None:
+    """The first run is cold (tool caches, the page cache of the Grype database), as a CI job always is."""
+    per_run = [9.0, 1.0, 1.0]
+    durations = [seconds if step == "gitleaks" else 0.0 for seconds in per_run for step in run.STEPS]
+    data = run.measure(3, step=ok, clock=Clock(durations), work=tmp_path)
+    assert data["first_run_seconds"] == 9.0
+    assert "Run 1 took 9.0 s" in run.markdown(data)
 
 
 def test_a_step_that_fails_stops_the_measurement(tmp_path: Path) -> None:
@@ -110,7 +138,7 @@ def test_the_steps_are_the_gates_and_make_evals(tmp_path: Path) -> None:
 def test_the_report_says_what_it_measures_and_what_it_does_not(tmp_path: Path) -> None:
     data = run.measure(5, step=ok, clock=Clock([1.0] * 5 * len(run.STEPS)), work=tmp_path)
     text = run.markdown(data)
-    assert "**PR feedback time on this machine: p50 6.0 s, p95 6.0 s over 5 runs.**" in text
+    assert "**One pass of the gate's steps on this machine: p50 6.0 s, p95 6.0 s over 5 runs.**" in text
     assert "not a CI measurement" in text
     assert "tool downloads" in text
     assert "with 5 runs, p95 is the slowest run (fewer than 20 runs)" in text

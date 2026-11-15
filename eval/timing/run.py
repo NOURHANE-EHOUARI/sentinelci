@@ -1,7 +1,7 @@
 """`make eval-timing`: the gate's steps on demo-shop, timed (task B8, SPEC sections 3 and 17).
 
 SPEC section 3 sets "PR feedback time: p95 <= 10 min" and section 17 asks for pipeline p50 and p95. Until
-GitHub Actions can run, this times what the gate itself does, on this machine:
+GitHub Actions can run, this times one pass of what the gate itself does, on this machine:
 1. the five scans `make eval` runs (`sentinel scan secrets|iac|pipelines|sast|sca`, the same commands, the
    pinned tools);
 2. the decision on their findings (`sentinel evaluate`, `local` context, the repository's policies).
@@ -9,7 +9,9 @@ GitHub Actions can run, this times what the gate itself does, on this machine:
 Each run does every step in order, and the report gives each step's p50, p95, min and max, and the total's.
 Percentiles are nearest-rank, so each one is a measured run. It is not a CI measurement: a CI job also
 checks out the repository, installs the pinned tools, downloads the Grype database and uploads artifacts, and
-its runner is another machine. The report says so, and names this machine.
+its runner is another machine. A pull request also scans its base as the baseline (`sentinel-scan.yml`), so
+its scans run twice: the target is checked against twice this pass's p95. The report says so, and names
+this machine.
 
 A step that fails stops the measurement (exit 2): a time for a scan that did not run would be a fast lie.
 Unlike B8's other reports, the output depends on the clock: it is a measurement of time.
@@ -36,6 +38,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 TARGET_P95_SECONDS = 600  # SPEC section 3: PR feedback time, p95 <= 10 min
+# sentinel-scan.yml scans a pull request's head, then its base as the baseline: two passes of the scans.
+PASSES_PER_PULL_REQUEST = 2
 EVALUATED_AT = "2026-11-15T00:00:00Z"  # a fixed time: the decision is not what is measured
 
 
@@ -103,11 +107,19 @@ def measure(runs: int, *, step: Step, clock: Callable[[], float], work: Path) ->
             total += elapsed
         totals.append(total)
     total_summary = _summary(totals)
+    # Every step twice, the decision too: a little over a pull request's two scan passes and one decision.
+    estimate = PASSES_PER_PULL_REQUEST * total_summary["p95"]
     return {
         "runs": runs,
         "steps": {name: _summary(values) for name, values in seconds.items()},
         "total": total_summary,
-        "target": {"p95_seconds": TARGET_P95_SECONDS, "met_here": total_summary["p95"] <= TARGET_P95_SECONDS},
+        "first_run_seconds": totals[0],
+        "target": {
+            "p95_seconds": TARGET_P95_SECONDS,
+            "passes_per_pull_request": PASSES_PER_PULL_REQUEST,
+            "pull_request_p95_estimate": estimate,
+            "met_here": estimate <= TARGET_P95_SECONDS,
+        },
         "versions": dict(sorted(versions.items())),
         "environment": {
             "platform": f"{platform.system().lower()}-{platform.machine().lower()}",
@@ -137,15 +149,21 @@ def markdown(data: Mapping[str, Any]) -> str:
     lines = [
         "# Pipeline timing (B8)",
         "",
-        f"**PR feedback time on this machine: p50 {total['p50']:.1f} s, p95 {total['p95']:.1f} s "
-        f"over {counted}.**"
-        f" SPEC section 3 asks for p95 <= {target['p95_seconds'] // 60} min: {met}.",
+        f"**One pass of the gate's steps on this machine: p50 {total['p50']:.1f} s, p95 {total['p95']:.1f} s "
+        f"over {counted}.**",
+        "",
+        "A pull request scans its head and then its base, as the baseline (`sentinel-scan.yml`), so its "
+        "scans run twice, and the comment and the upload come on top. SPEC section 3 asks for a PR feedback "
+        f"time with p95 <= {target['p95_seconds'] // 60} min. Twice this pass's p95 is about "
+        f"{target['pull_request_p95_estimate']:.1f} s: {met}.",
         "",
         f"Each run does the gate's steps in order on demo-shop: the five scans `make eval` runs, then "
         f"`sentinel evaluate` on their findings. Machine: {env['platform']}, {env['cpus']} CPUs, Python "
         f"{env['python']}. This is not a CI measurement: a CI job also checks out the repository, and pays "
         "for tool downloads, the Grype database and artifact uploads, on another machine. Percentiles are "
-        f"nearest-rank, so each is one measured run: {_p95_rank(runs)}.",
+        f"nearest-rank, so each is one measured run: {_p95_rank(runs)}. Run 1 took "
+        f"{data['first_run_seconds']:.1f} s. It is the coldest (tool caches, the page cache of the Grype "
+        "database), as a CI job always is, and it is counted in the table.",
         "",
         "| Step | p50 (s) | p95 (s) | min (s) | max (s) |",
         "|---|---|---|---|---|",
