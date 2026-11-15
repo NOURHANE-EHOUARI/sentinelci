@@ -25,8 +25,10 @@ can be restored by the gate of that same pull request, under the gate's own key.
    steps runs, so an entry can write any file there, the pipeline checkout and the CLI's virtual environment
    included (#105 review). So a job that judges a change restores only where the base branch wrote the entry:
    the scan and the gate of `sentinel-scan.yml` restore nothing in a pull request
-   (`if: github.event_name != 'pull_request'`, which also skips the post-job save), and on a push to `main` or
-   the nightly run only the base branch's own runs are in scope. There, an entry can at most cost a download.
+   (`if: github.event_name != 'pull_request'`, which also skips the post-job save). On a push to `main` only
+   `main`'s own runs are in scope, and there an entry can at most cost a download. A manual run
+   (`workflow_dispatch`) on another branch restores in that branch's scope, but it already runs that branch's
+   workflows and pipeline (`github.sha`), so the cache gives it nothing it does not already have.
 2. **Only `${{ runner.temp }}/sentinel-tools/cache` is cached**, with a key per job and per lock
    (`sentinel-tool-archives-<job>-<os>-<hashFiles(tools.lock.toml)>`), never with `restore-keys` (a prefix
    would restore another job's entry), and the next step installs from it. The binaries (`bin/`) are never
@@ -42,8 +44,8 @@ a pull request (`test_a_job_that_judges_restores_no_cache_in_a_pull_request`).
 
 ## Consequences
 
-- On `main` and the nightly run, each scan job downloads the archives once per lock change instead of once per
-  run. A new `tools.lock.toml` is a new key, and so a fresh download. A pull request's scan and gate download them
+- On a push to `main`, or a manual run, each scan job downloads the archives once per lock change instead of
+  once per run. A new `tools.lock.toml` is a new key, and so a fresh download. A pull request's scan and gate download them
   every run, as before this ADR.
 - Where the scan and the gate restore, only the base branch's runs wrote the entry, and a stale or corrupted
   archive fails the sha256 check and is downloaded again: there the cache changes only how fast a job starts. In
