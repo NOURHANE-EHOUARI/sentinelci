@@ -19,11 +19,24 @@ WAIVERS_FILE_VERSION = 1
 
 
 class _Loader(yaml.SafeLoader):
-    """Safe loader that keeps timestamps as strings.
+    """Safe loader that keeps timestamps as strings, and refuses aliases.
 
     YAML would turn `2026-12-31` into a date and drop the offset of `2026-12-31T00:00:00+01:00`;
-    the policy must see exactly what the reviewer approved.
+    the policy must see exactly what the reviewer approved. An alias (`*name`) is refused: a reviewed waivers
+    file never needs one, and anchors of anchors let a few hundred bytes expand to millions of values when the
+    entries are written out for the policy, so the gate would run until its time limit instead of failing
+    closed with a reason (#110 review).
     """
+
+    def compose_node(self, parent: Any, index: Any) -> Any:
+        if self.check_event(yaml.AliasEvent):
+            raise yaml.composer.ComposerError(
+                None,
+                None,
+                "a waivers file uses no YAML alias",
+                self.peek_event().start_mark,  # type: ignore[no-untyped-call]
+            )
+        return super().compose_node(parent, index)
 
 
 _Loader.yaml_implicit_resolvers = {
