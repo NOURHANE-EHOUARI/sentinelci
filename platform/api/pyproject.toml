@@ -5,6 +5,7 @@ description = "SentinelCI control-plane API: ingestion, GitHub sync and query en
 requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.16",
+    "celery[redis]>=5.5",
     "fastapi>=0.115",
     "psycopg[binary]>=3.2.9",
     "pyyaml>=6.0.2",
