@@ -293,6 +293,130 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/waivers/{sha256}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Waivers File
+         * @description A recorded waivers file, exactly as it was sent.
+         */
+        get: operations["get_waivers_file_api_v1_waivers__sha256__get"];
+        /**
+         * Record Waivers
+         * @description Keep a waivers file a recorded decision read, byte for byte, by its sha256. Never judged here.
+         */
+        put: operations["record_waivers_api_v1_waivers__sha256__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/waivers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Waivers In Force
+         * @description For each repository, its latest release decision of the default branch and the waivers it read.
+         */
+        get: operations["list_waivers_in_force_api_v1_waivers_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Count Rules
+         * @description How many recorded decisions each rule fired in, by effect and context.
+         */
+        get: operations["count_rules_api_v1_rules_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/findings/{finding_id}/explain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request Explanation
+         * @description Queue an explanation of the finding as a run recorded it. Advisory: it never changes a verdict.
+         */
+        post: operations["request_explanation_api_v1_findings__finding_id__explain_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/explain-requests/{request_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Explain Request
+         * @description Where a request for an explanation stands.
+         */
+        get: operations["get_explain_request_api_v1_explain_requests__request_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/findings/{finding_id}/explanation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Explanation
+         * @description The finding's latest explanation, exactly as the worker recorded it.
+         */
+        get: operations["get_explanation_api_v1_findings__finding_id__explanation_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/metrics": {
         parameters: {
             query?: never;
@@ -398,6 +522,54 @@ export interface components {
         ErrorOut: {
             /** Detail */
             detail: string;
+        };
+        /** ExplainIn */
+        ExplainIn: {
+            /** Run Id */
+            run_id?: string | null;
+        };
+        /**
+         * ExplainRequestFailed
+         * @description 503: the queue did not take the job; the request is recorded as failed.
+         */
+        ExplainRequestFailed: {
+            /** Detail */
+            detail: string;
+            request: components["schemas"]["ExplainRequestOut"];
+        };
+        /** ExplainRequestOut */
+        ExplainRequestOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Finding Id */
+            finding_id: string;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "running" | "explained" | "unavailable" | "not_sent" | "failed";
+            /** Reason */
+            reason: string | null;
+            /** Explanation Sha256 */
+            explanation_sha256: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
         };
         /** FindingDetail */
         FindingDetail: {
@@ -593,6 +765,32 @@ export interface components {
             /** Offset */
             offset: number;
         };
+        /** RuleCount */
+        RuleCount: {
+            /** Rule */
+            rule: string;
+            /** Effect */
+            effect: string;
+            /**
+             * Context
+             * @enum {string}
+             */
+            context: "pr" | "release" | "local";
+            /** Decisions */
+            decisions: number;
+            /**
+             * Last Evaluated At
+             * Format: date-time
+             */
+            last_evaluated_at: string;
+        };
+        /** RulesOut */
+        RulesOut: {
+            /** Decisions */
+            decisions: number;
+            /** Items */
+            items: components["schemas"]["RuleCount"][];
+        };
         /** RunCreate */
         RunCreate: {
             /** Repo */
@@ -688,6 +886,96 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /**
+         * WaiverOut
+         * @description One entry of the file, as written. A field that is absent or not text is null: the platform shows
+         *     what the reviewer wrote and never fills in or corrects a waiver.
+         */
+        WaiverOut: {
+            /** Index */
+            index: number;
+            /** Id */
+            id: string | null;
+            /** Finding Id */
+            finding_id: string | null;
+            /** Vulnerability */
+            vulnerability: string | null;
+            /** Purl */
+            purl: string | null;
+            /** Owner */
+            owner: string | null;
+            /** Justification */
+            justification: string | null;
+            /** Expires At */
+            expires_at: string | null;
+            /** Applied */
+            applied: boolean;
+        };
+        /** WaiversFileOut */
+        WaiversFileOut: {
+            /** Sha256 */
+            sha256: string;
+            /** Waiver Count */
+            waiver_count: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /**
+         * WaiversInForce
+         * @description A repository's latest release decision of the default branch, and the waivers it read.
+         */
+        WaiversInForce: {
+            /** Repo */
+            repo: string;
+            /** Commit */
+            commit: string;
+            /** Ref */
+            ref: string | null;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "run" | "release";
+            /** Run Id */
+            run_id: string | null;
+            /** Image Digest */
+            image_digest: string | null;
+            /**
+             * Decision Id
+             * Format: uuid
+             */
+            decision_id: string;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "PASS" | "WARN" | "BLOCK";
+            /**
+             * Evaluated At
+             * Format: date-time
+             */
+            evaluated_at: string;
+            /** Engine Version */
+            engine_version: string;
+            /** Policy Bundle Digest */
+            policy_bundle_digest: string | null;
+            /** Waivers Digest */
+            waivers_digest: string | null;
+            /** Waivers */
+            waivers: components["schemas"]["WaiverOut"][] | null;
+            /** Applied */
+            applied: string[];
+            /** Invalid Waivers */
+            invalid_waivers: string[];
+        };
+        /** WaiversPage */
+        WaiversPage: {
+            /** Items */
+            items: components["schemas"]["WaiversInForce"][];
         };
     };
     responses: never;
@@ -1891,6 +2179,387 @@ export interface operations {
                 };
             };
             /** @description No database is configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_waivers_file_api_v1_waivers__sha256__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The file's sha256, lowercase hex. */
+                sha256: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The waivers file byte for byte: its sha256 is the ETag. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/yaml": string;
+                };
+            };
+            /** @description No waivers file of this sha256 is recorded. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description No database is configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    record_waivers_api_v1_waivers__sha256__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The file's sha256, lowercase hex. */
+                sha256: string;
+            };
+            cookie?: never;
+        };
+        /** @description The waivers file (schemas/waivers.v1.json, `.sentinel/waivers.yaml`) as the gate read it; empty when there was none. */
+        requestBody: {
+            content: {
+                "application/yaml": string;
+            };
+        };
+        responses: {
+            /** @description This file is recorded already: its record. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaiversFileOut"];
+                };
+            };
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaiversFileOut"];
+                };
+            };
+            /** @description No valid ingestion token (`Authorization: Bearer <token>`). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description No recorded decision read this file (`inputs.waivers_digest`): record the decision first. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description The file is larger than the upload limit. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description The file is not sent as `application/yaml`. */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description No database is configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    list_waivers_in_force_api_v1_waivers_get: {
+        parameters: {
+            query?: {
+                repo?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaiversPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description No database is configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    count_rules_api_v1_rules_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RulesOut"];
+                };
+            };
+            /** @description No database is configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    request_explanation_api_v1_findings__finding_id__explain_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The finding's id (fingerprint). */
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ExplainIn"] | null;
+            };
+        };
+        responses: {
+            /** @description A request for this finding and run is open: it. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExplainRequestOut"];
+                };
+            };
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExplainRequestOut"];
+                };
+            };
+            /** @description No valid ingestion token (`Authorization: Bearer <token>`). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description No such finding (in that run), request or explanation. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description No database or no job queue is configured (`detail` only), or the queue did not take the job (`request`: the request, failed). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExplainRequestFailed"] | components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_explain_request_api_v1_explain_requests__request_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExplainRequestOut"];
+                };
+            };
+            /** @description No such finding (in that run), request or explanation. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description No database or no job queue is configured, or the queue did not take the job. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_explanation_api_v1_findings__finding_id__explanation_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The finding's id (fingerprint). */
+                finding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The finding's latest explanation (Explanation v1) byte for byte: its sha256 is the ETag. Advisory: never read by the gate. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description No such finding (in that run), request or explanation. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description No database or no job queue is configured, or the queue did not take the job. */
             503: {
                 headers: {
                     [name: string]: unknown;
