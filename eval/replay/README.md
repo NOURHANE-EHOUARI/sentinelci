@@ -30,5 +30,31 @@ recorded a decision and the ones that replay it later. That is what the nightly 
 (`.github/workflows/replay-nightly.yml`) is for: it replays the previous night's corpus with the next day's
 engine. `replay.md` says the same under its number.
 
+**Across two checkouts.** Until the nightly job can run, the same measurement can be made by hand, split in two:
+record on one checkout, replay on another (#124 review).
+
+```bash
+# On the checkout that records (say main), into an empty directory outside both checkouts:
+uv run python eval/replay/run.py --record-to ../replay-main --findings out/eval/findings
+# On the checkout that replays (say a pull request's):
+uv run python eval/replay/run.py --replay-from ../replay-main
+```
+
+`--record-to` records and replays nothing. It writes `store/` and `recorded.json` (each decision's id and
+verdict, and the recording checkout's commit and whether it had uncommitted changes), and refuses a directory
+that holds anything. `--replay-from` replays that store with the replaying checkout's engine and OPA, and never
+changes it. The report names both commits. A decision is replayed from its stored inputs and its stored policy
+bundle, so this compares engines and OPA, not policies: a policy change is a new decision, not a replay.
+Decisions the replaying engine skips (another engine or OPA version) are listed and not compared; if all are
+skipped, nothing is measured and the run exits 2. In one run nothing may be skipped, so there a skip counts as
+a failure. The store and `recorded.json` must list the same decisions: one in the store that the
+recording doesn't list would be replayed and not counted, so the run refuses it (exit 2).
+
+What it saw, recorded on this branch and replayed on it with today's `main` merged in:
+- 10 of 10 identical (no engine change between the two);
+- with the replaying engine's violations sorted the other way, the 2 decisions that have several violations
+  differ, and the run exits 1;
+- with the replaying engine's version bumped, all 10 are skipped: not measured, exit 2.
+
 The same inputs give the same report: decisions use fixed evaluation times, and demo-shop's findings are named
 by their digests.

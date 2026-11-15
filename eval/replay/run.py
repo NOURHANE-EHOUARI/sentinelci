@@ -17,7 +17,15 @@ It writes out/eval/replay.json and out/eval/replay.md, and exits 1 if any decisi
 replayed. The same inputs give the same report: no clock (decisions use fixed evaluation times), sorted keys,
 inputs named by their digests.
 
+Across two checkouts (#124 review), the run is split in two: `--record-to DIR` records on one checkout (say
+`main`) and replays nothing; `--replay-from DIR` replays that recording with another checkout's engine and OPA
+(say a pull request's). The stored policy bundle is replayed, so this compares engines and OPA, not policies.
+Decisions the replaying engine skips (another engine or OPA version) are listed and not compared; when nothing
+is compared, nothing is measured (exit 2).
+
 Usage: uv run python eval/replay/run.py [--findings out/eval/findings] [--out out/eval] [--opa PATH]
+       uv run python eval/replay/run.py --record-to DIR [--findings out/eval/findings] [--opa PATH]
+       uv run python eval/replay/run.py --replay-from DIR [--out out/eval] [--opa PATH]
 Owner: Track B (B8).
 """
 
@@ -141,40 +149,99 @@ def replay(store: Path, opa: Path | None) -> dict[str, Any]:
         raise EvalError(f"sentinel replay failed (exit {done.returncode}): {tail} ({exc})") from exc
 
 
-def report(recorded: Mapping[str, Mapping[str, Any]], replayed: Mapping[str, Any]) -> dict[str, Any]:
+def checkout() -> dict[str, Any]:
+    """This checkout: its commit, and whether it holds uncommitted changes (ignored files aside)."""
+
+    def git(*args: str) -> str:
+        done = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=False)  # noqa: S603, S607
+        if done.returncode != 0:
+            raise EvalError(f"git {args[0]} failed: {done.stderr.strip() or 'no message'}")
+        return done.stdout
+
+    return {"commit": git("rev-parse", "HEAD").strip(), "clean": git("status", "--porcelain") == ""}
+
+
+def report(
+    recorded: Mapping[str, Mapping[str, Any]],
+    replayed: Mapping[str, Any],
+    checkouts: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """The measurement. `checkouts` (recorded, replayed) when the recording came from another checkout: only
+    then may a decision be skipped (recorded with another engine or OPA version) and left out of the count."""
     results = replayed["results"]
+    # Every decision in the store must be listed in the recording: an unlisted one is replayed but not
+    # counted, so a decision that differs could hide there (#139 review). A no-op in one run.
+    unlisted = sorted(set(results) - {entry["decision_id"] for entry in recorded.values()})
+    if unlisted:
+        raise EvalError(
+            f"the store holds {len(unlisted)} decision(s) the recording does not list "
+            f"({', '.join(unlisted[:3])}): record again into an empty directory"
+        )
     decisions = {
         name: {"decision_id": entry["decision_id"], "verdict": entry["verdict"],
                "replay": results.get(entry["decision_id"], "not replayed")}
         for name, entry in recorded.items()
     }  # fmt: skip
     total = len(decisions)
+    skipped = 0 if checkouts is None else sum(e["replay"] == "skipped" for e in decisions.values())
+    compared = total - skipped
     identical = sum(entry["replay"] == "identical" for entry in decisions.values())
     inputs = {
         name: entry["findings_sha256"] for name, entry in recorded.items() if "findings_sha256" in entry
     }
-    return {
+    data: dict[str, Any] = {
+        "mode": "same run" if checkouts is None else "two checkouts",
         "decisions": decisions,
         "identical": identical,
+        "compared": compared,
+        "skipped": skipped,
         "total": total,
-        "identity": None if total == 0 else round(identical / total, 4),
+        "identity": None if compared == 0 else round(identical / compared, 4),
         "summary": replayed["summary"],
         "inputs": inputs,
     }
+    if checkouts is not None:
+        data["checkouts"] = {key: dict(checkouts[key]) for key in ("recorded", "replayed")}
+    return data
+
+
+def exit_code(data: Mapping[str, Any]) -> int:
+    """0: every compared decision is identical; 1: one is not; 2: nothing was compared, nothing measured."""
+    if data["compared"] == 0:
+        return 2
+    return 0 if data["identical"] == data["compared"] else 1
+
+
+def _named(side: Mapping[str, Any]) -> str:
+    return f"`{side['commit']}`" + ("" if side["clean"] else " (uncommitted changes)")
 
 
 def markdown(data: Mapping[str, Any]) -> str:
     identity = "not measured" if data["identity"] is None else f"{100 * data['identity']:.1f}%"
+    if "checkouts" in data:
+        recorded, replayed = data["checkouts"]["recorded"], data["checkouts"]["replayed"]
+        counted = f"{data['identical']} of {data['compared']} compared decisions"
+        headline = f"**{counted} replay identically ({identity}).**"
+        scope = (
+            f"Recorded on {_named(recorded)}, replayed on {_named(replayed)}: the stored inputs and the "
+            "stored policy bundle, re-evaluated with the replaying checkout's engine and OPA. This compares "
+            f"engines and OPA, not policies. {data['skipped']} skipped (recorded with another engine or OPA "
+            "version, so not compared)."
+        )
+    else:
+        headline = f"**{data['identical']} of {data['total']} decisions replay identically ({identity}).**"
+        scope = (
+            "Same checkout, same tools: this shows that the store holds every input and that the engine is "
+            "deterministic here. A decision recorded with another engine, OPA or policy version is the "
+            "nightly job's to replay (`replay-nightly.yml`), or `--record-to` and `--replay-from`'s."
+        )
     lines = [
         "# Replay identity (B8)",
         "",
-        f"**{data['identical']} of {data['total']} decisions replay identically ({identity}).** "
-        "SPEC section 3 asks for 100%. Each decision was recorded with `sentinel evaluate --store` and "
-        "replayed with this checkout's engine (`sentinel replay --all`).",
+        f"{headline} SPEC section 3 asks for 100%. Each decision was recorded with `sentinel evaluate "
+        "--store` and replayed with this checkout's engine (`sentinel replay --all`).",
         "",
-        "Same checkout, same tools: this shows that the store holds every input and that the engine is "
-        "deterministic here. A decision recorded with another engine, OPA or policy version is the nightly "
-        "job's to replay (`replay-nightly.yml`).",
+        scope,
         "",
         "| Decision | Verdict | Replay |",
         "|---|---|---|",
@@ -194,30 +261,75 @@ def markdown(data: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def record_all(store: Path, work: Path, findings: Path | None, opa: Path | None) -> dict[str, dict[str, Any]]:
+    """The corpus, plus a decision on demo-shop's findings when `findings` is given, recorded into `store`."""
+    recorded: dict[str, dict[str, Any]] = dict(corpus.record(store, work / "corpus", opa))
+    if findings is not None:
+        recorded["demo-shop (make eval, local)"] = record_demo_shop(findings, store, work / "demo", opa)
+    return recorded
+
+
+def record_to(directory: Path, findings: Path | None, opa: Path | None) -> None:
+    """Record into `directory` (store/ and recorded.json), for `--replay-from` on another checkout."""
+    if directory.exists() and any(directory.iterdir()):
+        raise EvalError(f"{directory} is not empty: a recording starts from an empty directory")
+    work = directory / "work"
+    recorded = record_all(directory / "store", work, findings, opa)
+    shutil.rmtree(work)
+    manifest = {"checkout": checkout(), "recorded": recorded}
+    text = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    (directory / "recorded.json").write_text(text, encoding="utf-8")
+
+
+def _recording(directory: Path) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    """What `record_to` wrote into `directory`: the recorded decisions, and the checkout they came from."""
+    path = directory / "recorded.json"
+    if not path.is_file() or not (directory / "store").is_dir():
+        raise EvalError(f"no recorded.json and store/ in {directory}: record with --record-to first")
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    if not (
+        isinstance(manifest, dict)
+        and isinstance(manifest.get("recorded"), dict)
+        and isinstance(manifest.get("checkout"), dict)
+        and {"commit", "clean"} <= set(manifest["checkout"])
+    ):
+        raise EvalError(f"{path} is not a recording of --record-to")
+    return manifest["recorded"], manifest["checkout"]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--findings", type=Path, help="make eval's findings, for a decision on demo-shop")
     parser.add_argument("--out", type=Path, default=ROOT / "out" / "eval")
     parser.add_argument("--opa", type=Path, default=None, help="OPA binary (default: $SENTINEL_OPA, PATH)")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--record-to", type=Path, help="record into this empty directory, replay nothing")
+    mode.add_argument("--replay-from", type=Path, help="replay what --record-to recorded on another checkout")
     args = parser.parse_args(argv)
+    if args.replay_from is not None and args.findings is not None:
+        parser.error("--findings is recorded with --record-to; --replay-from replays what was recorded")
     work = args.out / "replay"
     store = work / "store"
-    shutil.rmtree(work, ignore_errors=True)  # a fresh store: only this run's decisions are replayed
     try:
-        recorded: dict[str, dict[str, Any]] = dict(corpus.record(store, work / "corpus", args.opa))
-        if args.findings is not None:
-            recorded["demo-shop (make eval, local)"] = record_demo_shop(
-                args.findings, store, work / "demo", args.opa
-            )
-        data = report(recorded, replay(store, args.opa))
-    except (EvalError, corpus.CorpusError) as exc:
+        if args.record_to is not None:
+            record_to(args.record_to, args.findings, args.opa)
+            print(f"eval-replay: recorded into {args.record_to}; replay it with --replay-from")
+            return 0
+        shutil.rmtree(work, ignore_errors=True)  # a fresh store: only this run's decisions are replayed
+        if args.replay_from is not None:
+            recorded, recorded_on = _recording(args.replay_from)
+            checkouts = {"recorded": recorded_on, "replayed": checkout()}
+            data = report(recorded, replay(args.replay_from / "store", args.opa), checkouts)  # read only
+        else:
+            data = report(record_all(store, work, args.findings, args.opa), replay(store, args.opa))
+    except (EvalError, corpus.CorpusError, OSError, ValueError) as exc:
         print(f"eval-replay: {exc}", file=sys.stderr)
         return 2
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "replay.json").write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (args.out / "replay.md").write_text(markdown(data), encoding="utf-8")
     print(markdown(data))
-    return 0 if data["identical"] == data["total"] else 1
+    return exit_code(data)
 
 
 if __name__ == "__main__":
