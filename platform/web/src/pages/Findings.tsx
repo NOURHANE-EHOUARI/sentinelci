@@ -14,6 +14,7 @@ export function FindingsPage() {
     severity: params.get("severity") ?? undefined,
     tool: params.get("tool") ?? undefined,
     repo: params.get("repo") ?? undefined,
+    run_id: params.get("run_id") ?? undefined,
   };
   const offset = Math.max(0, Number(params.get("offset") ?? 0) || 0);
   const page = useQuery({
@@ -41,6 +42,11 @@ export function FindingsPage() {
       <div className="mb-4 flex flex-wrap gap-3 text-sm">
         <Select label="Category" value={filters.category} options={CATEGORIES} onChange={(v) => set("category", v)} />
         <Select label="Severity" value={filters.severity} options={SEVERITIES} onChange={(v) => set("severity", v)} />
+        {filters.run_id && (
+          <button className="rounded border bg-white px-2 py-1" onClick={() => set("run_id", "")}>
+            Run {filters.run_id.slice(0, 8)} ✕
+          </button>
+        )}
       </div>
       {page.isPending ? (
         <Loading />

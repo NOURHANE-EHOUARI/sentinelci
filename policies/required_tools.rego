@@ -6,8 +6,10 @@ package sentinel.config
 
 import rego.v1
 
+# Secrets (gitleaks), IaC (trivy), the CI workflow audit (zizmor, #66), SAST (opengrep) and SCA (syft for the
+# SBOM, grype for its vulnerabilities, #80). In release, the laptop's image scan reports syft and grype too.
 required_tools := {
-	"pr": {"gitleaks", "trivy", "zizmor"},
-	"release": {"gitleaks", "trivy", "zizmor"},
+	"pr": {"gitleaks", "grype", "opengrep", "syft", "trivy", "zizmor"},
+	"release": {"gitleaks", "grype", "opengrep", "syft", "trivy", "zizmor"},
 	"local": set(),
 }

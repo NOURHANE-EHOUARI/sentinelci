@@ -146,6 +146,7 @@ def test_only_pytests_exit_0_is_a_pass(tmp_path: Path, ran: Ran, problem: str) -
     checked = check_code(proposal_of(OLD, NEW), base, patched, rule=RULE, test_image=IMAGE, run=Recorder(ran))
     assert (checked.build_ok, checked.tests_ok, checked.problems) == (True, False, [f"tests: {problem}"])
     assert checked.log.endswith(ran.output), "kept as the feedback for a retry"
+    assert [run["exit"] for run in checked.runs] == [ran.returncode], "the run that failed is kept too"
 
 
 @pytest.mark.parametrize("returncode", [125, 126, 127])
@@ -217,6 +218,35 @@ SECURITY_RUN = "security_tests/test_python_sql_built_from_strings.py"
 SCRATCH = "/tmp:rw,noexec,nosuid,size=64m"  # noqa: S108 (the container's tmpfs, written out: C19)
 
 
+def test_each_run_is_kept_with_its_exit_and_summary_whatever_the_log_keeps(tmp_path: Path) -> None:
+    """#100 review, nit 2: the log is clipped to its end, so the runs are kept apart, each with its answer."""
+    base, patched = trees(tmp_path)
+    long = Ran(0, "x" * code.MAX_LOG_CHARS + "\n12 passed in 0.31s\n")
+    checked = check_code(
+        proposal_of(OLD, NEW), base, patched, rule=RULE, test_image=IMAGE, run=Recorder(long, *PASSING[1:])
+    )
+    assert checked.tests_ok and checked.log.startswith("...")
+    assert checked.runs == [
+        {"selection": "tests", "label": "behaviour tests, patched code", "exit": 0,
+         "summary": "12 passed"},
+        {"selection": SECURITY_RUN, "label": f"{SECURITY_RUN}, base code, expected to fail", "exit": 1,
+         "summary": "3 failed"},
+        {"selection": SECURITY_RUN, "label": f"{SECURITY_RUN}, patched code", "exit": 0,
+         "summary": "3 passed"},
+    ]  # fmt: skip
+
+
+def test_a_failed_check_keeps_the_runs_that_ran(tmp_path: Path) -> None:
+    base, patched = trees(tmp_path)
+    run = Recorder(PASSING[0], Ran(0, "3 passed in 0.10s\n"))
+    checked = check_code(proposal_of(OLD, NEW), base, patched, rule=RULE, test_image=IMAGE, run=run)
+    assert not checked.tests_ok
+    assert [(r["exit"], r["summary"]) for r in checked.runs] == [
+        (0, "12 passed"),
+        (0, "3 passed"),
+    ]
+
+
 @pytest.mark.parametrize(
     ("ran", "at", "shown"),
     [
@@ -259,6 +289,7 @@ def test_a_run_counts_only_when_pytests_summary_agrees(tmp_path: Path, ran: Ran,
         f"tests: {label}: pytest's summary does not show that (exit {ran.returncode}, {shown}): an early "
         "exit, a skip or a deselection proves nothing"
     ]
+    assert [run["exit"] for run in checked.runs] == [r.returncode for r in [*PASSING[:at], ran]]
 
 
 @pytest.mark.parametrize(
@@ -481,6 +512,9 @@ def test_the_command_checks_a_code_proposal(tmp_path: Path, monkeypatch: pytest.
     assert done.exit_code == 0, done.output
     result = json.loads(done.stdout)
     assert result.pop("log").endswith("3 passed in 0.09s\n")
+    assert [(r["exit"], r["summary"]) for r in result.pop("runs")] == [
+        (0, "12 passed"), (1, "3 failed"), (0, "3 passed"),
+    ]  # fmt: skip
     assert result == {
         "proposal_id": proposal_of(OLD, NEW).proposal_id, "strategy": "llm:code", "build_ok": True,
         "tests_ok": True, "problems": [],
