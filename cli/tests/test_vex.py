@@ -33,8 +33,15 @@ def test_invalid_vex_documents_are_refused(path: Path) -> None:
         {"statements": [{"vulnerability": {"name": "CVE-2099-0001"}, "products": [{"@id": "pkg:pypi/x"}],
                          "status": "not_affected", "justification": "component_not_present",
                          "status_notes": None}]},
+        # A field name beside its alias: pydantic < 2.14.2 dropped it silently (GHSA-qpmf-fgh3-ff25), the
+        # schema refuses it (additionalProperties). Kept so a downgrade cannot bring that back (#117 review).
+        {"id": "urn:example:other"},
+        {"statements": [{"vulnerability": {"name": "CVE-2099-0001"},
+                         "products": [{"@id": "pkg:pypi/x", "id": "pkg:pypi/y"}],
+                         "status": "not_affected", "justification": "component_not_present"}]},
     ],
-    ids=["boolean-version", "null-author", "null-in-statement"],
+    ids=["boolean-version", "null-author", "null-in-statement", "field-name-beside-its-alias",
+         "product-field-name-beside-its-alias"],
 )  # fmt: skip
 def test_the_model_and_the_schema_refuse_the_same_probes(probe: dict[str, object]) -> None:
     document = {**json.loads(VALID), **probe}

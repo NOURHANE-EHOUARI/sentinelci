@@ -208,6 +208,8 @@ def test_the_configuration_keeps_syft_offline_and_reports_packages_only() -> Non
         "enrich: []",
         "  search-remote-licenses: false",
         "  use-network: false",
+        "  local-mod-cache-dir: /nonexistent/go/pkg/mod",
+        "  maven-local-repository-dir: /nonexistent/.m2/repository",
         "  use-packages-lib: false",
         "  vcpkg-allow-git-clone: false",
         "    selection: none",
@@ -583,3 +585,28 @@ def test_real_syft_names_the_image_by_its_manifest_digest(tmp_path: Path, kind: 
     # must name the image is checked with the fake Syft (test_an_image_sbom_must_name_the_image...).
     with pytest.raises(ScannerError, match=r"index\.json does not name the image"):
         generate("sha256:" + "0" * 64)
+
+
+@real
+@pytest.mark.integration
+def test_real_syft_writes_the_same_sbom_bytes_for_the_same_tree(tmp_path: Path) -> None:
+    """Review of #80, should fix 1: Syft records its configuration in the syft-json SBOM, and two of its
+    directories defaulted to the private home, a new one each run, so the SBOM's sha256 changed every time."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "requirements.txt").write_text("pyyaml==5.3.1\n")
+    (tree / "go.mod").write_text("module example.com/demo\n\ngo 1.22\n\nrequire golang.org/x/text v0.3.7\n")
+
+    def native() -> bytes:
+        sbom = generate_sbom(
+            tree, kind="dir", name="demo-shop", lock=load_lock(REPO_LOCK), tools_dir=Path(str(TOOLS_DIR)),
+            syft_json=True,
+        )  # fmt: skip
+        assert sbom.syft_json is not None
+        return sbom.syft_json
+
+    first = native()
+    assert first == native()
+    packages = json.loads(first)["descriptor"]["configuration"]["packages"]
+    assert packages["golang"]["local-mod-cache-dir"] == "/nonexistent/go/pkg/mod"
+    assert packages["java-archive"]["maven-localrepository-dir"] == "/nonexistent/.m2/repository"

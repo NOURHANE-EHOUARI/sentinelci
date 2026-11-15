@@ -10,8 +10,10 @@ from pydantic import ValidationError
 from sentinelci.supplychain.attestations import (
     GITHUB_ACTIONS_BUILD_TYPE,
     KINDS,
+    LOCAL_RELEASE_BUILD_TYPE,
     AttestationError,
     VulnResult,
+    local_release_builder_id,
     parse_image,
     release_predicates,
 )
@@ -215,3 +217,62 @@ def test_the_signer_refuses_a_result_verify_would_find_inconsistent(monkeypatch:
     monkeypatch.setattr(VulnResult, "problem", lambda self: "totals.by_severity adds up to 2")
     with pytest.raises(AttestationError, match=r"would be inconsistent: totals\.by_severity adds up to 2"):
         predicates()
+
+
+# ------------------------------------------------------------ a release made on the laptop (ADR-0011, A4c)
+
+LOCAL_BUILDER = f"https://github.com/{REPO}/deploy/release/release.py@refs/heads/main"
+LAPTOP_ENV = {"HOME": "/home/user-7f3a", "USER": "user-7f3a", "HOSTNAME": "host-9c2e", "PWD": "/src/7f3a"}
+
+
+def test_a_local_release_names_the_release_script_at_main_as_its_builder() -> None:
+    """`make release` (deploy/release/release.py) on a clean checkout of origin/main: the provenance names the
+    script at refs/heads/main and the decision's commit, and nothing about the machine."""
+    result = predicates(env=LAPTOP_ENV, builder="local-release")
+    provenance = result["provenance"]
+    assert provenance == {
+        "buildDefinition": {
+            "buildType": LOCAL_RELEASE_BUILD_TYPE,
+            "externalParameters": {
+                "script": {
+                    "repository": f"https://github.com/{REPO}",
+                    "path": "deploy/release/release.py",
+                    "ref": "refs/heads/main",
+                }
+            },
+            "resolvedDependencies": [
+                {"uri": f"git+https://github.com/{REPO}@refs/heads/main", "digest": {"gitCommit": COMMIT}}
+            ],
+        },
+        "runDetails": {
+            "builder": {"id": LOCAL_BUILDER},
+            "metadata": {"invocationId": f"https://github.com/{REPO}/commit/{COMMIT}"},
+        },
+    }
+    assert result["vuln"]["invocation"] == {
+        "parameters": [],
+        "uri": f"https://github.com/{REPO}/commit/{COMMIT}",
+        "event_id": COMMIT,
+        "builder.id": LOCAL_BUILDER,
+    }
+    assert local_release_builder_id(REPO) == LOCAL_BUILDER
+    statements = json.dumps(result, sort_keys=True)
+    assert not any(value in statements for value in LAPTOP_ENV.values()), "no host, user or path is signed"
+
+
+def test_the_same_local_release_signs_the_same_statements() -> None:
+    once = predicates(env=LAPTOP_ENV, builder="local-release")
+    assert predicates(env={}, builder="local-release") == once, "the environment plays no part"
+    assert {k: once[k] for k in ("decision", "sbom")} == {k: predicates()[k] for k in ("decision", "sbom")}
+
+
+def test_a_local_release_is_never_made_in_github_actions() -> None:
+    """A workflow holds no release key (ADR-0011, decision 7). One that claimed the laptop's builder anyway
+    would sign a provenance that says the laptop built it: refused."""
+    with pytest.raises(AttestationError, match="not in GitHub Actions"):
+        predicates(env=GITHUB_ENV, builder="local-release")
+
+
+def test_an_unknown_builder_is_refused() -> None:
+    with pytest.raises(AttestationError, match="builder 'laptop' is not github-actions or local-release"):
+        predicates(builder="laptop")
