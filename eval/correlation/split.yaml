@@ -1,0 +1,36 @@
+# The seeds the stage 2b threshold is calibrated on, and the seeds it is tested on (task A7, SPEC section 17).
+#
+# Fixed before any score was looked at, and never changed to improve one: in each category, the seeds sorted by
+# id go to calibration, test, calibration, ... A new seed is added here, by that rule, in the commit that adds it
+# (`run.py` refuses a ground truth with a seed in neither list, or in both).
+calibration:
+  - GT-CONTAINER-001
+  - GT-IAC-001
+  - GT-IAC-003
+  - GT-IAC-005
+  - GT-PIPELINE-001
+  - GT-PIPELINE-003
+  - GT-SAST-001
+  - GT-SAST-003
+  - GT-SAST-005
+  - GT-SCA-001
+  - GT-SCA-003
+  - GT-SCA-005
+  - GT-SCA-007
+  - GT-SECRET-001
+  - GT-SECRET-003
+  - GT-SECRET-005
+test:
+  - GT-IAC-002
+  - GT-IAC-004
+  - GT-IAC-006
+  - GT-PIPELINE-002
+  - GT-SAST-002
+  - GT-SAST-004
+  - GT-SAST-006
+  - GT-SCA-002
+  - GT-SCA-004
+  - GT-SCA-006
+  - GT-SCA-008
+  - GT-SECRET-002
+  - GT-SECRET-004
