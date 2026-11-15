@@ -9,6 +9,7 @@ and sentinel verify is tested with the pinned tools in cli/tests/supplychain/tes
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -55,7 +56,7 @@ def rendered_policy(key: Path, repo: str = REPO) -> list[dict[str, Any]]:
     from sentinelci.supplychain.admission import render_policy
 
     text = render_policy(public_key=key, image_glob=cluster.IMAGE_GLOB, repo=repo, builder_id=BUILDER,
-                         allow_http=True)  # fmt: skip
+                         allow_http=False)  # fmt: skip
     return list(yaml.safe_load_all(text))
 
 
@@ -246,13 +247,11 @@ def test_a_release_is_loaded_verified_committed_synced_and_rolled_out(
     assert deploy(fake, bundle_dir, key, gitops) == digest
     commands = fake.commands()
 
-    load = commands.index(
-        f"/tools/bin/cosign load --allow-http-registry --dir {bundle_dir} 127.0.0.1:5001/demo-shop/shop-api"
-    )
+    load = commands.index(f"/tools/bin/cosign load --dir {bundle_dir} 127.0.0.1:5001/demo-shop/shop-api")
     (verify,) = [i for i, c in enumerate(commands) if " -m sentinelci.cli verify " in c]
     assert commands[verify].endswith(
         f"verify 127.0.0.1:5001/demo-shop/shop-api@{digest} --key {key} --repo {REPO} --builder-id {BUILDER} "
-        f"--registry-http --lock {ROOT}/tools.lock.toml --tools-dir /tools"
+        f"--lock {ROOT}/tools.lock.toml --tools-dir /tools"
     )
     policy = [i for i, c in enumerate(commands) if "imagevalidatingpolicies" in c]
     push = next(i for i, c in enumerate(commands) if c.startswith("git") and " push " in c)
@@ -369,7 +368,28 @@ def test_the_exit_code_says_what_stopped_it(monkeypatch: pytest.MonkeyPatch, err
         raise errors[error]("stopped")
 
     monkeypatch.setattr(demo, "release", failing)
+    monkeypatch.setattr(cluster, "trust_bundle", lambda tls: Path("/tls/trust.pem"))
+    monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")  # restored after the test
     assert demo.main(["release"]) == code
+
+
+def test_cosign_and_sentinel_verify_trust_the_clusters_registry_by_its_ca(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str | None] = []
+    monkeypatch.setattr(demo, "release", lambda *args, **kwargs: seen.append(os.environ.get("SSL_CERT_FILE")))
+    monkeypatch.setattr(cluster, "trust_bundle", lambda tls: Path("/tls/trust.pem"))
+    monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
+    assert demo.main(["release"]) == 0
+    assert seen == ["/tls/trust.pem"]
+
+
+def test_without_the_clusters_ca_nothing_is_released(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    released: list[object] = []
+    monkeypatch.setattr(demo, "release", lambda *args, **kwargs: released.append(args))
+    monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
+    assert demo.main(["release", "--tls", str(tmp_path)]) == 3
+    assert released == []
 
 
 # ---------------------------------------------------------------- the names the files share

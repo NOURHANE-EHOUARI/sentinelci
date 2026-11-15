@@ -4,7 +4,9 @@ cluster's.
 
 `cosign save` writes the release with its signature and attestations; deploy/kind/demo.py reads the image's
 digest from it, `cosign load`s it into the other registry with that digest, and `sentinel verify` trusts it
-there, with the release key only. Opt-in: SENTINEL_TOOLS_DIR (crane and cosign).
+there, with the release key only. Both registries serve plain HTTP on 127.0.0.1, which cosign falls back to on
+a loopback address with no flag; the cluster's own registry serves TLS (test_kind_demo.py). Opt-in:
+SENTINEL_TOOLS_DIR (crane and cosign).
 """
 
 from collections.abc import Iterator
