@@ -1,0 +1,61 @@
+name: scorecard
+
+# OpenSSF Scorecard (task A10): this repository's own supply-chain practices, scored by an outside tool (pinned
+# actions, token permissions, branch protection, signed releases, dependency updates, ...). Its result is
+# published to the Scorecard API, where the README badge reads it.
+#
+# It runs only once the repository is public: in the private phase (ADR-0006) Scorecard could not publish, most
+# of its checks need a public repository, and publishing would reveal the repository. No SARIF goes to GitHub
+# code scanning (ADR-0006: results go to artifacts); the job keeps it as an artifact.
+#
+# The action is pinned by commit (not by its annotated tag's object). Its action.yaml names the image
+# `docker://ghcr.io/ossf/scorecard-action:v2.5.0` by tag, so the job runs whatever that tag points to on the day:
+# the commit pin does not cover the image, and Scorecard's publish rules leave no clean way to pin it (a
+# residual risk in docs/threat-model.md). `id-token: write` lets it sign the published result with Sigstore;
+# nothing else is granted.
+#
+# No `schedule` yet: a scheduled run has no event payload, so it cannot tell a public repository from a private
+# one. The weekly run comes with the switch to GitHub mode, once the repository is public.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: scorecard
+  cancel-in-progress: true
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    # Fails closed: without a `repository` in the payload, null never equals 'public' (#104 review).
+    if: ${{ github.event.repository.visibility == 'public' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read # read the repository's files and settings
+      actions: read # read the workflow runs, for the token-permissions and CI checks
+      id-token: write # sign the published result with Sigstore (publish_results)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run Scorecard
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: scorecard.sarif
+          results_format: sarif
+          publish_results: true
+
+      - name: Keep the result
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scorecard
+          path: scorecard.sarif
+          retention-days: 30
+          if-no-files-found: error

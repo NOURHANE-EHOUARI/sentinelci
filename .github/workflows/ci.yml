@@ -122,4 +122,4 @@ jobs:
           enable-cache: true
 
       - name: Audit GitHub Actions workflows
-        run: uv run --locked zizmor --offline --min-severity low .github/workflows
+        run: uv run --locked zizmor --offline --ignore-lockfile --min-severity low .github/workflows
