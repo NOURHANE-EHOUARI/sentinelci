@@ -96,19 +96,23 @@ def released(
                           lock=load_lock(REPO_LOCK), tools_dir=Path(str(TOOLS_DIR)), cwd=work)  # fmt: skip
         unsigned = push_image(crane, host, work)
 
+    trust = str(cluster.trust_bundle())  # the cluster's registry serves TLS with its own CA
     tls = pytest.MonkeyPatch()
-    tls.setenv("SSL_CERT_FILE", str(cluster.trust_bundle()))  # the cluster's registry: TLS, by its CA
+    tls.setenv("SSL_CERT_FILE", trust)  # for `demo.release`'s cosign and `sentinel verify`
     digest = parse_image(image).digest
     # Another module's policy of the same name may still be being deleted: applying it now would fail.
     for name in (POLICY_NAME, f"{POLICY_NAME}-ephemeral-containers"):
         kubectl("wait", "--for=delete", f"imagevalidatingpolicies/{name}", "--timeout=120s")
-    cluster.policy(keys["release.pub"], work / "policy.yaml", builder_id=BUILDER)
-    # Loaded once here so that the readiness check can admit it; `demo-release` loads it again (same digest).
-    load = ["load", "--dir", str(bundle), f"{host}/{demo.IMAGE_PATH}"]
-    run_verified_tool("cosign", load, lock=load_lock(REPO_LOCK), tools_dir=Path(str(TOOLS_DIR)), cwd=work)
     in_cluster = f"{pins.registry_in_cluster}/{demo.IMAGE_PATH}@{digest}"
     unsigned_in_cluster = pins.registry_in_cluster + unsigned.removeprefix(host)
     try:
+        # Inside the try: a setup that fails leaves no policy behind for the next run to wait 120 s on.
+        cluster.policy(keys["release.pub"], work / "policy.yaml", builder_id=BUILDER)
+        # Loaded once here so that the readiness check can admit it; `demo-release` loads it again (same
+        # digest). The tool runner's minimal environment drops SSL_CERT_FILE: it is passed explicitly.
+        load = ["load", "--dir", str(bundle), f"{host}/{demo.IMAGE_PATH}"]
+        run_verified_tool("cosign", load, lock=load_lock(REPO_LOCK), tools_dir=Path(str(TOOLS_DIR)), cwd=work,
+                          extra_env={"SSL_CERT_FILE": trust})  # fmt: skip
         # The webhook takes this key asynchronously, after another module's policy: until it admits this
         # release and denies the unsigned image, it is not this policy that answers.
         deadline = time.monotonic() + READY_S

@@ -205,6 +205,16 @@ def _application(run: Run) -> dict[str, Any]:
     return json.loads(got.stdout) if got.returncode == 0 else {}
 
 
+def refused(operation: dict[str, Any]) -> bool:
+    """A sync operation that failed: phase Failed or Error, or one Argo CD is retrying. Argo CD 3.6 retries a
+    failed automated sync by itself, even with no `retry` block in the Application: the phase stays Running
+    ("Retrying attempt #N") and `retryCount` grows, so a sync Kyverno denied never ends Failed (Hiba's kind
+    run on #60). A first attempt still running (`retryCount` 0 or absent) is not refused yet."""
+    retries = operation.get("retryCount")
+    retrying = operation.get("phase") == "Running" and isinstance(retries, int) and retries > 0
+    return operation.get("phase") in ("Failed", "Error") or retrying
+
+
 def wait_for_sync(
     commit: str,
     run: Run,
@@ -214,7 +224,8 @@ def wait_for_sync(
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
     """Until Argo CD has synced `commit` and the application is healthy. A failed sync of that commit
-    (Kyverno's denial, for instance) stops the wait with Argo CD's message."""
+    (Kyverno's denial, for instance) stops the wait with Argo CD's message, and so does a sync Argo CD is
+    retrying (`refused`)."""
     deadline = clock() + timeout_s
     status: dict[str, Any] = {}
     while True:
@@ -222,7 +233,7 @@ def wait_for_sync(
         sync, health = status.get("sync") or {}, status.get("health") or {}
         operation = status.get("operationState") or {}
         synced_revision = ((operation.get("syncResult") or {}).get("revision")) or ""
-        if synced_revision == commit and operation.get("phase") in ("Failed", "Error"):
+        if synced_revision == commit and refused(operation):
             raise ClusterError(
                 f"Argo CD could not sync {commit[:12]}: {operation.get('message', 'no message')}"
             )

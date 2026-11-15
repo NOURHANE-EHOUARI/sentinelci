@@ -319,19 +319,51 @@ def test_a_cluster_without_the_keys_policy_gets_nothing(
     assert not [c for c in fake.commands() if " load " in c or " verify " in c]
 
 
+@pytest.mark.parametrize(
+    "operation",
+    [{"phase": "Failed"}, {"phase": "Error"}, {"phase": "Running", "retryCount": 5}],
+    ids=["failed", "error", "argo-cd-retrying"],
+)
 def test_a_sync_kyverno_denied_stops_the_release_with_its_message(
-    release_bundle: tuple[Path, str], key: Path, tmp_path: Path
+    release_bundle: tuple[Path, str], key: Path, tmp_path: Path, operation: dict[str, Any]
 ) -> None:
+    """Argo CD 3.6 retries a refused automated sync by itself: the phase stays Running, "Retrying attempt #5"
+    (Hiba's kind run on #60), and a wait for Failed would only time out."""
     bundle_dir, _ = release_bundle
     denied = {
         "sync": {"status": "OutOfSync", "revision": "COMMIT"},
-        "operationState": {"phase": "Failed", "syncResult": {"revision": "COMMIT"},
+        "operationState": operation | {"syncResult": {"revision": "COMMIT"},
                            "message": "admission webhook denied: signature: not signed by the release key"},
     }  # fmt: skip
     fake = Fake(policies=rendered_policy(key), statuses=[denied])
     with pytest.raises(cluster.ClusterError, match=r"could not sync .*not signed by the release key"):
         deploy(fake, bundle_dir, key, tmp_path / "gitops")
     assert not [c for c in fake.commands() if " rollout " in c]
+
+
+@pytest.mark.parametrize("retries", [None, 0, "5"], ids=["no-retry-count", "zero", "not-a-number"])
+def test_a_first_sync_still_running_is_waited_for(
+    release_bundle: tuple[Path, str], key: Path, tmp_path: Path, retries: object
+) -> None:
+    bundle_dir, digest = release_bundle
+    running = {"sync": {"status": "OutOfSync", "revision": "COMMIT"},
+               "operationState": {"phase": "Running", "syncResult": {"revision": "COMMIT"}}}  # fmt: skip
+    if retries is not None:
+        running["operationState"]["retryCount"] = retries
+    fake = Fake(policies=rendered_policy(key), statuses=[running, SYNCED],
+                image=f"kind-registry:5000/demo-shop/shop-api@{digest}")  # fmt: skip
+    assert deploy(fake, bundle_dir, key, tmp_path / "gitops") == digest
+
+
+def test_a_retried_sync_of_another_commit_is_not_this_releases(key: Path) -> None:
+    times = iter([0.0, 10.0, 40.0])
+    other = {
+        "sync": {"status": "OutOfSync", "revision": "0" * 40},
+        "operationState": {"phase": "Running", "retryCount": 3, "syncResult": {"revision": "0" * 40}},
+    }
+    fake = Fake(policies=None, statuses=[other])
+    with pytest.raises(cluster.ClusterError, match="within 30 s"):
+        demo.wait_for_sync("1" * 40, fake, timeout_s=30, clock=lambda: next(times), sleep=lambda _: None)
 
 
 def test_argo_cd_that_never_syncs_times_out_with_its_status(key: Path) -> None:
