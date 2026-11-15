@@ -21,12 +21,14 @@ from typing import Any
 import pytest
 import yaml
 
+from sentinelci.supplychain.attestations import local_release_builder_id
+
 ROOT = Path(__file__).resolve().parents[2]
 KIND_DIR = ROOT / "deploy" / "kind"
 RELEASE = "sha256:" + "ab" * 32
 TAMPERED = "sha256:" + "ef" * 32
 REPO = "NOURHANE-EHOUARI/sentinelci"
-BUILDER = f"https://github.com/{REPO}/.github/workflows/sentinel-release.yml@refs/heads/main"
+BUILDER = local_release_builder_id(REPO)  # a laptop release (ADR-0011), as `make release` records it
 IN_CLUSTER = "kind-registry:5000/demo-shop/shop-api"
 TEST_KEY = (
     "-----BEGIN PUBLIC KEY-----\n"
