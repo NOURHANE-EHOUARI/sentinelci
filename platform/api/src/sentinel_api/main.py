@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import Response
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -23,7 +28,12 @@ from sentinel_api.waivers import router as waivers_router
 from sentinelci import __version__ as engine_version
 
 # The version of the API contract (schemas/openapi.yaml), not of the engine: it changes only with the API.
-API_VERSION = "1.10.0"
+API_VERSION = "1.10.2"
+
+
+def _json(errors: list[dict[str, Any]]) -> str:
+    """A 422 body as Starlette's JSONResponse writes it (compact, no NaN), but in ASCII."""
+    return json.dumps({"detail": errors}, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -46,6 +56,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.sessions = sessionmaker(engine, expire_on_commit=False) if engine is not None else None
     # The worker's job queue (explanations, B5c); tests replace it with a fake.
     app.state.enqueue = celery_enqueue(settings.redis_url) if settings.redis_url else None
+
+    @app.exception_handler(RequestValidationError)
+    async def unprocessable(_: Request, exc: RequestValidationError) -> Response:
+        """FastAPI's own 422 body, written as ASCII JSON: it echoes the input it refused, and a lone UTF-16
+        surrogate in that input cannot be encoded as UTF-8, so the default rendering failed as a 500. An
+        echoed NaN or Infinity, which JSON has not, is dropped from `input` (#126 review)."""
+        errors = jsonable_encoder(exc.errors())
+        try:
+            body = _json(errors)
+        except ValueError:
+            body = _json([error | {"input": None} for error in errors])
+        return Response(body, status_code=422, media_type="application/json")
 
     @app.get("/healthz", tags=["ops"])
     def healthz() -> dict[str, str]:
