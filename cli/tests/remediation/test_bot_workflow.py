@@ -9,6 +9,7 @@ which, like GitHub, lets a client fetch a commit by its id) and a `gh` that reco
   real-tool tests): propose, publish, verify and report, as one run would.
 """
 
+import hashlib
 import io
 import json
 import os
@@ -36,9 +37,13 @@ REPO = "NOURHANE-EHOUARI/sentinelci"
 PUBLISH_STEP = "Push each verified branch and open its pull request"
 VERIFY_STEP = "Verify each pull request the bot opened"
 REPORT_STEP = "Comment each result and set its commit status"
+GRYPE_DB_STEP = (
+    "Prepare Grype's vulnerability database (the only download, checked against its listing's checksum)"
+)
 FAKE_TOKEN = "fake-token-for-the-recording-gh"  # noqa: S105 (not a credential: the local gh records it)
 SCAN_PATH = "demo-shop"
 TOOLS_DIR = os.environ.get("SENTINEL_TOOLS_DIR")
+GRYPE_DB = os.environ.get("SENTINEL_GRYPE_DB_DIR")
 # Where a command starts (a line, after ; & | or in $( )), it is never one that runs repository code.
 RUNS_CODE = re.compile(
     r"(?:^|[;&|(])\s*(uv|python3?|pip|make|sentinel|npm|node|bash|sh|source|\.|\./\S*)(?=\s|$)", re.MULTILINE
@@ -104,14 +109,51 @@ def test_verify_judges_with_the_scanned_commits_pipeline_and_the_scanners_the_pr
     required = re.search(r'"pr": \{([^}]*)\}', (ROOT / "policies" / "required_tools.rego").read_text())
     assert required is not None
     tools = set(re.findall(r'"(\w+)"', required[1]))
-    kinds = {"gitleaks": "scan secrets", "trivy": "scan iac", "zizmor": "scan pipelines"}
+    kinds = {
+        "gitleaks": "scan secrets", "opengrep": "scan sast", "syft": "scan sca", "grype": "scan sca",
+        "trivy": "scan iac", "zizmor": "scan pipelines",
+    }  # fmt: skip
     assert tools <= kinds.keys(), (
         f"a scanner the pr gate requires is not run by verify: {tools - kinds.keys()}"
     )
-    for tool in tools:
-        assert run.count(kinds[tool]) == 2, f"{tool}: the scanned commit and the patched commit"
+    # Verify runs every scanner the pr gate may require, whatever this tree's policy lists (#114 adds
+    # Opengrep, Syft and Grype): the policy that judges a bot pull request is the scanned commit's.
+    for tool, kind in kinds.items():
+        assert run.count(kind) == 2, f"{tool}: the scanned commit and the patched commit"
+        name = kind.split()[1]
+        assert f'--tool-status "$out/{name}-status.json"' in run, f"{tool}: its status reaches the gate"
+    install = step("verify", "Install the SentinelCI CLI, the pinned scanners and OPA")["run"]
+    installed = set(re.search(r"tools install ([a-z ]+) --lock", install)[1].split())  # type: ignore[index]
+    assert kinds.keys() - {"zizmor"} <= installed, "zizmor is the CLI's own, the others come from the lock"
+    database = step("verify", GRYPE_DB_STEP)["run"]
+    assert '--db-dir "$RUNNER_TEMP/grype-db"' in database and run.count('--db-dir "$GRYPE_DB"') == 2
     assert "--context pr" in run and '--baseline "$WORK/before.ndjson"' in run
     assert '(cd "$PIPELINE" && "$SENTINEL" evaluate' in run, "waivers from the pipeline checkout"
+
+
+def test_every_scan_of_verify_reaches_the_gate() -> None:
+    """A scan whose findings no `combine` reads is one the gate never sees. Each scan's findings reach the
+    baseline and the patched findings, and each patched scan's status reaches the gate (Hiba, #116 review)."""
+    run = step("verify", VERIFY_STEP)["run"]
+    # Inside each `combine` call: `remediate check --findings` reads the base IaC file too (#116, nit 1).
+    before, after = (call.split("--out ", 1)[0] for call in run.split('"$SENTINEL" scan combine ')[1:])
+    for name in ("secrets", "iac", "sast", "sca", "pipelines"):
+        for combine, out in ((before, f'"$WORK/base-{name}.ndjson"'), (after, f'"$out/{name}.ndjson"')):
+            assert f"--out {out}" in run and f"--findings {out}" in combine, f"{name}: {out} reaches the gate"
+        assert f'--tool-status "$out/{name}-status.json"' in after, f"{name}: its status reaches the gate"
+
+
+def test_the_database_and_each_dependency_scan_are_handed_over_with_the_results() -> None:
+    """A verification is a decision: it is explained only with the database Grype matched against, so the
+    database's evidence and each `scan sca` report, with the SBOM it names, go into the results artifact."""
+    database = step("verify", GRYPE_DB_STEP)["run"]
+    assert '--report "$RUNNER_TEMP/verification/evidence/grype-db.json"' in database
+    run = step("verify", VERIFY_STEP)["run"]
+    for where in ('"$RESULTS/evidence/base-sca', '"$RESULTS/evidence/$name/sca'):
+        assert f'--report {where}-report.json" --sbom-out {where}-sbom.json"' in run, where
+    (upload,) = [s for s in workflow()["jobs"]["verify"]["steps"] if s.get("name") == "Hand the results over"]
+    assert upload["with"]["path"] == "${{ runner.temp }}/verification"
+    assert step("verify", VERIFY_STEP)["env"]["RESULTS"] == "${{ runner.temp }}/verification"
 
 
 def test_verify_reads_trees_the_commit_cannot_configure_and_replays_the_fixer(tmp_path: Path) -> None:
@@ -185,13 +227,20 @@ def test_the_verify_job_outlives_every_scanner_run() -> None:
     per_run = int(re.search(r'^  SCANNER_TIMEOUT_S: "(\d+)"$', text, re.MULTILINE)[1])  # type: ignore[index]
     strategies = len(re.search(r"for strategy in ([a-z ]+); do", text)[1].split())  # type: ignore[index]
     run = step("verify", VERIFY_STEP)["run"]
-    assert run.count('"${common[@]}"') == 4 and run.count('"${audit[@]}"') == 3
+    assert run.count('"${common[@]}"') == 8 and run.count('"${audit[@]}"') == 3
     assert '--timeout "$SCANNER_TIMEOUT_S"' in run
-    # The scanned commit: Gitleaks on its tree, Trivy, zizmor. Each proposal: Gitleaks in git mode (two
-    # passes), Trivy, zizmor.
+    database = step("verify", GRYPE_DB_STEP)["run"]
+    assert '--timeout "$SCANNER_TIMEOUT_S"' in database
+    # Grype's database: the update, then Grype's own status check. The scanned commit: Gitleaks on its tree,
+    # Trivy, Opengrep, Syft then Grype, zizmor. Each proposal: Gitleaks in git mode (two passes), Trivy,
+    # Opengrep, Syft then Grype, zizmor.
     trivy = per_run + 60  # the runner's own limit on top of Trivy's --timeout (scanners/trivy.py)
     setup = 300  # setup, installs, OPA, uploads
-    worst = setup + 2 * per_run + trivy + strategies * (3 * per_run + trivy)
+    sast, sca = per_run, 2 * per_run
+    worst = (
+        setup + 2 * per_run + (2 * per_run + trivy + sast + sca)
+        + strategies * (3 * per_run + trivy + sast + sca)
+    )  # fmt: skip
     assert worst <= workflow()["jobs"]["verify"]["timeout-minutes"] * 60
 
 
@@ -270,8 +319,11 @@ class Bot:
             f"^{self.base}",
         )
 
-    def run(self, job: str, name: str, **env: str) -> subprocess.CompletedProcess[str]:
-        """A step's script, with the environment the workflow gives it (`env`) and a fresh GITHUB_OUTPUT."""
+    def run(
+        self, job: str, name: str, cwd: Path | None = None, **env: str
+    ) -> subprocess.CompletedProcess[str]:
+        """A step's script, with the environment the workflow gives it (`env`) and a fresh GITHUB_OUTPUT, in
+        `cwd` (the job's checkout) if given."""
         self.output = self.tmp / f"{job}-output"
         self.output.write_text("")
         base = {
@@ -281,6 +333,7 @@ class Bot:
         }  # fmt: skip
         return subprocess.run(
             ["bash", "-c", step(job, name)["run"]],
+            cwd=cwd,
             env=base | env,
             capture_output=True,
             text=True,
@@ -554,13 +607,89 @@ def test_each_result_is_commented_and_set_as_the_commit_status(
 # ---------------------------------------------------------------- one run, end to end, with the real tools
 
 
+# Every scanner verify runs (the pr gate's), and OPA; Grype also needs its database, built within 5 days.
+VERIFY_TOOLS = ("gitleaks", "opengrep", "syft", "grype", "trivy", "opa")
+
+
 def tools_with_opa() -> Path:
     if not TOOLS_DIR:
         pytest.skip("set SENTINEL_TOOLS_DIR to a `sentinel tools install` directory")
     tools = Path(TOOLS_DIR)
-    if not all((tools / "bin" / tool).exists() for tool in ("gitleaks", "trivy", "opa")):
-        pytest.skip("SENTINEL_TOOLS_DIR needs gitleaks, trivy and opa")
+    if not all((tools / "bin" / tool).exists() for tool in VERIFY_TOOLS):
+        pytest.skip(f"SENTINEL_TOOLS_DIR needs {', '.join(VERIFY_TOOLS)}")
+    if not GRYPE_DB:
+        pytest.skip("set SENTINEL_GRYPE_DB_DIR to a fresh `sentinel tools grype-db` directory")
     return tools
+
+
+PROPOSE_STEP = "Scan, propose and commit each proposal on its branch"
+
+
+def test_propose_scans_and_fixes_the_commit_as_committed() -> None:
+    """#98 review, nit 2: the propose job reads the scanned commit through a bare copy whose attributes come
+    from no tree, never through the checkout, which its .gitattributes may have rewritten."""
+    run = step("propose", PROPOSE_STEP)["run"]
+    init = run.index('git init --quiet --bare "$repo"')
+    pinned = run.index('git -C "$repo" config attr.tree "$(git hash-object -t tree /dev/null)"')
+    assert init < pinned < run.index('git -C "$repo" fetch')
+    assert 'git -C "$repo" archive --worktree-attributes --format=tar "$SHA" | tar -x -C "$tree"' in run
+    assert 'sentinel scan iac "$tree/$SCAN_PATH" --repo-root "$tree"' in run
+    assert '--out "$out/proposals/$strategy.json" --repo-root "$tree"' in run, "the fixer reads the tree"
+    assert '--repo-root "$repo" --base "$SHA"' in run and "--repo-root ." not in run
+    assert 'git -C "$repo" bundle create' in run
+
+
+@pytest.mark.parametrize(
+    "attributes",
+    ["demo-shop/** text eol=crlf\n", "demo-shop/** working-tree-encoding=UTF-16LE\n", "demo-shop/** ident\n"],
+    ids=["eol", "encoding", "ident"],
+)
+def test_a_checkout_its_attributes_rewrote_still_gets_its_proposal(bot: Bot, attributes: str) -> None:
+    """The scanned commit's attributes rewrite the checkout's manifest (line endings, encoding, an expanded
+    `$Id$`), so it differs from its blob. The propose step still proposes, and its commit applies to the
+    blob: the diff is made from the commit, not the checkout. Reading the checkout, the fixer resolved nothing
+    (eol), Trivy saw 4 findings of 25 (encoding) or `apply` refused the diff (ident). The checkout is shallow,
+    as actions/checkout leaves it (#118 review)."""
+    tools = tools_with_opa()
+    manifest = bot.clone / SEED_PATH  # an $Id$ the fixer's diff keeps as context
+    text = manifest.read_text()
+    manifest.write_text(text.replace("      hostNetwork:", "      # $Id$\n      hostNetwork:", 1))
+    git(bot.clone, "commit", "-qam", "ident")
+    (bot.clone / ".gitattributes").write_text(attributes)
+    git(bot.clone, "add", ".gitattributes")
+    git(bot.clone, "commit", "-qm", "attributes")
+    git(bot.clone, "push", "-q", str(bot.origin), "main")
+    sha = git(bot.clone, "rev-parse", "HEAD")
+    checkout = bot.tmp / "checkout"
+    # As actions/checkout leaves it (fetch-depth: 1): a shallow clone.
+    subprocess.run(["git", "clone", "-q", "--depth=1", f"file://{bot.origin}", str(checkout)], check=True)
+    blob = subprocess.run(
+        ["git", "-C", str(checkout), "cat-file", "blob", f"HEAD:{SEED_PATH}"], check=True, capture_output=True
+    ).stdout
+    assert (checkout / SEED_PATH).read_bytes() != blob, "the checkout was rewritten"
+    shutil.copy(ROOT / "tools.lock.toml", checkout)  # the job's checkout is this repository, which has it
+    runner = bot.tmp / "runner"
+    runner.mkdir()
+    (runner / "sentinel-tools").symlink_to(tools)
+    shim = bot.tmp / "bin" / "uv"  # `uv run sentinel ...` as the job runs it, with this environment's CLI
+    shim.write_text(f'#!/bin/sh\n[ "$1" = run ] && shift\nexec {Path(sys.executable).parent}/"$@"\n')
+    shim.chmod(0o755)
+    done = bot.run(
+        "propose", PROPOSE_STEP, cwd=checkout, RUNNER_TEMP=str(runner), GITHUB_WORKSPACE=str(checkout),
+        SHA=sha, REF="refs/heads/main", RUN_ID="1",
+    )  # fmt: skip
+    assert done.returncode == 0, done.stdout + done.stderr
+    out = runner / "remediation"
+    assert (out / "proposals" / "kubernetes.applied.json").is_file(), done.stdout + done.stderr
+    applied = json.loads((out / "proposals" / "kubernetes.applied.json").read_text())
+    assert applied["base"] == sha and (out / "summary.txt").read_text() == "proposals: 1\n"
+    bundle = out / "bundles" / "kubernetes.bundle"
+    git(checkout, "fetch", "-q", str(bundle), f"refs/heads/{applied['branch']}")
+    assert git(checkout, "rev-parse", "FETCH_HEAD") == applied["commit"]
+    patched = git(checkout, "show", f"{applied['commit']}:{SEED_PATH}")
+    assert "\r" not in patched and "runAsNonRoot: true" in patched, "the blob's own line endings, fixed"
+    assert "# $Id$\n" in patched, "the blob's own bytes, never the checkout's"
+    assert git(checkout, "diff", "--name-only", sha, applied["commit"]) == SEED_PATH
 
 
 def test_one_run_proposes_publishes_verifies_and_reports(bot: Bot) -> None:
@@ -588,11 +717,13 @@ def test_one_run_proposes_publishes_verifies_and_reports(bot: Bot) -> None:
     manifest = bot.tmp / "opa-manifest.json"
     subprocess.run([sentinel, "tools", "verify", "opa", "--lock", lock, "--dest", str(tools), "--report",
                     str(manifest)], check=True, capture_output=True)  # fmt: skip
+    checkout = bot.tmp / "checkout"  # the verify job's, as actions/checkout leaves it (fetch-depth: 1)
+    subprocess.run(["git", "clone", "-q", "--depth=1", f"file://{bot.origin}", str(checkout)], check=True)
 
     def verify(entries: list[dict[str, Any]], work: str) -> subprocess.CompletedProcess[str]:
         return bot.run(
-            "verify", VERIFY_STEP, SENTINEL=sentinel, PIPELINE=str(ROOT), CHECKOUT=str(bot.clone),
-            TOOLS=str(tools), OPA_MANIFEST=str(manifest), OPENED=json.dumps(entries),
+            "verify", VERIFY_STEP, SENTINEL=sentinel, PIPELINE=str(ROOT), CHECKOUT=str(checkout),
+            TOOLS=str(tools), GRYPE_DB=str(GRYPE_DB), OPA_MANIFEST=str(manifest), OPENED=json.dumps(entries),
             PROPOSALS=str(bot.artifact), WORK=str(bot.tmp / work), RESULTS=str(bot.tmp / work / "results"),
             BASE_SHA=bot.base, BASE_REF="refs/heads/main", RUN_ID="1", SCANNER_TIMEOUT_S="300",
         )  # fmt: skip
@@ -600,6 +731,12 @@ def test_one_run_proposes_publishes_verifies_and_reports(bot: Bot) -> None:
     done = verify(opened, "verify")
     assert done.returncode == 0, done.stdout + done.stderr
     result = json.loads((bot.tmp / "verify" / "results" / "kubernetes.json").read_text())
+    evidence = bot.tmp / "verify" / "results" / "evidence"
+    for report in (evidence / "base-sca-report.json", evidence / "kubernetes" / "sca-report.json"):
+        sbom = report.with_name(report.name.replace("report", "sbom"))
+        kept = json.loads(report.read_text())
+        assert kept["sbom_sha256"] == hashlib.sha256(sbom.read_bytes()).hexdigest(), report
+    assert json.loads((evidence / "base-sca-report.json").read_text())["database"] == kept["database"]
     assert result["outcome"] == "VERIFIED" and result["verdict"] in ("PASS", "WARN"), result
     assert result["pull_request"] == 1 and result["proposal_id"] == plan.proposal.proposal_id
     reported = bot.run(
@@ -641,3 +778,28 @@ def test_a_failed_push_is_named_and_the_others_still_go(bot: Bot) -> None:
     done = bot.publish()
     assert done.returncode == 0 and not bot.gh() and bot.outputs() == {"opened": "[]", "refused": "2"}
     assert done.stdout.count("the push of") == 2, "both proposals were tried, and each failure is named"
+
+
+@pytest.mark.parametrize(
+    ("job", "name", "start", "end"),
+    [
+        ("propose", PROPOSE_STEP, 'work="$RUNNER_TEMP/propose"', '= "$SHA" ]\n'),
+        ("verify", VERIFY_STEP, 'repo="$WORK/repo.git"', "exit 1; }\n"),
+    ],
+)
+def test_each_bare_copy_gets_the_scanned_commit_from_a_shallow_checkout(
+    bot: Bot, job: str, name: str, start: str, end: str
+) -> None:
+    """actions/checkout leaves a depth-1 clone: each job's bare copy still gets the scanned commit (#118,
+    #125). Git and bash only, so it runs where the end-to-end test is skipped (no SENTINEL_TOOLS_DIR: CI,
+    `make check`)."""
+    run = step(job, name)["run"]
+    begin = run.index(start)
+    lines = run[begin : run.index(end, run.index("fetch --quiet --no-tags", begin)) + len(end)]
+    checkout = bot.tmp / "checkout"
+    subprocess.run(["git", "clone", "-q", "--depth=1", f"file://{bot.origin}", str(checkout)], check=True)
+    env = {**os.environ, "RUNNER_TEMP": str(bot.tmp), "GITHUB_WORKSPACE": str(checkout), "SHA": bot.base,
+           "WORK": str(bot.tmp / "verify"), "CHECKOUT": str(checkout), "BASE_SHA": bot.base}  # fmt: skip
+    script = "set -euo pipefail\n" + lines + 'git -C "$repo" rev-parse refs/sentinel/base\n'
+    done = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+    assert done.returncode == 0 and done.stdout.strip() == bot.base, done.stdout + done.stderr
