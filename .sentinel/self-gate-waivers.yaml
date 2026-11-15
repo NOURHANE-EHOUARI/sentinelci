@@ -41,13 +41,6 @@ waivers:
       schemas/fixtures/release-evidence/invalid/decision-verdict-inconsistent.json, line 61: the same fingerprint
       (sha256 of "test") as a release-evidence fixture's `key_sha256`; no credential is in it.
     expires_at: "2027-01-31T00:00:00Z"
-  - id: self-2026-006
-    finding_id: 63849288c9aa2c6463dcf32e474be8d286f0c823bd6e68805fdfadff8257df9c
-    owner: "@NOURHANE-EHOUARI"
-    justification: >-
-      cli/tests/supplychain/test_verify.py, line 188: a private-key PEM header around the body `AAAA`, the case
-      that `sentinel verify` refuses a private key given as the public one. There is no key in it.
-    expires_at: "2027-01-31T00:00:00Z"
   - id: self-2026-007
     finding_id: 50c306fd0098a8a6f0bf1b5d5c842368840525a5d9712eff6c6c301807d7fced
     owner: "@Hiba-elouazi"
