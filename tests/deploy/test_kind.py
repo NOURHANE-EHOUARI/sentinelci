@@ -230,6 +230,16 @@ def test_the_policy_is_rendered_for_the_clusters_registry_and_applied(tmp_path: 
     ]
 
 
+def test_the_policy_expects_the_builder_a_laptop_release_records() -> None:
+    """Hiba's kind run (#60): with the CI workflow's builder, Kyverno and `sentinel verify` refuse every
+    release `make release` signs, since its provenance names the release script. In the private phase, that is
+    every release."""
+    from sentinelci.supplychain.attestations import local_release_builder_id
+
+    assert local_release_builder_id(cluster.REPO) == cluster.BUILDER_ID
+    assert cluster.BUILDER_ID.endswith("/deploy/release/release.py@refs/heads/main")
+
+
 def test_down_deletes_the_cluster_and_the_registry(pins: Any) -> None:
     fake = Fake()
     cluster.down(pins, "kind", run=fake)

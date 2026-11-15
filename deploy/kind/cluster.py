@@ -36,6 +36,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from sentinelci.supplychain.attestations import local_release_builder_id
+
 ROOT = Path(__file__).resolve().parents[2]
 HERE = ROOT / "deploy" / "kind"
 KIND_CONFIG = HERE / "kind-config.yaml"
@@ -44,7 +46,9 @@ CLUSTER = "sentinel"
 CONTEXT = f"kind-{CLUSTER}"
 IMAGE_GLOB = "kind-registry:5000/demo-shop/*"
 REPO = "NOURHANE-EHOUARI/sentinelci"
-BUILDER_ID = f"https://github.com/{REPO}/.github/workflows/sentinel-release.yml@refs/heads/main"
+# The builder `make release` records (ADR-0011): in the private phase every release is a laptop release. A
+# release from the CI workflow passes --builder-id (Hiba's kind run, #60: that builder refused it).
+BUILDER_ID = local_release_builder_id(REPO)
 _PINNED_IMAGE = re.compile(r"^[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[a-f0-9]{64}$")
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
 _NODE_IMAGE = re.compile(r"image:\s*kindest/node:v(\d+)\.(\d+)\.(\d+)@sha256:[a-f0-9]{64}\s")
