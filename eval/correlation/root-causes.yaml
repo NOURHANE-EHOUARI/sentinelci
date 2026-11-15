@@ -1,0 +1,145 @@
+# The true root causes of the demo-shop findings that no seed covers (task A7, SPEC section 17).
+#
+# The seeds say what was planted. Many findings are not planted but real: a manifest without a security
+# context gets a dozen Trivy findings, all fixed by one block. Without labels for them, the ARI could only
+# see wrong merges among the seeds and never a right one. So the findings of `make eval` that detect no
+# seed are labelled here with their root cause: **what one fix resolves**. Two findings fixed by the same edit
+# share a root cause; two findings that need two decisions do not, even in one resource. The other advisories
+# of a seeded package are labelled in run.py instead (one upgrade fixes them all, and these matchers cannot
+# tell two packages of one lock file apart).
+#
+# Labelled by that rule from the findings' tool, file and rule, before any embedding score was computed.
+# Never changed to improve a score. One exception, said in README.md ("The labels"): RC-DOCKER-002 and the
+# seeded-package rule came in the review of #90, after the dedup and structural scores had been seen. A root
+# cause can join a seed (`seeds`) when the same fix resolves it.
+#
+# Halves (`split.yaml` holds the seeds'): a root cause that joins a seed takes that seed's half; the
+# others go, in this file's order (by file path, then first rule), to test, calibration, test, ...
+#
+# Each matcher names the tool, the file (relative to demo-shop/, like the ground truth) and the rules.
+root_causes:
+  # ---- examples/bad-workflows/overprivileged-unpinned.yml
+  - id: RC-PIPELINE-001
+    half: test
+    fix: In overprivileged-unpinned.yml, do not persist the checkout's credentials.
+    findings:
+      - {tool: zizmor, file: examples/bad-workflows/overprivileged-unpinned.yml, rules: [artipacked]}
+  - id: RC-PIPELINE-002
+    half: calibration
+    fix: In overprivileged-unpinned.yml, pass the called workflow only the secrets it needs.
+    findings:
+      - {tool: zizmor, file: examples/bad-workflows/overprivileged-unpinned.yml, rules: [secrets-inherit]}
+  # ---- examples/bad-workflows/pwn-request.yml
+  - id: RC-PIPELINE-003
+    half: test
+    fix: In pwn-request.yml, do not persist the checkout's credentials.
+    findings:
+      - {tool: zizmor, file: examples/bad-workflows/pwn-request.yml, rules: [artipacked]}
+  - id: RC-PIPELINE-004
+    half: calibration
+    fix: In pwn-request.yml, give the workflow only the permissions it needs.
+    findings:
+      - {tool: zizmor, file: examples/bad-workflows/pwn-request.yml, rules: [excessive-permissions]}
+  - id: RC-PIPELINE-005
+    half: test
+    fix: In pwn-request.yml, pin the action by commit SHA.
+    findings:
+      - {tool: zizmor, file: examples/bad-workflows/pwn-request.yml, rules: [unpinned-uses]}
+  # ---- infra/k8s/shop-api.yaml
+  - id: RC-K8S-001
+    half: calibration
+    fix: >-
+      One security context for shop-api's pod and container: a non-root UID and GID above 10000, no privilege
+      escalation, every capability dropped, a read-only root file system and the RuntimeDefault seccomp
+      profile.
+    findings:
+      - tool: trivy
+        file: infra/k8s/shop-api.yaml
+        rules: [KSV-0001, KSV-0003, KSV-0004, KSV-0012, KSV-0014, KSV-0020, KSV-0021, KSV-0030, KSV-0104,
+                KSV-0105, KSV-0106, KSV-0118]
+  - id: RC-K8S-002
+    half: test
+    fix: One resources block for shop-api's container, with CPU and memory requests and limits.
+    findings:
+      - {tool: trivy, file: infra/k8s/shop-api.yaml, rules: [KSV-0011, KSV-0015, KSV-0016, KSV-0018]}
+  - id: RC-K8S-003
+    half: calibration
+    fix: Pin shop-api's image by digest instead of the :latest tag.
+    findings:
+      - {tool: trivy, file: infra/k8s/shop-api.yaml, rules: [KSV-0013]}
+  - id: RC-K8S-HOSTPATH
+    half: calibration
+    fix: >-
+      Remove the hostPath volume that GT-IAC-005 plants: the same edit.
+    seeds: [GT-IAC-005]
+    findings:
+      - {tool: trivy, file: infra/k8s/shop-api.yaml, rules: [KSV-0121]}
+  # ---- infra/terraform/database.tf
+  - id: RC-TF-001
+    half: test
+    fix: Set backup retention on the RDS instance.
+    findings:
+      - {tool: trivy, file: infra/terraform/database.tf, rules: [AWS-0077]}
+  - id: RC-TF-002
+    half: calibration
+    fix: Turn on Performance Insights for the RDS instance.
+    findings:
+      - {tool: trivy, file: infra/terraform/database.tf, rules: [AWS-0133]}
+  - id: RC-TF-003
+    half: test
+    fix: Turn on IAM database authentication for the RDS instance.
+    findings:
+      - {tool: trivy, file: infra/terraform/database.tf, rules: [AWS-0176]}
+  - id: RC-TF-004
+    half: calibration
+    fix: Turn on deletion protection for the RDS instance.
+    findings:
+      - {tool: trivy, file: infra/terraform/database.tf, rules: [AWS-0177]}
+  # ---- infra/terraform/network.tf
+  - id: RC-TF-005
+    half: test
+    fix: Restrict the security group's egress to the destinations it needs.
+    findings:
+      - {tool: trivy, file: infra/terraform/network.tf, rules: [AWS-0104]}
+  - id: RC-TF-006
+    half: calibration
+    fix: Describe the security group rule.
+    findings:
+      - {tool: trivy, file: infra/terraform/network.tf, rules: [AWS-0124]}
+  # ---- infra/terraform/storage.tf
+  - id: RC-TF-PUBLIC-ACCESS
+    half: calibration
+    fix: >-
+      One public access block for the bucket with its four settings on: the same edit that fixes GT-IAC-001's
+      public ACL.
+    seeds: [GT-IAC-001]
+    findings:
+      - {tool: trivy, file: infra/terraform/storage.tf, rules: [AWS-0087, AWS-0091, AWS-0093]}
+  - id: RC-TF-007
+    half: test
+    fix: Turn on access logging for the bucket.
+    findings:
+      - {tool: trivy, file: infra/terraform/storage.tf, rules: [AWS-0089]}
+  - id: RC-TF-008
+    half: calibration
+    fix: Turn on versioning for the bucket.
+    findings:
+      - {tool: trivy, file: infra/terraform/storage.tf, rules: [AWS-0090]}
+  - id: RC-TF-009
+    half: test
+    fix: Encrypt the bucket with a customer managed KMS key.
+    findings:
+      - {tool: trivy, file: infra/terraform/storage.tf, rules: [AWS-0132]}
+  # ---- services/shop-api/Dockerfile
+  - id: RC-DOCKER-001
+    half: calibration
+    fix: Add a HEALTHCHECK to shop-api's image.
+    findings:
+      - {tool: trivy, file: services/shop-api/Dockerfile, rules: [DS-0026]}
+  # ---- services/shop-api/Dockerfile.release (added in the review of #90: it had been missed; it is last in
+  # file order, so it takes the next half and no other root cause changes half)
+  - id: RC-DOCKER-002
+    half: test
+    fix: Add a HEALTHCHECK to shop-api's release image (or accept that the cluster's probes check it).
+    findings:
+      - {tool: trivy, file: services/shop-api/Dockerfile.release, rules: [DS-0026]}
