@@ -7,8 +7,11 @@ the binary of the CLI's own environment is hashed and must be one that a wheel p
 never runs, and a `zizmor` found on PATH is never used.
 
 The scanned repository cannot configure or silence it: `--no-config` (no zizmor.yml), `--no-ignores`
-(no `# zizmor: ignore[...]` comment is honoured), `--collect=all` (a workflow listed in .gitignore is still
-read). `--offline` and a minimal environment (no GitHub token) keep it from reaching the network.
+(no `# zizmor: ignore[...]` comment is honoured), `--ignore-lockfile` (zizmor 1.32 drops `unpinned-uses` for
+every workflow its `.github/workflows/actions.lock` lists, whatever it pins; the flag is experimental, and an
+unknown flag makes zizmor exit 2, so a version without it fails closed), `--collect=all` (a workflow listed in
+.gitignore is still read). `--offline` and a minimal environment (no GitHub token) keep it from reaching the
+network.
 `--persona=regular` is zizmor's default set of audits: the pedantic and auditor personas add findings meant
 for manual review, too noisy for a blocking gate.
 
@@ -47,7 +50,7 @@ _DEPENDABOT = frozenset({(".github", "dependabot.yml"), (".github", "dependabot.
 _JOBS = re.compile(rb"^jobs[ \t]*:", re.MULTILINE)
 MAX_WORKFLOW_BYTES = 4 << 20
 _FLAGS = (
-    "--offline", "--no-config", "--no-ignores", "--collect=all", "--strict-collection",
+    "--offline", "--no-config", "--no-ignores", "--ignore-lockfile", "--collect=all", "--strict-collection",
     "--format=json", "--no-progress", "--color=never", "--persona=regular",
 )  # fmt: skip
 
