@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.103 | §16 roadmap (both of us, 15 Nov): the project ends on 30 November instead of 17 January. Merge train 16–22 Nov, then going public after a checklist (Gitleaks on the whole history, demo-shop's fake secrets against GitHub's secret scanning, branch protection, approval for fork pull requests; key-pair signing kept at first); verified fix rate and A5 by 26 Nov (feature freeze); the full evaluation run on 27 Nov; v1.0.0, the demo video and the README on 28–30 Nov. The drop order is §16's, with the GitHub sync and the LLM judge first; a cut metric is reported as not measured. The original sprint plan is kept in §16 for the record. |
 | 1.1.100 | B5c and B1 (§11, migration 0011, #111 review): the worker logs in as its own role, `sentinel_worker`, never as the database owner. The role can read runs and findings, claim and finish explanation requests (`SELECT`, and `UPDATE` on their state only: `status`, `reason`, `explanation_sha256`, `updated_at`, so a request can't be moved to another finding, #140 review), and record explanations (`INSERT`, and `SELECT` on the two columns the insert reads back): it cannot write a run, a finding or a decision, read a decision, a waiver, a release, a remediation, a correlation or an explanation's text, delete anything or change the schema. The migration creates it without a login or a password; `python -m sentinel_api.migrate` gives it a login with `SENTINEL_WORKER_DATABASE_PASSWORD`, hashed on the client (SCRAM), so the server never sees the password. Compose generates `WORKER_DATABASE_PASSWORD` (`make compose-env` adds it to an older `.env`), gives it to the API and the worker, and no longer gives the worker the owner's password. A role belongs to the server: it is created once, and going below 0011 takes this database's rights back and keeps the role. |
 | 1.1.99 | A10 self-gate (#141 review, nit 2): `cli/tests/supplychain/test_verify.py`'s private-key case builds its PEM armor at run time (`private_key_pem`), like #141's `fake_pem`. Its literal header made Gitleaks match from line 188 to the public-key header at line 564, so any edit in between changed the fingerprint and blocked the self-gate until the value was waived again. No finding is left there, so `self-2026-006` is dropped; a real key in that file is its own finding. |
 | 1.1.97 | A10 self-gate (P4): the first dry run on the laptop (`make self-gate PIPELINE=3d330f2`, the target its own pipeline) blocked on one secret finding only: the fake RSA private-key armor of `ai/tests/test_correlate_labels.py`, added with #99 after the seven self-gate waivers were written. Its bodies are built at run time, so Gitleaks' match ran from one test's header to the next one's, and anything written after that second header was in no match (#141 review). The armor is now built at run time too (`fake_pem`): no finding, so no waiver, and a real key anywhere in the file is its own finding. The other 7 secret findings are the waived ones, and SC-006 (partial parsing) stays a WARN. |
@@ -1059,18 +1060,31 @@ Vertical ownership; each track has DevOps, security, backend/UI and an AI compon
 
 ## 16. Roadmap
 
-| Sprint | Dates | Milestone |
-|---|---|---|
-| S0 | 2–8 Nov | M0 — repo, settings, contracts, CI green |
-| S1 | 9–22 Nov | M1 — walking skeleton: PR scanned → Finding v1 → minimal gate → PR comment; platform lists findings |
-| S2 | 23 Nov–6 Dec | **M2 = MVP** — risk scoring, rule catalogue, waivers, replay; signed image with SBOM, provenance, decision; `sentinel verify` |
-| S3 | 7–20 Dec | M3 — Kyverno on kind + Argo CD; AI explanations; correlation; dashboards v1 |
-| S4 | 21 Dec–3 Jan | M4 — verified remediation loop; patch generator; Grafana |
-| S5 | 4–17 Jan | M5 — evaluation report, hardening, docs, demo video, v1.0.0; go public |
+Agreed on 15 November (both of us): the project ends on **30 November**, not 17 January. Everything built or in
+review by then is kept; what is not started is cut in the order below. The original plan, for the record: S0
+2–8 Nov (M0), S1 9–22 Nov (M1), S2 23 Nov–6 Dec (M2 = MVP), S3 7–20 Dec (M3), S4 21 Dec–3 Jan (M4), S5 4–17 Jan
+(M5).
 
-**MVP cut line:** M2 alone is a complete project. Drop order if late: stretch goals → Argo CD → LLM patch
-generator → correlation stage 3. **Stretch:** Jenkins pipeline reusing the CLI, MCP server for coding agents,
-Check Runs annotations, ChatOps, call-graph reachability, fine-tuned triage classifier.
+| Dates | Milestone |
+|---|---|
+| 2–8 Nov | M0 — repo, settings, contracts, CI green (done) |
+| 9–15 Nov | M1 and most of M2–M4 built: gate, risk, policy, waivers, replay, signed release, `sentinel verify`, Kyverno on kind, AI explanations, correlation, remediation, dashboards (in review) |
+| 16–22 Nov | **Merge train** (every reviewed PR). The last metrics: explanation rubric and Cohen's kappa, pipeline p50/p95, one evaluation report. On the laptops: canaries with the pinned model, the correlation threshold calibrated, the first shop-api release, the kind run. Then **go public**, after the checklist below |
+| 23–26 Nov | Verified fix rate on demo-shop; A5 (kind, Kyverno, Argo CD) merged or Argo CD cut; CI on GitHub on every open PR. **Feature freeze on 26 Nov** |
+| 27 Nov | The full evaluation run on a clean checkout; its numbers committed with their input digests |
+| 28–30 Nov | **M5** — v1.0.0, signed, with its evidence and `sentinel verify`; the 5-minute demo video (§17); final README |
+
+**Going public** (ADR-0006 ends then, amended by its own record): before the switch, a check of the whole git
+history with the pinned Gitleaks (every finding is a listed fake of `demo-shop/ground-truth/` or is fixed
+first); the fake secrets of `demo-shop/` checked against what GitHub's secret scanning will report; branch
+protection on `main`; fork pull requests need approval to run. Signing stays with Cosign key pairs at first;
+keyless signing, code-scanning upload and GitHub artifact attestations can follow.
+
+**Cut line:** M2 alone is a complete project. Drop order if late: GitHub sync (`POST /api/v1/sync/github`;
+an upload already meets B1, 1.1.24) → the LLM judge (the people's rubric and kappa stay) → Argo CD (Kyverno on
+kind stays) → correlation stage 2b numbers (reported as not measured) → stretch goals. A cut metric is reported
+as not measured, never as 0. **Stretch:** Jenkins pipeline reusing the CLI, MCP server for coding agents, Check
+Runs annotations, ChatOps, call-graph reachability, fine-tuned triage classifier.
 
 ## 17. Evaluation and demo
 
