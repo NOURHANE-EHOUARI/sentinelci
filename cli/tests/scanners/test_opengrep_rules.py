@@ -311,6 +311,12 @@ CASES: list[tuple[str, str, bool, str]] = [
      'def f(text):\n'
      '    yaml = YAML(typ=TYP)\n'
      '    return yaml.load(text)\n'),
+    # typ from a parameter: a lower-case name is not seen either (#84 round 5, nit 2).
+    ('python-unsafe-deserialization', 'de-ruamel-typ-param.py', True,
+     'from ruamel.yaml import YAML\n'
+     'def f(text, kind):\n'
+     '    yaml = YAML(typ=kind)\n'
+     '    return yaml.load(text)\n'),
     # ruamel.yaml's old module-level API (gone in 0.18): with no Loader, it used the unsafe one (#84, nit 2).
     ('python-unsafe-deserialization', 'de-ruamel-old-load.py', True,
      'import ruamel.yaml\n'

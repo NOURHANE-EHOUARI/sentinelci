@@ -1,4 +1,5 @@
 import { ApiError } from "../api/client";
+import { asVerdict } from "../api/decision";
 
 const SEVERITY_STYLE: Record<string, string> = {
   CRITICAL: "bg-red-700 text-white",
@@ -78,4 +79,14 @@ const OUTCOME_STYLE: Record<string, string> = {
 export function Outcome({ value }: { value: string }) {
   const style = OUTCOME_STYLE[value] ?? "bg-slate-100 text-slate-700";
   return <span className={`rounded px-1.5 py-0.5 text-xs font-semibold ${style}`}>{value}</span>;
+}
+
+/** The gate's verdict. A run without a decision, or a value that is not a verdict, reads "No decision":
+ * never a PASS by default. */
+export function VerdictBadge({ value }: { value: unknown }) {
+  const verdict = asVerdict(value);
+  if (verdict === null) {
+    return <span className="rounded border border-dashed border-slate-300 px-1.5 py-0.5 text-xs text-slate-600">No decision</span>;
+  }
+  return <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${VERDICT_STYLE[verdict]}`}>{verdict}</span>;
 }
