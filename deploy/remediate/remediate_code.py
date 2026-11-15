@@ -165,6 +165,9 @@ class Attempt:
     branch: str | None = None
     commit: str | None = None
     pull_request: str | None = None
+    # Why an "unavailable" attempt has no proposal, as B6 names it: "provider" (the model server failed,
+    # nothing was asked of the model) or "answer" (two answers, neither usable). Read it, never the reason.
+    cause: str | None = None
 
     def record(self) -> dict[str, Any]:
         return {key: value for key, value in self.__dict__.items() if value not in (None, "")}
@@ -256,7 +259,7 @@ class RemediateCode:
                 model_version=self.model_version, attempt=number, feedback=feedback, created_at=self.now(),
             )  # fmt: skip
             if outcome.status != "proposed":
-                attempts.append(Attempt(number, outcome.status, outcome.reason))
+                attempts.append(Attempt(number, outcome.status, outcome.reason, cause=outcome.cause))
                 break
             work = self.work / target.id[:12] / f"attempt-{number}"
             attempt = self._verify(target, outcome.proposal, number, work)
