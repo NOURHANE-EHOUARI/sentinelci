@@ -366,6 +366,38 @@ def test_a_dirty_tree_or_a_commit_not_on_main_is_refused_before_anything_runs(
     assert not recorder.named("sentinel")
 
 
+def test_the_pipeline_checkout_gets_the_release_checks(repo: Path, tmp_path: Path) -> None:
+    """The pipeline's CLI, policies and lock come from its working tree, so it is held to #129's checks:
+    an edit hidden by the index's stat data, a replace ref and GIT_DIR are refused before anything runs."""
+    path = repo / "cli" / "src" / "sentinelci" / "__init__.py"
+    text = path.read_text()
+    old = path.stat().st_mtime_ns - 100 * 10**9  # well before the index, so git does not re-read a racy entry
+    os.utime(path, ns=(old, old))
+    git(repo, "update-index", "--refresh")
+    path.write_text(text.replace("1.0.0", "9.9.9"))  # the same size
+    os.utime(path, ns=(old, old))  # and the same time
+    git(repo, "-c", "core.checkStat=minimal", "-c", "core.trustctime=false", "status", "--porcelain")
+    assert git(repo, "status", "--porcelain=v1", "--untracked-files=all").strip() == ""
+    recorder = Recorder(repo)
+    FakeCli(recorder)
+    with pytest.raises(release.ReleaseError, match="is not HEAD's blob"):
+        self_gate(repo, tmp_path, recorder)()
+    path.write_text(text)
+    pipeline = head(repo)
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "--quiet", "--allow-empty",
+        "-m", "another")  # fmt: skip
+    other = head(repo)
+    git(repo, "checkout", "--quiet", "--detach", pipeline)
+    git(repo, "replace", pipeline, other)  # HEAD's id stays the pipeline's, git reads another commit
+    with pytest.raises(release.ReleaseError, match=re.escape("replace refs (refs/replace/)")):
+        self_gate(repo, tmp_path, recorder, pipeline=pipeline)()
+    git(repo, "replace", "-d", pipeline)
+    environ = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "GIT_DIR": str(repo / ".git")}
+    with pytest.raises(release.ReleaseError, match="GIT_DIR set"):
+        self_gate(repo, tmp_path, recorder, environ=environ)()
+    assert not recorder.named("sentinel")
+
+
 # ---------------------------------------------------------------- the exported tree
 
 
