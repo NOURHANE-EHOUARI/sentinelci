@@ -416,3 +416,11 @@ def test_a_merged_finding_with_a_held_place_is_not_claimed(tmp_path: Path) -> No
     )
     plan = propose([merged, _at("DS-0021", 4, severity="HIGH")], repo, created_at=NOW)
     assert plan.proposal is None and plan.skipped["svc/Dockerfile"] == "nothing this fixer can resolve"
+
+
+def test_a_byte_order_mark_is_not_edited() -> None:
+    """#85 review: BuildKit drops a UTF-8 BOM and still reads `# escape=`` after it, so the RUN goes on to
+    `add`."""
+    text = "\ufeff# escape=`\nFROM debian:12\nRUN cd /src && git `\n    add app.py docs/\n"
+    with pytest.raises(NotFixable, match="byte-order mark"):
+        fix_dockerfile(text, ["DS-0005"], None)

@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0",
+  "repo": "NOURHANE-EHOUARI/sentinelci",
+  "proposal": {
+    "schema_version": "1.0",
+    "proposal_id": "0193f2c5-0000-7000-8000-000000000003",
+    "finding_ids": [
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    ],
+    "strategy": "deterministic:kubernetes",
+    "diff": "diff --git a/demo-shop/infra/k8s/shop-api.yaml b/demo-shop/infra/k8s/shop-api.yaml\n--- a/demo-shop/infra/k8s/shop-api.yaml\n+++ b/demo-shop/infra/k8s/shop-api.yaml\n@@ -20,3 +20,6 @@\n       containers:\n         - name: shop-api\n+          securityContext:\n+            runAsNonRoot: true\n+            readOnlyRootFilesystem: true\n",
+    "files": [
+      "demo-shop/infra/k8s/shop-api.yaml"
+    ],
+    "rationale": "Run shop-api as a non-root user with a read-only root file system (KSV-0012, KSV-0014).",
+    "attempt": 1,
+    "created_at": "2026-11-11T09:00:00Z"
+  },
+  "result": {
+    "schema_version": "1.0",
+    "proposal_id": "0193f2c5-0000-7000-8000-000000000003",
+    "attempt": 1,
+    "build_ok": true,
+    "tests_ok": false,
+    "target_resolved": true,
+    "new_findings": [],
+    "verdict": "PASS",
+    "outcome": "VERIFIED",
+    "pull_request": 81,
+    "verified_at": "2026-11-11T09:12:00Z"
+  }
+}

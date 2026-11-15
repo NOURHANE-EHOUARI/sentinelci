@@ -60,6 +60,12 @@ def outcome_from_error(tool: str, error: Exception, *, lock: ToolLock) -> dict[s
     return {"version": pinned.version if pinned else "unknown", "status": status, "detail": detail}
 
 
+def outcome_not_run(tool: str, detail: str, *, lock: ToolLock) -> dict[str, Any]:
+    """`not_run`: expected but never started, because a tool before it failed (Grype after Syft)."""
+    pinned = lock.tools.get(tool) or lock.python_tools.get(tool)
+    return {"version": pinned.version if pinned else "unknown", "status": "not_run", "detail": detail}
+
+
 def tool_status_document(
     lock_bytes: bytes, platform: str | None, outcomes: dict[str, dict[str, Any]]
 ) -> dict[str, Any]:

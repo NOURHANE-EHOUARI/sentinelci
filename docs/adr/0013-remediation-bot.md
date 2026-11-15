@@ -25,10 +25,14 @@ VERIFYING → VERIFIED | REJECTED | FAILED, "never merges", "verification jobs g
 ## Decision
 
 1. **Two jobs** (`.github/workflows/sentinel-remediate.yml`, by hand only).
-   - **`propose`** has a read-only token and no secret. It runs the pinned Trivy, `scan iac` and the fixers,
-     then `remediate apply`, which commits each proposal on its own `sentinel/fix/<id>` branch of the clone
-     with plumbing commands (#48). It hands over each proposal, `apply`'s output and a git bundle of that
-     branch.
+   - **`propose`** has a read-only token and no secret. It reads the scanned commit as it is committed: a bare
+     copy whose attributes come from no tree (`attr.tree`), exported with `git archive --worktree-attributes`,
+     so the commit's `.gitattributes` cannot rewrite what is scanned and fixed (#98 review). The copy holds one
+     commit, fetched with `--depth=1` from the checkout, which `actions/checkout` leaves shallow: git refuses
+     to set a ref to a shallow root otherwise (#118 review). `propose` runs the pinned Trivy, `scan iac` and
+     the fixers on that tree, then `remediate apply`, which commits each proposal on its own `sentinel/fix/<id>`
+     branch of the bare copy with plumbing commands (#48). It hands over each proposal, `apply`'s output and a
+     git bundle of that branch. `verify` makes its own bare copy the same way.
    - **`publish`** has the write token (`contents` and `pull-requests`) and runs no repository code: no
      checkout, no Python, no package. Its one script uses the runner's git, jq and gh.
 2. **`publish` trusts nothing `propose` says.** It fetches the scanned commit and the bundle into an empty bare
@@ -75,9 +79,12 @@ VERIFYING → VERIFIED | REJECTED | FAILED, "never merges", "verification jobs g
 6. **Build and tests of an IaC patch** (`sentinel remediate check`). A manifest or a Dockerfile has no compiler
    and no unit test, and the demo's are never built. Build: every edited file still parses into the same
    resources (a manifest's documents, a Dockerfile's stages), since a scanner reports nothing in a file it cannot
-   parse. Tests: the patch changes only what its strategy may change. Whether the new settings are right is the
-   scanners' part: a weaker one is a new finding. A strategy with no build or tests defined there is never
-   verified.
+   parse. Tests: the patch changes only what its strategy may change, and the proposal is the fixer's own
+   output: the deterministic fixer is re-run on the scanned commit's whole tree and IaC findings, and must give
+   this proposal, field for field but its time. The line rules stay as a guard against a fixer bug; the re-run
+   catches any edit the fixer would not make (an ADD of a URL or an archive turned into COPY reads as a plain
+   line edit). Whether the new settings are right is the scanners' part: a weaker one is a new finding. A
+   strategy with no build or tests defined there is never verified.
 
 ## Consequences
 
