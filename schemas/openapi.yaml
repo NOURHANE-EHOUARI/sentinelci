@@ -2,7 +2,7 @@
 openapi: 3.1.0
 info:
   title: SentinelCI API
-  version: 1.8.0
+  version: 1.9.0
 paths:
   /healthz:
     get:
@@ -1227,6 +1227,183 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/waivers/{sha256}:
+    put:
+      tags:
+      - waivers
+      summary: Record Waivers
+      description: Keep a waivers file a recorded decision read, byte for byte, by
+        its sha256. Never judged here.
+      operationId: record_waivers_api_v1_waivers__sha256__put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: sha256
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          description: The file's sha256, lowercase hex.
+          title: Sha256
+        description: The file's sha256, lowercase hex.
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WaiversFileOut'
+        '200':
+          description: 'This file is recorded already: its record.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WaiversFileOut'
+        '401':
+          description: 'No valid ingestion token (`Authorization: Bearer <token>`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '409':
+          description: 'No recorded decision read this file (`inputs.waivers_digest`):
+            record the decision first.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '413':
+          description: The file is larger than the upload limit.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '415':
+          description: The file is not sent as `application/yaml`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '503':
+          description: No database is configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      requestBody:
+        required: true
+        description: The waivers file (schemas/waivers.v1.json, `.sentinel/waivers.yaml`)
+          as the gate read it; empty when there was none.
+        content:
+          application/yaml:
+            schema:
+              type: string
+    get:
+      tags:
+      - waivers
+      summary: Get Waivers File
+      description: A recorded waivers file, exactly as it was sent.
+      operationId: get_waivers_file_api_v1_waivers__sha256__get
+      parameters:
+      - name: sha256
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          description: The file's sha256, lowercase hex.
+          title: Sha256
+        description: The file's sha256, lowercase hex.
+      responses:
+        '200':
+          description: 'The waivers file byte for byte: its sha256 is the ETag.'
+          content:
+            application/yaml:
+              schema:
+                type: string
+        '404':
+          description: No waivers file of this sha256 is recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '503':
+          description: No database is configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/waivers:
+    get:
+      tags:
+      - waivers
+      summary: List Waivers In Force
+      description: For each repository, its latest release decision of the default
+        branch and the waivers it read.
+      operationId: list_waivers_in_force_api_v1_waivers_get
+      parameters:
+      - name: repo
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 200
+            pattern: ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$
+          - type: 'null'
+          title: Repo
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WaiversPage'
+        '503':
+          description: No database is configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/rules:
+    get:
+      tags:
+      - waivers
+      summary: Count Rules
+      description: How many recorded decisions each rule fired in, by effect and context.
+      operationId: count_rules_api_v1_rules_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RulesOut'
+        '503':
+          description: No database is configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
   /metrics:
     get:
       tags:
@@ -1687,6 +1864,51 @@ components:
       - limit
       - offset
       title: RemediationPage
+    RuleCount:
+      properties:
+        rule:
+          type: string
+          title: Rule
+        effect:
+          type: string
+          title: Effect
+        context:
+          type: string
+          enum:
+          - pr
+          - release
+          - local
+          title: Context
+        decisions:
+          type: integer
+          title: Decisions
+        last_evaluated_at:
+          type: string
+          format: date-time
+          title: Last Evaluated At
+      type: object
+      required:
+      - rule
+      - effect
+      - context
+      - decisions
+      - last_evaluated_at
+      title: RuleCount
+    RulesOut:
+      properties:
+        decisions:
+          type: integer
+          title: Decisions
+        items:
+          items:
+            $ref: '#/components/schemas/RuleCount'
+          type: array
+          title: Items
+      type: object
+      required:
+      - decisions
+      - items
+      title: RulesOut
     RunCreate:
       properties:
         repo:
@@ -1881,6 +2103,189 @@ components:
       - msg
       - type
       title: ValidationError
+    WaiverOut:
+      properties:
+        index:
+          type: integer
+          title: Index
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Id
+        finding_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Finding Id
+        vulnerability:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Vulnerability
+        purl:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Purl
+        owner:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner
+        justification:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Justification
+        expires_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Expires At
+        applied:
+          type: boolean
+          title: Applied
+      type: object
+      required:
+      - index
+      - id
+      - finding_id
+      - vulnerability
+      - purl
+      - owner
+      - justification
+      - expires_at
+      - applied
+      title: WaiverOut
+      description: 'One entry of the file, as written. A field that is absent or not
+        text is null: the platform shows
+
+        what the reviewer wrote and never fills in or corrects a waiver.'
+    WaiversFileOut:
+      properties:
+        sha256:
+          type: string
+          title: Sha256
+        waiver_count:
+          type: integer
+          title: Waiver Count
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - sha256
+      - waiver_count
+      - created_at
+      title: WaiversFileOut
+    WaiversInForce:
+      properties:
+        repo:
+          type: string
+          title: Repo
+        commit:
+          type: string
+          title: Commit
+        ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ref
+        source:
+          type: string
+          enum:
+          - run
+          - release
+          title: Source
+        run_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Run Id
+        image_digest:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Image Digest
+        decision_id:
+          type: string
+          format: uuid
+          title: Decision Id
+        verdict:
+          type: string
+          enum:
+          - PASS
+          - WARN
+          - BLOCK
+          title: Verdict
+        evaluated_at:
+          type: string
+          format: date-time
+          title: Evaluated At
+        engine_version:
+          type: string
+          title: Engine Version
+        policy_bundle_digest:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Policy Bundle Digest
+        waivers_digest:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Waivers Digest
+        waivers:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/WaiverOut'
+            type: array
+          - type: 'null'
+          title: Waivers
+        applied:
+          items:
+            type: string
+          type: array
+          title: Applied
+        invalid_waivers:
+          items:
+            type: string
+          type: array
+          title: Invalid Waivers
+      type: object
+      required:
+      - repo
+      - commit
+      - ref
+      - source
+      - run_id
+      - image_digest
+      - decision_id
+      - verdict
+      - evaluated_at
+      - engine_version
+      - policy_bundle_digest
+      - waivers_digest
+      - waivers
+      - applied
+      - invalid_waivers
+      title: WaiversInForce
+      description: A repository's latest release decision of the default branch, and
+        the waivers it read.
+    WaiversPage:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/WaiversInForce'
+          type: array
+          title: Items
+      type: object
+      required:
+      - items
+      title: WaiversPage
   securitySchemes:
     HTTPBearer:
       type: http
