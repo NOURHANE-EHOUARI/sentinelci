@@ -260,3 +260,13 @@ def test_unreadable_waivers_file_makes_no_decision(
     code, out, output = run_evaluate(tmp_path, opa_binary, "--waivers", str(waivers))
     assert code == 3, out
     assert not output.exists()
+
+
+@pytest.mark.parametrize("depth", [3000, 100_000])
+def test_a_file_nested_too_deeply_is_refused_not_a_crash(depth: int) -> None:
+    """YAML composes nested sequences recursively, so a deep file reaches Python's recursion limit before the
+    entries are ever copied as JSON. The file cannot be read, so it is refused like any unreadable file (fail
+    closed), with a reason, not a RecursionError (#126 review)."""
+    data = ("version: 1\nwaivers: " + "[" * depth + "]" * depth + "\n").encode()
+    with pytest.raises(EvaluationError, match="nested too deeply"):
+        load_waivers(data)

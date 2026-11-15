@@ -570,15 +570,18 @@ def test_a_decision_recorded_as_a_run_and_as_a_release_counts_once(
         ("owner", "\\x00", "U+0000"),
         ("justification", "\\u0000", "U+0000"),
         ("owner", "\\ud800", "surrogate"),
+        ("key", "\\0", "U+0000"),
     ],
-    ids=["nul-escape", "hex-escape", "unicode-escape", "lone-surrogate"],
+    ids=["nul-escape", "hex-escape", "unicode-escape", "lone-surrogate", "in-a-key"],
 )
 def test_a_waiver_whose_yaml_decodes_to_what_postgresql_refuses_is_a_422(
     client: TestClient, headers: dict[str, str], field: str, escape: str, problem: str
 ) -> None:
     justification = b"justification: |\n      Test fixture key, never deployed."
-    line = b"owner: hiba" if field == "owner" else justification
-    value = f'{field}: "a{escape}b"'.encode()
+    line = b"owner: hiba" if field in ("owner", "key") else justification
+    # In a key, the escape decodes the same way: keys are walked as well as values (#126 review, nit 1).
+    value = f'"own{escape}er": hiba' if field == "key" else f'{field}: "a{escape}b"'
+    value = value.encode()
     body = WAIVERS.replace(line, value)
     assert body != WAIVERS
     run_decision(client, headers, f"sha256:{sha(body)}")
@@ -594,3 +597,12 @@ def test_a_waiver_with_other_text_outside_ascii_is_kept(client: TestClient, head
     response = put(client, headers, body)
     assert response.status_code == 201, response.text
     assert client.get(f"/api/v1/waivers/{sha(body)}").content == body
+
+
+def test_a_waivers_file_nested_too_deeply_is_a_422(client: TestClient, headers: dict[str, str]) -> None:
+    """The loader refuses it like any file the gate cannot read, so the PUT stores nothing (#126 review)."""
+    body = b"version: 1\nwaivers: " + b"[" * 3000 + b"]" * 3000 + b"\n"
+    run_decision(client, headers, f"sha256:{sha(body)}")
+    response = put(client, headers, body)
+    assert response.status_code == 422, response.text
+    assert "nested too deeply" in response.json()["detail"][0]["msg"]
