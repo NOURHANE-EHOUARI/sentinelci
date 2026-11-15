@@ -248,6 +248,16 @@ def _application(run: Run) -> dict[str, Any]:
     return json.loads(got.stdout) if got.returncode == 0 else {}
 
 
+def refused(operation: dict[str, Any]) -> bool:
+    """A sync operation that failed: phase Failed or Error, or one Argo CD is retrying. Argo CD 3.6 retries a
+    failed automated sync by itself, even with no `retry` block in the Application: the phase stays Running
+    ("Retrying attempt #N") and `retryCount` grows, so a sync Kyverno denied never ends Failed (Hiba's kind
+    run on #60). A first attempt still running (`retryCount` 0 or absent) is not refused yet."""
+    retries = operation.get("retryCount")
+    retrying = operation.get("phase") == "Running" and isinstance(retries, int) and retries > 0
+    return operation.get("phase") in ("Failed", "Error") or retrying
+
+
 def refresh(run: Run) -> None:
     """Ask Argo CD to compare the application with the repository now, not at its next poll."""
     run(["kubectl", "--context", CONTEXT, "--namespace", "argocd", "annotate", "--overwrite",
@@ -263,7 +273,8 @@ def sync_result(
     sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[bool, str]:
     """Until Argo CD has synced `commit` healthy, (True, ""), or failed to sync it, (False, Argo CD's message:
-    Kyverno's denial, for instance). A ClusterError if neither happens in time."""
+    Kyverno's denial, for instance), a sync Argo CD is retrying included (`refused`). A ClusterError if
+    neither happens in time."""
     deadline = clock() + timeout_s
     status: dict[str, Any] = {}
     while True:
@@ -271,7 +282,7 @@ def sync_result(
         sync, health = status.get("sync") or {}, status.get("health") or {}
         operation = status.get("operationState") or {}
         synced_revision = ((operation.get("syncResult") or {}).get("revision")) or ""
-        if synced_revision == commit and operation.get("phase") in ("Failed", "Error"):
+        if synced_revision == commit and refused(operation):
             return False, str(operation.get("message", "no message"))
         if (
             sync.get("revision") == commit
@@ -298,7 +309,7 @@ def wait_for_sync(
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
     """Until Argo CD has synced `commit` and the application is healthy. A failed sync of that commit
-    (Kyverno's denial, for instance) stops the wait with Argo CD's message."""
+    (Kyverno's denial, for instance), or one Argo CD is retrying, stops the wait with Argo CD's message."""
     synced, message = sync_result(commit, run, timeout_s=timeout_s, clock=clock, sleep=sleep)
     if not synced:
         raise ClusterError(f"Argo CD could not sync {commit[:12]}: {message}")

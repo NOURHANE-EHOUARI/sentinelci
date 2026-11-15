@@ -87,7 +87,8 @@ class Cluster:
     """kubectl, crane and `sentinel verify` against a demo cluster that runs the release; git is real.
 
     `admitted` lists the images the cluster's admission would let in (none, when everything works);
-    `argo_syncs_attack` makes Argo CD sync the tampered commit; `argo_stuck` makes it never answer for it."""
+    `argo_syncs_attack` makes Argo CD sync the tampered commit; `argo_stuck` makes it never answer for it;
+    `argo_retries` makes it retry the refused sync as Argo CD 3.6 does (phase Running, never Failed)."""
 
     def __init__(
         self,
@@ -97,6 +98,7 @@ class Cluster:
         verify: int = 1,
         argo_syncs_attack: bool = False,
         argo_stuck: bool = False,
+        argo_retries: bool = False,
         running: str | None = f"{IN_CLUSTER}@{RELEASE}",
         create_error: str | None = None,
     ) -> None:
@@ -106,6 +108,7 @@ class Cluster:
                              allow_http=False)  # fmt: skip
         self.policies = {d["metadata"]["name"]: d for d in yaml.safe_load_all(text)}
         self.admitted, self.verify, self.running = set(admitted), verify, running
+        self.argo_retries = argo_retries
         self.argo_syncs_attack, self.argo_stuck, self.create_error = (
             argo_syncs_attack,
             argo_stuck,
@@ -178,10 +181,15 @@ class Cluster:
         if self.argo_syncs_attack:
             self.running = f"{IN_CLUSTER}@{TAMPERED}"
             return healthy
+        denied = f"one or more objects failed to apply, reason: {KYVERNO_DENIAL}"
+        operation = (
+            {"phase": "Running", "retryCount": 5, "message": f"{denied}. Retrying attempt #5"}
+            if self.argo_retries
+            else {"phase": "Failed", "message": denied}
+        )
         return {
             "sync": {"status": "OutOfSync", "revision": commit}, "health": {"status": "Healthy"},
-            "operationState": {"phase": "Failed", "syncResult": {"revision": commit},
-                               "message": f"one or more objects failed to apply, reason: {KYVERNO_DENIAL}"},
+            "operationState": operation | {"syncResult": {"revision": commit}},
         }  # fmt: skip
 
     def commands(self) -> list[str]:
@@ -272,6 +280,17 @@ def test_every_attack_is_refused_by_the_check_that_must_refuse_it(
         "with no signature.\n"
     ]
     assert not [c for c in commands if " delete " in c], "nothing was created, so nothing is deleted"
+
+
+def test_a_refused_sync_argo_cd_keeps_retrying_is_a_refused_attack(key: Path, gitops: Path) -> None:
+    """Argo CD 3.6 retries a refused automated sync by itself: "Retrying attempt #5", phase Running, never
+    Failed. The wait timed out after 300 s on Hiba's kind run (#60); it is a refusal by Kyverno."""
+    fake = Cluster(key, argo_retries=True)
+    results = attack(fake, key, gitops)
+    gitops_attack = next(r for r in results if r.name.startswith("the tampered release committed"))
+    assert (gitops_attack.refused, gitops_attack.by) == (True, "Kyverno, during Argo CD's sync")
+    assert "not signed by the release key" in gitops_attack.message
+    assert [subject for _, subject in fake.pushed][-1] == f"restore release {RELEASE}"
 
 
 def test_the_gitops_attack_is_committed_then_the_release_restored(

@@ -117,6 +117,23 @@ def test_without_docker_config_no_credentials_reach_cosign(
     )
 
 
+def test_the_cas_the_operator_trusts_reach_cosign_and_nothing_else(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The demo cluster's registry serves TLS with its own CA, trusted through SSL_CERT_FILE: without it,
+    `sentinel attest` and `sentinel verify` there fail with "certificate signed by unknown authority"
+    (Hiba's kind run on #60). Trust anchors pass; a proxy URL, which may hold credentials, does not."""
+    calls = _capture(monkeypatch)
+    trust = {"SSL_CERT_FILE": "/kind/tls/trust.pem", "SSL_CERT_DIR": "/etc/ssl/extra"}
+    environ = ENVIRON | trust | {"HTTPS_PROXY": "http://user:fake@proxy:3128"}
+    Verifier(tmp_path / "k.pub", LOCK, tmp_path).verify_signature(parse_image(IMAGE), Registry(), environ)
+    Signer("env://SIGNING_KEY", LOCK, tmp_path).sign_image(parse_image(IMAGE), Registry(), environ)
+    assert calls[0]["env"] == trust | {"DOCKER_CONFIG": "/run/docker-config"}
+    assert calls[1]["env"] == trust | {"SIGNING_KEY": "fake key material", "COSIGN_PASSWORD": "pw",
+                                       "DOCKER_CONFIG": "/run/docker-config"}  # fmt: skip
+    assert Registry.env({"SSL_CERT_FILE": "", "SSL_CERT_DIR": ""}) == {}, "an empty value is not passed"
+
+
 def _envelope(predicate: Any, **changes: Any) -> str:
     return json.dumps(json.loads(bundle(statement(predicate=predicate, **changes)))["dsseEnvelope"])
 
