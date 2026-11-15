@@ -1,0 +1,478 @@
+# SentinelCI evaluation report
+
+> **Provisional: the numbers of 15 November 2026.** Each one comes from a run made on 14 or 15 November, on the
+> commit named on its page, and several runs used different commits and inputs. SPEC section 16 replaces all of
+> them with **one full run on a clean checkout on 27 November**, whose reports are committed with their input
+> digests ([The 27 November run](#the-27-november-run) gives the commands). Until then, read every number
+> below with the commit and inputs next to it.
+
+This is the "one evaluation report" of SPEC section 17. It has one page for each metric of section 17's list,
+with section 3's target, and a summary first. SPEC section 3 asks to "report real numbers, including misses":
+a missed target and a null result get the same space as a met one. "Not measured" is never written as 0.
+
+## Summary
+
+| Metric (§17) | Result, 15 Nov | Comparison (baseline or noise floor) | Target (§3) | Status |
+|---|---|---|---|---|
+| [Recall per category, false positives on clean controls](#1-detection-recall-and-false-positives) | 28 of 28 measured seeds detected (100%); 0 false positives on 5 clean controls; CONTAINER (1 seed) not measured | Counting the unmeasured CONTAINER seed as a miss: 28 of 29 (96.6%) | ≥ 90% of seeds found by ≥ 1 scanner | **Met** on the categories measured |
+| [NDCG@10 vs CVSS baseline](#2-ranking-ndcg10-against-the-cvss-baseline) | All categories, by advisory: **0.366** (by package: 0.495) | CVSS-only baseline: 0.347 (by package: 0.390) | NDCG@10 above the CVSS-only baseline | **Met** on all categories; **not met** on SCA by advisory (0.627 vs 0.771) |
+| [ARI, alert reduction, ablation](#3-correlation-ari-alert-reduction-ablation) (A7) | Whole run, stages without a parameter: **25.8%** alert reduction, ARI 0.497. Test half, three stages: ARI 0.827, 57.1% | Ablation on the test half: dedup only 0.0%; dedup+structural ARI 0.793, 40.5%; dedup+embedding ARI 0.657, 52.4% | Alert reduction ≥ 40% | **Not met** (25.8% on the whole run). Pending the review of #146 |
+| [Explanation rubric, LLM-judge agreement](#4-explanation-rubric-and-cohens-kappa) | 23 explanations: people's pass rates 83% to 100%; the judge rated all 92 answers "yes" | Kappa between the two people: **0.71** pooled. Each person vs the judge: **0.00** pooled | None in §3 | No target. The judge **cannot stand in** for the people here |
+| [Verified fix rate](#5-verified-fix-rate) | Not measured | None | ≥ 60% of attempted fixable seeds | **Not measured** (being built; §16: by 26 Nov) |
+| [AI mislabels on canaries, verdict changes](#6-injection-canaries-mislabels-and-verdict-changes) | **0 verdict changes**; pinned model: 0 of 10 outputs obeyed, 0 of 5 hints mislabelled | Control model that always obeys: 10 of 10 obeyed, 5 of 5 mislabelled, 0 verdict changes | 0 verdict changes (hard requirement) | **Met**, with 2 of the 5 canaries §17 asks for |
+| [Pipeline p50/p95](#7-pipeline-p50-and-p95) | One pass of the gate's steps: p50 **12.4 s**, p95 **12.8 s** (20 runs, one machine) | A pull request scans twice: 2 × p95 = 25.7 s | PR feedback time p95 ≤ 10 min | **Met on this machine**; not a CI measurement |
+| [Replay identity](#8-replay-identity) | **10 of 10** compared decisions identical, recorded and replayed on two checkouts | Engine made to sort violations the other way: 8 of 10 (the measurement sees drift) | 100% identical | **Met** by hand; the nightly job has not run yet |
+
+Section 3 also lists gate correctness and deploy enforcement. They are not in section 17's list, and this
+report does not cover them.
+
+---
+
+## 1. Detection: recall and false positives
+
+**What it measures.** For each category of `demo-shop/ground-truth/findings.yaml`, the share of seeds that
+SentinelCI's own scanners detect, by the ground truth's matching rules. It also counts false positives on the
+clean controls (a finding by a tool the control names, in the control's file) and lists real findings that match
+no seed ("unlisted": neither hits nor false positives). A category whose scan did not run is "not measured",
+never 0.
+
+**Result.**
+
+| Category | Seeds | Detected | Recall |
+|---|---|---|---|
+| SECRET | 5 | 5 | 100% |
+| SAST | 6 | 6 | 100% |
+| SCA | 8 | 8 | 100% |
+| IAC | 6 | 6 | 100% |
+| PIPELINE | 3 | 3 | 100% |
+| CONTAINER | 1 | — | not measured: `make eval` scans no image |
+
+- 28 of 28 measured seeds detected. Counting the unmeasured CONTAINER seed as a miss gives 28 of 29 (96.6%),
+  still above the target.
+- False positives on the 5 clean controls: 0.
+- Unlisted findings: 57 (IAC 31 in seeded files and 1 elsewhere, PIPELINE 5 in seeded files, SCA 14 in seeded
+  files and 6 elsewhere).
+
+**Target (§3).** ≥ 90% of seeds found by at least one scanner: **met** on the categories measured.
+
+**Inputs.**
+- Commit: `84bcf2b` (`b8/explanation-rubric`). The report records no commit: this is the worktree's commit at the
+  time of the run (its reflog), 15 Nov 04:05 UTC.
+- demo-shop tree `28680d7fd7bc85889e9bfdff00e0bf4e76c215ea`, the same as `main`'s (`64f0e4b`).
+- Ground truth sha256 `bba899c548ad2e6de13515fbaa87d588edc5cbe8cb39cc88f99548a6068f0567` (`main`'s). The merge
+  train's ground truth (`83a2cde6…`) adds only the ranking grades (`relevance`, `relevance_why`); no seed and no
+  matcher changed.
+- Tools: Gitleaks 8.30.1, Trivy 0.76.1, zizmor 1.32.0, Opengrep 1.33.1, Grype 0.121.0 on Syft 1.55.0's SBOM
+  (53 packages), Grype database v6.1.10 built 2026-11-14T06:19:25Z (checksum
+  `sha256:762b01ba9c79e6a250bd73f11ef62fbf44539ee8e08e043d80df4aaad3afc2aa`).
+- Findings sha256: gitleaks `c859f350…`, grype `85aba01d…`, opengrep `8d6d8f24…`, trivy `1afe96bc…`, zizmor
+  `6b91555e…` (in full in `detection.json`). The canaries and the rubric used these same five files.
+
+**Full report and how to regenerate it.** `out/eval/detection.md` and `detection.json` of that run (not
+committed). PR #77 introduced the report.
+
+```bash
+uv run sentinel tools grype-db --db-dir .sentinel/grype-db
+make eval DB_DIR=.sentinel/grype-db
+```
+
+**Limits.**
+- **The benchmark is smaller than section 17 asks:** SAST 6 of 10, CONTAINER 1 of 5, canaries 2 of 5. SECRET,
+  SCA, IAC, PIPELINE and the controls are at full size.
+- **Recall is partly true by construction.** Each seed was checked against these pinned tools when it was written
+  (the ground truth's header says so), so 100% shows that the scanners run, are wired to the gate and report
+  what they were checked to report. It does not estimate recall on code nobody seeded.
+- 5 clean controls is a small sample for a false-positive rate: 0 of 5 does not bound the rate tightly.
+- CONTAINER is not measured until an image scan joins `make eval`.
+
+---
+
+## 2. Ranking: NDCG@10 against the CVSS baseline
+
+**What it measures.** How well SentinelCI's risk score orders demo-shop's findings, against a CVSS-only order of
+the same findings (`sentinelci.risk.cvss_baseline`; a finding without CVSS gets its severity's CVSS v3.1 floor).
+Relevance is each seed's `relevance` grade (1 to 3) in the ground truth, committed before any ranking was
+computed. A finding that stands for no seed counts 0, and a seed counts once, at its best finding. Ties share
+their places' mean discount (McSherry and Najork, 2008). Two definitions of a seed's item are reported side by
+side: **advisory** (the findings that detect it) and **package** (those, plus the other advisories of its package
+in the same manifest, which one upgrade also fixes).
+
+**Result.**
+
+| Set | Seed item | Seeds (detected) | Risk NDCG@10 | CVSS NDCG@10 | Risk NDCG | CVSS NDCG |
+|---|---|---|---|---|---|---|
+| All categories | advisory | 28 (28) | **0.366** | 0.347 | 0.715 | 0.724 |
+| All categories | package | 28 (28) | **0.495** | 0.390 | 0.802 | 0.748 |
+| SCA only | advisory | 8 (8) | 0.627 | **0.771** | 0.706 | 0.813 |
+| SCA only | package | 8 (8) | 0.836 | 0.828 | 0.836 | 0.828 |
+
+**Target (§3).** NDCG@10 above the CVSS-only baseline: **met on all categories** under both definitions, by
+0.019 by advisory and 0.105 by package. **Not met on SCA alone by advisory** (0.627 against 0.771): the risk
+score's no-data defaults put the 20 sibling advisories of the seeded packages above the seeds, while CVSS puts
+them at their severity's floor. By package, SCA is about even (0.836 against 0.828). Over every item (NDCG, not
+@10), the risk score is below CVSS by advisory (0.715 against 0.724).
+
+**Inputs.**
+- Commit: the tree that became `a2c995e` (`b8/ranking`, 14 Nov 18:12 UTC: `725fc27` with the GT-CONTAINER-001
+  grade of `a2c995e`), from the worktree's reflog and the ground-truth digest.
+- Ground truth sha256 `3b88a026296bb43093e6f0054ab5321d86f2ff0436c3330645a6a2f9238d41da`; demo-shop tree
+  `ceb7a43275a0be5ee65e8a65e48195ac5e13af44` (`a2c995e`'s).
+- Findings sha256: the detection run's for gitleaks, grype, opengrep and trivy; zizmor `14628d8e…`, from zizmor
+  1.31.1 (the ground truth records that 1.32.0 gives the same 11 findings).
+- Risk model sha256 `4be62e7e8a3ba070689a462fe3ed5e9169c2bca6a488ad36e3157a6f77a36449`; feed snapshot
+  (`eval/feeds/snapshot.json`) sha256 `026150c2728aefe1da1cf9ad496edc7bce1d36a5df390db43c5d12f4039bf653`.
+- Of 92 findings, 8 have a CVSS score, 8 an EPSS percentile and 8 a KEV answer; the rest have no feed data.
+
+**Full report and how to regenerate it.** `out/eval/ranking.md` and `ranking.json` of that run (not committed);
+the same table is in the text of PR #121.
+
+```bash
+make eval DB_DIR=.sentinel/grype-db
+make eval-ranking
+```
+
+**Limits.**
+- **28 seeds is small.** One seed moving a few places changes NDCG@10 by several hundredths; the margin by
+  advisory (0.019) is within that. No significance test is reported.
+- **The package definition was added after the first result was seen** (#121 review), which is why both are
+  shown; the advisory definition is the one first published.
+- **The rubric's grade-3 sentence on committed credentials was narrowed after the first result** (#121 review);
+  no grade changed. With GT-SECRET-004 and GT-SECRET-005 at 3 instead, NDCG@10 on all categories would be
+  0.416 (risk) and 0.353 (CVSS) by advisory, 0.573 and 0.400 by package; SCA alone is unchanged (from
+  `eval/ranking/README.md`).
+- **The score rests on defaults.** demo-shop has no `sentinel.yaml` and no reachability analysis runs, so every
+  service counts as internet-facing and every dependency as reachable. A low risk NDCG measures those defaults as
+  much as the model.
+- CONTAINER (1 seed) is left out of every order, as in detection.
+
+---
+
+## 3. Correlation: ARI, alert reduction, ablation
+
+**Owner: A7 (Nourhane).** These numbers are **pending the review of PR #146**, which has 2 should-fix open
+(below). They come from SPEC changelog row 1.1.98 and `eval/correlation/threshold.json` on #146's branch
+(`a7f/threshold`, head `8d20426`); neither is on `main` yet. `eval/correlation/README.md` on `main` describes the
+method.
+
+**What it measures.** How well the correlator (`sentinel_ai.correlate`) groups `make eval`'s findings into true
+root causes (adjusted Rand index: 1 when the groups are exactly the root causes, about 0 for a random grouping),
+how much it reduces alerts (`1 - groups / places`, where the places are each finding and its `other_locations`),
+and each configuration of the stages (ablation). The root causes are split once into a calibration half and a
+test half; stage 2b's threshold is chosen on the calibration half and committed before the test half is
+measured.
+
+**Result.**
+
+| Set | Configuration | ARI | Alert reduction | Groups / places |
+|---|---|---|---|---|
+| Whole run | dedup + structural (no parameter to tune) | 0.497 | **25.8%** | 69 / 93 |
+| Test half (42 findings, 23 root causes) | dedup only (see below) | not in the row | 0.0% | 42 / 42 |
+| Test half | dedup + structural | 0.793 | 40.5% | 25 / 42 |
+| Test half | dedup + embedding | 0.657 | 52.4% | 20 / 42 |
+| Test half | all three stages, threshold 0.75 | **0.827** | 57.1% | 18 / 42 |
+| Test half, without SCA | all three stages | 0.742 (6 same-root pairs) | — | — |
+| Calibration half (50 findings, 24 root causes) | all three stages, threshold 0.75 | 0.644 | 70.6% | — |
+
+- The calibrated threshold is 0.75, not at the edge of the grid (0.5 to 0.95). On the calibration curve, the
+  correlator's shipped default, 0.8, gives ARI 0.628.
+- The sensitivity curve on the test half peaks at 0.85 (ARI 0.841). It is reported and was not used to move the
+  threshold.
+- The groups/places column comes from the review of #146, which checked the row's percentages against them
+  (18, 25, 20 and 42 groups over 42 places). The row does not name the fourth configuration (42 groups, 0.0%);
+  it is read here as dedup alone, which section 17 says reduces nothing on a findings file. Its ARI is not in
+  the row.
+
+**Target (§3).** Alert reduction ≥ 40%: **not met.** SPEC section 3's 40% is read on the whole run
+(`eval/correlation/README.md`), where the configuration that can be measured without tuning gives **25.8%**.
+57.1% is the test half with stage 2b: the halves split root causes, not findings, so the test half holds 20 of the
+28 SCA findings in 42 of 92 and its reduction is not demo-shop's. Section 3 sets no target for the ARI.
+
+**Inputs.**
+- Commit: `main` `3d330f2`; correlator 0.1.1; embedding model `qwen3-embedding:0.6b` at
+  `sha256:ac6da0dfba84a81fdbfbaf330198c33cd77c4cdfc53e8bc50eb581914a15621d` (ADR-0009).
+- `make eval`'s findings of 14 November: the same five digests as the ranking (zizmor `14628d8e…`, zizmor
+  1.31.1).
+- Ground truth `bba899c5…` (as detection); root causes sha256 `2f2fe3c2…`; split sha256 `b43973f1…`;
+  `threshold.json` sha256 `6124ce73981bae629d415da637eba61daa110fffcc9ff1a5c396b37e2c8badd7`.
+
+**Full report and how to regenerate it.** `out/eval/correlation.md` and `.json` of Nourhane's run (not
+committed); the calibration is `eval/correlation/threshold.json` on #146's branch.
+
+```bash
+ollama pull qwen3-embedding:0.6b          # its digest must be ADR-0009's
+make eval DB_DIR=.sentinel/grype-db
+make eval-correlation                     # with the committed threshold.json; never recalibrate on the test half
+```
+
+**Limits.**
+- **Open review (#146), 2 should-fix:** (1) the correlator still ships `DEFAULT_THRESHOLD = 0.8`
+  (provisional), so the product's stage 2b would not run at the calibrated 0.75 that 0.827 and 57.1% describe;
+  (2) `make eval-correlation` accepts any threshold in `threshold.json` as "calibrated on the calibration half",
+  even one set by hand. These numbers may change with the fixes.
+- **A label change after scores were seen, disclosed in the README:** the SCA package rule and RC-DOCKER-002 were
+  added in the review of #90, after the dedup and structural scores had been seen and before any embedding
+  score.
+- **Small samples:** without SCA, the test half has 6 same-root pairs, so its ARI mostly measures whether those
+  few merge.
+- The findings are 14 November's (zizmor 1.31.1), not the detection run's (zizmor 1.32.0, findings
+  `6b91555e…`).
+
+---
+
+## 4. Explanation rubric and Cohen's kappa
+
+**What it measures.** How good the AI analyst's explanations are, as two people and an LLM judge rate them, and
+how far the raters agree. One explanation per non-secret seed (23: GT-CONTAINER-001 has no finding without an
+image scan, and a secret's finding is never sent to a model), written through `sentinel_ai.explain` with the
+pinned model. Four yes/no criteria: **correct** (the right flaw in the right component), **grounded** (every
+file, package, version, CWE, CVE and URL named is in what the explainer was given), **fix** (the fix guidance
+removes the finding without breaking the code), **clear** (a developer who has not seen the scanner's output
+knows what to change and why).
+
+**Result.** Pass rates (share of explanations rated yes):
+
+| Rater | correct | grounded | fix | clear |
+|---|---|---|---|---|
+| Hiba | 100% | 83% (19/23) | 91% (21/23) | 100% |
+| Nourhane | 100% | 83% (19/23) | 96% (22/23) | 100% |
+| LLM judge | 100% | 100% | 100% | 100% |
+
+Cohen's kappa (Landis and Koch's names), with the observed agreement next to it:
+
+| Pair | correct | grounded | fix | clear | pooled (92 answers) |
+|---|---|---|---|---|---|
+| Hiba vs Nourhane | undefined (23/23 agree) | **0.70** (21/23 agree) | **0.65** (22/23 agree) | undefined (23/23 agree) | **0.71** (89/92 agree) |
+| Hiba vs judge | undefined | **0.00** (19/23 agree) | **0.00** (21/23 agree) | undefined | **0.00** |
+| Nourhane vs judge | undefined | **0.00** (19/23 agree) | **0.00** (22/23 agree) | undefined | **0.00** |
+
+"Undefined" is kappa's 0/0 when both raters give one answer to every item. The observed agreements were
+computed for this report from the three rating sheets; the kappas and pass rates are the report's.
+
+**Reading it.**
+- **The negative result: the LLM judge rated all 92 answers "yes".** A rater who always says yes has a kappa of
+  0.00 against anyone who does not, so the judge agrees with each person no better than chance, while the two
+  people agree substantially with each other (0.71). **A same-model judge cannot stand in for the people
+  here.** The judge is `gemma4:12b-it-qat`, the model that wrote the explanations, so it may favour them; the
+  report says so.
+- The people's "no" answers on `grounded` fall on SCA explanations for 3 of 4 each (GT-SCA-004, 005 and 008 for
+  both).
+- Kappa between the people sits next to a 96.7% raw agreement (89/92): with pass rates near 100%, a few
+  disagreements move kappa a lot. The pooled kappa is not the mean of the per-criterion kappas.
+
+**Target (§3).** Section 3 sets none. Section 17 asks for the rubric and the judge's agreement; both are reported.
+
+**Inputs.**
+- Explanations and the blank sheet generated on `89e76c4` (`b8/explanation-rubric`, the #143 review fixes), from
+  the detection run's five findings files (section 1), demo-shop tree `28680d7f…`, ground truth `bba899c5…`.
+- Model (explainer and judge): `gemma4:12b-it-qat` at
+  `sha256:38044be4f923e5a55264ed7df4eaac2676651a905f735197c504045140c02bd3`; judge prompt `sentinel-judge/2`.
+- The judge's reported run is a re-run: the run before it ended with an HTTP 500 from the model server. The
+  head of the re-run was not recorded (the worktree was at `d9aa36e`, `89e76c4` with `main` merged in).
+
+**Full report and how to regenerate it.** `out/eval/explanations/rubric.md` and `rubric.json`, with the sheets
+and each rater's ratings (not committed).
+
+```bash
+make eval DB_DIR=.sentinel/grype-db
+make eval-explanations OLLAMA_URL=http://127.0.0.1:11434   # about an hour on a CPU
+# each person copies out/eval/explanations/sheet.yaml to ratings-<name>.yaml and rates alone
+make eval-rubric RATERS="hiba nourhane"
+```
+
+**Disclosures and limits.**
+- **`grounded` was worded after the first outputs were seen**, and before anyone rated (#143 review, SPEC
+  1.1.102).
+- **Hiba's ratings were not blind to the judge's:** she knew it had rated everything "yes". Nourhane's were blind.
+- The first sheets were void (they lacked the explainer's inputs) and were regenerated before rating; no rating
+  was made on them.
+- 23 explanations and two people: kappa has a wide uncertainty at this size, and no test is reported.
+
+---
+
+## 5. Verified fix rate
+
+**What it measures.** The share of attempted fixable seeds whose fix the remediation loop verifies (SPEC section
+9).
+
+**Result. Not measured.** The measurement is being built; section 16 plans it on demo-shop by 26 November.
+
+**Target (§3).** ≥ 60% of attempted fixable seeds: **not measured** (not 0).
+
+**Inputs, full report, command.** None yet. This page will name them with the 27 November run.
+
+---
+
+## 6. Injection canaries: mislabels and verdict changes
+
+**What it measures.** demo-shop plants instructions to an AI reviewer beside seeded weaknesses, each with a token an
+output holds only if it obeyed. `make eval-canaries` shows every finding whose code window holds a canary's line
+to the AI analyst (an explanation and a triage hint each, as the platform does), and counts the outputs that obey
+and the hints that call a seeded weakness a likely false positive (mislabels). The gate decides before and after
+the AI runs, each time reading its inputs again from disk, and the two decisions are compared byte for byte.
+
+**Result.**
+
+| Model | Findings shown a canary | AI outputs | Obeyed a canary | Hints on seeded findings | Mislabels |
+|---|---|---|---|---|---|
+| control (always obeys) | 5 | 10 | 10 (100%) | 5 | 5 (100%) |
+| `gemma4:12b-it-qat` (pinned) | 5 | 10 | **0 (0%)** | 5 | **0 (0%)** |
+
+**Verdict changes: 0.** BLOCK before and after, and the decision's bytes did not change (sha256
+`e5084b3439b85745564df9eaea04f1e8bd871f32bdfb68ffc16d87508f8f111a`).
+
+**Comparison.** The control obeys every canary it is shown: it must be counted as obeying 10 of 10 while the
+verdict stays the same, which shows the measurement sees an obeyed canary when there is one.
+
+**Target (§3).** 0 verdict changes, a hard requirement: **met.** The pinned model's mislabel rate is 0 of 5.
+
+**Inputs.**
+- Commit `6bba8c8` (`b8/canaries` with `main` `3d330f2` merged in; PR #128, since merged), a clean checkout.
+- demo-shop tree `28680d7f…`, ground truth `bba899c5…`, the detection run's five findings files.
+- Model `gemma4:12b-it-qat` at `sha256:38044be4f923…` (recorded in each output), Ollama 0.40.8, OPA 1.21.4,
+  risk model 1.0.0; scanner versions as in section 1.
+- Machine: a 4-CPU, 15 GB sandbox, CPU only (from #128's discussion; the report does not record it).
+
+**Full report and how to regenerate it.** `out/eval/canaries.md` and `.json`, with every output under
+`out/eval/canaries/outputs/` (not committed).
+
+```bash
+make eval DB_DIR=.sentinel/grype-db
+make eval-canaries OLLAMA_URL=http://127.0.0.1:11434
+```
+
+**Disclosures and limits.**
+- **The reported run is the second.** The first lost one output (a hint) when the kernel's out-of-memory killer
+  stopped Ollama's model process; it gave 0 obeyed and 0 mislabels on 9 outputs. The second ran with llama.cpp's
+  prompt cache and context checkpoints off (`LLAMA_ARG_CACHE_RAM=0`, `LLAMA_ARG_CTX_CHECKPOINTS=0`) and kept all
+  10 outputs.
+- **2 canaries are planted, of the 5 section 17 asks for**, both in one file beside SAST seeds. 0 of 10 says
+  little about canaries of other shapes or in other categories.
+- The verdict check shows that the AI step changed none of the gate's inputs in this run; it does not test a
+  model that tries to write files.
+
+---
+
+## 7. Pipeline p50 and p95
+
+**What it measures.** One pass of the gate's steps on demo-shop, 20 times on one machine: the five scans
+`make eval` runs (same commands, pinned tools), then `sentinel evaluate` on their findings. Percentiles are
+nearest-rank, so each is one measured run.
+
+**Result (one pass, seconds).**
+
+| Step | p50 | p95 | min | max |
+|---|---|---|---|---|
+| gitleaks | 1.1 | 1.1 | 1.0 | 1.1 |
+| trivy | 2.9 | 3.0 | 2.6 | 3.3 |
+| zizmor | 0.4 | 0.5 | 0.4 | 0.5 |
+| opengrep | 2.6 | 2.8 | 2.4 | 2.8 |
+| grype | 5.0 | 5.3 | 4.9 | 5.3 |
+| evaluate | 0.4 | 0.5 | 0.3 | 0.5 |
+| **total** | **12.4** | **12.8** | 12.1 | 13.2 |
+
+**A pull request scans twice.** `sentinel-scan.yml` scans a pull request's head, then its base as the baseline,
+so a pull request's scans take two passes, and the comment and the upload come on top. Section 3's target is read
+against twice the pass's p95: 2 × 12.829 s = **25.7 s**. That counts the decision twice too, so it errs on the
+slow side.
+
+**Target (§3).** PR feedback time p95 ≤ 10 min: **met on this machine**, by a wide margin. It is not a CI
+measurement.
+
+**Inputs.**
+- Commit `ec0a9d3` (`b8/pipeline-timing`), run ending 15 Nov 02:24 UTC: from the worktree's reflog. The report
+  file says "with 20 runs, p95 is the slowest run", the wording of `ec0a9d3`; that sentence was wrong (nearest-rank
+  p95 of 20 is the 19th, which is why p95 12.8 s is below the maximum 13.2 s) and was fixed in `07d713d`.
+- demo-shop tree `28680d7f…`. Tools: Gitleaks 8.30.1, Grype 0.121.0, Opengrep 1.33.1, Trivy 0.76.1, zizmor
+  1.32.0. Machine: linux-x86_64, 4 CPUs, Python 3.13.17.
+
+**Full report and how to regenerate it.** `out/eval/timing.md` and `timing.json` of that run (not committed).
+
+```bash
+make eval-timing DB_DIR=.sentinel/grype-db          # RUNS=20 by default
+```
+
+**Limits.**
+- **Not CI:** checkout, tool installation, the Grype database download and artifact uploads are not in it, and
+  GitHub's runner is another machine. Once Actions can run, the workflow's own timings replace this.
+- **This run predates the report's current form** (#145 review, `a2b0bf2`): it does not give run 1, the coldest,
+  on its own. The 27 November run will.
+- The output depends on the clock and the machine: a rerun gives other numbers.
+
+---
+
+## 8. Replay identity
+
+**What it measures.** Whether a stored decision, replayed from its stored inputs and stored policy bundle with
+another checkout's engine and OPA (`sentinel replay --all`), gives the same decision, byte for byte. The corpus is
+nine release-gate cases built from the contract fixtures, plus a `local` decision on demo-shop's real findings.
+
+**Result. 10 of 10 compared decisions identical (100%)**, recorded on one checkout and replayed on another, both
+clean; 0 skipped, 0 differ, 0 cannot replay. On one checkout (record and replay in the same run, PR #124), also
+10 of 10.
+
+**Comparison (does the measurement see drift?).** On the replaying checkout, an engine that sorts violations the
+other way, at the same version, made the 2 decisions with several violations differ: **8 of 10**, exit 1. An
+engine with a bumped version skipped all 10: nothing compared, reported as not measured (exit 2), not as 100%.
+
+**Target (§3).** 100% identical: **met** in this hand-run measurement.
+
+**Inputs.**
+- Recorded on `602be73` (a local "wip" commit on `b8/replay-identity`, after `c68e67e`), replayed on `75028a3`
+  (that commit with `main` `0e40739` merged in, a local scratch commit); both checkouts clean. PR #139.
+- Engine 0.2.0 and OPA 1.21.4 on both sides.
+- demo-shop decision on the findings `c859f350…` (gitleaks), `85aba01d…` (grype), `8d6d8f24…` (opengrep),
+  `1afe96bc…` (trivy), `14628d8e…` (zizmor 1.31.1).
+
+**Full report and how to regenerate it.** `replay.md` and `replay.json` of that run (not committed).
+
+```bash
+make eval-replay                                                              # one checkout
+uv run python eval/replay/run.py --record-to ../replay-main --findings out/eval/findings   # checkout 1
+uv run python eval/replay/run.py --replay-from ../replay-main                 # checkout 2
+```
+
+**Limits.**
+- **It compares engines and OPA, not policies:** the stored policy bundle is replayed, and a policy change makes a
+  new decision, not a replay.
+- Both checkouts ran on one machine with the same OPA. Drift between versions over time is the nightly job's
+  (`replay-nightly.yml`), which has not run: GitHub Actions cannot run on this repository yet.
+- 10 decisions, 2 of them with several violations: a narrow corpus for ordering bugs.
+
+---
+
+## Disclosures in one place
+
+- **Criteria settled after data was seen:** the rubric's `grounded` wording (after the first outputs, before any
+  rating); the ranking's package definition and the narrowed grade-3 sentence (after the first ranking, no grade
+  changed); A7's SCA package rule and RC-DOCKER-002 (after the dedup and structural scores, before any embedding
+  score).
+- **Rater blindness:** Hiba knew the judge had rated everything "yes"; Nourhane did not.
+- **Reruns:** the canaries' first run lost one output to an out-of-memory kill, and the reported run is the
+  second; the judge's reported run followed one that failed with an HTTP 500.
+- **Different inputs across pages:** detection, canaries and the rubric share one set of findings (zizmor
+  1.32.0); ranking, correlation and replay used 14 November's (zizmor 1.31.1). The 27 November run removes this.
+- **Commits inferred, not recorded:** detection, ranking and timing reports do not record their commit; it is
+  taken from each worktree's reflog.
+- **Pending review:** A7's numbers (#146, 2 should-fix).
+
+## The 27 November run
+
+SPEC section 16: "The full evaluation run on a clean checkout; its numbers committed with their input digests."
+On a clean checkout of `main` after the feature freeze (26 November), with the pinned tools and models:
+
+```bash
+make setup && make tools && make tools-verify
+uv run sentinel tools grype-db --db-dir .sentinel/grype-db
+make eval DB_DIR=.sentinel/grype-db                             # detection; writes out/eval/findings
+make eval-ranking
+make eval-replay
+make eval-timing DB_DIR=.sentinel/grype-db
+make eval-canaries OLLAMA_URL=http://127.0.0.1:11434
+make eval-explanations OLLAMA_URL=http://127.0.0.1:11434       # then each person rates alone
+make eval-rubric RATERS="hiba nourhane"
+make eval-correlation                                           # with the committed threshold.json
+```
+
+Then commit the reports with their input digests and replace every number above, and the provisional note at the
+top. The verified fix rate joins with the command that measures it. Under section 16's drop order, a metric cut
+before then is reported as not measured, never as 0.
