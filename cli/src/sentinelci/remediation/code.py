@@ -39,7 +39,7 @@ import shutil
 import subprocess
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from sentinelci.contracts.remediation import PatchProposal
@@ -90,6 +90,9 @@ class CodeChecked:
     tests_ok: bool
     problems: list[str]  # "build: <file>: <why>", then "tests: <why>"
     log: str = ""  # the end of the tests' output ("" when they did not run)
+    # Each test run that started, in order: {"selection", "label", "exit", "summary"}. Kept whole, apart from
+    # the clipped `log`, so a reader sees every run's answer (#100 review, nit 2).
+    runs: list[dict[str, str | int]] = field(default_factory=list)
 
 
 def docker_runner(args: Sequence[str], timeout: int) -> Ran:
@@ -166,8 +169,8 @@ def _answered(counts: dict[str, int], expected: int) -> bool:
     return counts.get("passed", 0) > 0 and counts.keys() <= ONLY_PASSED
 
 
-def _tests_failed(why: str, log: str = "") -> CodeChecked:
-    return CodeChecked(build_ok=True, tests_ok=False, problems=[f"tests: {why}"], log=log)
+def _tests_failed(why: str, log: str = "", runs: Sequence[dict[str, str | int]] = ()) -> CodeChecked:
+    return CodeChecked(build_ok=True, tests_ok=False, problems=[f"tests: {why}"], log=log, runs=list(runs))
 
 
 def security_test_of(rule: str) -> str:
@@ -237,6 +240,7 @@ def check_code(
     kept_tests = (base_root / service / "tests").resolve()
     kept_security = (base_root / service / SECURITY_TESTS).resolve()
     logs: list[str] = []
+    done: list[dict[str, str | int]] = []
     for label, tree, selected, expected in runs:
         name = f"sentinel-tests-{uuid.uuid4().hex}"
         args = [
@@ -249,8 +253,12 @@ def check_code(
         ran = (run or docker_runner)(args, timeout)
         logs.append(f"$ pytest {selected} ({label})\n{ran.output}")
         log = _tail("\n".join(logs))
+        said, counts = summary_of(ran.output)
+        done.append({"selection": selected, "label": label, "exit": ran.returncode, "summary": said})
         if ran.timed_out or ran.returncode in TIMED_OUT:
-            return _tests_failed(f"{label}: did not finish within {timeout} s, or ran out of memory", log)
+            return _tests_failed(
+                f"{label}: did not finish within {timeout} s, or ran out of memory", log, done
+            )
         if ran.returncode in DOCKER_FAILURES:
             raise CodeCheckError(f"the test container could not run (docker exit {ran.returncode})")
         if ran.returncode != expected:
@@ -260,8 +268,7 @@ def check_code(
                 if expected == TESTS_FAILED
                 else f"{service}/{selected} failed on the patched code (pytest exit {ran.returncode})"
             )
-            return _tests_failed(why, log)
-        said, counts = summary_of(ran.output)
+            return _tests_failed(why, log, done)
         # pytest prints one summary line: a second one was printed by the code under test (at exit, say).
         summaries = sum(1 for line in ran.output.splitlines() if SUMMARY.fullmatch(line.strip()))
         if summaries > 1 or not _answered(counts, expected):
@@ -273,5 +280,6 @@ def check_code(
                 f"{label}: pytest's summary does not show that (exit {ran.returncode}, {shown}): an early "
                 "exit, a skip or a deselection proves nothing",
                 log,
+                done,
             )
-    return CodeChecked(build_ok=True, tests_ok=True, problems=[], log=_tail("\n".join(logs)))
+    return CodeChecked(build_ok=True, tests_ok=True, problems=[], log=_tail("\n".join(logs)), runs=done)
