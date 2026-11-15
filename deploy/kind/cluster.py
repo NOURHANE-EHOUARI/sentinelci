@@ -4,21 +4,26 @@
     uv run python deploy/kind/cluster.py policy --key deploy/keys/release.pub
     uv run python deploy/kind/cluster.py down
 
-`up` starts the registry container, creates the cluster, tells containerd where the registry is, and installs
-Kyverno. `policy` renders the release admission policy with `sentinel admission-policy`'s code, for the images
-of the cluster's registry, and applies it. `down` deletes both.
+`up` issues the registry's TLS certificate, starts the registry container, creates the cluster, tells
+containerd where the registry is and which CA to trust, and installs Kyverno, trusting that CA too. `policy`
+renders the release admission policy with `sentinel admission-policy`'s code, for the images of the cluster's
+registry, and applies it. `down` deletes both.
 
 Everything `up` runs or applies is pinned: kind by sha256 in tools.lock.toml (installed and checked with
 `sentinel tools`, and verified again before it runs), the node image by digest in kind-config.yaml, the
 registry image by digest and Kyverno's install manifest by sha256 in cluster.toml. A manifest whose sha256
-differs is refused before anything is applied. Docker and kubectl come from the machine: `up` checks that the
-Docker daemon answers and that kubectl is within one minor version of the node image's Kubernetes before it
-creates anything.
+differs is refused before anything is applied. Docker, kubectl and OpenSSL come from the machine: `up` checks
+that the Docker daemon answers, that kubectl is within one minor version of the node image's Kubernetes and
+that OpenSSL 3 runs before it creates anything.
 
 The registry is published on the host's loopback only (127.0.0.1:5001). Inside the cluster's network it is
-`kind-registry:5000`, plain HTTP, and that is the name the admission policy matches: containerd on the nodes
-and Kyverno both reach it there, and `localhost:5001` is an alias of it on the nodes, so a push from the host
-and a pull in the cluster name the same images.
+`kind-registry:5000`, and that is the name the admission policy matches: containerd on the nodes and Kyverno
+both reach it there, and `localhost:5001` is an alias of it on the nodes, so a push from the host and a pull
+in the cluster name the same images. It serves TLS with a certificate for those names, issued by a CA made
+for this cluster only (`.sentinel/kind/tls`, git-ignored), whose key signs that one certificate and is
+deleted. Kyverno 1.19 fetches cosign's bundles over HTTPS whatever the policy says about insecure registries
+(kyverno/kyverno#18350, unmerged), so over plain HTTP every image was denied, signed or not (Hiba's kind run,
+#60).
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tomllib
@@ -45,6 +51,10 @@ PINS = HERE / "cluster.toml"
 CLUSTER = "sentinel"
 CONTEXT = f"kind-{CLUSTER}"
 IMAGE_GLOB = "kind-registry:5000/demo-shop/*"
+TLS_DIR = ROOT / ".sentinel" / "kind" / "tls"
+CA_CONFIG_MAP = "kind-registry-ca"  # in the kyverno namespace, mounted into its admission controller
+CA_MOUNT = "/sentinel-registry-ca"
+KYVERNO_ADMISSION = "kyverno-admission-controller"
 REPO = "NOURHANE-EHOUARI/sentinelci"
 # The builder `make release` records (ADR-0011): in the private phase every release is a laptop release. A
 # release from the CI workflow passes --builder-id (Hiba's kind run, #60: that builder refused it).
@@ -161,8 +171,16 @@ def manifest(pins: Pins, cache: Path) -> Path:
     return path
 
 
+def _node_ca(pins: Pins) -> str:
+    """Where the registry's CA certificate is on each node."""
+    return f"/etc/containerd/certs.d/{pins.registry_in_cluster}/ca.crt"
+
+
 def _hosts_toml(pins: Pins) -> str:
-    return f'[host."http://{pins.registry_in_cluster}"]\n  capabilities = ["pull", "resolve"]\n'
+    return (
+        f'[host."https://{pins.registry_in_cluster}"]\n  capabilities = ["pull", "resolve"]\n'
+        f'  ca = "{_node_ca(pins)}"\n'
+    )
 
 
 def node_version(config: Path = KIND_CONFIG) -> tuple[int, int, int]:
@@ -206,22 +224,80 @@ def check_docker(run: Run = run_command) -> None:
         raise ClusterError(f"the Docker daemon does not answer (`docker version`: {last}): start Docker")
 
 
-def up(pins: Pins, kind: str, cache: Path, run: Run = run_command) -> None:
+def check_openssl(run: Run = run_command) -> None:
+    """openssl issues the registry's certificate: it must run before anything is created."""
+    done = run(["openssl", "version"], check=False)
+    if done.returncode != 0 or not done.stdout.startswith("OpenSSL 3"):
+        raise ClusterError(
+            f"OpenSSL 3 is needed to issue the registry's certificate (`openssl version`: "
+            f"{(done.stdout or done.stderr).strip() or 'no output'})"
+        )
+
+
+def registry_tls(pins: Pins, directory: Path, run: Run = run_command) -> Path:
+    """The registry's certificate (`registry.crt`, `registry.key`) for its names in the cluster and on the
+    host, issued by a CA made for it (`ca.crt`), whose key signs this one certificate and is deleted. Kept if
+    it exists, so `up` is safe to run twice; `down` keeps it too. Returns the CA certificate."""
+    ca, cert, key = directory / "ca.crt", directory / "registry.crt", directory / "registry.key"
+    if ca.is_file() and cert.is_file() and key.is_file():
+        return ca
+    directory.mkdir(parents=True, exist_ok=True)
+    ca_key, csr, ext = directory / "ca.key", directory / "registry.csr", directory / "registry.ext"
+    ec = ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes"]
+    try:
+        run(["openssl", "req", "-x509", *ec, "-keyout", str(ca_key), "-out", str(ca), "-days", "365",
+             "-subj", "/CN=SentinelCI kind registry CA",
+             "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
+             "-addext", "keyUsage=critical,keyCertSign,cRLSign"])  # fmt: skip
+        run(["openssl", "req", *ec, "-keyout", str(key), "-out", str(csr),
+             "-subj", f"/CN={pins.registry_container}"])  # fmt: skip
+        ext.write_text(
+            f"subjectAltName=DNS:{pins.registry_container},DNS:localhost,IP:127.0.0.1\n"
+            "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n"
+            "extendedKeyUsage=serverAuth\n",
+            encoding="ascii",
+        )
+        run(["openssl", "x509", "-req", "-in", str(csr), "-CA", str(ca), "-CAkey", str(ca_key),
+             "-set_serial", str(secrets.randbits(63)), "-days", "365", "-out", str(cert),
+             "-extfile", str(ext)])  # fmt: skip
+    except ClusterError:
+        for made in (ca, cert, key):
+            made.unlink(missing_ok=True)  # a half-made set is never kept as if it were whole
+        raise
+    finally:
+        for scratch in (ca_key, csr, ext):
+            scratch.unlink(missing_ok=True)  # the CA signs this one certificate only
+    return ca
+
+
+def up(pins: Pins, kind: str, cache: Path, run: Run = run_command, *, tls: Path = TLS_DIR) -> None:
     """Registry, cluster, registry configuration on the nodes, Kyverno. What already exists is kept.
 
     Docker and kubectl are checked first, so a machine without them gets one clear error and no half-made
     cluster."""
     check_docker(run)
     check_kubectl(node_version(), run)
+    check_openssl(run)
+    ca = registry_tls(pins, tls, run)
     state = run(["docker", "inspect", "-f", "{{.State.Running}}", pins.registry_container], check=False)
     if state.returncode != 0:
         run([
             "docker", "run", "--detach", "--restart=always",
             "--publish", f"127.0.0.1:{pins.registry_port}:5000",
+            "--volume", f"{tls.resolve()}:/certs:ro",
+            "--env", "REGISTRY_HTTP_TLS_CERTIFICATE=/certs/registry.crt",
+            "--env", "REGISTRY_HTTP_TLS_KEY=/certs/registry.key",
             "--network", "bridge", "--name", pins.registry_container, pins.registry_image,
         ])  # fmt: skip
-    elif state.stdout.strip() != "true":
-        run(["docker", "start", pins.registry_container])
+    else:
+        env = run(["docker", "inspect", "-f", "{{json .Config.Env}}", pins.registry_container]).stdout
+        if "REGISTRY_HTTP_TLS_CERTIFICATE=" not in env:
+            raise ClusterError(
+                f"the registry {pins.registry_container} serves plain HTTP (an older `make kind-up`): "
+                "`make kind-down`, then `make kind-up`"
+            )
+        if state.stdout.strip() != "true":
+            run(["docker", "start", pins.registry_container])
 
     if CLUSTER not in run([kind, "get", "clusters"]).stdout.split():
         run([kind, "create", "cluster", "--name", CLUSTER, "--config", str(KIND_CONFIG), "--wait", "180s"])
@@ -229,6 +305,8 @@ def up(pins: Pins, kind: str, cache: Path, run: Run = run_command) -> None:
     # containerd resolves both names to the registry container: kind-registry:5000 (what the cluster's
     # manifests and the policy name) and localhost:5001 (what a push from the host names).
     for node in run([kind, "get", "nodes", "--name", CLUSTER]).stdout.split():
+        run(["docker", "exec", node, "mkdir", "-p", str(Path(_node_ca(pins)).parent)])
+        run(["docker", "exec", "-i", node, "cp", "/dev/stdin", _node_ca(pins)], input=ca.read_text("ascii"))
         for host in (pins.registry_in_cluster, pins.registry_on_host):
             directory = f"/etc/containerd/certs.d/{host}"
             run(["docker", "exec", node, "mkdir", "-p", directory])
@@ -246,8 +324,35 @@ def up(pins: Pins, kind: str, cache: Path, run: Run = run_command) -> None:
     kubectl = ["kubectl", "--context", CONTEXT]
     run([*kubectl, "apply", "-f", "-"], input=_registry_config_map(pins))
     run([*kubectl, "apply", "--server-side", "-f", str(manifest(pins, cache))])
+    # Kyverno reads the registry over TLS: its admission controller trusts the registry's CA too, next to
+    # the system's (SSL_CERT_DIR adds a directory; Go still reads the system bundle).
+    run([*kubectl, "apply", "-f", "-"], input=_ca_config_map(ca))
+    run([*kubectl, "--namespace", "kyverno", "patch", "deployment", KYVERNO_ADMISSION, "--type=strategic",
+         "--patch", _kyverno_trusts_the_registry()])  # fmt: skip
+    run([*kubectl, "--namespace", "kyverno", "rollout", "status", f"deployment/{KYVERNO_ADMISSION}",
+         "--timeout=300s"])  # fmt: skip
     run([*kubectl, "wait", "--namespace", "kyverno", "--for=condition=Available", "deployment", "--all",
          "--timeout=300s"])  # fmt: skip
+
+
+def _ca_config_map(ca: Path) -> str:
+    return json.dumps({
+        "apiVersion": "v1", "kind": "ConfigMap",
+        "metadata": {"name": CA_CONFIG_MAP, "namespace": "kyverno"},
+        "data": {"ca.crt": ca.read_text("ascii")},
+    })  # fmt: skip
+
+
+def _kyverno_trusts_the_registry() -> str:
+    """The admission controller's container gets the CA's ConfigMap as a directory of trusted certificates."""
+    volume = {"name": "sentinel-registry-ca", "configMap": {"name": CA_CONFIG_MAP}}
+    mount = {"name": "sentinel-registry-ca", "mountPath": CA_MOUNT, "readOnly": True}
+    container = {
+        "name": "kyverno",
+        "env": [{"name": "SSL_CERT_DIR", "value": CA_MOUNT}],
+        "volumeMounts": [mount],
+    }
+    return json.dumps({"spec": {"template": {"spec": {"volumes": [volume], "containers": [container]}}}})
 
 
 def _registry_config_map(pins: Pins) -> str:
@@ -272,7 +377,7 @@ def policy(
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(
         render_policy(
-            public_key=key, image_glob=IMAGE_GLOB, repo=repo, builder_id=builder_id, allow_http=True
+            public_key=key, image_glob=IMAGE_GLOB, repo=repo, builder_id=builder_id, allow_http=False
         ),
         encoding="utf-8",
     )

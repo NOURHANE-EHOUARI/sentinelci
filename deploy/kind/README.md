@@ -25,20 +25,31 @@ release pipeline (A4c); until then, a test key does.
 
 ## What `make kind-up` does
 
-1. Starts the registry container (`kind-registry`), published on **127.0.0.1:5001 only**.
-2. Creates the cluster `sentinel` from `kind-config.yaml` (kubectl context `kind-sentinel`). Its API server
+1. Issues the registry's TLS certificate with OpenSSL 3, once: a CA made for this cluster only signs a
+   certificate for `kind-registry`, `localhost` and `127.0.0.1`, then its key is deleted. Both certificates
+   and the registry's key stay in `.sentinel/kind/tls/` (git-ignored, never committed).
+2. Starts the registry container (`kind-registry`), published on **127.0.0.1:5001 only**, serving TLS with
+   that certificate. A registry an older `make kind-up` started over plain HTTP is refused: `make kind-down`,
+   then `make kind-up`.
+3. Creates the cluster `sentinel` from `kind-config.yaml` (kubectl context `kind-sentinel`). Its API server
    listens on 127.0.0.1.
-3. Tells containerd on each node that `kind-registry:5000` and `localhost:5001` are that registry, over plain
-   HTTP (`/etc/containerd/certs.d/<host>/hosts.toml`, pull and resolve only).
-4. Connects the registry to the cluster's network and documents it (KEP-1755's `local-registry-hosting`
+4. Tells containerd on each node that `kind-registry:5000` and `localhost:5001` are that registry, over HTTPS
+   with the cluster's CA (`/etc/containerd/certs.d/<host>/hosts.toml`, pull and resolve only).
+5. Connects the registry to the cluster's network and documents it (KEP-1755's `local-registry-hosting`
    ConfigMap).
-5. Installs Kyverno from its release manifest and waits until its deployments are available.
+6. Installs Kyverno from its release manifest, gives its admission controller the cluster's CA (a ConfigMap
+   mounted as `SSL_CERT_DIR`, next to the system's CAs), and waits until its deployments are available.
+
+**Why TLS:** Kyverno 1.19 fetches cosign's bundles over HTTPS whatever `allowInsecureRegistry` says
+([kyverno/kyverno#18350](https://github.com/kyverno/kyverno/pull/18350), not merged). Over plain HTTP, it
+read no signature and denied every image, the good release too (Hiba's kind run, #60). With TLS, the policy
+needs no insecure flag at all.
 
 **Registry names:**
-- From the host, the registry is `127.0.0.1:5001`: that is where `sentinel attest --push --registry-http`
-  pushes.
+- From the host, the registry is `127.0.0.1:5001`, over TLS: a tool that pushes or reads there trusts the
+  cluster's CA through `SSL_CERT_FILE` (a bundle of the system's CAs and `.sentinel/kind/tls/ca.crt`).
 - In the cluster, the same images are `kind-registry:5000/...`. The manifests use that name, and the admission
-  policy matches it, rendered with `--image-glob 'kind-registry:5000/demo-shop/*' --registry-http`.
+  policy matches it, rendered with `--image-glob 'kind-registry:5000/demo-shop/*'` and no insecure flag.
 - The attestations bind a release to its digest and its source repository, not to a registry host. So a
   release pushed from the host is verified by Kyverno under the cluster's name.
 

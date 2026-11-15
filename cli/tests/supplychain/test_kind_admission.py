@@ -7,12 +7,18 @@ each Pod when the API server asks it: server-side dry runs, so nothing runs. A r
 --push` attested is admitted; an unsigned image, a BLOCK decision signed with the release key, and a
 Deployment with an unsigned image are denied, each with the policy's own message.
 
+The registry serves TLS with a certificate from the cluster's own CA (`make kind-up`): the pushes from the
+host trust it through SSL_CERT_FILE (the system's CAs and that one), and Kyverno trusts it without any
+insecure flag.
+
 Opt-in: SENTINEL_KIND_CONTEXT names the cluster's kubectl context (the sentinel-kind workflow sets it) and
-SENTINEL_TOOLS_DIR the pinned tools (cosign and crane).
+SENTINEL_TOOLS_DIR the pinned tools (cosign and crane). SENTINEL_KIND_CA names the cluster's CA certificate
+(default: `.sentinel/kind/tls/ca.crt`, where `make kind-up` writes it).
 """
 
 import json
 import os
+import ssl
 import subprocess
 import time
 from collections.abc import Iterator
@@ -31,6 +37,11 @@ from .oci import TOOLS_DIR, attach, attest, make_keys, predicates, push_image
 CONTEXT = os.environ.get("SENTINEL_KIND_CONTEXT")
 HOST_REGISTRY = os.environ.get("SENTINEL_KIND_REGISTRY", "127.0.0.1:5001")
 CLUSTER_REGISTRY = "kind-registry:5000"
+KIND_CA = Path(
+    os.environ.get(
+        "SENTINEL_KIND_CA", Path(__file__).resolve().parents[3] / ".sentinel" / "kind" / "tls" / "ca.crt"
+    )
+)
 NAMESPACE = "sentinel-admission-test"
 READY_S = 240
 
@@ -71,6 +82,15 @@ def deployment(name: str, image: str) -> dict[str, Any]:
     }  # fmt: skip
 
 
+def trust(work: Path) -> Path:
+    """The CAs the host's tools trust, and the cluster's: what cosign and crane need to reach its registry."""
+    paths = ssl.get_default_verify_paths()
+    system = os.environ.get("SSL_CERT_FILE") or paths.cafile or paths.openssl_cafile
+    bundle = work / "trust.pem"
+    bundle.write_text(Path(system).read_text("ascii") + "\n" + KIND_CA.read_text("ascii"), encoding="ascii")
+    return bundle
+
+
 def admit(resource: dict[str, Any]) -> subprocess.CompletedProcess[str]:
     """A server-side dry run: every admission webhook answers, and nothing is stored or started."""
     return kubectl("create", "--dry-run=server", "-o", "name", "-f", "-", input=json.dumps(resource))
@@ -85,6 +105,7 @@ def release(crane: Path, tmp_path_factory: pytest.TempPathFactory) -> Iterator[d
         for name, value in GITHUB_ENV.items():
             env.setenv(name, value)
         env.setenv("COSIGN_PASSWORD", "")
+        env.setenv("SSL_CERT_FILE", str(trust(work)))
         keys = make_keys(work / "keys")
         good = push_image(crane, HOST_REGISTRY, work)
         (work / "good").mkdir()
@@ -99,7 +120,7 @@ def release(crane: Path, tmp_path_factory: pytest.TempPathFactory) -> Iterator[d
 
     policy = render_policy(
         public_key=keys["release.pub"], image_glob=f"{CLUSTER_REGISTRY}/demo-shop/*", repo=REPO,
-        builder_id=BUILDER, allow_http=True,
+        builder_id=BUILDER, allow_http=False,
     )  # fmt: skip
     kubectl("create", "namespace", NAMESPACE)
     applied = kubectl("apply", "-f", "-", input=policy)
@@ -155,4 +176,4 @@ def test_the_policy_rendered_for_the_cluster_matches_its_registry(release: dict[
     assert spec["matchImageReferences"] == [
         {"expression": f"ref.lowerAscii().startsWith('{CLUSTER_REGISTRY}/demo-shop/')"}
     ]
-    assert spec["credentials"]["allowInsecureRegistry"] is True
+    assert spec["credentials"]["allowInsecureRegistry"] is False, "TLS with the cluster's CA, never insecure"
