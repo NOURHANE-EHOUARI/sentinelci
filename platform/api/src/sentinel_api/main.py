@@ -24,7 +24,7 @@ from sentinel_api.remediations import router as remediations_router
 from sentinelci import __version__ as engine_version
 
 # The version of the API contract (schemas/openapi.yaml), not of the engine: it changes only with the API.
-API_VERSION = "1.8.1"
+API_VERSION = "1.8.2"
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
