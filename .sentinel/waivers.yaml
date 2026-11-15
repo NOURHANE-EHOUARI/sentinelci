@@ -1,0 +1,475 @@
+# Waivers of demo-shop's gates: every `sentinel evaluate` of demo-shop reads this file from the base commit of
+# what it judges (ADR-0008), the laptop release of shop-api included (ADR-0011). A waiver applies once it is
+# reviewed and merged, never to the change that adds it. SentinelCI's own self-gate reads
+# .sentinel/self-gate-waivers.yaml instead, so neither file applies to the other.
+#
+# The `base-` waivers below cover the Debian packages of the official python:3.12.16-slim-trixie image under
+# shop-api's release image (decision of 14 November: no change to the risk score, no `apt-get upgrade` in the
+# Dockerfile). They were drafted from the first release run on main (def5da7, 15 November, BLOCK SC-002 on 77
+# P0 findings, all of them Debian packages of that image), one per vulnerability and package: 14 days when Debian
+# has a fix that the official image does not have yet, 30 days when Debian publishes none (won't-fix). A seed is
+# never waived: the BLOCK image (requirements.block.txt, pyyaml 5.3.1, GT-CONTAINER-001) must always block.
+version: 1
+waivers:
+  - id: base-CVE-2025-69720-libncursesw6
+    vulnerability: CVE-2025-69720
+    purl: "pkg:deb/debian/libncursesw6"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2025-69720-libtinfo6
+    vulnerability: CVE-2025-69720
+    purl: "pkg:deb/debian/libtinfo6"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2025-69720-ncurses-base
+    vulnerability: CVE-2025-69720
+    purl: "pkg:deb/debian/ncurses-base"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2025-69720-ncurses-bin
+    vulnerability: CVE-2025-69720
+    purl: "pkg:deb/debian/ncurses-bin"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-102010-gcc-14-base
+    vulnerability: CVE-2026-102010
+    purl: "pkg:deb/debian/gcc-14-base"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-102010-libgcc-s1
+    vulnerability: CVE-2026-102010
+    purl: "pkg:deb/debian/libgcc-s1"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-102010-libstdc-2B-2B6
+    vulnerability: CVE-2026-102010
+    purl: "pkg:deb/debian/libstdc%2B%2B6"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-107496-libssl3t64
+    vulnerability: CVE-2026-107496
+    purl: "pkg:deb/debian/libssl3t64"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-107496-openssl
+    vulnerability: CVE-2026-107496
+    purl: "pkg:deb/debian/openssl"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-107496-openssl-provider-legacy
+    vulnerability: CVE-2026-107496
+    purl: "pkg:deb/debian/openssl-provider-legacy"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-119373-libsqlite3-0
+    vulnerability: CVE-2026-119373
+    purl: "pkg:deb/debian/libsqlite3-0"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-119374-libsqlite3-0
+    vulnerability: CVE-2026-119374
+    purl: "pkg:deb/debian/libsqlite3-0"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-119379-libsqlite3-0
+    vulnerability: CVE-2026-119379
+    purl: "pkg:deb/debian/libsqlite3-0"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-19499-libc-bin
+    vulnerability: CVE-2026-19499
+    purl: "pkg:deb/debian/libc-bin"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-19499-libc6
+    vulnerability: CVE-2026-19499
+    purl: "pkg:deb/debian/libc6"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-5435-libc-bin
+    vulnerability: CVE-2026-5435
+    purl: "pkg:deb/debian/libc-bin"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-5435-libc6
+    vulnerability: CVE-2026-5435
+    purl: "pkg:deb/debian/libc6"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-54369-libacl1
+    vulnerability: CVE-2026-54369
+    purl: "pkg:deb/debian/libacl1"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-54370-libacl1
+    vulnerability: CVE-2026-54370
+    purl: "pkg:deb/debian/libacl1"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-76642-bsdutils
+    vulnerability: CVE-2026-76642
+    purl: "pkg:deb/debian/bsdutils"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-76642-libblkid1
+    vulnerability: CVE-2026-76642
+    purl: "pkg:deb/debian/libblkid1"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-76642-liblastlog2-2
+    vulnerability: CVE-2026-76642
+    purl: "pkg:deb/debian/liblastlog2-2"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-76642-libmount1
+    vulnerability: CVE-2026-76642
+    purl: "pkg:deb/debian/libmount1"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-76642-libsmartcols1
+    vulnerability: CVE-2026-76642
+    purl: "pkg:deb/debian/libsmartcols1"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-76642-libuuid1
+    vulnerability: CVE-2026-76642
+    purl: "pkg:deb/debian/libuuid1"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-76642-login
+    vulnerability: CVE-2026-76642
+    purl: "pkg:deb/debian/login"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-76642-mount
+    vulnerability: CVE-2026-76642
+    purl: "pkg:deb/debian/mount"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-76642-util-linux
+    vulnerability: CVE-2026-76642
+    purl: "pkg:deb/debian/util-linux"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-76844-zlib1g
+    vulnerability: CVE-2026-76844
+    purl: "pkg:deb/debian/zlib1g"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Fixed in Debian, not yet in the official python:3.12.16-slim-trixie image; remove it at the first rebuilt digest."
+    expires_at: "2026-11-29T18:00:48Z"
+  - id: base-CVE-2026-78408-bsdutils
+    vulnerability: CVE-2026-78408
+    purl: "pkg:deb/debian/bsdutils"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78408-libblkid1
+    vulnerability: CVE-2026-78408
+    purl: "pkg:deb/debian/libblkid1"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78408-liblastlog2-2
+    vulnerability: CVE-2026-78408
+    purl: "pkg:deb/debian/liblastlog2-2"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78408-libmount1
+    vulnerability: CVE-2026-78408
+    purl: "pkg:deb/debian/libmount1"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78408-libsmartcols1
+    vulnerability: CVE-2026-78408
+    purl: "pkg:deb/debian/libsmartcols1"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78408-libuuid1
+    vulnerability: CVE-2026-78408
+    purl: "pkg:deb/debian/libuuid1"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78408-login
+    vulnerability: CVE-2026-78408
+    purl: "pkg:deb/debian/login"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78408-mount
+    vulnerability: CVE-2026-78408
+    purl: "pkg:deb/debian/mount"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78408-util-linux
+    vulnerability: CVE-2026-78408
+    purl: "pkg:deb/debian/util-linux"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78409-bsdutils
+    vulnerability: CVE-2026-78409
+    purl: "pkg:deb/debian/bsdutils"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78409-libblkid1
+    vulnerability: CVE-2026-78409
+    purl: "pkg:deb/debian/libblkid1"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78409-liblastlog2-2
+    vulnerability: CVE-2026-78409
+    purl: "pkg:deb/debian/liblastlog2-2"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78409-libmount1
+    vulnerability: CVE-2026-78409
+    purl: "pkg:deb/debian/libmount1"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78409-libsmartcols1
+    vulnerability: CVE-2026-78409
+    purl: "pkg:deb/debian/libsmartcols1"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78409-libuuid1
+    vulnerability: CVE-2026-78409
+    purl: "pkg:deb/debian/libuuid1"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78409-login
+    vulnerability: CVE-2026-78409
+    purl: "pkg:deb/debian/login"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78409-mount
+    vulnerability: CVE-2026-78409
+    purl: "pkg:deb/debian/mount"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78409-util-linux
+    vulnerability: CVE-2026-78409
+    purl: "pkg:deb/debian/util-linux"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78410-bsdutils
+    vulnerability: CVE-2026-78410
+    purl: "pkg:deb/debian/bsdutils"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78410-libblkid1
+    vulnerability: CVE-2026-78410
+    purl: "pkg:deb/debian/libblkid1"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78410-liblastlog2-2
+    vulnerability: CVE-2026-78410
+    purl: "pkg:deb/debian/liblastlog2-2"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78410-libmount1
+    vulnerability: CVE-2026-78410
+    purl: "pkg:deb/debian/libmount1"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78410-libsmartcols1
+    vulnerability: CVE-2026-78410
+    purl: "pkg:deb/debian/libsmartcols1"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78410-libuuid1
+    vulnerability: CVE-2026-78410
+    purl: "pkg:deb/debian/libuuid1"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78410-login
+    vulnerability: CVE-2026-78410
+    purl: "pkg:deb/debian/login"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78410-mount
+    vulnerability: CVE-2026-78410
+    purl: "pkg:deb/debian/mount"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-78410-util-linux
+    vulnerability: CVE-2026-78410
+    purl: "pkg:deb/debian/util-linux"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-82560-perl-base
+    vulnerability: CVE-2026-82560
+    purl: "pkg:deb/debian/perl-base"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-84243-libc-bin
+    vulnerability: CVE-2026-84243
+    purl: "pkg:deb/debian/libc-bin"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-84243-libc6
+    vulnerability: CVE-2026-84243
+    purl: "pkg:deb/debian/libc6"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-85091-zlib1g
+    vulnerability: CVE-2026-85091
+    purl: "pkg:deb/debian/zlib1g"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Fixed in Debian, not yet in the official python:3.12.16-slim-trixie image; remove it at the first rebuilt digest."
+    expires_at: "2026-11-29T18:00:48Z"
+  - id: base-CVE-2026-88822-libssl3t64
+    vulnerability: CVE-2026-88822
+    purl: "pkg:deb/debian/libssl3t64"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-88822-openssl
+    vulnerability: CVE-2026-88822
+    purl: "pkg:deb/debian/openssl"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-88822-openssl-provider-legacy
+    vulnerability: CVE-2026-88822
+    purl: "pkg:deb/debian/openssl-provider-legacy"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-88823-libssl3t64
+    vulnerability: CVE-2026-88823
+    purl: "pkg:deb/debian/libssl3t64"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-88823-openssl
+    vulnerability: CVE-2026-88823
+    purl: "pkg:deb/debian/openssl"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-88823-openssl-provider-legacy
+    vulnerability: CVE-2026-88823
+    purl: "pkg:deb/debian/openssl-provider-legacy"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-91094-dpkg
+    vulnerability: CVE-2026-91094
+    purl: "pkg:deb/debian/dpkg"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-9538-perl-base
+    vulnerability: CVE-2026-9538
+    purl: "pkg:deb/debian/perl-base"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-95619-gcc-14-base
+    vulnerability: CVE-2026-95619
+    purl: "pkg:deb/debian/gcc-14-base"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-95619-libgcc-s1
+    vulnerability: CVE-2026-95619
+    purl: "pkg:deb/debian/libgcc-s1"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-95619-libstdc-2B-2B6
+    vulnerability: CVE-2026-95619
+    purl: "pkg:deb/debian/libstdc%2B%2B6"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-95691-libssl3t64
+    vulnerability: CVE-2026-95691
+    purl: "pkg:deb/debian/libssl3t64"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-95691-openssl
+    vulnerability: CVE-2026-95691
+    purl: "pkg:deb/debian/openssl"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-95691-openssl-provider-legacy
+    vulnerability: CVE-2026-95691
+    purl: "pkg:deb/debian/openssl-provider-legacy"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-95692-libssl3t64
+    vulnerability: CVE-2026-95692
+    purl: "pkg:deb/debian/libssl3t64"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-95692-openssl
+    vulnerability: CVE-2026-95692
+    purl: "pkg:deb/debian/openssl"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
+  - id: base-CVE-2026-95692-openssl-provider-legacy
+    vulnerability: CVE-2026-95692
+    purl: "pkg:deb/debian/openssl-provider-legacy"
+    owner: "@NOURHANE-EHOUARI"
+    justification: "Debian publishes no fix (won't-fix) for this base package of the official Python image; revisit at expiry, or earlier with a slimmer base."
+    expires_at: "2026-12-15T18:00:48Z"
