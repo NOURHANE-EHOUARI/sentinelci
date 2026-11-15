@@ -169,6 +169,14 @@ def report(
     """The measurement. `checkouts` (recorded, replayed) when the recording came from another checkout: only
     then may a decision be skipped (recorded with another engine or OPA version) and left out of the count."""
     results = replayed["results"]
+    # Every decision in the store must be listed in the recording: an unlisted one is replayed but not
+    # counted, so a decision that differs could hide there (#139 review). A no-op in one run.
+    unlisted = sorted(set(results) - {entry["decision_id"] for entry in recorded.values()})
+    if unlisted:
+        raise EvalError(
+            f"the store holds {len(unlisted)} decision(s) the recording does not list "
+            f"({', '.join(unlisted[:3])}): record again into an empty directory"
+        )
     decisions = {
         name: {"decision_id": entry["decision_id"], "verdict": entry["verdict"],
                "replay": results.get(entry["decision_id"], "not replayed")}

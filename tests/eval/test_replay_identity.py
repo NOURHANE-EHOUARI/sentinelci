@@ -240,3 +240,11 @@ def test_a_checkout_with_uncommitted_changes_says_so(tmp_path: Path, monkeypatch
     assert clean["clean"] is True and len(clean["commit"]) == 40
     (tmp_path / "b.txt").write_text("b\n", encoding="utf-8")
     assert run.checkout() == {"commit": clean["commit"], "clean": False}
+
+
+def test_a_store_decision_the_recording_does_not_list_is_refused() -> None:
+    """Replayed but not counted, a decision that differs would hide: store and recording must agree."""
+    recorded = {"a": {"decision_id": A, "verdict": "BLOCK"}}
+    replayed = {"results": {A: "identical", B: "differs"}, "summary": {"identical": 1, "differ": 1}}
+    with pytest.raises(run.EvalError, match=f"does not list \\({B}\\)"):
+        run.report(recorded, replayed)

@@ -47,7 +47,8 @@ changes it. The report names both commits. A decision is replayed from its store
 bundle, so this compares engines and OPA, not policies: a policy change is a new decision, not a replay.
 Decisions the replaying engine skips (another engine or OPA version) are listed and not compared; if all are
 skipped, nothing is measured and the run exits 2. In one run nothing may be skipped, so there a skip counts as
-a failure.
+a failure. The store and `recorded.json` must list the same decisions: one in the store that the
+recording doesn't list would be replayed and not counted, so the run refuses it (exit 2).
 
 What it saw, recorded on this branch and replayed on it with today's `main` merged in:
 - 10 of 10 identical (no engine change between the two);
