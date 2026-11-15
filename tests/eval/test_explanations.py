@@ -44,6 +44,18 @@ TRUTH = {
          "expected": {"detections": [{"tool": "trivy", "rule": "CVE-2099-0002"}]}},
     ],
 }  # fmt: skip
+SAST = SECRET | {
+    "id": "a" * 64, "category": "SAST", "tool": {"name": "opengrep", "version": "1.0.0"},
+    "rule_id": "python-example", "title": "an example weakness",
+}  # fmt: skip
+SAST_TRUTH = {
+    "version": 1,
+    "seeds": [
+        {"id": "GT-SAST-900", "category": "SAST", "title": "an example weakness",
+         "location": {"path": "services/shop-api/app/config.py", "line": 12},
+         "expected": {"detections": [{"tool": "opengrep", "rule": "python-example"}]}},
+    ],
+}  # fmt: skip
 ANSWER = {
     "summary": "example-lib 1.2.0 runs code from crafted input.",
     "impact": "An attacker who controls the input runs code as the service.",
@@ -104,7 +116,7 @@ def test_kappa_needs_the_same_items_rated() -> None:
 
 @pytest.mark.parametrize(
     ("kappa", "label"),
-    [(None, "undefined"), (-0.1, "poor"), (0.1, "slight"), (0.3, "fair"), (0.5, "moderate"),
+    [(None, "undefined"), (-0.1, "poor"), (0.0, "slight"), (0.1, "slight"), (0.3, "fair"), (0.5, "moderate"),
      (0.7, "substantial"), (0.9, "almost perfect")],
 )  # fmt: skip
 def test_kappa_is_named_on_landis_and_kochs_scale(kappa: float | None, label: str) -> None:
@@ -159,6 +171,38 @@ def test_the_judge_rates_every_item_with_the_rubric_and_writes_a_sheet(tmp_path:
     assert "untrusted" in system
 
 
+def test_the_sheet_and_the_judge_get_the_code_the_explainer_saw(tmp_path: Path) -> None:
+    """`grounded` and `fix` are judged against the code shown (#143 review): the sheet keeps the window the
+    explainer was sent, and the judge is sent the same block."""
+    repo = tmp_path / "repo"
+    source = repo / SAST["location"]["path"]
+    source.parent.mkdir(parents=True)
+    source.write_text("".join(f"line_{n} = {n}\n" for n in range(1, 31)), encoding="utf-8")
+    out = tmp_path / "out"
+    explainer = Scripted(ANSWER)
+    run.generate(SAST_TRUTH, [SAST], explainer, run.ModelInfo("fake-model"), out, repo_root=repo)
+    sheet = yaml.safe_load((out / "sheet.yaml").read_text(encoding="utf-8"))
+    code = sheet["items"][0]["code"]
+    assert code == run.code_window(run.Finding.model_validate(SAST), repo, [run.Finding.model_validate(SAST)])
+    assert {"n": 12, "text": "line_12 = 12", "flagged": True} in code
+    sent = run.block("code", code)
+    assert sent in explainer.calls[0][1], "the explainer was sent this block"
+    judge = Scripted(YES)
+    run.judge(out, judge, run.ModelInfo("judge-model"))
+    system, user = judge.calls[0]
+    assert sent in user, "the judge is sent the same block"
+    assert "<code>" in system and "untrusted" in system
+
+
+def test_without_code_the_sheet_says_so_and_the_judge_gets_no_code_block(tmp_path: Path) -> None:
+    run.generate(SAST_TRUTH, [SAST], Scripted(ANSWER), run.ModelInfo("fake-model"), tmp_path)
+    sheet = yaml.safe_load((tmp_path / "sheet.yaml").read_text(encoding="utf-8"))
+    assert sheet["items"][0]["code"] is None
+    judge = Scripted(YES)
+    run.judge(tmp_path, judge, run.ModelInfo("judge-model"))
+    assert "<code>" not in judge.calls[0][1]
+
+
 # ---------------------------------------------------------------- report
 
 
@@ -196,6 +240,7 @@ def test_the_report_gives_pass_rates_and_kappa_per_criterion_and_pooled(tmp_path
     assert data["kappa"]["hiba vs nourhane"]["pooled"] == 1.0
     text = run.markdown(data)
     assert "| hiba vs nourhane | 1.00 (almost perfect)" in text
+    assert "pooled: the four criteria's answers as one sequence of 4 x 2 items" in text
     assert "undefined" in text
 
 
@@ -228,6 +273,18 @@ def test_a_sheet_of_other_explanations_is_refused(tmp_path: Path) -> None:
     sheet["items"][0]["explanation"]["summary"] = "something else"
     (tmp_path / "ratings-nourhane.yaml").write_text(yaml.safe_dump(sheet), encoding="utf-8")
     with pytest.raises(run.EvalError, match="GT-SCA-900: nourhane rated another explanation"):
+        run.report(tmp_path, ["hiba", "nourhane"], None)
+
+
+def test_a_sheet_rated_with_other_code_is_refused(tmp_path: Path) -> None:
+    """The code shown is part of what is rated: a sheet that shows other code rates something else."""
+    two_item_run(tmp_path)
+    write_sheet(tmp_path, "hiba", [YES, NO])
+    write_sheet(tmp_path, "nourhane", [YES, NO])
+    sheet = yaml.safe_load((tmp_path / "ratings-nourhane.yaml").read_text(encoding="utf-8"))
+    sheet["items"][1]["code"] = [{"n": 1, "text": "something else"}]
+    (tmp_path / "ratings-nourhane.yaml").write_text(yaml.safe_dump(sheet), encoding="utf-8")
+    with pytest.raises(run.EvalError, match="GT-SCA-901: nourhane rated it with other code"):
         run.report(tmp_path, ["hiba", "nourhane"], None)
 
 
