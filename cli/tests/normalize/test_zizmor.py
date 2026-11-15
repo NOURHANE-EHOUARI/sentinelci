@@ -2,7 +2,7 @@
 
 The fixture is zizmor 1.31.1's real output on the demo workflow seeds (GT-PIPELINE-001 to 003 and the clean
 control), audited from `demo-shop/` with the flags `sentinel scan pipelines` uses, so its paths are the
-ground truth's (`examples/bad-workflows/...`).
+ground truth's (`examples/bad-workflows/...`). zizmor 1.32.0 gives the same 11 findings, ids included.
 """
 
 import copy
