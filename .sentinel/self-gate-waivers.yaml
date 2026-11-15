@@ -55,3 +55,12 @@ waivers:
       ai/tests/test_analyst.py, line 395: `UNKNOWN_SECRET`, a fake value in a shape `redact` does not know, which
       the test needs to look like a secret (the answer that quotes it is refused). No credential is in it.
     expires_at: "2027-01-31T00:00:00Z"
+  - id: self-2026-008
+    finding_id: b588c996b13cb87416a455dfb6e65076ddfd0bfed212ed5698635133cb918886
+    owner: "@NOURHANE-EHOUARI"
+    justification: >-
+      ai/tests/test_correlate_labels.py, lines 216 to 414: fake RSA private-key PEM headers around a body built at
+      run time (`fake_token("MII", 40)`), the cases that `redact` removes a key and a key cut by its scanner. There
+      is no key in it. Gitleaks' match runs from line 216's header to line 414's, so an edit between those lines
+      gives a new fingerprint: the self-gate then blocks again until it is waived again.
+    expires_at: "2027-01-31T00:00:00Z"
