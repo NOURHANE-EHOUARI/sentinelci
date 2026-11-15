@@ -1,6 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help setup check lint format typecheck imports policy test zizmor web eval tools tools-verify compose-env up down \
-	remediate-code release release-block release-key self-gate release-sentinelci
+	eval-correlation eval-correlation-calibrate remediate-code release release-block release-key self-gate \
+	release-sentinelci
 
 # OPA is a pinned binary, not a Python package: `uv run sentinel tools install opa` (tools.lock.toml).
 OPA ?= $(or $(SENTINEL_OPA),opa)
@@ -50,6 +51,13 @@ web: ## Dashboard: locked install (no package scripts), typed client up to date,
 EVAL_TOOLS ?= $(or $(SENTINEL_TOOLS_DIR),.sentinel/tools)
 eval: ## Detection report of demo-shop (B8): out/eval/detection.json and detection.md
 	uv run python eval/detection/run.py --tools-dir $(EVAL_TOOLS) $(if $(DB_DIR),--db-dir $(DB_DIR))
+
+# The correlator on make eval's findings (A7), with the pinned embedding model on a local Ollama (ADR-0009).
+eval-correlation: ## Correlation on demo-shop's test half (A7): out/eval/correlation.json and .md, after make eval
+	uv run python eval/correlation/run.py
+
+eval-correlation-calibrate: ## Calibrate stage 2b on the calibration half (A7): eval/correlation/threshold.json
+	uv run python eval/correlation/run.py --calibrate
 
 tools: ## Download, hash-check and install the pinned scanners into .sentinel/tools
 	uv run sentinel tools install
