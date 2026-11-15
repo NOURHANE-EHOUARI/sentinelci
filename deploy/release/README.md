@@ -50,21 +50,22 @@ before the gate decides.
 SPEC principle P4, practice what we preach: the same release gate, on SentinelCI's own tree.
 
 ```bash
-git switch --detach v1.0.0     # the pipeline: the last release (or any reviewed commit of main, named)
+git switch --detach v1.0.0     # the pipeline: the last release (or a commit main was at, named)
 make self-gate                 # judges origin's main; out/self-gate/evidence: the decision and its inputs
 make self-gate PIPELINE=$(git rev-parse HEAD)   # when HEAD is no release tag, name it on purpose
 ```
 
 The commit judged is not the one that judges, as in the workflow (ADR-0008). The checkout is the **pipeline
-commit**: clean, a reviewed commit of `main` (an ancestor of `origin/main`), and a release tag `vX.Y.Z` or named
-with `PIPELINE=<HEAD>`. Its CLI, policies, `tools.lock.toml` and `.sentinel/self-gate-waivers.yaml` decide. The
-**target** is `origin/main`, fetched now. Its own files (exported from the commit and checked blob by blob)
-are scanned without `demo-shop/`, the intentionally vulnerable target, which its own workflow gates. The five
-scanners of the gate run on them: Gitleaks, Opengrep, Trivy, zizmor, and Grype on the SBOM of the lockfiles
-(so it needs Grype's database, like a release). So a change cannot bring the waiver, the policy or the lock
-entry that lets it through: those count once they are in a pipeline commit. The pipeline files changed between
-the two commits are printed and kept in `evidence/pipeline.json`. A target that is its own pipeline (named on
-purpose) says so: that decision shows the commit passes its own gate, not one it did not write.
+commit**: clean, a commit `main` was at (on `origin/main`'s first-parent line, so not a commit of a branch merged
+into it), and a release tag `vX.Y.Z` or named with `PIPELINE=<HEAD>`. Its CLI, policies, `tools.lock.toml` and
+`.sentinel/self-gate-waivers.yaml` decide. The **target** is `origin/main`, fetched now. Its own files (exported
+from the commit and checked blob by blob) are scanned without `demo-shop/`, the intentionally vulnerable target,
+which its own workflow gates. The five scanners of the gate run on them: Gitleaks, Opengrep, Trivy, zizmor, and
+Grype on the SBOM of the lockfiles (so it needs Grype's database, like a release). So a change cannot bring the
+waiver, the policy or the lock entry that lets it through: those count once they are in a pipeline commit. The
+pipeline files changed between the two commits are printed and kept in `evidence/pipeline.json`. A target that is
+its own pipeline (named on purpose) says so: that decision shows the commit passes its own gate, not one it did not
+write.
 
 The waivers are always named to `sentinel evaluate` and kept with the evidence (an empty file when the pipeline
 has none); they are apart from `.sentinel/waivers.yaml`, which demo-shop's gates read. The VEX is
@@ -124,6 +125,16 @@ read the verdict, which must be `PASS` or `WARN`, and the commit judged, which m
 jq -r '.dsseEnvelope.payload | @base64d | fromjson | .predicate | .verdict, .subject.commit' \
   sentinelci-1.0.0-py3-none-any.whl.decision.sigstore.json
 git rev-parse 'v1.0.0^{commit}'
+```
+
+The signed provenance names the pipeline commit that judged the release (`pipeline.json` in the evidence says
+it too, but no signature covers that file). Compare it with the tag's commit: if they are equal, the release
+was judged by itself, which shows only that the commit passes its own gate (ADR-0011, decision 8).
+
+```bash
+jq -r '.dsseEnvelope.payload | @base64d | fromjson
+       | .predicate.buildDefinition.internalParameters.gatePipeline.gitCommit' \
+  sentinelci-1.0.0-py3-none-any.whl.provenance.sigstore.json
 ```
 
 (`--insecure-ignore-tlog=true` because nothing goes to the public transparency log while the repository is

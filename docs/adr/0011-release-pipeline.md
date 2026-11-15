@@ -122,10 +122,12 @@ registry (ADR-0006, decision 4). Facts checked with the pinned tools on 2026-11-
    by their base commit's pipeline (ADR-0008). SentinelCI's own pull requests have no such gate yet (the
    self-gate workflow comes after Dec 1), so `release.py self-gate` and `release.py sentinelci` split the two
    roles:
-   - the **pipeline commit** is the checkout: clean, an ancestor of `origin/main`, and a release tag `vX.Y.Z`
-     or named on purpose (`--pipeline <HEAD>`). Its CLI, `policies/`, `tools.lock.toml`,
-     `.sentinel/self-gate-waivers.yaml` and `deploy/release/build-constraints.txt` decide and build, read from
-     its blobs;
+   - the **pipeline commit** is the checkout: clean, on `origin/main`'s first-parent line (a commit `main` was
+     at, not one of a branch merged into it), and a release tag `vX.Y.Z` or named on purpose
+     (`--pipeline <HEAD>`). Its CLI, `policies/` and `tools.lock.toml` decide from its clean checkout (the
+     preconditions of `make release`: no index flag, no ignored gate input, every tracked file HEAD's blob);
+     `.sentinel/self-gate-waivers.yaml`, `.sentinel/self-gate-vex.json` and
+     `deploy/release/build-constraints.txt` are read from its blobs;
    - the **target** is `origin/main`, fetched now, exported blob by blob, scanned, judged and, for a release,
      built and tagged. A waiver, a policy or a lock entry added with a change counts only once it is in a
      pipeline commit;

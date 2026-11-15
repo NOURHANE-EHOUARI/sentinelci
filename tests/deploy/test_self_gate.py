@@ -235,6 +235,30 @@ def test_a_pipeline_that_is_not_on_main_is_refused(repo: Path, tmp_path: Path) -
     assert not recorder.named("sentinel")
 
 
+def test_a_commit_of_a_branch_merged_into_main_is_no_pipeline(repo: Path, tmp_path: Path) -> None:
+    """#95 review, nit 3: an ancestor of origin/main is not enough. A commit of a merged branch was never
+    main's state; only main's first-parent line was."""
+    branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    git(repo, "checkout", "--quiet", "-b", "merged")
+    commit(repo, {"policies/gate.rego": "package sentinel.gate\ndecision := {}\n"})
+    merged = head(repo)
+    git(repo, "checkout", "--quiet", branch)
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "merge", "--quiet", "--no-ff",
+        "-m", "merge", "merged")  # fmt: skip
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(repo, "checkout", "--quiet", "--detach", merged)
+    git(repo, "merge-base", "--is-ancestor", merged, "refs/remotes/origin/main")  # an ancestor all the same
+    recorder = Recorder(repo)
+    FakeCli(recorder)
+    with pytest.raises(release.ReleaseError, match="first-parent line"):
+        self_gate(repo, tmp_path, recorder)()
+    assert not recorder.named("sentinel")
+    git(repo, "checkout", "--quiet", "--detach", "refs/remotes/origin/main^1")
+    recorder = Recorder(repo)
+    FakeCli(recorder)
+    assert self_gate(repo, tmp_path, recorder)() == release.EXIT_RELEASED, "main's commit before the merge"
+
+
 def test_the_pipelines_vex_is_named_and_demo_shops_never_read(repo: Path, tmp_path: Path) -> None:
     vex = '{"statements": []}\n'
     commit(repo, {".sentinel/self-gate-vex.json": vex})
@@ -252,6 +276,47 @@ def test_the_pipelines_vex_is_named_and_demo_shops_never_read(repo: Path, tmp_pa
     FakeCli(recorder)
     with pytest.raises(release.ReleaseError, match="would be read by default"):
         self_gate(repo, tmp_path, recorder)()
+
+
+def test_the_targets_vex_is_never_named(repo: Path, tmp_path: Path) -> None:
+    """#95 review, nit 1: the target's `.sentinel/self-gate-vex.json` is scanned, never read as the VEX."""
+    advance_main(repo, {".sentinel/self-gate-vex.json": '{"statements": [{"status": "not_affected"}]}\n'})
+    recorder = Recorder(repo)
+    FakeCli(recorder)
+    assert self_gate(repo, tmp_path, recorder)() == release.EXIT_RELEASED
+    assert "--vex" not in recorder.named("sentinel evaluate")[0].args, "the pipeline has none"
+    vex = '{"statements": []}\n'
+    commit(repo, {".sentinel/self-gate-vex.json": vex})
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    advance_main(repo, {".sentinel/self-gate-vex.json": '{"statements": [{"status": "fixed"}]}\n'})
+    recorder = Recorder(repo)
+    FakeCli(recorder)
+    gate = self_gate(repo, tmp_path, recorder)
+    assert gate() == release.EXIT_RELEASED
+    named = Path(recorder.named("sentinel evaluate")[0].option("--vex"))
+    assert (gate.out / "evidence" / named.name).read_text() == vex, "the pipeline's, not the target's"
+
+
+def test_every_lock_is_the_pipeline_checkouts(repo: Path, tmp_path: Path) -> None:
+    """#95 review, nit 1: a lock the target brings is scanned like any file, never used to verify a tool."""
+    advance_main(repo, {"tools.lock.toml": "# the target's own lock\n"})
+    recorder = Recorder(repo)
+    FakeCli(recorder)
+    assert self_gate(repo, tmp_path, recorder)() == release.EXIT_RELEASED
+    locks = [call.option("--lock") for call in recorder.calls if "--lock" in call.args]
+    assert len(locks) >= len(release.SELF_SCANS) + 1, "every scan and the OPA check name a lock"
+    assert set(locks) == {str(repo / "tools.lock.toml")}
+
+
+def test_a_pipeline_file_that_is_a_link_is_never_read(repo: Path, tmp_path: Path) -> None:
+    """#95 review, nit 1: the waivers or the VEX are read from the pipeline commit's blob, never through a
+    link, which would read a file outside the commit."""
+    (repo / ".sentinel" / "self-gate-waivers.yaml").unlink()
+    (repo / ".sentinel" / "self-gate-waivers.yaml").symlink_to("/etc/hostname")
+    commit(repo, {})
+    with pytest.raises(release.ReleaseError, match="is not a file in"):
+        release.from_commit(head(repo), release.SELF_WAIVERS, tmp_path / "waivers.yaml", Recorder(repo))
+    assert not (tmp_path / "waivers.yaml").exists()
 
 
 def test_a_decision_about_an_image_is_refused(repo: Path, tmp_path: Path) -> None:

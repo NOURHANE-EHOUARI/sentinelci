@@ -44,14 +44,14 @@ bundle). With --expect-block (`make release-block`, the demo's BLOCK image), 0 m
 
 `self-gate` (`make self-gate`, A10, SPEC principle P4) runs the same release gate on SentinelCI itself, and
 like the workflow (ADR-0008) the commit judged is not the one that judges (#95 review). The checkout is the
-pipeline commit: clean, a reviewed commit of main, and a release tag `vX.Y.Z` or named on purpose with
-`--pipeline <HEAD>`; its CLI, policies, tool lock and `.sentinel/self-gate-waivers.yaml` decide. The target is
-origin's main, fetched now: its own files without demo-shop (exported from the commit and checked blob by
-blob, so no export attribute can hide or rewrite one), scanned by the gate's five scanners (secrets, SAST,
-IaC, CI workflows, and Grype on the SBOM of the lockfiles), then `sentinel evaluate --context release` with
-the waivers (and VEX) always named. The pipeline files changed between the two are printed and kept with the
-evidence. The decision and its evidence go to `out/self-gate/evidence`; nothing is signed. Exit 0: PASS or
-WARN; 1: BLOCK; 3: no decision.
+pipeline commit: clean, a commit main was at (on its first-parent line), and a release tag `vX.Y.Z` or named
+on purpose with `--pipeline <HEAD>`; its CLI, policies, tool lock and `.sentinel/self-gate-waivers.yaml`
+decide. The target is origin's main, fetched now: its own files without demo-shop (exported from the commit
+and checked blob by blob, so no export attribute can hide or rewrite one), scanned by the gate's five scanners
+(secrets, SAST, IaC, CI workflows, and Grype on the SBOM of the lockfiles), then `sentinel evaluate --context
+release` with the waivers (and VEX) always named. The pipeline files changed between the two are printed and
+kept with the evidence. The decision and its evidence go to `out/self-gate/evidence`; nothing is signed. Exit
+0: PASS or WARN; 1: BLOCK; 3: no decision.
 
 `sentinelci --version X.Y.Z` (`make release-sentinelci VERSION=X.Y.Z`, A10) releases SentinelCI itself,
 origin's main judged by the pipeline commit as above: the self-gate first (a BLOCK builds nothing), then the
@@ -311,8 +311,9 @@ class Pipeline:
 def pipeline_preconditions(
     run: Runner, *, fetch: bool, environ: Mapping[str, str], named: str | None
 ) -> Pipeline:
-    """The pipeline commit (HEAD, clean, a reviewed commit of main: a release tag, or named on purpose with
-    --pipeline) and the target (origin's main, fetched now)."""
+    """The pipeline commit (HEAD, clean, a commit main was at: on origin/main's first-parent line, not only an
+    ancestor, which a merged branch's commits are too; a release tag, or named on purpose with --pipeline) and
+    the target (origin's main, fetched now)."""
     checkout_is_clean(run, environ=environ)
     if fetch:
         run(["git", "fetch", "--quiet", "--no-tags", "origin", f"+{MAIN}:refs/remotes/origin/main"])
@@ -322,9 +323,10 @@ def pipeline_preconditions(
     ).stdout.strip()
     if not _COMMIT.fullmatch(head) or not _COMMIT.fullmatch(target):
         raise ReleaseError(f"HEAD is {head}, origin/main is {target or 'unknown'}: fetch origin's main first")
-    if run(["git", "merge-base", "--is-ancestor", head, target], check=False).returncode != 0:
+    if head not in run(["git", "rev-list", "--first-parent", target]).stdout.split():
         raise ReleaseError(
-            f"HEAD {head} is not on origin/main: the pipeline must be a reviewed commit of main (ADR-0008)"
+            f"HEAD {head} is not on origin/main (its first-parent line): the pipeline must be a commit main "
+            "was at, not one of a branch merged into it (ADR-0008)"
         )
     if named is not None:
         if named != head:

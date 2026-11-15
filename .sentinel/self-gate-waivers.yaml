@@ -50,7 +50,7 @@ waivers:
     expires_at: "2027-01-31T00:00:00Z"
   - id: self-2026-007
     finding_id: 50c306fd0098a8a6f0bf1b5d5c842368840525a5d9712eff6c6c301807d7fced
-    owner: "@NOURHANE-EHOUARI"
+    owner: "@Hiba-elouazi"
     justification: >-
       ai/tests/test_analyst.py, line 395: `UNKNOWN_SECRET`, a fake value in a shape `redact` does not know, which
       the test needs to look like a secret (the answer that quotes it is refused). No credential is in it.
