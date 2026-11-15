@@ -71,7 +71,9 @@ def services() -> dict[str, Any]:
 
 
 def test_all_planned_services_are_defined(services: dict[str, Any]) -> None:
-    assert set(services) == {"postgres", "redis", "seaweedfs", "api", "ollama", "prometheus", "grafana"}
+    assert set(services) == {
+        "postgres", "redis", "seaweedfs", "api", "worker", "ollama", "prometheus", "grafana"
+    }  # fmt: skip
 
 
 def test_every_image_is_pinned_by_tag_and_digest(services: dict[str, Any]) -> None:
@@ -110,7 +112,8 @@ def test_credentials_only_come_from_the_env_file(services: dict[str, Any]) -> No
     secret_name = re.compile(r"PASSWORD|SECRET|_KEY|_URL$")
     for name, service in services.items():
         for var, value in (service.get("environment") or {}).items():
-            if not secret_name.search(var) or var == "SENTINEL_S3_ENDPOINT":
+            # Addresses of other services, not credentials (the worker's is pinned in its own test).
+            if not secret_name.search(var) or var in {"SENTINEL_S3_ENDPOINT", "SENTINEL_OLLAMA_URL"}:
                 continue
             assert any(dummy in str(value) for dummy in DUMMY_ENV.values()), f"{name}.{var} is hard-coded"
 
@@ -148,7 +151,35 @@ def test_api_runs_unprivileged_on_a_read_only_root(services: dict[str, Any]) -> 
     assert users[-1] not in {"root", "0", "0:0"}, "the API image must end with a non-root USER"
 
 
-@pytest.mark.parametrize("name", ["api", "prometheus", "grafana"])
+def test_the_worker_holds_only_what_its_jobs_need(services: dict[str, Any]) -> None:
+    """The AI analyst's jobs (B5c): the API's image, read-only and unprivileged, with the database, the queue
+    and Ollama only. No API token, no S3 credential, no published port: a model's answer cannot reach
+    further."""
+    worker = services["worker"]
+    assert worker["image"] == services["api"]["image"] and worker["build"] == services["api"]["build"]
+    assert worker.get("read_only") is True and worker.get("profiles") == ["ai"]
+    assert worker["command"][:4] == ["celery", "-A", "sentinel_worker.tasks", "worker"]
+    assert set(worker["environment"]) == {
+        "SENTINEL_DATABASE_URL",
+        "SENTINEL_REDIS_URL",
+        "SENTINEL_OLLAMA_URL",
+    }
+    assert worker["environment"]["SENTINEL_OLLAMA_URL"] == "http://ollama:11434"
+    assert not worker.get("ports")
+    assert worker["depends_on"]["api"]["condition"] == "service_healthy"
+
+
+def test_the_worker_logs_in_as_its_own_role_and_the_api_sets_its_password(services: dict[str, Any]) -> None:
+    """The worker's database login is `sentinel_worker` (migration 0011: only what its jobs need), never the
+    owner `sentinel`, whose password it never gets. The API's migrate step gives the role its password."""
+    worker_url = services["worker"]["environment"]["SENTINEL_DATABASE_URL"]
+    password = DUMMY_ENV["WORKER_DATABASE_PASSWORD"]
+    assert worker_url == f"postgresql://sentinel_worker:{password}@postgres:5432/sentinel"
+    assert DUMMY_ENV["POSTGRES_PASSWORD"] not in json.dumps(services["worker"])
+    assert services["api"]["environment"]["SENTINEL_WORKER_DATABASE_PASSWORD"] == password
+
+
+@pytest.mark.parametrize("name", ["api", "worker", "prometheus", "grafana"])
 def test_capabilities_are_dropped(services: dict[str, Any], name: str) -> None:
     assert services[name].get("cap_drop") == ["ALL"], name
 
