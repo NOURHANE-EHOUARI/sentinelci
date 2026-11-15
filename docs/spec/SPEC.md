@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.125 | A7 (§8): `sentinel-ai correlate --embedding` runs stage 2b on the platform's correlations with the pinned embedding model on the local Ollama (`SENTINEL_OLLAMA_URL`), at `DEFAULT_THRESHOLD` (0.75, calibrated on the calibration half, after #146). The document names the model (`ollama`, its name and digest) and the threshold. The provider checks the served digest before each request, so a model that is not served, or fails, leaves stages 1 and 2a stored and 2b recorded as skipped ("the embedder failed: ProviderError"), exit code 0: advice degrades, it never vanishes. Without the option, nothing changes and no model is asked. |
 | 1.1.99 | A10 self-gate (#141 review, nit 2): `cli/tests/supplychain/test_verify.py`'s private-key case builds its PEM armor at run time (`private_key_pem`), like #141's `fake_pem`. Its literal header made Gitleaks match from line 188 to the public-key header at line 564, so any edit in between changed the fingerprint and blocked the self-gate until the value was waived again. No finding is left there, so `self-2026-006` is dropped; a real key in that file is its own finding. |
 | 1.1.97 | A10 self-gate (P4): the first dry run on the laptop (`make self-gate PIPELINE=3d330f2`, the target its own pipeline) blocked on one secret finding only: the fake RSA private-key armor of `ai/tests/test_correlate_labels.py`, added with #99 after the seven self-gate waivers were written. Its bodies are built at run time, so Gitleaks' match ran from one test's header to the next one's, and anything written after that second header was in no match (#141 review). The armor is now built at run time too (`fake_pem`): no finding, so no waiver, and a real key anywhere in the file is its own finding. The other 7 secret findings are the waived ones, and SC-006 (partial parsing) stays a WARN. |
 | 1.1.95 | A6 llm:code check (#100 review, nit 2): `sentinel remediate check` keeps each test run that started in its JSON (`runs`: selection, label, exit code, pytest's summary), apart from the `log`, which is clipped to its last 8,000 characters. The bot's pull request lists every run's answer from `runs`, so a long log no longer hides the runs before the clip; a check written before `runs` is still read from its log. Round 2 (#136 review): the loop's stand-in writes `runs` as the CLI does (a check without `runs` is still tested), the time-limit and summary paths' `runs` are tested, and `remediate check --help` names `runs`. |
@@ -706,7 +707,8 @@ AI runs after the decision is stored, writes only advisory tables, and every out
   its `findings_sha256` is the run's, and its groups hold each of the run's findings exactly once. Each version
   is kept byte for byte, named by its sha256 (the same bytes again: 409 with that version), never changed or
   deleted; `GET` serves the latest, or a version by `?sha256=`. The gate never reads it.
-  `sentinel-ai correlate --run ID` stores it on the platform (`correlate.store`, §13.3): the findings it
+  `sentinel-ai correlate --run ID` stores it on the platform (`correlate.store`, §13.3), with stage 2b when given
+  `--embedding` (the pinned embedding model on the local Ollama, at `DEFAULT_THRESHOLD`): the findings it
   reads must be the bytes B1 recorded, and the document it posts is canonical JSON whose sha256 is the
   version. Stages 1 and 2 are deterministic, so a rerun on the same findings is the same version (409, already
   recorded); with embeddings, only while they are stable; stage 3 is a model's text, so a rerun is a new
