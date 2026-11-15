@@ -129,10 +129,8 @@ def test_the_same_bytes_again_get_their_version_and_a_new_document_is_a_new_vers
     again = post(client, headers, run_id, first)
     assert again.status_code == 409
     assert again.json()["correlation"]["sha256"] == hashlib.sha256(first).hexdigest()
-    # Another correlator run (a structural group of two) is a new version, and the latest one.
-    second = as_bytes(
-        correlation(digest, group(SECRET["id"]), group(SCA["id"], CONTAINER["id"], stage="structural"))
-    )
+    # Another correlator run (another version) is a new version, and the latest one.
+    second = as_bytes(one_group_each(digest, version="0.2.0"))
     assert post(client, headers, run_id, second).status_code == 201
     assert client.get(f"/api/v1/runs/{run_id}/correlations").content == second
     old = client.get(
@@ -141,7 +139,7 @@ def test_the_same_bytes_again_get_their_version_and_a_new_document_is_a_new_vers
     assert old.content == first
     versions = client.get(f"/api/v1/runs/{run_id}/correlations/versions").json()["items"]
     assert [(v["sha256"], v["group_count"]) for v in versions] == [
-        (hashlib.sha256(second).hexdigest(), 2),
+        (hashlib.sha256(second).hexdigest(), 3),
         (hashlib.sha256(first).hexdigest(), 3),
     ]
 
@@ -210,6 +208,32 @@ def test_a_finding_in_two_groups_is_refused(client: TestClient, headers: dict[st
         digest, group(SECRET["id"]), group(SECRET["id"], SCA["id"]), group(CONTAINER["id"])
     )
     assert "a finding is in two groups" in refused(client, headers, run_id, as_bytes(document))
+
+
+def test_a_group_across_two_categories_is_refused(client: TestClient, headers: dict[str, str]) -> None:
+    """The correlator groups within one category only, and the metrics give a group its first finding's."""
+    run_id, digest = recorded_run(client, headers)
+    mixed = group(SECRET["id"], SCA["id"])
+    document = correlation(digest, mixed, group(CONTAINER["id"]))
+    assert refused(client, headers, run_id, as_bytes(document)) == (
+        f"group {mixed['group_id']} holds findings of 2 categories (SCA, SECRET): a group is one category"
+    )
+
+
+def test_a_group_of_one_category_is_recorded(client: TestClient, headers: dict[str, str]) -> None:
+    run_id = create_run(client, headers)
+    other_sca = SCA | {"id": hashlib.sha256(b"another SCA finding").hexdigest()}
+    findings = (SECRET, SCA, other_sca, CONTAINER)
+    body = "".join(json.dumps(f) + "\n" for f in findings).encode("utf-8")
+    uploaded = client.post(f"/api/v1/runs/{run_id}/findings", content=body, headers={**headers, **NDJSON})
+    assert uploaded.status_code == 201, uploaded.text
+    document = correlation(
+        hashlib.sha256(body).hexdigest(),
+        group(SECRET["id"]), group(SCA["id"], other_sca["id"]), group(CONTAINER["id"]),
+    )  # fmt: skip
+    response = post(client, headers, run_id, as_bytes(document))
+    assert response.status_code == 201, response.text
+    assert response.json()["group_count"] == 3
 
 
 @pytest.mark.parametrize(

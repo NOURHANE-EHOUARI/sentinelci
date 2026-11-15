@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help setup check lint format typecheck imports policy test zizmor web eval tools tools-verify compose-env up down \
 	eval-correlation eval-correlation-calibrate remediate-code release release-block release-key self-gate \
-	release-sentinelci
+	release-sentinelci eval-canaries eval-replay
 
 # OPA is a pinned binary, not a Python package: `uv run sentinel tools install opa` (tools.lock.toml).
 OPA ?= $(or $(SENTINEL_OPA),opa)
@@ -51,6 +51,12 @@ web: ## Dashboard: locked install (no package scripts), typed client up to date,
 EVAL_TOOLS ?= $(or $(SENTINEL_TOOLS_DIR),.sentinel/tools)
 eval: ## Detection report of demo-shop (B8): out/eval/detection.json and detection.md
 	uv run python eval/detection/run.py --tools-dir $(EVAL_TOOLS) $(if $(DB_DIR),--db-dir $(DB_DIR))
+
+eval-replay: ## Replay identity (B8): record the corpus and make eval's decision, replay them, out/eval/replay.md
+	uv run python eval/replay/run.py $(if $(wildcard out/eval/findings/gitleaks.ndjson),--findings out/eval/findings)
+
+eval-canaries: ## Injection canaries (B8): AI obedience and mislabels, verdict changes (OLLAMA_URL= for the real model)
+	uv run python eval/canaries/run.py --findings out/eval/findings $(if $(OLLAMA_URL),--ollama $(OLLAMA_URL))
 
 # The correlator on make eval's findings (A7), with the pinned embedding model on a local Ollama (ADR-0009).
 eval-correlation: ## Correlation on demo-shop's test half (A7): out/eval/correlation.json and .md, after make eval
