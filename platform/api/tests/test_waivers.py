@@ -555,3 +555,42 @@ def test_a_decision_recorded_as_a_run_and_as_a_release_counts_once(
     rules = client.get("/api/v1/rules").json()
     assert rules["decisions"] == 1
     assert [(i["rule"], i["decisions"]) for i in rules["items"]] == [("SC-006", 1)]
+
+
+# ---------------------------------------------------------------- what PostgreSQL cannot store (#126)
+
+
+# The raw body is checked for U+0000 before anything is parsed, but YAML decodes escapes: "\0", "\x00" and
+# "\u0000" become U+0000, and "\ud800" a lone surrogate, once the file is read. The entries are kept as jsonb,
+# which refuses both, so each was a 500 (UntranslatableCharacter) after #110 met #126.
+@pytest.mark.parametrize(
+    ("field", "escape", "problem"),
+    [
+        ("owner", "\\0", "U+0000"),
+        ("owner", "\\x00", "U+0000"),
+        ("justification", "\\u0000", "U+0000"),
+        ("owner", "\\ud800", "surrogate"),
+    ],
+    ids=["nul-escape", "hex-escape", "unicode-escape", "lone-surrogate"],
+)
+def test_a_waiver_whose_yaml_decodes_to_what_postgresql_refuses_is_a_422(
+    client: TestClient, headers: dict[str, str], field: str, escape: str, problem: str
+) -> None:
+    justification = b"justification: |\n      Test fixture key, never deployed."
+    line = b"owner: hiba" if field == "owner" else justification
+    value = f'{field}: "a{escape}b"'.encode()
+    body = WAIVERS.replace(line, value)
+    assert body != WAIVERS
+    run_decision(client, headers, f"sha256:{sha(body)}")
+    response = put(client, headers, body)
+    assert response.status_code == 422, response.text
+    assert problem in response.json()["detail"][0]["msg"]
+    assert client.get(f"/api/v1/waivers/{sha(body)}").status_code == 404, "nothing is stored"
+
+
+def test_a_waiver_with_other_text_outside_ascii_is_kept(client: TestClient, headers: dict[str, str]) -> None:
+    body = WAIVERS.replace(b"owner: hiba", b'owner: "Hiba \\u00e9 \\U0001F511"')
+    run_decision(client, headers, f"sha256:{sha(body)}")
+    response = put(client, headers, body)
+    assert response.status_code == 201, response.text
+    assert client.get(f"/api/v1/waivers/{sha(body)}").content == body

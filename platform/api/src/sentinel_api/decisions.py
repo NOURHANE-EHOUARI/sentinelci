@@ -22,6 +22,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
@@ -31,7 +32,8 @@ from starlette.concurrency import run_in_threadpool
 
 from sentinel_api.api import ErrorOut, SessionDep, _read_body
 from sentinel_api.auth import require_writer
-from sentinel_api.correlations import _invalid, _no_duplicate_keys, _refuse_constant
+from sentinel_api.correlations import _invalid as _refused
+from sentinel_api.correlations import _no_duplicate_keys, _refuse_constant
 from sentinel_api.models import Run, RunDecision, RunFinding
 from sentinelci.contracts.decision import Decision as DecisionDocument
 from sentinelci.contracts.decision import Verdict
@@ -39,6 +41,11 @@ from sentinelci.contracts.decision import Verdict
 JSON_TYPE = "application/json"
 
 router = APIRouter(prefix="/api/v1")
+
+
+def _invalid(message: str) -> RequestValidationError:
+    """A refused decision, as a 422 of type `decision_invalid` (#126 review: it said correlation_invalid)."""
+    return _refused(message, "decision_invalid")
 
 
 class DecisionOut(BaseModel):
