@@ -4,7 +4,7 @@ The SentinelCI control plane on your machine (SPEC §4.4). **Local only**: every
 
 ```bash
 make up                                      # postgres + pgvector, redis, seaweedfs (S3), api
-COMPOSE_PROFILES=ai make up                  # + ollama
+COMPOSE_PROFILES=ai make up                  # + ollama and the worker
 COMPOSE_PROFILES=ai,observability make up    # + prometheus, grafana
 make down                                    # stop; data volumes are kept
 ```
@@ -21,6 +21,7 @@ there is no default password anywhere.
 | redis | `127.0.0.1:6379` (password) | default | Celery broker (B1) |
 | seaweedfs | http://127.0.0.1:8333 (S3, signed requests only) | default | evidence store, ADR-0007 |
 | ollama | http://127.0.0.1:11434 | `ai` | local LLM (B5); pull the pinned models (below) |
+| worker | (none) | `ai` | the AI analyst's jobs (B5c): explanations asked with `POST /api/v1/findings/{id}/explain`; the API's image, with the database, Redis and Ollama only |
 | prometheus | http://127.0.0.1:9090 | `observability` | metrics (A8) |
 | grafana | http://127.0.0.1:3000, user `admin` | `observability` | dashboards as code (A8) |
 
@@ -55,7 +56,7 @@ findings only if `findings_sha256` is null. In GitHub Actions the run id is `<ru
 of the job is a new run. A run without `run_id` (a local run) is always new. `GET /api/v1/runs/<run id>/findings` gives the upload back
 byte for byte (its sha256 is `findings_sha256`), for the correlator or a replay. Bodies are capped before
 authentication: 64 KiB for JSON, `SENTINEL_API_MAX_UPLOAD_BYTES` (32 MiB by default) for a findings upload, a
-correlation or a decision. To rotate the token, delete both `SENTINEL_API_TOKEN` lines from `.env` and run `make compose-env`.
+correlation, a decision, a release's evidence or a remediation attempt. To rotate the token, delete both `SENTINEL_API_TOKEN` lines from `.env` and run `make compose-env`.
 
 A run's correlations (the correlator's root-cause groups, advisory: the gate never reads them) are posted after
 its findings, as one Correlation v1 document:
