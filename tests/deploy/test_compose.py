@@ -169,6 +169,16 @@ def test_the_worker_holds_only_what_its_jobs_need(services: dict[str, Any]) -> N
     assert worker["depends_on"]["api"]["condition"] == "service_healthy"
 
 
+def test_the_worker_logs_in_as_its_own_role_and_the_api_sets_its_password(services: dict[str, Any]) -> None:
+    """The worker's database login is `sentinel_worker` (migration 0011: only what its jobs need), never the
+    owner `sentinel`, whose password it never gets. The API's migrate step gives the role its password."""
+    worker_url = services["worker"]["environment"]["SENTINEL_DATABASE_URL"]
+    password = DUMMY_ENV["WORKER_DATABASE_PASSWORD"]
+    assert worker_url == f"postgresql://sentinel_worker:{password}@postgres:5432/sentinel"
+    assert DUMMY_ENV["POSTGRES_PASSWORD"] not in json.dumps(services["worker"])
+    assert services["api"]["environment"]["SENTINEL_WORKER_DATABASE_PASSWORD"] == password
+
+
 @pytest.mark.parametrize("name", ["api", "worker", "prometheus", "grafana"])
 def test_capabilities_are_dropped(services: dict[str, Any], name: str) -> None:
     assert services[name].get("cap_drop") == ["ALL"], name

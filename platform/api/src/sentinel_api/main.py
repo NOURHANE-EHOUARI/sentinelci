@@ -28,7 +28,7 @@ from sentinel_api.waivers import router as waivers_router
 from sentinelci import __version__ as engine_version
 
 # The version of the API contract (schemas/openapi.yaml), not of the engine: it changes only with the API.
-API_VERSION = "1.10.1"
+API_VERSION = "1.10.2"
 
 
 def _json(errors: list[dict[str, Any]]) -> str:
