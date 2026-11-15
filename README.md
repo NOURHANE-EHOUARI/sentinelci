@@ -32,7 +32,8 @@ pull request / release
   │              benchmarked against a CVSS-only ranking
   ├─ 4. Decide ── OPA/Rego rules → PASS / WARN / BLOCK with rule ids; a Decision v1 record holds the digest of
   │              every input and replays bit for bit (`sentinel replay`)
-  ├─ 5. Sign ──── image + CycloneDX/SPDX SBOMs + SLSA provenance + the decision, as Cosign attestations
+  ├─ 5. Sign ──── image + the decision, the CycloneDX SBOM, the vulnerability scan and SLSA provenance, as
+  │              four Cosign attestations (the SPDX SBOM is kept with the evidence)
   └─ 6. Admit ─── Argo CD deploys by digest; Kyverno admits only an image signed with the release key and
                  carrying its attestations, as `sentinel verify` would
 ```
@@ -85,8 +86,9 @@ own ignore files and inline comments are never read.
   seeds cover secrets, SAST, SCA, containers, IaC, CI workflows and prompt-injection canaries, plus clean
   controls. `make eval` measures recall per category and false positives, and `make eval-correlation` measures
   the root-cause grouping (ARI, alert reduction). On 14 November 2026, with the pinned scanners and that day's
-  Grype database, all 28 seeds that `make eval` measures were detected (the container seed is checked by the
-  image scan of `make release-block`) and no clean control gave a false positive.
+  Grype database, all 28 seeds that `make eval` measures were detected (the container seed is checked in the
+  built BLOCK image by an opt-in test, `tests/demo_shop/test_container_seeds.py`) and no clean control gave a
+  false positive.
 
 ## Try it
 
