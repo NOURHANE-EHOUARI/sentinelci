@@ -9,6 +9,8 @@ how untrusted text is put in a prompt, and how an answer is asked for and checke
 - **Bounded.** Each text field is clipped, and the code window is a few lines around the finding.
 - **Schema, then one repair retry** (`ask`): an answer that does not validate, or that a task's own check
   refuses, is asked for again once with the reason; then the task is "unavailable", never a guess.
+- **Why it is unavailable** (`Cause`): "provider" when the model server failed (not retried), "answer" when
+  the model answered twice and neither answer was usable. A caller reads the cause, never the reason's words.
 
 Owner: Track B (B5).
 """
@@ -18,7 +20,7 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
 
@@ -26,11 +28,25 @@ from sentinel_ai.correlate.labels import REDACTED, redact
 from sentinel_ai.providers import LLMProvider
 from sentinelci.contracts.finding import Finding
 
-__all__ = ["REDACTED", "Refused", "code_window", "described", "json_line", "quotes_a_secret", "redact"]
+__all__ = [
+    "REDACTED",
+    "Cause",
+    "Refused",
+    "code_window",
+    "described",
+    "json_line",
+    "quotes_a_secret",
+    "redact",
+]
 
 MAX_FIELD = 300  # characters of each text field of a finding
 WINDOW = 15  # lines of code before and after the finding's lines
 MAX_LINE = 400  # characters of each line of code sent
+
+# Why a task is "unavailable": the provider failed (the model server is down, timed out, refused or serves
+# another model; nothing was asked of the model), or the model's answers were not usable (two answers, each
+# invalid or refused by the guardrails). Only an "unavailable" outcome has one.
+Cause = Literal["provider", "answer"]
 
 
 class Refused(Exception):
@@ -171,9 +187,10 @@ def ask[AnswerT: BaseModel, ResultT](
     user: str,
     schema: type[AnswerT],
     check: Callable[[AnswerT], ResultT],
-) -> tuple[ResultT | None, str]:
-    """The model's answer, validated against `schema` and accepted by `check`, with one repair retry; (None,
-    why) when it could not give one. A provider failure is not retried and its message is not repeated."""
+) -> tuple[ResultT | None, str, Cause | None]:
+    """The model's answer, validated against `schema` and accepted by `check`, with one repair retry, as
+    (answer, "", None); (None, why, cause) when it could not give one. A provider failure is not retried and
+    its message is not repeated."""
     reason = ""
     for attempt in range(2):
         message = user if attempt == 0 else (
@@ -187,15 +204,15 @@ def ask[AnswerT: BaseModel, ResultT](
             reason = f"not a valid answer: {type(exc).__name__}"
             continue
         except Exception as exc:  # the provider is down or refused
-            return None, f"the provider failed: {type(exc).__name__}"
+            return None, f"the provider failed: {type(exc).__name__}", "provider"
         if any(quotes_a_secret(text) for text in texts_of(validated)):
             reason = "the answer quotes something that looks like a secret"
             continue
         try:
-            return check(validated), ""
+            return check(validated), "", None
         except Refused as exc:
             reason = str(exc)
-    return None, reason
+    return None, reason, "answer"
 
 
 def block(name: str, lines: list[Any] | Mapping[str, Any]) -> str:

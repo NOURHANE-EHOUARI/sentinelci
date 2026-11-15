@@ -22,6 +22,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from sentinel_ai.guardrails import (
+    Cause,
     ModelInfo,
     Refused,
     ask,
@@ -83,6 +84,7 @@ class Outcome:
     reason: str
     explanation: dict[str, Any] | None = None  # an Explanation v1 document
     input_sha256: str | None = None
+    cause: Cause | None = None  # why it is "unavailable": the provider failed, or the answers were not usable
 
 
 def allowed_references(finding: Finding) -> list[str]:
@@ -147,10 +149,10 @@ def explain_finding(
             raise Refused("a reference is listed twice")
         return answer
 
-    answer, reason = ask(provider, SYSTEM_PROMPT, user, ExplanationAnswer, check)
+    answer, reason, cause = ask(provider, SYSTEM_PROMPT, user, ExplanationAnswer, check)
     record = model_record(provider, model, PROMPT_SHA256, user)
     if answer is None:
-        return Outcome("unavailable", reason, input_sha256=record["input_sha256"])
+        return Outcome("unavailable", reason, input_sha256=record["input_sha256"], cause=cause)
     document = {
         "schema_version": "1.0",
         "finding_id": finding.id,
