@@ -19,13 +19,15 @@ from typing import Any
 import pytest
 import yaml
 
+from sentinelci.supplychain.attestations import local_release_builder_id
+
 ROOT = Path(__file__).resolve().parents[2]
 KIND_DIR = ROOT / "deploy" / "kind"
 ARGOCD_DIR = ROOT / "deploy" / "argocd"
 DIGEST = "sha256:" + "ab" * 32
 OTHER = "sha256:" + "cd" * 32
 REPO = "NOURHANE-EHOUARI/sentinelci"
-BUILDER = f"https://github.com/{REPO}/.github/workflows/sentinel-release.yml@refs/heads/main"
+BUILDER = local_release_builder_id(REPO)  # a laptop release (ADR-0011), as `make release` records it
 TEST_KEY = (
     "-----BEGIN PUBLIC KEY-----\n"
     "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEO6hJTV7g+9HDqwapkmeWrwZLKCO0\n"
