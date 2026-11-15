@@ -35,6 +35,8 @@ make eval-fixrate TEST_IMAGE=<shop-api test image, pinned>     # OLLAMA_URL= if 
   IaC findings (the fixer is re-run: the proposal must be its output), `score`, `evaluate` in pr context with
   the base as baseline, and `remediate verify`. One attempt: a deterministic fixer gives the same proposal
   again, so the bot never retries it. A seed's outcome is that of the proposal that claims its findings.
+  Each fixer makes one proposal across all its files, as the bot does, so one rejected edit makes every seed
+  of that strategy REJECTED: "0/4 Kubernetes" is one proposal the gate refused, not four separate failures.
 - **The LLM code fixer** runs once per finding that detects a SAST seed, through `make remediate-code`'s loop:
   a finding no patch could verify (no behaviour tests, no security test for its rule) is not sent; otherwise
   up to three attempts, a REJECTED one fed back with its diff and what rejected it, each verified with
@@ -45,7 +47,8 @@ The gate decides; the model never does. Nothing is pushed or published, and no p
 
 ## The rate, and what "attempted" means
 
-**Rate = VERIFIED seeds / attempted seeds**, against the target of 60%, with one row per strategy.
+**Rate = VERIFIED seeds / attempted seeds**, against the target of 60%, with one row per strategy. The target
+is met when the exact fraction is at least 3/5, not the rounded rate.
 
 A seed is **attempted** when section 9 has a strategy for it, that strategy is implemented, the base scan
 detected it, and the strategy was run on its findings. Section 3 counts the "attempted fixable seeds": the
@@ -64,7 +67,11 @@ Per seed:
   the outcome of an attempt that left retries (a deterministic proposal, or an LLM retry the model could not
   answer); FAILED, of the third.
 - **NO PROPOSAL**: the strategy ran and proposed nothing for it (the fixer left it open, the model gave no
-  usable answer, the file was not sent, no patch of it could be verified). Attempted, not verified.
+  usable answer, the file was not sent, no patch of it could be verified). Attempted, not verified. Each
+  strategy's row counts them by whose they are: `left open` (the fixer), `no usable answer` (the model),
+  `not sent` and `no verifiable test` (the harness), so a reader can see how much of the rate is the model's.
+  The model's answer is told from the model server by the attempt's recorded `cause` ("answer" or
+  "provider"), never by the reason's words.
 - **Not attempted**, listed with the reason, counted neither way: no strategy in section 9 (secrets, CI
   workflows, Terraform), a strategy that is not implemented (the dependency bump: SCA, and the image's
   package; each row shows the fixed versions Grype reports), or not detected by the base scan.
@@ -77,7 +84,7 @@ base scan.
 A step that could not run makes its seeds **not measured**: the headline is withheld and the run exits 2.
 This covers no detection report or another demo-shop tree, a dirty checkout, Grype's database that cannot be
 prepared, a scan that fails, no test image or one not pinned by digest, no Docker, a model server that is
-down or serves another digest, and any attempt that did not reach the gate (a check that could not run its
+down (an attempt recorded with the cause "provider", or with no cause at all) or serves another digest, and any attempt that did not reach the gate (a check that could not run its
 container, no decision). A result that breaks the gate's invariant (VERIFIED with a failed condition, or the
 reverse) is not measured either. Once the code fixer hits such a step, the remaining SAST findings are not
 run. The run exits 0 when the rate was measured, whether the target is met or not: the report says which.

@@ -436,6 +436,34 @@ def test_the_per_strategy_table_counts_each_strategys_seeds() -> None:
     assert f"| {CODE} | 4 | 3 | 2 | 1 | 0 | 0 | 0 | 1 | 0 | 66.7% |" in text
 
 
+def test_no_proposal_is_counted_by_whose_it_is() -> None:
+    """How much of NO PROPOSAL is the model's and how much the harness's, per strategy (#159 review)."""
+    engine = all_verified()
+    no = run.Attempt(1, "NO PROPOSAL", reason="x")
+    engine.code_runs[fid("sql")] = made(CODE, [], no, kind=run.NO_ANSWER)
+    engine.code_runs[fid("sh")] = made(CODE, [], no, kind=run.NOT_SENT)
+    engine.deterministic_runs[K8S] = made(K8S, [], reason="the fixer proposed nothing")
+    data = measured(engine)
+    strategies = data["summary"]["strategies"]
+    assert strategies[CODE]["no_proposal_why"] == {run.NO_ANSWER: 1, run.NOT_SENT: 1}
+    assert strategies[K8S]["no_proposal_why"] == {run.LEFT_OPEN: 1}
+    assert strategies[DOCKER]["no_proposal_why"] == {}
+    assert rows(data)["GT-IAC-001"]["no_proposal"] == run.LEFT_OPEN
+    text = run.markdown(data)
+    assert f"| {CODE} | 4 | 3 | 1 | 0 | 0 | 0 | 2 (1 no usable answer, 1 not sent) | 1 | 0 | 33.3% |" in text
+
+
+def test_the_target_is_met_by_the_exact_rate_not_the_rounded_one() -> None:
+    """59,999 of 100,000 rounds to 0.6 but is below it: not met (#159 review)."""
+    row = {"strategy": CODE, "make_eval_detected": None, "findings": [], "id": "s"}
+    verified = [row | {"status": "attempted", "outcome": "VERIFIED"}] * 59_999
+    others = [row | {"status": "attempted", "outcome": "REJECTED"}] * 40_001
+    headline = run.summarize([*verified, *others])["headline"]
+    assert headline["rate"] == 0.6 and headline["met"] is False
+    headline = run.summarize([*verified, verified[0], *others[1:]])["headline"]
+    assert headline["rate"] == 0.6 and headline["met"] is True
+
+
 def test_the_markdown_states_the_headline_and_the_definition() -> None:
     text = run.markdown(measured(all_verified()))
     assert "**Verified fix rate: 5 of 5 attempted fixable seeds (100.0%)**" in text
@@ -538,21 +566,37 @@ def test_code_attempts_map_to_outcomes() -> None:
 
 
 @pytest.mark.parametrize(
-    "records",
+    ("records", "said"),
     [
-        [{"number": 1, "status": "unavailable", "reason": "the provider failed: ProviderError"}],
-        [
-            {"number": 1, "status": "FAILED", "reason": "its build and tests could not be checked"}
-        ],  # no result
-        [{"number": 1, "status": "proposed"}],
+        # The cause decides, never the reason's words (#159 review): these words say nothing of a provider.
+        ([{"number": 1, "status": "unavailable", "reason": "connection refused", "cause": "provider"}],
+         "the model server failed"),
+        # A record without a cause (an older loop) is not measured: it withholds the rate, never lowers it.
+        ([{"number": 1, "status": "unavailable", "reason": "the provider failed: ProviderError"}],
+         "no usable cause"),
+        ([{"number": 1, "status": "FAILED", "reason": "its build and tests could not be checked"}],
+         "did not reach the gate"),  # no result
+        ([{"number": 1, "status": "proposed"}], "which no step reports"),
     ],
-    ids=["model-server-down", "never-reached-the-gate", "unknown-status"],
-)
-def test_a_code_attempt_that_could_not_run_is_not_measured(records: list[dict[str, Any]]) -> None:
-    said = {"unavailable": "model server failed", "FAILED": "did not reach the gate"}
-    with pytest.raises(run.NotMeasured, match=said.get(records[0]["status"], "which no step reports")):
+    ids=["model-server-down", "no-cause", "never-reached-the-gate", "unknown-status"],
+)  # fmt: skip
+def test_a_code_attempt_that_could_not_run_is_not_measured(records: list[dict[str, Any]], said: str) -> None:
+    with pytest.raises(run.NotMeasured, match=said):
         judged = (result("VERIFIED"), {"proposal_id": "p", "diff": "d"})
         run.code_run(fid("sql"), records, lambda n: None if records[0]["status"] == "FAILED" else judged)
+
+
+@pytest.mark.parametrize(
+    ("status", "cause", "kind"),
+    [("unavailable", "answer", run.NO_ANSWER), ("not sent", None, run.NOT_SENT),
+     ("not verifiable", None, run.NOT_VERIFIABLE)],
+    ids=["no-usable-answer", "not-sent", "not-verifiable"],
+)  # fmt: skip
+def test_a_code_attempt_with_no_proposal_says_whose_it_is(status: str, cause: str | None, kind: str) -> None:
+    """An answer that was not usable is an attempt that failed, whatever the reason's words say."""
+    record = {"number": 1, "status": status, "reason": "the provider failed, says the text"}
+    made_run = run.code_run(fid("sql"), [record | ({"cause": cause} if cause else {})], {}.get)
+    assert made_run.outcome == "NO PROPOSAL" and made_run.kind == kind
 
 
 # ---------------------------------------------------------------- the real engine's IaC steps, as the bot

@@ -46,6 +46,7 @@ import sys
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -56,7 +57,8 @@ from sentinelci.contracts.remediation import PatchProposal
 
 ROOT = Path(__file__).resolve().parents[2]
 GROUND_TRUTH = ROOT / "demo-shop" / "ground-truth" / "findings.yaml"
-TARGET_RATE = 0.60  # SPEC section 3
+TARGET = Fraction(3, 5)  # SPEC section 3: 60%
+TARGET_RATE = float(TARGET)
 TOOLS = ("gitleaks", "grype", "opengrep", "trivy", "zizmor")  # make eval's findings files
 
 
@@ -102,9 +104,12 @@ PARTIAL, NO_PROPOSAL, NOT_MEASURED = "PARTIAL", "NO PROPOSAL", "NOT MEASURED"
 GATE_OUTCOMES = (VERIFIED, REJECTED, FAILED)
 ATTEMPTED_OUTCOMES = (VERIFIED, REJECTED, FAILED, PARTIAL, NO_PROPOSAL)
 # What `make remediate-code` records for an attempt that made no proposal (the LLM fixer's statuses, and the
-# loop's own for a finding no patch could verify). The model server failing is not one: it is not measured.
-NO_PROPOSAL_STATUSES = ("unavailable", "not sent", "not verifiable")
-PROVIDER_FAILED = "the provider failed"  # sentinel_ai.patch.code._ask, when the model server fails
+# loop's own for a finding no patch could verify), and why, as a reader of the rate needs it: how much of NO
+# PROPOSAL is the model's, and how much the harness's. "unavailable" counts only with the cause "answer" (two
+# answers, neither usable); the model server failing ("provider"), or no cause recorded, is not measured.
+NOT_SENT, NOT_VERIFIABLE = "not sent", "no verifiable test"  # the harness's
+NO_ANSWER, LEFT_OPEN = "no usable answer", "left open"  # the model's, the fixer's
+NO_PROPOSAL_STATUSES = {"not sent": NOT_SENT, "not verifiable": NOT_VERIFIABLE, "unavailable": NO_ANSWER}
 PINNED_IMAGE = re.compile(r"(?:[^\s@]+@)?sha256:[0-9a-f]{64}")
 LEFT_ALONE = re.compile(r"^warning: (.+) left alone: (.+)$", re.MULTILINE)
 
@@ -162,6 +167,7 @@ class Run:
     attempts: tuple[Attempt, ...] = ()
     reason: str = ""
     left_open: Mapping[str, str] = field(default_factory=dict)  # path -> why the fixer left it alone
+    kind: str = ""  # why it proposed nothing, as counted (NO_PROPOSAL_STATUSES); a fixer's: LEFT_OPEN
 
     @property
     def outcome(self) -> str:
@@ -236,13 +242,17 @@ def code_run(finding_id: str, records: Sequence[Mapping[str, Any]], read: Read) 
     """The LLM fixer's attempts on one finding, as `make remediate-code` recorded them; `read(n)` gives
     attempt n's gate result and proposal, or None when the attempt never reached the gate."""
     attempts: list[Attempt] = []
+    kind = ""
     for record in records:
         number, status = int(record["number"]), str(record.get("status"))
         reason = str(record.get("reason") or "")
-        if status == "unavailable" and reason.startswith(PROVIDER_FAILED):
-            raise NotMeasured(f"the model server failed on attempt {number}: {reason}")
+        if status == "unavailable" and record.get("cause") != "answer":
+            cause = record.get("cause")
+            what = "the model server failed" if cause == "provider" else f"no usable cause ({cause!r})"
+            raise NotMeasured(f"attempt {number} is unavailable: {what}: {reason}")
         if status in NO_PROPOSAL_STATUSES:
             attempts.append(Attempt(number, NO_PROPOSAL, reason=f"{status}: {reason}" if reason else status))
+            kind = NO_PROPOSAL_STATUSES[status]
             continue
         if status not in GATE_OUTCOMES:
             raise NotMeasured(f"attempt {number} ended as {status!r}, which no step reports")
@@ -260,7 +270,7 @@ def code_run(finding_id: str, records: Sequence[Mapping[str, Any]], read: Read) 
         attempts.append(attempt)
     claimed = frozenset({finding_id}) if any(a.outcome in GATE_OUTCOMES for a in attempts) else frozenset()
     why = "; ".join(f"attempt {a.number}: {a.reason}" for a in attempts if a.outcome == NO_PROPOSAL)
-    return Run(CODE, claimed, tuple(attempts), reason=why)
+    return Run(CODE, claimed, tuple(attempts), reason=why, kind=kind)
 
 
 # ---------------------------------------------------------------- seeds, strategies, outcomes
@@ -317,7 +327,7 @@ def _target(finding: Mapping[str, Any], run: Run | str) -> dict[str, Any]:
         path = _place(finding)
         if path is not None and path in run.left_open and run.left_open[path] not in why:
             why += f" ({path} left alone: {run.left_open[path]})"
-        return me | {"outcome": NO_PROPOSAL, "reason": why}
+        return me | {"outcome": NO_PROPOSAL, "reason": why, "kind": run.kind or LEFT_OPEN}
     judged = [attempt for attempt in run.attempts if attempt.outcome in GATE_OUTCOMES]
     if not judged:  # a claim no gate result backs is not a measurement
         return me | {"outcome": NOT_MEASURED, "reason": "claimed, never judged"}
@@ -377,6 +387,9 @@ def seed_row(
         "failed": failed,
         "findings": targets,
     }
+    if outcome == NO_PROPOSAL:  # why, as counted: one kind, or "mixed" when its findings differ
+        kinds = sorted({str(t["kind"]) for t in targets})
+        row["no_proposal"] = kinds[0] if len(kinds) == 1 else "mixed"
     return row
 
 
@@ -403,6 +416,9 @@ def summarize(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "failed": sum(row["outcome"] == FAILED for row in tried),
             "partial": sum(row["outcome"] == PARTIAL for row in tried),
             "no_proposal": sum(row["outcome"] == NO_PROPOSAL for row in tried),
+            "no_proposal_why": dict(
+                sorted(Counter(row["no_proposal"] for row in tried if row["outcome"] == NO_PROPOSAL).items())
+            ),
             "not_attempted": sum(row["status"] == "not attempted" for row in mine),
             "not_measured": missing,
             "rate": None if missing else _rate(won, len(tried)),
@@ -417,7 +433,7 @@ def summarize(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         rate = round(verified / len(attempted), 4)
         headline = {
             "verified": verified, "attempted": len(attempted), "rate": rate, "target": TARGET_RATE,
-            "met": rate >= TARGET_RATE,
+            "met": Fraction(verified, len(attempted)) >= TARGET,  # exact, not the rounded rate
         }  # fmt: skip
     differs = [
         row["id"]
@@ -535,8 +551,12 @@ def markdown(data: Mapping[str, Any]) -> str:
     ]
     for name, entry in summary["strategies"].items():
         rate = "not measured" if entry["not_measured"] else _percent(entry["rate"])
+        cells = {key: str(entry[key]) for key in entry if key not in ("rate", "no_proposal_why")}
+        if entry["no_proposal_why"]:  # how much of it is the model's, how much the harness's
+            why = ", ".join(f"{count} {kind}" for kind, count in entry["no_proposal_why"].items())
+            cells["no_proposal"] += f" ({why})"
         counts = " | ".join(
-            str(entry[key])
+            cells[key]
             for key in (
                 "seeds", "attempted", "verified", "rejected", "failed", "partial", "no_proposal",
                 "not_attempted", "not_measured",
