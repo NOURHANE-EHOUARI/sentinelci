@@ -1,4 +1,4 @@
-"""SentinelCI background workers.
+"""SentinelCI background workers (Celery + Redis, SPEC section 11).
 
-Task queue (Celery + Redis) is introduced by task B1; remediation jobs by task A6.
+`sentinel_worker.tasks`: the AI analyst's jobs (B5c, explanations). Remediation jobs come with task A6.
 """

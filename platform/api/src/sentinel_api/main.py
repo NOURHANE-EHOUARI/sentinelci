@@ -18,14 +18,17 @@ from sentinel_api.api import router
 from sentinel_api.config import Settings, sqlalchemy_url
 from sentinel_api.correlations import router as correlations_router
 from sentinel_api.decisions import router as decisions_router
+from sentinel_api.explanations import celery_enqueue
+from sentinel_api.explanations import router as explanations_router
 from sentinel_api.limits import BodyLimit
 from sentinel_api.metrics import router as metrics_router
 from sentinel_api.releases import router as releases_router
 from sentinel_api.remediations import router as remediations_router
+from sentinel_api.waivers import router as waivers_router
 from sentinelci import __version__ as engine_version
 
 # The version of the API contract (schemas/openapi.yaml), not of the engine: it changes only with the API.
-API_VERSION = "1.8.1"
+API_VERSION = "1.10.1"
 
 
 def _json(errors: list[dict[str, Any]]) -> str:
@@ -51,6 +54,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(BodyLimit, upload_limit=lambda: settings.max_upload_bytes)
     app.state.settings = settings
     app.state.sessions = sessionmaker(engine, expire_on_commit=False) if engine is not None else None
+    # The worker's job queue (explanations, B5c); tests replace it with a fake.
+    app.state.enqueue = celery_enqueue(settings.redis_url) if settings.redis_url else None
 
     @app.exception_handler(RequestValidationError)
     async def unprocessable(_: Request, exc: RequestValidationError) -> Response:
@@ -73,6 +78,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(decisions_router)
     app.include_router(releases_router)
     app.include_router(remediations_router)
+    app.include_router(waivers_router)
+    app.include_router(explanations_router)
     app.include_router(metrics_router)
     return app
 
