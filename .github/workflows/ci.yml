@@ -29,6 +29,10 @@ jobs:
         with:
           version: "0.11.32"
           python-version: "3.12"
+          # Explicit (setup-uv's default turns it on for hosted runners): this job runs the change's own code
+          # anyway, holds no write token, and no job that judges reads uv's cache, since those keep it off
+          # (ADR-0015).
+          enable-cache: true
 
       - name: Install locked dependencies
         run: uv sync --locked
@@ -43,6 +47,15 @@ jobs:
 
       - name: Architecture contract (deterministic decides, AI advises)
         run: uv run lint-imports
+
+      # Only the scanners' release archives are kept between runs: each is checked against tools.lock.toml's sha256
+      # before use, and the binary is extracted again from it, so a cache entry written elsewhere can only cost a
+      # download (ADR-0015). Never the binaries, never a package manager's cache.
+      - name: Restore the verified release archives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/sentinel-tools/cache
+          key: sentinel-tool-archives-checks-${{ runner.os }}-${{ hashFiles('tools.lock.toml') }}
 
       # OPA comes from tools.lock.toml like every security tool: `sentinel tools install` checks the release
       # asset's SHA-256 before installing it and fails closed on a mismatch (principle P2, rule SC-010).
@@ -103,6 +116,10 @@ jobs:
         with:
           version: "0.11.32"
           python-version: "3.12"
+          # Explicit (setup-uv's default turns it on for hosted runners): this job runs the change's own code
+          # anyway, holds no write token, and no job that judges reads uv's cache, since those keep it off
+          # (ADR-0015).
+          enable-cache: true
 
       - name: Audit GitHub Actions workflows
-        run: uv run --locked zizmor --offline --min-severity low .github/workflows
+        run: uv run --locked zizmor --offline --ignore-lockfile --min-severity low .github/workflows

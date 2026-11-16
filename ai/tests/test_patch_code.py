@@ -21,6 +21,7 @@ from sentinel_ai.patch import (
     Feedback,
     propose_code_fix,
 )
+from sentinel_ai.patch.code import MAX_FIELD, _described
 from sentinel_ai.providers import LLMProvider
 from sentinelci.contracts.finding import Finding
 from sentinelci.remediation.apply import apply_proposal
@@ -237,6 +238,27 @@ def test_anything_that_looks_like_a_secret_is_sent_redacted_and_its_line_cannot_
         "unavailable",
         "an edit changes line 2, which was sent redacted",
     )
+
+
+@pytest.mark.parametrize("before", [0, 250, 286, 290, 292])
+@pytest.mark.parametrize("field", ["title", "message", "rule_id", "cwe", "path"])
+def test_a_token_across_the_clip_is_not_sent_even_in_part(tmp_path: Path, field: str, before: int) -> None:
+    """Each text of the finding is redacted whole, then clipped: cut first, a token would lose its pattern
+    and its start would be sent (#99 review)."""
+    text = "x" * before + " " + TOKEN
+    if field == "path":
+        extra: dict[str, Any] = {"location": {"path": text, "start_line": SQL_LINE, "end_line": SQL_LINE}}
+    elif field == "cwe":
+        extra = {"cwe": [text]}
+    else:
+        extra = {field: text}
+    target = finding("python-sql-built-from-strings", SQL_LINE, **extra)
+    described = _described(target, SQL_LINE, SQL_LINE)
+    sent = json.dumps(described)
+    assert "ghp_" not in sent and TOKEN[4:9] not in sent, "not even the start of the token"
+    for value in described.values():
+        for item in value if isinstance(value, list) else [value]:
+            assert not isinstance(item, str) or len(item) <= MAX_FIELD
 
 
 @pytest.mark.parametrize(

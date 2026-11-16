@@ -7,21 +7,26 @@ tests never download.
 """
 
 import copy
+import hashlib
 import json
 import os
+import subprocess
 from collections.abc import Callable
 from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from sentinelci.cli import app
 from sentinelci.contracts.finding import Run
-from sentinelci.normalize.grype import load_grype_report, normalize_grype
+from sentinelci.normalize.errors import NormalizationError
+from sentinelci.normalize.grype import PINNED_MATCH, database_of_status, load_grype_report, normalize_grype
+from sentinelci.scanners import runner
 from sentinelci.scanners.errors import ScannerError
-from sentinelci.scanners.grype import grype_env, match_sbom, scan_sca
+from sentinelci.scanners.grype import SbomScanFailure, grype_env, match_sbom, scan_sca
 from sentinelci.scanners.installer import install_tools
 from sentinelci.scanners.lock import ToolLock, load_lock
 from sentinelci.scanners.runner import run_verified_tool
@@ -212,26 +217,34 @@ def test_nothing_runs_on_a_bad_setup(
     else:
         target = target / "file.txt"
         target.write_text("x")
-    with pytest.raises(ScannerError, match=r"does not exist|outside the repository|is not a directory"):
+    with pytest.raises(
+        SbomScanFailure, match=r"does not exist|outside the repository|is not a directory"
+    ) as raised:
         _scan(lock, dest, repo, target, db)
+    assert isinstance(raised.value.error, ScannerError)
+    # A target that cannot be scanned is Syft's failure; a missing database is Grype's, after Syft's SBOM.
+    assert (raised.value.tool, raised.value.sbom is None) == (
+        ("grype", False) if problem == "no-database" else ("syft", True)
+    )
     assert not (fakes.record / "grype.argv").exists()
     if problem != "no-database":
         assert not (fakes.record / "syft.argv").exists()
 
 
 @pytest.mark.parametrize(
-    ("options", "message"),
+    ("options", "message", "tool"),
     [
         ({"grype_exit": 1, "grype_stderr": "failed to load vulnerability db: database does not exist"},
-         "grype exited with code 1: failed to load vulnerability db"),
-        ({"report": None}, "grype wrote no readable report"),
-        ({"report": "{not json"}, "grype wrote no readable report"),
-        ({"report": []}, "not a JSON object"),
-        ({"report": _report(**{"only-fixed": True})}, "cannot be trusted: .*only-fixed"),
-        ({"report": _report(version="0.121.0")}, "names Grype 0.121.0, but the verified binary is 1.0.0"),
-        ({"syft_json": None}, "syft wrote no SBOM"),
-        ({"syft_json": {"descriptor": {"name": "trivy"}, "artifacts": []}}, "not a Syft document"),
-        ({"syft_json": {"descriptor": {"name": "syft"}}}, "artifacts` is not a list"),
+         "grype exited with code 1: failed to load vulnerability db", "grype"),
+        ({"report": None}, "grype wrote no readable report", "grype"),
+        ({"report": "{not json"}, "grype wrote no readable report", "grype"),
+        ({"report": []}, "not a JSON object", "grype"),
+        ({"report": _report(**{"only-fixed": True})}, "cannot be trusted: .*only-fixed", "grype"),
+        ({"report": _report(version="0.121.0")}, "names Grype 0.121.0, but the verified binary is 1.0.0",
+         "grype"),
+        ({"syft_json": None}, "syft wrote no SBOM", "syft"),
+        ({"syft_json": {"descriptor": {"name": "trivy"}, "artifacts": []}}, "not a Syft document", "syft"),
+        ({"syft_json": {"descriptor": {"name": "syft"}}}, "artifacts` is not a list", "syft"),
     ],
 )  # fmt: skip
 def test_anything_short_of_a_trusted_report_fails_closed(
@@ -240,11 +253,15 @@ def test_anything_short_of_a_trusted_report_fails_closed(
     write_lock: Callable[[str], Path],
     options: dict[str, Any],
     message: str,
+    tool: str,
 ) -> None:
     lock, dest, _ = install_fakes(tmp_path, releases, write_lock, **{"report": _report(), **options})
     repo, target, db = _tree(tmp_path)
-    with pytest.raises(ScannerError, match=message):
+    with pytest.raises(SbomScanFailure, match=message) as raised:
         _scan(lock, dest, repo, target, db)
+    assert isinstance(raised.value.error, ScannerError) and raised.value.tool == tool, (
+        "names the tool that failed"
+    )
 
 
 def test_the_configuration_hides_nothing_and_stays_offline() -> None:
@@ -270,13 +287,14 @@ def test_the_configuration_hides_nothing_and_stays_offline() -> None:
         assert line in CONFIG.splitlines(), line
 
 
-def _cli(repo: Path, target: Path, db: Path, dest: Path, out: Path) -> Any:
+def _cli(repo: Path, target: Path, db: Path, dest: Path, out: Path, *extra: str) -> Any:
     return CliRunner().invoke(
         app,
         [
             "scan", "sca", str(target), "--out", str(out), "--repo", REPO, "--commit", COMMIT,
             "--context", "pr", "--db-dir", str(db), "--repo-root", str(repo),
             "--lock", str(dest.parent / "tools.lock.toml"), "--tools-dir", str(dest), "--platform", PLATFORM,
+            *extra,
         ],
     )  # fmt: skip
 
@@ -315,6 +333,199 @@ def test_cli_fails_closed_and_leaves_no_findings_file(
 
 TOOLS_DIR = os.environ.get("SENTINEL_TOOLS_DIR")
 GRYPE_DB = os.environ.get("SENTINEL_GRYPE_DB_DIR")
+# ---------------------------------------------------------------- tool status (the gate's SC-010, A3)
+
+
+def _validator() -> Any:
+    from jsonschema import Draft202012Validator
+
+    root = Path(__file__).resolve().parents[3]
+    return Draft202012Validator(json.loads((root / "schemas" / "tool-status.v1.json").read_text("utf-8")))
+
+
+def _sca_status(tmp_path: Path, dest: Path, *extra: str) -> tuple[Any, Path, dict[str, Any] | None]:
+    """Run the CLI over a stale findings file and a stale status; (result, findings path, status or None)."""
+    repo, target, db = _tree(tmp_path)
+    out, status = tmp_path / "sca.ndjson", tmp_path / "status.json"
+    out.write_text("stale\n")
+    status.write_text("stale")
+    result = _cli(repo, target, db, dest, out, "--tool-status-out", str(status), *extra)
+    if not status.exists():
+        return result, out, None
+    document = json.loads(status.read_text())
+    assert not list(_validator().iter_errors(document)), document
+    return result, out, document
+
+
+def test_cli_records_syft_and_grype_ok_after_the_findings(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
+) -> None:
+    _, dest, _ = install_fakes(tmp_path, releases, write_lock, report=_report())
+    result, out, document = _sca_status(tmp_path, dest)
+    assert result.exit_code == 0, result.output
+    assert document is not None and len(out.read_text().splitlines()) == 36
+    for tool in ("syft", "grype"):
+        binary = hashlib.sha256((dest / "bin" / tool).read_bytes()).hexdigest()
+        assert document["tools"][tool] == {
+            "version": "1.0.0", "binary_sha256": binary, "artifact_sha256": binary, "status": "ok"
+        }  # fmt: skip
+    lock_bytes = (dest.parent / "tools.lock.toml").read_bytes()
+    assert document["lock_sha256"] == hashlib.sha256(lock_bytes).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("options", "syft", "grype", "detail"),
+    [
+        ({"syft_json": None}, "failed", "not_run", "syft wrote no SBOM"),
+        ({"grype_exit": 1, "grype_stderr": "failed to load vulnerability db"}, "ok", "failed",
+         "grype exited with code 1"),
+        ({"report": _report(**{"by-cve": True})}, "ok", "failed", "by-cve"),
+    ],
+    ids=["syft-fails", "grype-fails", "grype-report-untrusted"],
+)  # fmt: skip
+def test_cli_records_which_tool_failed_and_that_grype_never_ran_after_syft(
+    tmp_path: Path,
+    releases: FakeReleases,
+    write_lock: Callable[[str], Path],
+    options: dict[str, Any],
+    syft: str,
+    grype: str,
+    detail: str,
+) -> None:
+    _, dest, fakes = install_fakes(tmp_path, releases, write_lock, **{"report": _report(), **options})
+    result, out, document = _sca_status(tmp_path, dest)
+    assert result.exit_code == 3 and "FAIL CLOSED" in result.output, result.output
+    assert not out.exists() and document is not None
+    tools = document["tools"]
+    assert (tools["syft"]["status"], tools["grype"]["status"]) == (syft, grype)
+    failed = "syft" if syft != "ok" else "grype"
+    assert detail in tools[failed]["detail"] and "binary_sha256" not in tools[failed]
+    if grype == "not_run":
+        assert tools["grype"] == {"version": "1.0.0", "status": "not_run",
+                                  "detail": "not started: Syft produced no SBOM"}  # fmt: skip
+        assert not (fakes.record / "grype.argv").exists()
+
+
+def test_cli_a_finding_grype_reported_that_cannot_be_normalized_is_grypes_failure(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sentinelci.cli as cli
+
+    def refuse(*args: Any, **kwargs: Any) -> Any:
+        raise NormalizationError("a match without a location")
+
+    monkeypatch.setattr(cli, "normalize_grype", refuse)
+    _, dest, _ = install_fakes(tmp_path, releases, write_lock, report=_report())
+    result, out, document = _sca_status(tmp_path, dest)
+    assert result.exit_code == 3 and not out.exists() and document is not None
+    assert document["tools"]["syft"]["status"] == "ok"
+    assert document["tools"]["grype"]["status"] == "failed"
+    assert document["tools"]["grype"]["detail"] == "a match without a location"
+
+
+@pytest.mark.parametrize("tool", ["syft", "grype"])
+def test_cli_records_a_tampered_binary_that_never_ran(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path], tool: str
+) -> None:
+    _, dest, fakes = install_fakes(tmp_path, releases, write_lock, report=_report())
+    (dest / "bin" / tool).write_text(f"#!/bin/sh\ntouch {fakes.record}/tampered-ran\n")
+    result, out, document = _sca_status(tmp_path, dest)
+    assert result.exit_code == 3 and not out.exists() and document is not None
+    assert not (fakes.record / "tampered-ran").exists()
+    assert document["tools"][tool]["status"] == "integrity_mismatch"
+    other = {"syft": "grype", "grype": "syft"}[tool]
+    assert document["tools"][other]["status"] == ("not_run" if tool == "syft" else "ok")
+
+
+def test_cli_records_a_timeout(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def slow(*args: Any, **kwargs: Any) -> Any:
+        raise subprocess.TimeoutExpired(cmd="syft", timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(runner.subprocess, "run", slow)
+    _, dest, _ = install_fakes(tmp_path, releases, write_lock, report=_report())
+    result, out, document = _sca_status(tmp_path, dest, "--timeout", "37")
+    assert result.exit_code == 3 and not out.exists() and document is not None
+    assert document["tools"]["syft"]["status"] == "timeout" and "37 s" in document["tools"]["syft"]["detail"]
+    assert document["tools"]["grype"]["status"] == "not_run"
+
+
+def test_cli_reports_the_database_the_scan_read_and_the_sbom_it_matched(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
+) -> None:
+    _, dest, fakes = install_fakes(tmp_path, releases, write_lock, report=_report())
+    report, sbom = tmp_path / "evidence" / "sca-report.json", tmp_path / "evidence" / "sca-sbom.syft.json"
+    result, _, _ = _sca_status(tmp_path, dest, "--report", str(report), "--sbom-out", str(sbom))
+    assert result.exit_code == 0, result.output
+    assert sbom.read_bytes() == (fakes.record / "grype.sbom").read_bytes(), "the SBOM Grype matched, kept"
+    binaries = {
+        tool: hashlib.sha256((dest / "bin" / tool).read_bytes()).hexdigest() for tool in ("syft", "grype")
+    }
+    database = database_of_status(GOLDEN_REPORT["descriptor"]["db"]["status"])  # what the report says it read
+    assert json.loads(report.read_text()) == {
+        "schema_version": 1,
+        "syft": {"version": "1.0.0", "binary_sha256": binaries["syft"]},
+        "grype": {"version": "1.0.0", "binary_sha256": binaries["grype"]},
+        "database": {
+            "schema_version": database.schema_version,
+            "built": database.built,
+            "checksum": database.checksum,
+        },
+        "sbom_sha256": hashlib.sha256(sbom.read_bytes()).hexdigest(),
+    }
+
+
+def test_cli_leaves_no_report_and_no_sbom_when_the_scan_fails(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
+) -> None:
+    _, dest, _ = install_fakes(tmp_path, releases, write_lock, report=_report(**{"by-cve": True}))
+    report, sbom = tmp_path / "sca-report.json", tmp_path / "sca-sbom.syft.json"
+    report.write_text("an older scan's report")
+    sbom.write_text("an older scan's SBOM")
+    result, _, _ = _sca_status(tmp_path, dest, "--report", str(report), "--sbom-out", str(sbom))
+    assert result.exit_code == 3 and not report.exists() and not sbom.exists()
+
+
+def test_cli_a_report_is_never_written_without_the_sbom_it_names(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
+) -> None:
+    """Review of #80, should fix 1: the digest of bytes nobody keeps could be checked against nothing."""
+    _, dest, fakes = install_fakes(tmp_path, releases, write_lock, report=_report())
+    report = tmp_path / "sca-report.json"
+    report.write_text("an older scan's report")
+    result, out, status = _sca_status(tmp_path, dest, "--report", str(report))
+    assert result.exit_code == 2 and "--report needs --sbom-out" in result.output, result.output
+    assert not (fakes.record / "syft.argv").exists(), "nothing ran"
+    assert not report.exists() and not out.exists() and status is None, "and nothing older is left behind"
+
+
+def test_cli_writes_no_status_without_a_lock(tmp_path: Path) -> None:
+    # Nothing to vouch for: no status at all, which the gate blocks (SC-010) once required_tools.rego
+    # requires the tool.
+    dest = tmp_path / "tools"
+    dest.mkdir()
+    result, out, document = _sca_status(tmp_path, dest)
+    assert result.exit_code == 3 and document is None and not out.exists()
+
+
+def test_cli_passes_its_time_limit_to_both_tools(
+    tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[int] = []
+    real = runner.subprocess.run
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs["timeout"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(runner.subprocess, "run", spy)
+    _, dest, _ = install_fakes(tmp_path, releases, write_lock, report=_report())
+    result, _, _ = _sca_status(tmp_path, dest, "--timeout", "1234")
+    assert result.exit_code == 0, result.output
+    assert seen and set(seen) == {1234}, "every Syft and Grype run gets the limit"
+
+
 real = pytest.mark.skipif(
     not TOOLS_DIR, reason="set SENTINEL_TOOLS_DIR to a `sentinel tools install` directory"
 )
@@ -341,6 +552,7 @@ def test_real_grype_loads_sentinelcis_configuration_over_a_local_one(tmp_path: P
     (tmp_path / ".grype.yaml").write_text(
         "only-fixed: true\nby-cve: true\nexclude: ['./x']\n"
         "db:\n  update-url: https://attacker.example/databases\n  max-allowed-built-age: 8760h\n"
+        "match:\n  stock: {using-cpes: false}\n  jvm: {using-cpes: false}\n"
     )
     with as_file(files("sentinelci.scanners.configs").joinpath("grype.yaml")) as config:
         run = run_verified_tool(
@@ -362,6 +574,7 @@ def test_real_grype_loads_sentinelcis_configuration_over_a_local_one(tmp_path: P
         "  max-allowed-built-age: 120h0m0s",
     ):
         assert line in loaded, line
+    assert yaml.safe_load(run.stdout)["match"] == PINNED_MATCH, "the pinned block, which the report must show"
 
 
 @with_database

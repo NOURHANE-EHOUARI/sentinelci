@@ -4,7 +4,7 @@ The SentinelCI control plane on your machine (SPEC §4.4). **Local only**: every
 
 ```bash
 make up                                      # postgres + pgvector, redis, seaweedfs (S3), api
-COMPOSE_PROFILES=ai make up                  # + ollama
+COMPOSE_PROFILES=ai make up                  # + ollama and the worker
 COMPOSE_PROFILES=ai,observability make up    # + prometheus, grafana
 make down                                    # stop; data volumes are kept
 ```
@@ -21,13 +21,20 @@ there is no default password anywhere.
 | redis | `127.0.0.1:6379` (password) | default | Celery broker (B1) |
 | seaweedfs | http://127.0.0.1:8333 (S3, signed requests only) | default | evidence store, ADR-0007 |
 | ollama | http://127.0.0.1:11434 | `ai` | local LLM (B5); pull the pinned models (below) |
+| worker | (none) | `ai` | the AI analyst's jobs (B5c): explanations asked with `POST /api/v1/findings/{id}/explain`; the API's image, with the database (as its own role `sentinel_worker`), Redis and Ollama only |
 | prometheus | http://127.0.0.1:9090 | `observability` | metrics (A8) |
 | grafana | http://127.0.0.1:3000, user `admin` | `observability` | dashboards as code (A8) |
 
 Ports can be moved if one is taken, e.g. `POSTGRES_PORT=5433 make up` (also `REDIS_PORT`, `S3_PORT`, `API_PORT`,
 `OLLAMA_PORT`, `PROMETHEUS_PORT`, `GRAFANA_PORT`).
 
-Not here yet: the Celery worker (B1) and the web dashboard (B7) are added by their tasks.
+**The worker's database role.** The worker logs in as `sentinel_worker`, not as the owner `sentinel`. Migration
+0011 gives that role only what the worker's jobs need: read runs and findings, claim and finish explanation
+requests (their state only: `status`, `reason`, `explanation_sha256`, `updated_at`), record explanations. It cannot write a run, a finding or a decision, read a decision, a waiver, a
+release or an explanation's text, or change the schema. The migration holds no password: the API's migrate
+step gives the role its login with `WORKER_DATABASE_PASSWORD` from `.env` (`make compose-env` adds it to an
+older file). Outside Compose, the migrating user needs `CREATEROLE` the first time, and the worker's own
+login only after `SENTINEL_WORKER_DATABASE_PASSWORD` was set once for `python -m sentinel_api.migrate`.
 
 ## Platform API (B1)
 
@@ -55,7 +62,7 @@ findings only if `findings_sha256` is null. In GitHub Actions the run id is `<ru
 of the job is a new run. A run without `run_id` (a local run) is always new. `GET /api/v1/runs/<run id>/findings` gives the upload back
 byte for byte (its sha256 is `findings_sha256`), for the correlator or a replay. Bodies are capped before
 authentication: 64 KiB for JSON, `SENTINEL_API_MAX_UPLOAD_BYTES` (32 MiB by default) for a findings upload, a
-correlation or a decision. To rotate the token, delete both `SENTINEL_API_TOKEN` lines from `.env` and run `make compose-env`.
+correlation, a decision, a release's evidence or a remediation attempt. To rotate the token, delete both `SENTINEL_API_TOKEN` lines from `.env` and run `make compose-env`.
 
 A run's correlations (the correlator's root-cause groups, advisory: the gate never reads them) are posted after
 its findings, as one Correlation v1 document:
