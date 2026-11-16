@@ -43,6 +43,10 @@ extend-exclude = ["demo-shop"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
+# No PEP 695 type parameters (`def f[T]`, `class C[T]`, `type X = ...`): Opengrep cannot parse them, and the code
+# it cannot parse goes unanalysed (`sentinel-sast-not-analysed`, P1 in the self-gate). TypeVars instead;
+# tests/ci/test_python_syntax.py keeps the tree free of them.
+ignore = ["UP040", "UP046", "UP047"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["sentinelci", "sentinel_api", "sentinel_worker", "sentinel_ai"]
