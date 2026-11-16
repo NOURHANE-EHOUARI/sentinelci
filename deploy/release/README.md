@@ -1,7 +1,7 @@
 # Releases on the laptop (ADR-0011)
 
-While the repository is private, the laptop that holds the release key is the only signer: the key never
-reaches GitHub. `release.py` builds shop-api's release image, decides on it with the release gate, and signs
+Until keyless signing (ADR-0016, step 2), the laptop that holds the release key is the only signer: the key
+never reaches GitHub. `release.py` builds shop-api's release image, decides on it with the release gate, and signs
 it
 only when the gate lets it through. Its docstring lists every step and what each one refuses.
 

@@ -15,7 +15,7 @@ What SentinelCI defends, against whom, and where each defence lives and is teste
 | The signed release and its evidence | Image, signature and the four attestations (decision, SBOM, vulnerability scan, provenance) |
 | The cluster | What finally runs |
 | Findings and decisions stored by the platform | Evidence; findings may describe secrets (never their values) |
-| Repository write access | `main` has no server-side protection in the private phase (ADR-0006) |
+| Repository write access | `main` is protected server-side since the switch (ADR-0016): pull requests, one approving review, the required checks, no bypass |
 
 ## 2. Who attacks
 
@@ -26,8 +26,9 @@ What SentinelCI defends, against whom, and where each defence lives and is teste
 - **A3, the malicious or confused AI output**: a model that follows instructions hidden in finding text, or
   invents a fix.
 - **A4, the attacker inside the network path**: a proxy, a redirect, a registry that serves something else.
-- **A5, the insider with push rights**: one of the two team members, or a session acting for one. In the
-  private phase this attacker is accepted as a residual risk (section 5).
+- **A5, the insider with push rights**: one of the two team members, or a session acting for one. Since the
+  switch (ADR-0016), `main` needs the other member's approval and a green CI, so one insider alone cannot change
+  it; the release key is still one person's (section 5).
 
 ## 3. Trust boundaries
 
@@ -40,7 +41,7 @@ flowchart LR
     PROPOSE["bot propose: read-only"] --> PUBLISH["bot publish: write token, no repository code"]
     PUBLISH --> VERIFY["bot verify: read-only, base pipeline"] --> BREPORT["bot report: comment and status, no repository code"]
   end
-  subgraph LAPTOP["Laptop signer (private phase)"]
+  subgraph LAPTOP["Laptop signer (until keyless, ADR-0016 step 2)"]
     REL["make release: clean tree at origin/main"] --> KEY["release key, password-protected"]
   end
   REL --> BUNDLE["release bundle: image + signature + 4 attestations"]
@@ -133,16 +134,15 @@ token or a secret, and a job that holds one runs no repository code.
 
 | Risk | Why it is accepted now | What removes it |
 |---|---|---|
-| `main` has no server-side protection; anyone who can push can change the pipeline | GitHub Free, private repository (ADR-0006); two people and their sessions only | Branch protection when the repository goes public, which the Scorecard workflow (PR #104) then checks |
-| Any workflow run can read a repository secret | No environment branch rules on GitHub Free for a private repository | There is no signing secret on GitHub (ADR-0011) |
-| The laptop signer trusts the laptop | A local key is the only signer the private phase allows | Keyless signing in CI when public (ADR-0006) |
+| `main`'s protection is a GitHub setting, not part of the repository: the owner's account can turn it off | Two people; Scorecard's Branch-Protection check runs on every push to `main` and publishes a weaker setting | — |
+| Any workflow run can read a repository secret | There is no signing secret on GitHub (ADR-0011), so there is nothing to protect yet | Environment branch rules, available now that the repository is public, when step 2 of ADR-0016 brings a signing identity to CI |
+| The laptop signer trusts the laptop | A local key stays the only signer until keyless signing, after v1.0.0 (ADR-0016, step 2) | Keyless signing in CI (ADR-0016, step 2) |
 | `verify` in the bot runs the same code as `propose` | A compromised dependency could write a false result, but holds no write token: at worst a wrong comment on a pull request a reviewer still judges | — |
 | Local models may be wrong | Their output is advice, schema-checked, and never decides | — |
 | The explanation worker (B5c, PR #111) connects to PostgreSQL as the database owner: a compromised dependency of its model path could change any table | It holds no API token, no S3 credential and no published port, it keeps an explanation only if it is a valid Explanation v1 about its own finding (the API and a trigger check it), and the platform records evidence the gate already decided on | A database role for the worker with only `SELECT` on `runs` and `findings`, `SELECT`/`UPDATE` on `explain_requests` and `INSERT` on `explanations` |
 | uv's cache in `ci.yml` can be written by the pull request's own run, and read by its next one | That job runs the change's own code anyway and holds no write token, and no job that judges a change reads that cache (ADR-0015) | — |
 | The platform API's reads need no token: anything on the host, or in the Compose network, can read runs and findings | Every port binds 127.0.0.1, findings never hold a secret's value (only its hash), and nothing but the dashboard reads them yet | A read token (B1), when the dashboard (B7) and the Grafana datasource need one |
-| The Scorecard job (PR #104) runs the image its pinned action's `action.yaml` names by tag (`ghcr.io/ossf/scorecard-action:v2.5.0`), with `id-token: write`: the commit pin does not cover the image | It runs only on a push to `main` or by hand, of a public repository, so not at all in the private phase; its repository permissions are reads; its OIDC token names `scorecard.yml`, an identity nothing trusts (keyless verification pins the release workflow, ADR-0010) | No clean way within Scorecard's publish rules; re-checked when the repository goes public |
-| The nightly replay, like every other workflow, is stopped while GitHub Actions is blocked (the account's spending limit) | Decisions can still be replayed by hand (`sentinel replay --all`), and each pull request carries a local `make check` report | Actions running again |
+| The Scorecard job (PR #104) runs the image its pinned action's `action.yaml` names by tag (`ghcr.io/ossf/scorecard-action:v2.5.0`), with `id-token: write`: the commit pin does not cover the image | It runs only on a push to `main` or by hand, and only while the repository is public; its repository permissions are reads; its OIDC token names `scorecard.yml`, an identity nothing trusts (keyless verification pins the release workflow, ADR-0010) | No clean way within Scorecard's publish rules; re-checked when the repository goes public |
 
 ## 6. Keeping this document true
 

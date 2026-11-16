@@ -223,8 +223,8 @@ waivers:
 
 ADR-0010. `sentinel attest` signs four in-toto statements about the image digest (release decision, CycloneDX
 SBOM, vulnerability scan, SLSA v1 provenance) with the pinned Cosign and a key pair, and writes them as Sigstore
-bundles under `<out>/attestations/`. In the private phase it runs only on the release laptop, inside
-`make release` (ADR-0011, `deploy/release/README.md`):
+bundles under `<out>/attestations/`. Until keyless signing (ADR-0016, step 2) it runs only on the release
+laptop, inside `make release` (ADR-0011, `deploy/release/README.md`):
 
 ```bash
 uv run sentinel attest registry.local/demo-shop/shop-api@sha256:<digest> \

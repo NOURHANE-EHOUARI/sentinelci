@@ -6,7 +6,8 @@ Every change is scanned by a hardened pipeline, every release is decided by test
 artifact carries signed evidence of why it is safe, and Kubernetes refuses to run anything without that
 evidence. AI explains findings and proposes fixes — it never decides.
 
-> Status: work in progress (Sprint 0). Private repository until v1.0.0.
+> Status: v1.0.0 in preparation. The repository is public (ADR-0016); releases are signed with a Cosign key pair
+> kept on the maintainers' laptop (ADR-0011), with nothing uploaded to the public Rekor log, until keyless signing.
 
 ## Why
 

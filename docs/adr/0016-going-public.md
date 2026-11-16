@@ -63,12 +63,21 @@ keyless signing via GitHub OIDC, GitHub artifact attestations, SARIF upload to c
 Each is its own pull request, with Kyverno and `sentinel verify` accepting both attestors first, as ADR-0006
 already plans.
 
-## The history scan of 15 November
+## The scans before the switch
 
 `sentinel scan secrets` in git mode over every commit of every branch (891 commits on 142 remote branches), with the
 pinned Gitleaks 8.30.1: **11 findings, 59 places, no real secret.** Re-run by Nourhane with the pull request refs
 too (#144 review: 122 branches and 144 PR refs, 893 commits, one of them reachable only from `refs/pull/59/head`):
-the same 11 findings, nothing new.
+the same 11 findings, nothing new. Run again on 15 November after the merge train, on a `git clone --mirror`
+(120 branches, 185 pull-request refs with their `merge` refs, 989 commits): the same 11 findings, each matched by
+path, line and rule to `GT-SECRET-001` to `005` or by finding ID to the self-gate's waivers (#144).
+
+The **workflow artifacts** (44, 348,935 bytes, none expired: `sentinel-scan`, `sentinel-decision`,
+`sentinel-evidence`, `replay-corpus`) were downloaded one folder each and scanned in dir mode on 15 November: 6
+findings, all `generic-api-key` on a `secret_hash` field (the sha256 the normalizer writes in place of a secret),
+in 2 artifacts. Nothing was deleted (#144). The runs since Actions was blocked hold no logs.
+
+The switch PR re-runs the history scan on the day, after the last merge before the switch, and records it here.
 
 | Kind | What it is |
 |---|---|

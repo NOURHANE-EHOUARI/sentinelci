@@ -29,18 +29,29 @@ fixes; it never decides.
 8. **Contracts first.** If a change needs a different data shape, update the schema version and its fixtures in
    the same PR; never silently diverge from `schemas/`.
 
-## Repository status: private phase
+## Repository status: public, step 1 of ADR-0016
 
-The repository stays private until the project is complete. Until then (see ADR-0006):
-- Signing uses Cosign **key pairs** with no upload to the public transparency log (no keyless signing, because the
-  keyless certificate would publish the repository identity).
-- SLSA provenance is produced as a Cosign in-toto attestation (GitHub artifact attestations require a public repo).
+The repository is public (ADR-0016, step 1; it amends ADR-0006). What that changes:
+- Everything pushed is public at once: branches, tags, every pull request's head (`refs/pull/*/head`), and, to
+  anyone with its SHA, a commit that a force-push removed. Never push what must not be published.
+- `main` is protected server-side: pull requests only, one approving review, the required checks green
+  (`lint, types, contracts, tests`, `dashboard (typed client, types, tests, build)`, `workflow security (zizmor)`),
+  no force-push, no deletion, no bypass, admins included. Never commit or push to `main` directly: always a task
+  branch and a PR, which the other team member reviews and merges. If GitHub Actions does not run, a local
+  `make check` report on the PR head stands in for CI.
+- GitHub Actions runs on every pull request: keep path filters and caches, and the full image scan nightly on
+  `main`. Workflows from fork pull requests need a maintainer's approval; the repository's default workflow
+  permissions are read-only, and every job still sets its own `permissions:`.
+- GitHub's alerts on `demo-shop/` (Dependabot, secret scanning) are closed with their reason ("intentionally
+  vulnerable demo target", "used in tests", naming the seed in `demo-shop/ground-truth/`): a closed alert is not
+  a waiver. A new fake seed goes into the ground truth in the same PR; push protection is bypassed for it only.
+
+Unchanged until step 2 (keyless signing, after v1.0.0 and only if there is time):
+- Signing uses Cosign **key pairs** on the laptop that holds the release key (ADR-0011), with no upload to the
+  public transparency log.
+- SLSA provenance is produced as a Cosign in-toto attestation.
 - Scan results go to PR comments, workflow artifacts and our dashboard (no GitHub code-scanning upload).
 - Kubernetes demos use the local registry of the kind cluster.
-- GitHub Actions minutes are limited (Free plan): use path filters and caches; run the full image scan nightly on `main`.
-- `main` has no server-side protection: never commit or push to `main` directly. Always work on a task branch
-  and open a PR; the other team member reviews and merges only with
-  a green CI, or a local `make check` report on the PR head while Actions cannot run.
 
 ## Commands
 
