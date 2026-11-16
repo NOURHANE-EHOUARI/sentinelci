@@ -462,7 +462,12 @@ def test_a_threshold_inside_the_grid_is_not_called_an_edge(
 ) -> None:
     assert run.main(["--findings", str(findings_dir), "--calibrate"]) == 0
     calibrated = json.loads(model.read_text(encoding="utf-8"))
-    model.write_text(json.dumps(calibrated | {"threshold": 0.8}), encoding="utf-8")
+    # A calibration whose own best is 0.8 (#146 review: the threshold is never edited alone).
+    curve = [p | {"ari": 1.0 if p["threshold"] == 0.8 else 0.5} for p in calibrated["curve"]]
+    best = {"threshold": 0.8, "at_grid_edge": False, "curve": curve}
+    model.write_text(
+        json.dumps(calibrated | best | {"calibration": calibrated["calibration"] | {"ari": 1.0}})
+    )
     out = tmp_path / "out"
     assert run.main(["--findings", str(findings_dir), "--out", str(out)]) == 0
     assert (
@@ -471,6 +476,81 @@ def test_a_threshold_inside_the_grid_is_not_called_an_edge(
     )
     assert "edge of the grid" not in (out / "correlation.md").read_text(encoding="utf-8")
     assert run.at_the_grid_edge(0.5) and run.at_the_grid_edge(0.95) and not run.at_the_grid_edge(0.55)
+
+
+def _edit_calibration(model: Path, edit: str) -> None:
+    calibrated = json.loads(model.read_text(encoding="utf-8"))
+    if edit == "threshold":  # set by hand, e.g. to the test half's peak
+        calibrated["threshold"] = 0.8
+    elif edit == "edge":
+        calibrated["at_grid_edge"] = False
+    elif edit == "ari":
+        calibrated["calibration"]["ari"] = 0.5
+    else:
+        del calibrated["curve"]
+    model.write_text(json.dumps(calibrated), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("edit", "message"),
+    [
+        ("threshold", "its own calibration curve's best is 0.95"),
+        ("edge", "its own calibration curve's best is 0.95"),
+        ("ari", "its own calibration curve's best is 0.95"),
+        ("curve", "has no calibration curve: KeyError"),
+    ],
+)
+def test_a_threshold_its_own_curve_does_not_give_is_refused(
+    findings_dir: Path,
+    model: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    edit: str,
+    message: str,
+) -> None:
+    """Review of #146 (Hiba): the inputs and the model can match while the threshold is not the one
+    `--calibrate` chose. The measurement refuses it rather than call it calibrated on the calibration half."""
+    assert run.main(["--findings", str(findings_dir), "--calibrate"]) == 0
+    _edit_calibration(model, edit)
+    assert run.main(["--findings", str(findings_dir), "--out", str(tmp_path / "out")]) == 2
+    assert message in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
+def test_a_curve_on_another_grid_is_refused(
+    findings_dir: Path, model: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run.main(["--findings", str(findings_dir), "--calibrate"]) == 0
+    calibrated = json.loads(model.read_text(encoding="utf-8"))
+    narrow = [p for p in calibrated["curve"] if 0.7 <= p["threshold"] <= 0.8]  # its best is 0.8, not an edge
+    edited = calibrated | {"curve": narrow, "threshold": 0.8, "at_grid_edge": False}
+    model.write_text(json.dumps(edited), encoding="utf-8")
+    assert run.main(["--findings", str(findings_dir), "--out", str(tmp_path / "out")]) == 2
+    assert "curve is not on the grid" in capsys.readouterr().err
+
+
+def test_a_threshold_with_its_inputs_but_another_models_digest_is_refused(
+    findings_dir: Path, model: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Only the digest differs, so the model check refuses it, not the inputs' (#146 review, nit 2)."""
+    assert run.main(["--findings", str(findings_dir), "--calibrate"]) == 0
+    calibrated = json.loads(model.read_text(encoding="utf-8"))
+    calibrated["embedding_model"]["digest"] = "sha256:" + "1" * 64
+    model.write_text(json.dumps(calibrated), encoding="utf-8")
+    assert run.main(["--findings", str(findings_dir), "--out", str(tmp_path / "out")]) == 2
+    assert f"not the pinned {MODEL.name} ({MODEL.digest})" in capsys.readouterr().err
+
+
+def test_the_committed_threshold_is_the_best_of_its_own_curve() -> None:
+    text = run.THRESHOLD.read_text(encoding="utf-8")
+    run.check_calibration(text, json.loads(text)["threshold"])
+
+
+def test_the_correlators_default_threshold_is_the_committed_one() -> None:
+    """The product's stage 2b runs at the threshold the calibration half chose, not a provisional one."""
+    from sentinel_ai.correlate.stages import DEFAULT_THRESHOLD
+
+    assert json.loads(run.THRESHOLD.read_text(encoding="utf-8"))["threshold"] == DEFAULT_THRESHOLD
 
 
 def test_the_whole_run_sentence_counts_what_the_test_half_holds(
