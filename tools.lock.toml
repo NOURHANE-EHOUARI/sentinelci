@@ -262,6 +262,35 @@ url = "https://github.com/kyverno/kyverno/releases/download/v1.19.2/kyverno-cli_
 sha256 = "7915c03c613c22363a100adb3da8d06f2e2626d9d21a98b97f921795ffdc536f"
 
 
+# Kubernetes in Docker, for the demo cluster (task A5b, deploy/kind/). A raw binary per platform, each with
+# its own .sha256sum file in the release.
+[tools.kind]
+version = "0.33.0"
+homepage = "https://github.com/kubernetes-sigs/kind"
+binary = "kind"
+archive = "none"
+
+[tools.kind.artifacts.linux-amd64]
+url = "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64"
+checksums_url = "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64.sha256sum"
+sha256 = "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d"
+
+[tools.kind.artifacts.linux-arm64]
+url = "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-arm64"
+checksums_url = "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-arm64.sha256sum"
+sha256 = "20022bee6cfcd5086cb7234d218e3454e6090022f2a8f55d1fa7fcf42c3867a2"
+
+[tools.kind.artifacts.darwin-amd64]
+url = "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-darwin-amd64"
+checksums_url = "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-darwin-amd64.sha256sum"
+sha256 = "5a99f26f57246dc9319dd294803313197a0f34d33c525b3ea8b655db5916ece0"
+
+[tools.kind.artifacts.darwin-arm64]
+url = "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-darwin-arm64"
+checksums_url = "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-darwin-arm64.sha256sum"
+sha256 = "0c8c7dbe5e23594a198b786c4bc13dacc101fa6196b0cb0b23a1ca44e61f4b4f"
+
+
 # Python tools (SPEC §5): installed by `uv sync --locked` from PyPI, where the project publishes no checksum file
 # for its binaries. uv checks each wheel against uv.lock at install time; the CLI checks the installed binary
 # against `binary_sha256` right before every run, so a binary replaced or reinstalled later never runs.

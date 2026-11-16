@@ -20,6 +20,8 @@ out/
 
 # Installed scanners (re-created and verified from tools.lock.toml)
 .sentinel/tools/
+.sentinel/cache/
+.sentinel/kind/
 
 # Secrets and signing material: never commit them
 .env
