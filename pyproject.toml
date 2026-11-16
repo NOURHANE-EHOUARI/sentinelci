@@ -25,6 +25,10 @@ dev = [
 [tool.uv]
 package = false
 default-groups = ["dev"]
+# Nothing uploaded in the last week is resolved, transitive dependencies included: Dependabot's cooldown
+# covers only the packages it updates (#135 review, grimp). The lock records the span, not a date, and
+# tests/ci/test_dependabot.py keeps it equal to Dependabot's cooldown.
+exclude-newer = "7 days"
 
 [tool.uv.workspace]
 members = ["cli", "platform/api", "platform/worker", "ai"]
