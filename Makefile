@@ -1,8 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help setup check lint format typecheck imports policy test zizmor web eval tools tools-verify compose-env up down \
 	eval-correlation eval-correlation-calibrate remediate-code release release-block release-key self-gate \
-	release-sentinelci eval-canaries eval-replay eval-ranking eval-timing eval-explanations eval-rubric \
-	container-seed-images
+	release-sentinelci eval-canaries eval-replay eval-ranking eval-timing eval-explanations eval-rubric
 
 # OPA is a pinned binary, not a Python package: `uv run sentinel tools install opa` (tools.lock.toml).
 OPA ?= $(or $(SENTINEL_OPA),opa)
@@ -113,6 +112,7 @@ release-block: ## The demo's BLOCK image: the gate must block it, nothing is sig
 # run or deployed. tests/demo_shop/test_container_seeds.py checks these lines against the ground truth, and reads
 # the archives when SENTINEL_CONTAINER_IMAGES names this directory.
 SEED_IMAGES ?= out/container-seeds
+.PHONY: container-seed-images
 container-seed-images: ## Build the CONTAINER seeds' images, to scan them -> out/container-seeds/<name>.oci.tar
 	mkdir -p $(SEED_IMAGES)
 	docker buildx build --provenance=false --sbom=false --file demo-shop/services/shop-api/Dockerfile.release \
