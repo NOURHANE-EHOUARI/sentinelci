@@ -63,11 +63,16 @@ def check_public_key(path: Path) -> None:
         raise AttestationError(f"{path} is not a PEM public key (-----BEGIN PUBLIC KEY-----)")
 
 
+# The CAs Cosign may trust besides the system's (the demo cluster's registry CA, through SSL_CERT_FILE), as
+# Grype's NETWORK_VARIABLES do: trust anchors from the operator's own environment, never credentials.
+TRUST_VARIABLES = ("SSL_CERT_FILE", "SSL_CERT_DIR")
+
+
 @dataclass(frozen=True)
 class Registry:
     """How Cosign reaches the image's registry. Plain HTTP only when asked (a local registry, such as the
     kind cluster's: see `registry_for`); credentials only from `DOCKER_CONFIG` (the directory of a Docker
-    config.json), if set."""
+    config.json), if set; the CAs it trusts from `SSL_CERT_FILE` and `SSL_CERT_DIR`, if set."""
 
     allow_http: bool = False
 
@@ -76,8 +81,9 @@ class Registry:
 
     @staticmethod
     def env(environ: Mapping[str, str]) -> dict[str, str]:
+        trusted = {name: environ[name] for name in TRUST_VARIABLES if environ.get(name)}
         config = environ.get("DOCKER_CONFIG")
-        return {"DOCKER_CONFIG": config} if config else {}
+        return trusted | ({"DOCKER_CONFIG": config} if config else {})
 
 
 def registry_for(image: Image, *, allow_http: bool) -> Registry:

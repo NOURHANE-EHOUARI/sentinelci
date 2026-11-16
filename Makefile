@@ -1,7 +1,8 @@
 .DEFAULT_GOAL := help
 .PHONY: help setup check lint format typecheck imports policy test zizmor web eval tools tools-verify compose-env up down \
 	eval-correlation eval-correlation-calibrate remediate-code release release-block release-key self-gate \
-	release-sentinelci eval-canaries eval-replay eval-ranking eval-timing eval-explanations eval-rubric
+	release-sentinelci eval-canaries eval-replay eval-ranking eval-timing eval-explanations eval-rubric \
+	kind-up kind-policy kind-down
 
 # OPA is a pinned binary, not a Python package: `uv run sentinel tools install opa` (tools.lock.toml).
 OPA ?= $(or $(SENTINEL_OPA),opa)
@@ -116,3 +117,13 @@ self-gate: ## SentinelCI's release gate on main, run from a pipeline commit (a v
 
 release-sentinelci: ## SentinelCI's own release VERSION=X.Y.Z of main, judged from a pipeline commit (PIPELINE=) (A10)
 	uv run --locked python deploy/release/release.py sentinelci --version $(VERSION) $(if $(KEY),--key $(KEY)) $(if $(PIPELINE),--pipeline $(PIPELINE))
+
+# The demo cluster (A5b, deploy/kind): needs Docker, kubectl and the pinned kind (`uv run sentinel tools install kind`).
+kind-up: ## Create the demo kind cluster: its registry on 127.0.0.1:5001 and Kyverno (safe to run twice)
+	uv run python deploy/kind/cluster.py up
+
+kind-policy: ## Apply the release admission policy, rendered from deploy/keys/release.pub (KEY=... to change it)
+	uv run python deploy/kind/cluster.py policy $(if $(KEY),--key $(KEY))
+
+kind-down: ## Delete the demo kind cluster and its registry
+	uv run python deploy/kind/cluster.py down
