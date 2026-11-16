@@ -1,0 +1,14 @@
+# Where the demo-shop release runs (task A5b). Two admission checks guard it:
+# - Kyverno's release policy (`make kind-policy`): only an image signed by the release key, with its evidence;
+# - Pod Security "restricted": no root, no privilege escalation, no added capability, a seccomp profile.
+# Created by `make kind-up`, not by Argo CD: the demo-shop AppProject may create no cluster-scoped resource.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo-shop
+  labels:
+    app.kubernetes.io/part-of: sentinelci-demo
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest

@@ -450,3 +450,30 @@ def test_a_pod_controller_with_an_unsigned_image_is_refused_itself(release: dict
     refused = ("fail", "signature: the image itself is not signed by the release key")
     results = admit(release["work"] / "controllers", _policy(release), controllers)
     assert results == {"deployment": refused, "job": refused, "cronjob": refused}
+
+
+@needs_tools
+@pytest.mark.integration
+def test_the_demo_shop_charts_deployment_is_admitted_for_a_release_only(release: dict[str, Any]) -> None:
+    """The Deployment of deploy/helm/demo-shop, rendered as Helm renders it (tests/deploy/chart_render.py),
+    for this registry: admitted with the release's digest, refused with an unsigned image's (task A5b)."""
+    from .deploy_modules import chart_render
+
+    if chart_render.GO is None:
+        pytest.skip("renders the chart with Go's text/template: needs Go")
+    deployments = []
+    for case in ("good", "unsigned"):
+        image = parse_image(release["images"][case])
+        (deployment,) = [
+            d
+            for d in chart_render.render({"image": {"repository": image.name, "digest": image.digest}})
+            if d["kind"] == "Deployment"
+        ]
+        deployment["metadata"] |= {"name": f"shop-api-{case}", "namespace": "demo-shop"}
+        deployments.append(deployment)
+    results = admit(release["work"] / "chart", _policy(release), deployments)
+    assert results["shop-api-good"][0] == "pass", results
+    assert results["shop-api-unsigned"] == (
+        "fail",
+        "signature: the image itself is not signed by the release key",
+    )

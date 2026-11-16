@@ -1,0 +1,7 @@
+apiVersion: v2
+name: demo-shop
+description: >-
+  The demo-shop API as a SentinelCI release: by digest only, hardened, and admitted by Kyverno only with its
+  signature and evidence (task A5b, SPEC section 7, ADR-0011).
+type: application
+version: 0.1.0
