@@ -101,6 +101,16 @@ export async function getRuleCounts(): Promise<RuleCounts> {
   return (await get("/api/v1/rules")).json() as Promise<RuleCounts>;
 }
 
+/** The finding's latest explanation (Explanation v1, advisory), or null when none is recorded (404). */
+export async function getExplanation(findingId: string): Promise<unknown> {
+  try {
+    return await (await get(`/api/v1/findings/${encodeURIComponent(findingId)}/explanation`)).json();
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
 /** The run's latest correlation document, or null when none is recorded (404). */
 export async function getCorrelation(runId: string): Promise<unknown> {
   try {

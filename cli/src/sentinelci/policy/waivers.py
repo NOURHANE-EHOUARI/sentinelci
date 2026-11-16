@@ -45,6 +45,9 @@ _Loader.yaml_implicit_resolvers = {
 }
 
 
+_TOO_DEEP = "waivers file is nested too deeply to be read"
+
+
 def load_waivers(data: bytes) -> list[Any]:
     """Return the waiver entries of a waivers file. An empty file means no waivers."""
     try:
@@ -53,6 +56,8 @@ def load_waivers(data: bytes) -> list[Any]:
         raise EvaluationError("waivers file is not UTF-8") from exc
     except yaml.YAMLError as exc:
         raise EvaluationError(f"waivers file is not valid YAML: {exc}") from exc
+    except RecursionError:  # a deeply nested document reaches Python's recursion limit (#126 review)
+        raise EvaluationError(_TOO_DEEP) from None
     if document is None:
         return []
     if not isinstance(document, dict) or set(document) != {"version", "waivers"}:

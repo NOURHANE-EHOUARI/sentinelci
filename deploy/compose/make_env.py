@@ -18,6 +18,8 @@ ENV_FILE = Path(__file__).resolve().parent / ".env"
 # Values use only [A-Za-z0-9_-]: safe inside URLs and never interpolated by Compose.
 VARIABLES = {
     "POSTGRES_PASSWORD": lambda: secrets.token_urlsafe(32),
+    # The worker's own database login (`sentinel_worker`, migration 0011): only what its jobs need.
+    "WORKER_DATABASE_PASSWORD": lambda: secrets.token_urlsafe(32),
     "REDIS_PASSWORD": lambda: secrets.token_urlsafe(32),
     "S3_ACCESS_KEY": lambda: "sentinel-" + secrets.token_hex(8),
     "S3_SECRET_KEY": lambda: secrets.token_urlsafe(32),
