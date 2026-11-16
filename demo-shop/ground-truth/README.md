@@ -37,6 +37,38 @@ controls:
     must_not_detect: [gitleaks]   # any finding by these tools in this file is a false positive
 ```
 
+## Ranking relevance (B8)
+
+Each seed has a `relevance` grade, with its reason in `relevance_why`. B8 scores SentinelCI's ranking with them
+(NDCG@10 against a CVSS-only baseline, SPEC section 17). The grade answers one question: how urgently should a
+person fix this, given what demo-shop is?
+
+| Grade | Meaning |
+|---|---|
+| 3 | Fix now. Someone outside can exploit it today with no prior access, and it leads to code execution, data exposure, or a credential or supply-chain compromise. A credential committed to the repository that gives access to code, data, infrastructure or the supply chain counts here: anyone who reads the code has it. |
+| 2 | Fix soon. It is serious but needs a precondition: an existing foothold, a network position, specific deployment conditions, or a component that demo-shop does not deploy (no manifest under `infra/k8s/`). |
+| 1 | Fix when convenient. It is real, but the impact is low or there is no reachable path: a dependency never imported, information disclosure, hardening. |
+| 0 | Not a seed. Unlisted findings and controls are 0. |
+
+The grades were set from each seed's own description, the files it names, `imported` and `kev`, and which
+services `infra/k8s/` deploys (shop-api and web, not reports). They do not use SentinelCI's risk score, its
+priority or its factors. All the grades were committed before any ranking was computed. The person who set them
+had seen `expected.gate`, which records the engine's verdict with the feed fixtures; the rubric does not read
+it. A grade is changed only by a reviewed pull request that says why, and the ranking report names the ground
+truth by its digest.
+
+A seed added later gets its grade in the same pull request, by this rubric, before its ranking is looked at.
+
+**Correction after the first result (#121 review).** As first committed, grade 3 counted any credential
+committed to the repository. Two grades did not follow that sentence: GT-SECRET-004 (the shop's TLS key, graded
+2, since impersonating the shop also needs a network position) and GT-SECRET-005 (a Slack webhook, graded 1,
+since it can only post to one channel). The sentence was narrowed to the credentials that give access to code,
+data, infrastructure or the supply chain. This was done after the first ranking result was seen, and no grade
+changed. Grading both 3 instead, as the first sentence read, would raise the risk score's NDCG@10 on all
+categories from 0.366 to 0.416 by advisory and from 0.495 to 0.573 by package, and the CVSS baseline's from
+0.347 to 0.353 and from 0.390 to 0.400. SCA alone is unchanged. The narrower sentence is the one that does not
+raise our own result.
+
 Matching rules for the harness:
 
 - A seed is **detected** only by a finding of its own category, when any listed `(tool, rule)` reports it in

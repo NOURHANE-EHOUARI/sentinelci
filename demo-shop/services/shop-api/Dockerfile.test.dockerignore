@@ -1,0 +1,5 @@
+# Build context of Dockerfile.test (BuildKit reads <Dockerfile>.dockerignore): an allow-list, the two
+# requirements files only. The application is mounted at run time, and the seeded files never enter the image.
+*
+!requirements.release.txt
+!requirements.test.txt
