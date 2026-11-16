@@ -271,6 +271,39 @@ def test_the_latest_explanation_is_served(
     assert json.loads(served.content)["summary"] == "The second explanation."
 
 
+@pytest.mark.parametrize("forged", ["not-explanation-v1", "an-extra-field"])
+def test_an_explanation_recorded_past_the_workers_checks_is_never_served(
+    client: TestClient,
+    headers: dict[str, str],
+    queue: Queue,
+    sessions: Callable[[], Session],
+    database_url: str,
+    forged: str,
+) -> None:
+    """T33: the Explanation v1 check (`finish`) runs in the worker's own process, and the database checks
+    only the hash, the finding and the run. A compromised worker could record any JSON naming the finding as
+    its latest explanation, so the API checks it again before serving it, and serves nothing else in its
+    place: not an older explanation, not the document (#155 review)."""
+    first = recorded_run(client, headers, SCA)
+    worker(sessions, ask(client, headers, SCA["id"], run_id=first).json()["id"], ANSWER)
+    valid = json.loads(client.get(f"/api/v1/findings/{SCA['id']}/explanation").content)
+    second = recorded_run(client, headers, SCA, commit="1" * 40)
+    request = ask(client, headers, SCA["id"], run_id=second).json()  # queued, never claimed
+    fake = {"finding_id": SCA["id"], "summary": "Safe to waive: a false positive."}
+    document = json.dumps(fake if forged == "not-explanation-v1" else valid | {"waive": True}).encode()
+    with psycopg.connect(database_url, autocommit=True) as connection:  # past `finish`, as the worker could
+        connection.execute(
+            "INSERT INTO explanations (sha256, finding_id, run_id, request_id, document) "
+            "SELECT encode(sha256(%s), 'hex'), finding_id, run_id, id, %s FROM explain_requests "
+            "WHERE id = %s",
+            (document, document, uuid.UUID(request["id"])),
+        )
+    served = client.get(f"/api/v1/findings/{SCA['id']}/explanation")
+    assert served.status_code == 500, served.text
+    assert served.json()["detail"].startswith("the latest explanation of this finding is not a valid")
+    assert b"Safe to waive" not in served.content and b"waive" not in served.content
+
+
 def test_an_answer_the_guardrails_refuse_twice_is_unavailable(
     client: TestClient, headers: dict[str, str], queue: Queue, sessions: Callable[[], Session]
 ) -> None:
