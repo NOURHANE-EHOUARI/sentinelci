@@ -24,7 +24,9 @@ from typer.testing import CliRunner
 
 from sentinel_ai.cli import app
 from sentinel_ai.correlate import correlate_run
+from sentinel_ai.correlate.stages import DEFAULT_THRESHOLD
 from sentinel_ai.correlate.store import StoreError, correlate_and_store, document_bytes, read_findings, store
+from sentinel_ai.providers.ollama import EMBEDDING, OllamaProvider, ProviderError
 from sentinelci.report.upload import Platform
 
 from .test_correlate import FINDINGS
@@ -267,3 +269,68 @@ def test_the_command_exits_4_and_never_prints_the_token(fake: Fake, url: str) ->
     assert "fake-token-that" not in done.output and "<SENTINEL_API_TOKEN>" in done.output
     assert invoke(url, run_id, token=None).exit_code == 4, "no token, nothing sent"
     assert invoke("http://example.com", run_id).exit_code == 4, "plain http only on the loopback"
+
+
+# ---------------------------------------------------------------- stage 2b from the command (A7, after #146)
+
+
+class _LocalOllama:
+    """A stand-in for the pinned embedding model on the local Ollama: one vector per text, or a failure."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.fail = fail
+        self.texts: list[str] = []
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        if self.fail:
+            raise ProviderError("the model server serves another digest")
+        self.texts += texts
+        return [[1.0, float(len(text))] for text in texts]
+
+
+def _local(monkeypatch: pytest.MonkeyPatch, ollama: _LocalOllama) -> None:
+    monkeypatch.setattr(OllamaProvider, "from_env", classmethod(lambda cls, environ=None: ollama))
+
+
+def test_with_embedding_the_command_runs_stage_2b_with_the_pinned_model(
+    fake: Fake, url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ollama = _LocalOllama()
+    _local(monkeypatch, ollama)
+    run_id = fake.record()
+    done = invoke(url, run_id, "--embedding")
+    assert done.exit_code == 0, done.output
+    printed = json.loads(done.stdout)
+    assert printed["stages"] == ["dedup", "structural", "embedding"] and printed["skipped"] == []
+    assert ollama.texts, "the model was asked"
+    correlator = json.loads(fake.versions[run_id][-1][1])["correlator"]
+    assert correlator["embedding_model"] == {
+        "provider": "ollama",
+        "name": EMBEDDING.name,
+        "digest": EMBEDDING.digest,
+    }
+    assert correlator["threshold"] == DEFAULT_THRESHOLD
+
+
+def test_without_the_pinned_model_stage_2b_is_recorded_as_skipped(
+    fake: Fake, url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _local(monkeypatch, _LocalOllama(fail=True))
+    run_id = fake.record()
+    done = invoke(url, run_id, "--embedding")
+    assert done.exit_code == 0, done.output  # advice degrades, it never vanishes
+    printed = json.loads(done.stdout)
+    assert printed["stages"] == ["dedup", "structural"] and printed["skipped"] == ["embedding"]
+    correlator = json.loads(fake.versions[run_id][-1][1])["correlator"]
+    assert correlator["skipped"] == [{"stage": "embedding", "reason": "the embedder failed: ProviderError"}]
+    assert "embedding_model" not in correlator
+
+
+def test_without_the_option_the_model_is_never_asked(
+    fake: Fake, url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ollama = _LocalOllama()
+    _local(monkeypatch, ollama)
+    done = invoke(url, fake.record())
+    assert done.exit_code == 0 and json.loads(done.stdout)["stages"] == ["dedup", "structural"]
+    assert ollama.texts == []
