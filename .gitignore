@@ -20,6 +20,10 @@ out/
 
 # Installed scanners (re-created and verified from tools.lock.toml)
 .sentinel/tools/
+.sentinel/cache/
+.sentinel/kind/
+# The demo's GitOps repository (make kind-up, make demo-release): local only, never pushed
+.sentinel/gitops/
 
 # Secrets and signing material: never commit them
 .env
