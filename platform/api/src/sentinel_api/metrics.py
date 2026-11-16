@@ -315,9 +315,9 @@ def findings_fix_seconds(session: Session, default_ref: str) -> Family | None:
 
 
 # Alert reduction. Each repository's latest release run of the default branch that has a correlation, and its
-# latest correlation version; a group's category is its first finding's: the API refuses a group across two
-# categories (#138, API 1.10.2), and the correlator never forms one. The first row counts those runs: none
-# means nothing is known.
+# latest correlation version; a group's category is its first finding's: since API 1.10.2 (#138) the API
+# refuses a group across two categories (a correlation stored before is not re-checked), and the correlator
+# never forms one. The first row counts those runs: none means nothing is known.
 _CORRELATED = """
 WITH ranked AS (
   SELECT r.id, row_number() OVER (PARTITION BY r.repo ORDER BY r.findings_uploaded_at DESC, r.id DESC) AS rank
