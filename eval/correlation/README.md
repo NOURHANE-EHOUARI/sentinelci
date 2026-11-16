@@ -60,7 +60,10 @@ findings.
 
 2. **Measure** the test half with the committed threshold: `make eval-correlation`. A threshold calibrated
    with another model or digest is refused, and so is one calibrated on other halves: another ground truth,
-   split or root causes moves findings between them, so after a label edit, calibrate again. Findings of
+   split or root causes moves findings between them, so after a label edit, calibrate again. A threshold
+   that is not what `--calibrate` wrote is refused too: its own curve must be on today's grid, and the
+   threshold must be that curve's best ARI (a tie going to the highest), with the ARI and the edge it
+   recorded, so a hand edit of the file cannot move it. Findings of
    another `make eval` run (a new Grype database, say) give another calibration half but leak nothing of
    the test half: the report says "of another `make eval` run". So does a threshold calibrated with another
    correlator version (`threshold.json` records it): stage 2b embeds that version's texts, and the report
