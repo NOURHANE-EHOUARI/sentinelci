@@ -23,7 +23,9 @@ them, and are never changed to improve a score. **One exception, said here:** th
 RC-DOCKER-002 (the release Dockerfile's missing HEALTHCHECK, which had been missed) were added in the review
 of #90, after the dedup and structural scores had been seen and before any embedding score. Without them,
 the structural stage's right merges (one package's advisories) were all unlabelled, so its ARI could only
-see its wrong ones.
+see its wrong ones. RC-DOCKER-003 and RC-DOCKER-004 came after the first measurement (SPEC 1.1.98) with the
+two images of the CONTAINER seeds (A9b): they label the findings of two new Dockerfiles by the same rule as
+RC-DOCKER-001 and -002, appended last (`appended: true`), so no earlier label or half changed.
 
 ## What each number can see
 

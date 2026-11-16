@@ -1,7 +1,8 @@
 .DEFAULT_GOAL := help
 .PHONY: help setup check lint format typecheck imports policy test zizmor web eval tools tools-verify compose-env up down \
 	eval-correlation eval-correlation-calibrate remediate-code release release-block release-key self-gate \
-	release-sentinelci eval-canaries eval-replay eval-ranking eval-timing eval-explanations eval-rubric
+	release-sentinelci eval-canaries eval-replay eval-ranking eval-timing eval-explanations eval-rubric \
+	container-seed-images
 
 # OPA is a pinned binary, not a Python package: `uv run sentinel tools install opa` (tools.lock.toml).
 OPA ?= $(or $(SENTINEL_OPA),opa)
@@ -107,6 +108,20 @@ release: ## Build, decide on and sign shop-api's release image (KEY=~/.sentinelc
 
 release-block: ## The demo's BLOCK image: the gate must block it, nothing is signed -> out/release/block-image
 	uv run --locked python deploy/release/release.py --requirements requirements.block.txt --expect-block
+
+# The images of demo-shop's CONTAINER seeds (A9, ground truth `image`), built only to be scanned: never pushed,
+# run or deployed. tests/demo_shop/test_container_seeds.py checks these lines against the ground truth, and reads
+# the archives when SENTINEL_CONTAINER_IMAGES names this directory.
+SEED_IMAGES ?= out/container-seeds
+container-seed-images: ## Build the CONTAINER seeds' images, to scan them -> out/container-seeds/<name>.oci.tar
+	mkdir -p $(SEED_IMAGES)
+	docker buildx build --provenance=false --sbom=false --file demo-shop/services/shop-api/Dockerfile.release \
+		--build-arg REQUIREMENTS=requirements.block.txt --build-arg ONLY_BINARY=:none: \
+		--output type=oci,dest=$(SEED_IMAGES)/shop-api-block.oci.tar demo-shop/services/shop-api
+	docker buildx build --provenance=false --sbom=false --file demo-shop/services/web/Dockerfile \
+		--output type=oci,dest=$(SEED_IMAGES)/web.oci.tar demo-shop/services/web
+	docker buildx build --provenance=false --sbom=false --file demo-shop/services/reports/Dockerfile \
+		--output type=oci,dest=$(SEED_IMAGES)/reports.oci.tar demo-shop/services/reports
 
 release-key: ## Make the release key pair (~/.sentinelci/release.key) and deploy/keys/release.pub, to commit
 	uv run --locked python deploy/release/release.py key $(if $(KEY),--key $(KEY))

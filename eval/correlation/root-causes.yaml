@@ -14,7 +14,9 @@
 # cause can join a seed (`seeds`) when the same fix resolves it.
 #
 # Halves (`split.yaml` holds the seeds'): a root cause that joins a seed takes that seed's half; the
-# others go, in this file's order (by file path, then first rule), to test, calibration, test, ...
+# others go, in this file's order (by file path, then first rule), to test, calibration, test, ... A root
+# cause added after the first measurement is marked `appended: true` and goes last, so no earlier one changes
+# half; the appended ones are in file order among themselves and go on with the alternation.
 #
 # Each matcher names the tool, the file (relative to demo-shop/, like the ground truth) and the rules.
 root_causes:
@@ -143,3 +145,19 @@ root_causes:
     fix: Add a HEALTHCHECK to shop-api's release image (or accept that the cluster's probes check it).
     findings:
       - {tool: trivy, file: services/shop-api/Dockerfile.release, rules: [DS-0026]}
+  # ---- appended after the first measurement (SPEC 1.1.98): the findings of files added since, labelled by the
+  # same rule, last in this file and in file order among themselves, so they take the next halves and no
+  # earlier root cause changes half.
+  # ---- services/reports/Dockerfile and services/web/Dockerfile (A9b: the CONTAINER seeds' images)
+  - id: RC-DOCKER-003
+    appended: true
+    half: calibration
+    fix: Add a HEALTHCHECK to the reports image (or accept that it is built only to be scanned).
+    findings:
+      - {tool: trivy, file: services/reports/Dockerfile, rules: [DS-0026]}
+  - id: RC-DOCKER-004
+    appended: true
+    half: test
+    fix: Add a HEALTHCHECK to the web image (or accept that it is built only to be scanned).
+    findings:
+      - {tool: trivy, file: services/web/Dockerfile, rules: [DS-0026]}
