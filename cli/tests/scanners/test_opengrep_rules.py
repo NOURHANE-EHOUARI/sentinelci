@@ -122,6 +122,308 @@ CASES: list[tuple[str, str, bool, str]] = [
      '    yaml.safe_load(text)\n'
      '    yaml.load(text, Loader=yaml.SafeLoader)\n'
      '    return json.loads(text)\n'),
+    # Every unsafe PyYAML loader form (#74 review: GT-SCA-001 is about FullLoader), one per file.
+    ('python-unsafe-deserialization', 'de-full.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return yaml.full_load(text)\n'),
+    ('python-unsafe-deserialization', 'de-full-all.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return list(yaml.full_load_all(text))\n'),
+    ('python-unsafe-deserialization', 'de-unsafe-all.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return list(yaml.unsafe_load_all(text))\n'),
+    ('python-unsafe-deserialization', 'de-load-all-full.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return list(yaml.load_all(text, Loader=yaml.FullLoader))\n'),
+    ('python-unsafe-deserialization', 'de-load-all-bare.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return list(yaml.load_all(text))\n'),
+    ('python-unsafe-deserialization', 'de-positional.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return yaml.load(text, yaml.FullLoader)\n'),
+    ('python-unsafe-deserialization', 'de-positional-all.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return list(yaml.load_all(text, yaml.UnsafeLoader))\n'),
+    ('python-unsafe-deserialization', 'de-from-import.py', True,
+     'from yaml import FullLoader, load\n'
+     'def f(text):\n'
+     '    return load(text, Loader=FullLoader)\n'),
+    ('python-unsafe-deserialization', 'de-all-ok.py', False,
+     'import yaml\n'
+     'def f(text):\n'
+     '    list(yaml.safe_load_all(text))\n'
+     '    list(yaml.load_all(text, Loader=yaml.SafeLoader))\n'
+     '    yaml.load(text, yaml.SafeLoader)\n'
+     '    return list(yaml.load_all(text, yaml.CSafeLoader))\n'),
+    # #84 review: a case for each pattern, so that removing any of them fails (Hiba's mutants M01, M06, M08).
+    ('python-unsafe-deserialization', 'de-unsafe.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return yaml.unsafe_load(text)\n'),
+    ('python-unsafe-deserialization', 'de-unsafe-kw.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return yaml.load(text, Loader=yaml.UnsafeLoader)\n'),
+    ('python-unsafe-deserialization', 'de-positional-loader.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return yaml.load(text, yaml.Loader)\n'),
+    # A Loader passed to a function that builds no object is not a finding (M12: the load/load_all regex).
+    ('python-unsafe-deserialization', 'de-loader-elsewhere-ok.py', False,
+     'import yaml\n'
+     'def ctor(loader, node):\n'
+     '    return node.value\n'
+     'yaml.add_constructor("!x", ctor, Loader=yaml.Loader)\n'
+     'def f(text):\n'
+     '    return yaml.compose(text, Loader=yaml.FullLoader)\n'),
+    ('python-unsafe-deserialization', 'de-base-ok.py', False,
+     'import yaml\n'
+     'class Strict(yaml.SafeLoader):\n'
+     '    pass\n'
+     'def f(text):\n'
+     '    yaml.load(text, Loader=yaml.BaseLoader)\n'
+     '    yaml.load(text, yaml.loader.BaseLoader)\n'
+     '    return yaml.load(text, Loader=Strict)\n'),
+    # The libyaml loaders are as unsafe as the pure-Python ones.
+    ('python-unsafe-deserialization', 'de-cloader.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return yaml.load(text, Loader=yaml.CLoader)\n'),
+    ('python-unsafe-deserialization', 'de-cfull-all.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return list(yaml.load_all(text, yaml.CFullLoader))\n'),
+    ('python-unsafe-deserialization', 'de-submodule.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return yaml.load(text, Loader=yaml.loader.FullLoader)\n'),
+    ('python-unsafe-deserialization', 'de-submodule-positional.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return list(yaml.load_all(text, yaml.cyaml.CLoader))\n'),
+    # No loader, said another way: the data by keyword, or Loader=None (FullLoader in pyyaml 5.1 to 5.4).
+    ('python-unsafe-deserialization', 'de-stream-kw.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return yaml.load(stream=text)\n'),
+    ('python-unsafe-deserialization', 'de-stream-kw-all.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return list(yaml.load_all(stream=text))\n'),
+    ('python-unsafe-deserialization', 'de-loader-none.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return yaml.load(text, Loader=None)\n'),
+    ('python-unsafe-deserialization', 'de-loader-none-all.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return list(yaml.load_all(text, Loader=None))\n'),
+    # ruamel.yaml's YAML() in a local named yaml is not PyYAML, and our remediation module uses that idiom.
+    ('python-unsafe-deserialization', 'de-ruamel-ok.py', False,
+     'from ruamel.yaml import YAML\n'
+     'def f(text):\n'
+     '    yaml = YAML()\n'
+     '    return yaml.load(text), list(yaml.load_all(text))\n'),
+    # Built by a factory with arguments, as in remediation/kubernetes.py (#84 review).
+    ('python-unsafe-deserialization', 'de-ruamel-factory-ok.py', False,
+     'from ruamel.yaml import YAML\n'
+     'def _yaml(indent):\n'
+     '    yaml = YAML(typ="rt")\n'
+     '    yaml.indent(mapping=indent)\n'
+     '    return yaml\n'
+     'def f(text):\n'
+     '    yaml = _yaml(2)\n'
+     '    return list(yaml.load_all(text))\n'),
+    # A call's result is still unsafe when it imports PyYAML or builds ruamel.yaml's unsafe loader.
+    ('python-unsafe-deserialization', 'de-ruamel-unsafe.py', True,
+     'from ruamel.yaml import YAML\n'
+     'def f(text):\n'
+     '    yaml = YAML(typ="unsafe")\n'
+     '    return yaml.load(text)\n'),
+    # typ as a list: ruamel.yaml picks the unsafe loader when the list names no rt, safe or base (#84).
+    ('python-unsafe-deserialization', 'de-ruamel-unsafe-list.py', True,
+     'from ruamel.yaml import YAML\n'
+     'def f(text):\n'
+     '    yaml = YAML(typ=["unsafe"])\n'
+     '    return list(yaml.load_all(text))\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-safe-list-ok.py', False,
+     'from ruamel.yaml import YAML\n'
+     'def f(text):\n'
+     '    yaml = YAML(typ=["safe"])\n'
+     '    return yaml.load(text)\n'),
+    ('python-unsafe-deserialization', 'de-dunder-import.py', True,
+     'from ruamel.yaml import YAML\n'
+     'yaml = __import__("yaml")\n'
+     'def f(text):\n'
+     '    return yaml.load(stream=text)\n'),
+    # Another call that returns PyYAML, in a file that does not import ruamel.yaml: still a finding (#84).
+    ('python-unsafe-deserialization', 'de-import-module-alias.py', True,
+     'from importlib import import_module as im\n'
+     'yaml = im("yaml")\n'
+     'def f(text):\n'
+     '    return yaml.load(text)\n'),
+    ('python-unsafe-deserialization', 'de-reload.py', True,
+     'import importlib\n'
+     'import yaml\n'
+     'yaml = importlib.reload(yaml)\n'
+     'def f(text):\n'
+     '    return yaml.load(text)\n'),
+    ('python-unsafe-deserialization', 'de-lazy-loader.py', True,
+     'from lazy import LazyLoader\n'
+     'yaml = LazyLoader("yaml", globals(), "yaml")\n'
+     'def f(text):\n'
+     '    return yaml.load(stream=text)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-module-import-ok.py', False,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    yaml = ruamel.yaml.YAML()\n'
+     '    return yaml.load(text)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-module-alias-ok.py', False,
+     'import ruamel.yaml as ry\n'
+     'def f(text):\n'
+     '    yaml = ry.YAML()\n'
+     '    return yaml.load(text)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-alias-import-ok.py', False,
+     'from ruamel.yaml import YAML as Y\n'
+     'def f(text):\n'
+     '    yaml = Y(typ="rt")\n'
+     '    return yaml.load(text)\n'),
+    # The exclusion stays in the scope of the ruamel binding: another function's yaml is PyYAML's (#84).
+    ('python-unsafe-deserialization', 'de-ruamel-then-pyyaml.py', True,
+     'import yaml\n'
+     'from ruamel.yaml import YAML\n'
+     'def a(text):\n'
+     '    yaml = YAML()\n'
+     '    return yaml.load(text)\n'
+     'def b(text):\n'
+     '    return yaml.load(text)\n'),
+    # typ from a name: the value is not seen, so the instance is not excluded (a list constant runs code).
+    ('python-unsafe-deserialization', 'de-ruamel-typ-constant.py', True,
+     'from ruamel.yaml import YAML\n'
+     'TYP = ["unsafe"]\n'
+     'def f(text):\n'
+     '    yaml = YAML(typ=TYP)\n'
+     '    return yaml.load(text)\n'),
+    # typ from a parameter: a lower-case name is not seen either (#84 round 5, nit 2).
+    ('python-unsafe-deserialization', 'de-ruamel-typ-param.py', True,
+     'from ruamel.yaml import YAML\n'
+     'def f(text, kind):\n'
+     '    yaml = YAML(typ=kind)\n'
+     '    return yaml.load(text)\n'),
+    # ruamel.yaml's old module-level API (gone in 0.18): with no Loader, it used the unsafe one (#84, nit 2).
+    ('python-unsafe-deserialization', 'de-ruamel-old-load.py', True,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return ruamel.yaml.load(text)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-load-all-stream.py', True,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return list(ruamel.yaml.load_all(stream=text))\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-from-import.py', True,
+     'from ruamel.yaml import load\n'
+     'def f(text):\n'
+     '    return load(text, Loader=None)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-unsafe-loader.py', True,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return ruamel.yaml.load(text, Loader=ruamel.yaml.UnsafeLoader)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-positional-loader.py', True,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return ruamel.yaml.load(text, ruamel.yaml.Loader)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-positional-none.py', True,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return list(ruamel.yaml.load_all(text, None))\n'),
+    # Another keyword than Loader leaves Loader=None, and the C loader is unsafe too (#137 review).
+    ('python-unsafe-deserialization', 'de-ruamel-old-version.py', True,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return ruamel.yaml.load(text, version=(1, 1))\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-cloader.py', True,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return list(ruamel.yaml.load_all(text, Loader=ruamel.yaml.CLoader))\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-round-trip-positional-ok.py', False,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return ruamel.yaml.load(text, ruamel.yaml.RoundTripLoader, preserve_quotes=True)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-c-safe-ok.py', False,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return ruamel.yaml.load(text, Loader=ruamel.yaml.CSafeLoader)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-base-ok.py', False,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return ruamel.yaml.load(text, ruamel.yaml.BaseLoader)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-dump-ok.py', False,
+     'import ruamel.yaml\n'
+     'def f(data):\n'
+     '    return ruamel.yaml.dump(data)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-safe-ok.py', False,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return ruamel.yaml.load(text, Loader=ruamel.yaml.SafeLoader)\n'),
+    ('python-unsafe-deserialization', 'de-ruamel-old-round-trip-ok.py', False,
+     'import ruamel.yaml\n'
+     'def f(text):\n'
+     '    return ruamel.yaml.load(text, Loader=ruamel.yaml.RoundTripLoader)\n'),
+    ('python-unsafe-deserialization', 'de-import-module.py', True,
+     'from ruamel.yaml import YAML\n'
+     'import importlib\n'
+     'yaml = importlib.import_module("yaml")\n'
+     'def f(text):\n'
+     '    return yaml.load(text)\n'),
+    ('python-unsafe-deserialization', 'de-importorskip.py', True,
+     'from ruamel.yaml import YAML\n'
+     'import pytest\n'
+     'yaml = pytest.importorskip("yaml")\n'
+     'def test_f():\n'
+     '    assert yaml.load("a: 1")\n'),
+    # None as the second argument: the positional twin of Loader=None.
+    ('python-unsafe-deserialization', 'de-positional-none.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return yaml.load(text, None)\n'),
+    ('python-unsafe-deserialization', 'de-positional-none-all.py', True,
+     'import yaml\n'
+     'def f(text):\n'
+     '    return list(yaml.load_all(text, None))\n'),
+    # Only a call result excuses the name: an import fallback to None is still PyYAML where the call runs.
+    ('python-unsafe-deserialization', 'de-import-fallback.py', True,
+     'from ruamel.yaml import YAML\n'
+     'try:\n'
+     '    import yaml\n'
+     'except ImportError:\n'
+     '    yaml = None\n'
+     'def f(text):\n'
+     '    return yaml.load(text)\n'),
+    ('python-unsafe-deserialization', 'de-module-rebound.py', True,
+     'from ruamel.yaml import YAML\n'
+     'import yaml as pyyaml\n'
+     'yaml = pyyaml\n'
+     'def f(text):\n'
+     '    return yaml.load(text)\n'),
+    # pickle and marshal, from a file as from bytes (M22, M23).
+    ('python-unsafe-deserialization', 'de-pickle-file.py', True,
+     'import pickle\n'
+     'def f(fh):\n'
+     '    return pickle.load(fh)\n'),
+    ('python-unsafe-deserialization', 'de-marshal.py', True,
+     'import marshal\n'
+     'def f(data):\n'
+     '    return marshal.loads(data)\n'),
+    ('python-unsafe-deserialization', 'de-marshal-file.py', True,
+     'import marshal\n'
+     'def f(fh):\n'
+     '    return marshal.load(fh)\n'),
     ('python-tls-verification-disabled', 'tls1.py', True,
      'import requests\n'
      'def f(u):\n'
