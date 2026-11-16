@@ -189,7 +189,7 @@ def test_the_role_is_created_once_per_server(database_url: str, postgres_server:
     """Roles belong to the server, not to one database: a second database's migration reuses the role."""
     name = f"t_{uuid.uuid4().hex}"
     with psycopg.connect(f"{postgres_server}/sentinel", autocommit=True) as conn:
-        conn.execute(f'CREATE DATABASE "{name}"')
+        conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
     migrate.upgrade(f"{postgres_server}/{name}")  # does not fail on the existing role
     with psycopg.connect(database_url) as conn:
         row = conn.execute(
