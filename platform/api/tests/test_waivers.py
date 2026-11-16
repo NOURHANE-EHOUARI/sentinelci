@@ -555,3 +555,82 @@ def test_a_decision_recorded_as_a_run_and_as_a_release_counts_once(
     rules = client.get("/api/v1/rules").json()
     assert rules["decisions"] == 1
     assert [(i["rule"], i["decisions"]) for i in rules["items"]] == [("SC-006", 1)]
+
+
+# ---------------------------------------------------------------- what PostgreSQL cannot store (#126)
+
+
+# The raw body is checked for U+0000 before anything is parsed, but YAML decodes escapes: "\0", "\x00" and
+# "\u0000" become U+0000, and "\ud800" a lone surrogate, once the file is read. The entries are kept as jsonb,
+# which refuses both, so each was a 500 (UntranslatableCharacter) after #110 met #126.
+@pytest.mark.parametrize(
+    ("field", "escape", "problem"),
+    [
+        ("owner", "\\0", "U+0000"),
+        ("owner", "\\x00", "U+0000"),
+        ("justification", "\\u0000", "U+0000"),
+        ("owner", "\\ud800", "surrogate"),
+        ("key", "\\0", "U+0000"),
+    ],
+    ids=["nul-escape", "hex-escape", "unicode-escape", "lone-surrogate", "in-a-key"],
+)
+def test_a_waiver_whose_yaml_decodes_to_what_postgresql_refuses_is_a_422(
+    client: TestClient, headers: dict[str, str], field: str, escape: str, problem: str
+) -> None:
+    justification = b"justification: |\n      Test fixture key, never deployed."
+    line = b"owner: hiba" if field in ("owner", "key") else justification
+    # In a key, the escape decodes the same way: keys are walked as well as values (#126 review, nit 1).
+    value = f'"own{escape}er": hiba' if field == "key" else f'{field}: "a{escape}b"'
+    value = value.encode()
+    body = WAIVERS.replace(line, value)
+    assert body != WAIVERS
+    run_decision(client, headers, f"sha256:{sha(body)}")
+    response = put(client, headers, body)
+    assert response.status_code == 422, response.text
+    assert problem in response.json()["detail"][0]["msg"]
+    assert client.get(f"/api/v1/waivers/{sha(body)}").status_code == 404, "nothing is stored"
+
+
+def test_a_waiver_with_other_text_outside_ascii_is_kept(client: TestClient, headers: dict[str, str]) -> None:
+    body = WAIVERS.replace(b"owner: hiba", b'owner: "Hiba \\u00e9 \\U0001F511"')
+    run_decision(client, headers, f"sha256:{sha(body)}")
+    response = put(client, headers, body)
+    assert response.status_code == 201, response.text
+    assert client.get(f"/api/v1/waivers/{sha(body)}").content == body
+
+
+def test_a_waivers_file_nested_too_deeply_is_a_422(client: TestClient, headers: dict[str, str]) -> None:
+    """The loader refuses it like any file the gate cannot read, so the PUT stores nothing (#126 review)."""
+    body = b"version: 1\nwaivers: " + b"[" * 3000 + b"]" * 3000 + b"\n"
+    run_decision(client, headers, f"sha256:{sha(body)}")
+    response = put(client, headers, body)
+    assert response.status_code == 422, response.text
+    assert "nested too deeply" in response.json()["detail"][0]["msg"]
+
+
+def test_the_deepest_file_the_loader_reads_is_never_a_500(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    """Only YAML's composer is guarded against deep files: everything after it (the JSON copy, the U+0000
+    walk, the jsonb column) must take fewer frames per level, or a file just under the composer's limit is a
+    500 again. The boundary is searched through the PUT itself, so it is the handler's own stack (#157)."""
+
+    def put_at(depth: int) -> Any:
+        body = b"version: 1\nwaivers: " + b"[" * depth + b"]" * depth + b"\n"
+        run_decision(client, headers, f"sha256:{sha(body)}")
+        response = put(client, headers, body)
+        assert response.status_code != 500, (depth, response.text)
+        return response
+
+    read, too_deep = 1, 3000
+    assert "nested too deeply" in put_at(too_deep).text
+    assert put_at(read).status_code == 201
+    while too_deep - read > 1:
+        depth = (read + too_deep) // 2
+        response = put_at(depth)
+        if "nested too deeply" in response.text:
+            too_deep = depth
+        else:
+            assert response.status_code == 201, (depth, response.text)
+            read = depth
+    assert read > 100, "the boundary is near Python's recursion limit, not an earlier refusal"

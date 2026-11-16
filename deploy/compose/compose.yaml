@@ -96,6 +96,8 @@ services:
     image: sentinelci/api:dev
     environment:
       SENTINEL_DATABASE_URL: postgresql://sentinel:${POSTGRES_PASSWORD:?run make compose-env}@postgres:5432/sentinel
+      # The migrate step gives the worker's role (sentinel_worker) a login with this password.
+      SENTINEL_WORKER_DATABASE_PASSWORD: ${WORKER_DATABASE_PASSWORD:?run make compose-env}
       SENTINEL_REDIS_URL: redis://:${REDIS_PASSWORD:?run make compose-env}@redis:6379/0
       SENTINEL_S3_ENDPOINT: http://seaweedfs:8333
       SENTINEL_S3_ACCESS_KEY: ${S3_ACCESS_KEY:?run make compose-env}
@@ -142,6 +144,7 @@ services:
 
   # The worker (B5c): the AI analyst's jobs from the Redis queue (Celery, JSON only), with the API's image.
   # It reaches the database, the queue and Ollama only: no API token, no S3 credential, no published port.
+  # Its database login is its own role (sentinel_worker, migration 0011), never the owner's.
   worker:
     <<: *hardening
     profiles: [ai]
@@ -149,7 +152,7 @@ services:
     image: sentinelci/api:dev
     command: ["celery", "-A", "sentinel_worker.tasks", "worker", "--concurrency", "1", "--loglevel", "INFO"]
     environment:
-      SENTINEL_DATABASE_URL: postgresql://sentinel:${POSTGRES_PASSWORD:?run make compose-env}@postgres:5432/sentinel
+      SENTINEL_DATABASE_URL: postgresql://sentinel_worker:${WORKER_DATABASE_PASSWORD:?run make compose-env}@postgres:5432/sentinel
       SENTINEL_REDIS_URL: redis://:${REDIS_PASSWORD:?run make compose-env}@redis:6379/0
       SENTINEL_OLLAMA_URL: http://ollama:11434
     depends_on:

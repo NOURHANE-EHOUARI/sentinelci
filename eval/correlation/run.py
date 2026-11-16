@@ -356,6 +356,26 @@ def at_the_grid_edge(threshold: float) -> bool:
     return threshold in (thresholds[0], thresholds[-1])
 
 
+def check_calibration(text: str, threshold: float) -> None:
+    """The committed threshold is what `--calibrate` wrote: its own curve is on today's grid, and the
+    threshold is that curve's best ARI (a tie going to the highest), with the edge and the ARI it recorded.
+    So the test half cannot move it, even through a hand edit of the file (#146 review)."""
+    data = json.loads(text)
+    try:
+        points = [(float(p["threshold"]), float(p["ari"])) for p in data["curve"]]
+        recorded_ari, edge = data["calibration"]["ari"], data["at_grid_edge"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise EvalError(f"threshold.json has no calibration curve: {type(exc).__name__}") from exc
+    if [t for t, _ in points] != grid():
+        raise EvalError(f"threshold.json's curve is not on the grid {grid()}: calibrate again")
+    best, best_ari = max(points, key=lambda p: (p[1], p[0]))
+    if threshold != best or recorded_ari != best_ari or edge is not at_the_grid_edge(threshold):
+        raise EvalError(
+            f"threshold.json holds {threshold}, but its own calibration curve's best is {best}: a threshold "
+            "is never set by hand; calibrate again (`make eval-correlation-calibrate`)"
+        )
+
+
 # ---------------------------------------------------------------- the measurements
 
 
@@ -588,6 +608,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         text = THRESHOLD.read_bytes()
         threshold = read_threshold(text.decode("utf-8"), model)
         source = calibrated_on(text.decode("utf-8"), inputs)
+        check_calibration(text.decode("utf-8"), threshold)
         inputs["threshold_sha256"] = sha256(text)
     try:
         test = measurement(*half("test"), embed=embed, threshold=threshold, why_not=why_not)
