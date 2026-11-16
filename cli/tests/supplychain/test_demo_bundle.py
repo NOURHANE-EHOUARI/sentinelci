@@ -9,6 +9,7 @@ a loopback address with no flag; the cluster's own registry serves TLS (test_kin
 SENTINEL_TOOLS_DIR (crane and cosign).
 """
 
+import json
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -92,3 +93,32 @@ def test_the_other_key_or_an_unsigned_image_is_not_trusted_there(saved: Saved) -
         load(saved, "good", key="other.pub")
     with pytest.raises(demo.NotTrusted, match="not deployed"):
         load(saved, "unsigned")
+
+
+def test_a_tampered_release_has_another_digest_and_is_not_trusted(saved: Saved) -> None:
+    """`make demo-attack`'s first attack, with the pinned crane: one layer appended to the release in the
+    cluster's registry gives a new digest, which nothing signed, so `sentinel verify` does not trust it."""
+    load(saved, "good")
+    digest = demo.bundle_digest(saved.bundles["good"])
+    repository = demo.on_host(saved.pins)
+    tampered = demo.tamper(f"{repository}@{digest}", saved.pins, Path(str(TOOLS_DIR)), cluster.run_command)
+    assert tampered != digest
+
+    def manifest(reference: str) -> dict[str, Any]:
+        run = run_verified_tool("crane", ["manifest", reference, "--insecure"], lock=load_lock(REPO_LOCK),
+                                tools_dir=Path(str(TOOLS_DIR)), cwd=Path.cwd())  # fmt: skip
+        parsed: dict[str, Any] = json.loads(run.stdout)
+        return parsed
+
+    release, changed = manifest(f"{repository}@{digest}"), manifest(f"{repository}@{tampered}")
+    assert changed["layers"][:-1] == release["layers"], "the release's layers, and one more"
+    verify = {
+        reference: demo.sentinel_verify(
+            reference, key=saved.keys["release.pub"], repo=REPO, builder_id=BUILDER,
+            tools_dir=Path(str(TOOLS_DIR)), run=cluster.run_command,
+        )
+        for reference in (f"{repository}@{tampered}", f"{repository}@{digest}")
+    }  # fmt: skip
+    assert verify[f"{repository}@{tampered}"].returncode == 1
+    assert "signed by the key" not in verify[f"{repository}@{tampered}"].stdout.split("\n")[0]
+    assert verify[f"{repository}@{digest}"].returncode == 0, "the release itself is untouched"

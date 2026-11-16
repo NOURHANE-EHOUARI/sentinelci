@@ -1,6 +1,6 @@
-"""`make demo-release` on the demo cluster (task A5b, SPEC section 7, ADR-0011 decision 5): a release goes
-from its bundle to a running Deployment, through the cluster's registry, the GitOps repository, Argo CD and
-Kyverno.
+"""`make demo-release` and `make demo-attack` on the demo cluster (task A5b, SPEC section 7, ADR-0011 decision
+5): a release goes from its bundle to a running Deployment, through the cluster's registry, the GitOps
+repository, Argo CD and Kyverno; then every attack next to it is refused, and it keeps running.
 
 The release is a real one for the test's key: an image that runs as the release image must (a static server on
 8080 as UID 10001, built with Go), attested by `sentinel attest --push` in a throwaway registry and saved with
@@ -95,6 +95,11 @@ def released(
         run_verified_tool("cosign", ["save", "--allow-http-registry", "--dir", str(bundle), image],
                           lock=load_lock(REPO_LOCK), tools_dir=Path(str(TOOLS_DIR)), cwd=work)  # fmt: skip
         unsigned = push_image(crane, host, work)
+        # The BLOCK image of `make release`: an OCI layout of an image nothing signed.
+        block = work / "block-image"
+        blocked = push_image(crane, registry, work)
+        run_verified_tool("crane", ["pull", "--format=oci", "--insecure", blocked, str(block)],
+                          lock=load_lock(REPO_LOCK), tools_dir=Path(str(TOOLS_DIR)), cwd=work)  # fmt: skip
 
     trust = str(cluster.trust_bundle())  # the cluster's registry serves TLS with its own CA
     tls = pytest.MonkeyPatch()
@@ -122,7 +127,8 @@ def released(
             time.sleep(5)
         deployed = demo.release(bundle, key=keys["release.pub"], repo=REPO, builder_id=BUILDER,
                                 tools_dir=Path(str(TOOLS_DIR)))  # fmt: skip
-        yield {"digest": digest, "deployed": deployed, "bundle": bundle, "keys": keys, "image": in_cluster}
+        yield {"digest": digest, "deployed": deployed, "bundle": bundle, "keys": keys, "image": in_cluster,
+               "block": block}  # fmt: skip
     finally:
         kubectl("--namespace", "argocd", "delete", "application", demo.APPLICATION, "--wait=false")
         kubectl("--namespace", demo.NAMESPACE, "delete", "deployment,service,serviceaccount",
@@ -166,3 +172,31 @@ def test_the_other_key_is_refused_before_anything_is_loaded(released: dict[str, 
     """The cluster's policy is the test key's: a release with another key stops at the policy check."""
     with pytest.raises(cluster.ClusterError, match="make kind-policy"):
         release_again(released, key="other.pub")
+
+
+def test_every_attack_is_refused_and_the_release_keeps_running(released: dict[str, Any]) -> None:
+    """`make demo-attack`: each attack refused by the check that must refuse it, on the real cluster."""
+    results = demo.attack(key=released["keys"]["release.pub"], repo=REPO, builder_id=BUILDER,
+                          tools_dir=Path(str(TOOLS_DIR)), block=released["block"])  # fmt: skip
+    assert [(r.refused, r.by) for r in results] == [
+        (True, "sentinel verify"),
+        (True, "Kyverno, during Argo CD's sync"),
+        (True, "Kyverno"),
+        (True, "the API server's image policy"),
+        (True, "Kyverno"),
+    ], results
+    assert results[0].message.startswith("NOT TRUSTED")
+    for result in (results[1], results[2], results[4]):
+        assert "denied" in result.message and "not signed by the release key" in result.message, result
+    assert "demo-shop runs SentinelCI releases only" in results[3].message, results[3]
+    deployment = json.loads(kubectl("--namespace", demo.NAMESPACE, "get", "deployment", demo.DEPLOYMENT,
+                                    "-o", "json").stdout)  # fmt: skip
+    assert deployment["spec"]["template"]["spec"]["containers"][0]["image"] == released["image"]
+    assert deployment["status"].get("readyReplicas") == 1
+    attacks = kubectl("--namespace", demo.NAMESPACE, "get", "deployments", "--selector",
+                      "app.kubernetes.io/part-of=demo-shop-attack", "-o", "name")  # fmt: skip
+    assert attacks.stdout.strip() == "", "no attack Deployment exists"
+    repository = cluster.GITOPS_DIR / cluster.GITOPS_REPOSITORY
+    log = subprocess.run(["git", "-C", str(repository), "log", "-2", "--format=%s", "main"],
+                         capture_output=True, text=True, check=True).stdout  # fmt: skip
+    assert log.startswith(f"restore release {released['digest']}\nattack: deploy a tampered image ")

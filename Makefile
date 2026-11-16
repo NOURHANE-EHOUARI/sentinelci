@@ -2,7 +2,7 @@
 .PHONY: help setup check lint format typecheck imports policy test zizmor web eval tools tools-verify compose-env up down \
 	eval-correlation eval-correlation-calibrate remediate-code release release-block release-key self-gate \
 	release-sentinelci eval-canaries eval-replay eval-ranking eval-timing eval-explanations eval-rubric \
-	kind-up kind-policy kind-down demo-release
+	kind-up kind-policy kind-down demo-release demo-attack
 
 # OPA is a pinned binary, not a Python package: `uv run sentinel tools install opa` (tools.lock.toml).
 OPA ?= $(or $(SENTINEL_OPA),opa)
@@ -131,3 +131,6 @@ kind-down: ## Delete the demo kind cluster and its registry (the GitOps reposito
 
 demo-release: ## Deploy a release bundle through GitOps (BUNDLE=out/release/bundle, KEY=deploy/keys/release.pub)
 	uv run python deploy/kind/demo.py release $(if $(BUNDLE),--bundle $(BUNDLE)) $(if $(KEY),--key $(KEY))
+
+demo-attack: ## Try to run what must not run next to the release, and show who refuses it (BLOCK=, KEY=)
+	uv run python deploy/kind/demo.py attack $(if $(BLOCK),--block $(BLOCK)) $(if $(KEY),--key $(KEY))

@@ -477,3 +477,82 @@ def test_the_demo_shop_charts_deployment_is_admitted_for_a_release_only(release:
         "fail",
         "signature: the image itself is not signed by the release key",
     )
+
+
+# ---------------------------------------------------------------- the demo-shop namespace's image policy
+
+
+def _workload(kind: str, name: str, image: str, init: str | None = None) -> dict[str, Any]:
+    pod: dict[str, Any] = {"containers": [{"name": "app", "image": image}]}
+    if init is not None:
+        pod["initContainers"] = [{"name": "init", "image": init}]
+    meta = {"name": name, "namespace": "demo-shop"}
+    if kind == "Pod":
+        return {"apiVersion": "v1", "kind": "Pod", "metadata": meta, "spec": pod}
+    template = {"metadata": {"labels": {"app": name}}, "spec": {**pod, "restartPolicy": "Never"}}
+    if kind == "CronJob":
+        spec: dict[str, Any] = {"schedule": "0 * * * *", "jobTemplate": {"spec": {"template": template}}}
+        return {"apiVersion": "batch/v1", "kind": kind, "metadata": meta, "spec": spec}
+    template["spec"].pop("restartPolicy")
+    spec = {"selector": {"matchLabels": {"app": name}}, "template": template}
+    return {"apiVersion": "apps/v1", "kind": kind, "metadata": meta, "spec": spec}
+
+
+@needs_tools
+@pytest.mark.integration
+def test_the_demo_shop_namespace_runs_images_of_the_release_repository_only(tmp_path: Path) -> None:
+    """deploy/argocd/demo-shop-namespace.yaml's ValidatingAdmissionPolicy and its binding, evaluated by the
+    Kyverno CLI as the API server evaluates them (task A5b): an image from anywhere else, which Kyverno's
+    release policy would not even match, is refused in demo-shop, in any container of any Pod controller."""
+    release = "kind-registry:5000/demo-shop/shop-api@sha256:" + "a" * 64
+    resources = [
+        _workload("Pod", "release", release),
+        _workload("Deployment", "release-deployment", release),
+        _workload("CronJob", "release-cronjob", release),
+        _workload("Pod", "upper-case-host", release.replace("kind-registry", "KIND-REGISTRY")),
+        _workload("Pod", "foreign", "quay.io/argoproj/argocd:v3.6.1"),
+        _workload("Pod", "foreign-init-container", release, init="busybox:1.37"),
+        _workload("Deployment", "foreign-deployment", "nginx:1.31"),
+        _workload("StatefulSet", "foreign-statefulset", "nginx:1.31"),
+        _workload("CronJob", "foreign-cronjob", "nginx:1.31"),
+        _workload("Pod", "longer-repository", "kind-registry:5000/demo-shop-evil/x:1"),
+        {
+            **_workload("Pod", "elsewhere", "nginx:1.31"),
+            "metadata": {"name": "elsewhere", "namespace": "other"},
+        },
+    ]
+    (tmp_path / "resources.yaml").write_text(yaml.safe_dump_all(resources), encoding="utf-8")
+    documents = list(
+        yaml.safe_load_all((ROOT / "deploy" / "argocd" / "demo-shop-namespace.yaml").read_text("utf-8"))
+    )
+    policies = [d for d in documents if d["kind"] != "Namespace"]
+    (tmp_path / "policy.yaml").write_text(yaml.safe_dump_all(policies), encoding="utf-8")
+    # The CLI has no API server to read the namespaces' labels from: the binding's selector reads them here.
+    values = {
+        "apiVersion": "cli.kyverno.io/v1alpha1", "kind": "Value", "metadata": {"name": "namespaces"},
+        "namespaceSelector": [
+            {"name": n, "labels": {"kubernetes.io/metadata.name": n}} for n in ("demo-shop", "other")
+        ],
+    }  # fmt: skip
+    (tmp_path / "values.yaml").write_text(yaml.safe_dump(values), encoding="utf-8")
+    run = run_verified_tool(
+        "kyverno",
+        ["apply", "policy.yaml", "--resource", "resources.yaml", "--values-file", "values.yaml",
+         "--policy-report", "--output-format", "json", "--remove-color"],
+        lock=load_lock(REPO_LOCK), tools_dir=Path(str(TOOLS_DIR)), cwd=tmp_path, allowed_exit_codes=(0, 1),
+    )  # fmt: skip
+    report = json.loads(run.stdout)
+    results = {
+        r["resources"][0]["name"]: (r["result"], r.get("message", "")) for r in report.get("results") or []
+    }
+    passed = {"release", "release-deployment", "release-cronjob", "upper-case-host"}
+    assert {name for name, (result, _) in results.items() if result == "pass"} == passed
+    refused = {name: message for name, (result, message) in results.items() if result == "fail"}
+    assert set(refused) == {
+        "foreign", "foreign-init-container", "foreign-deployment", "foreign-statefulset", "foreign-cronjob",
+        "longer-repository",
+    }  # fmt: skip
+    assert refused["foreign-init-container"] == (
+        "demo-shop runs SentinelCI releases only, from kind-registry:5000/demo-shop/: not busybox:1.37"
+    )
+    assert "elsewhere" not in results, "the binding is for the demo-shop namespace only"

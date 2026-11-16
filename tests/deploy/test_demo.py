@@ -444,7 +444,7 @@ def test_argo_cd_reads_the_one_repository_the_git_server_serves() -> None:
 def test_the_application_deploys_the_chart_and_digest_demo_release_commits() -> None:
     application = yaml.safe_load((ARGOCD_DIR / "application.yaml").read_text("utf-8"))
     project = yaml.safe_load((ARGOCD_DIR / "project.yaml").read_text("utf-8"))
-    namespace = yaml.safe_load((ARGOCD_DIR / "demo-shop-namespace.yaml").read_text("utf-8"))
+    namespace = next(yaml.safe_load_all((ARGOCD_DIR / "demo-shop-namespace.yaml").read_text("utf-8")))
     source, destination = application["spec"]["source"], application["spec"]["destination"]
     assert application["metadata"]["name"] == demo.APPLICATION
     assert (source["targetRevision"], source["path"], source["helm"]["valueFiles"]) == (
@@ -464,3 +464,31 @@ def test_the_chart_names_the_image_where_the_policy_and_the_registry_expect_it()
     values = yaml.safe_load((ROOT / "deploy" / "helm" / "demo-shop" / "values.yaml").read_text("utf-8"))
     assert values["image"]["repository"] == f"{pins.registry_in_cluster}/{demo.IMAGE_PATH}"
     assert (values["image"]["repository"] + "/").startswith(cluster.IMAGE_GLOB.removesuffix("*").rstrip("/"))
+
+
+def test_the_namespace_admits_images_of_the_release_repository_only() -> None:
+    """The API server's own policy, bound to demo-shop: the prefix is the one the Kyverno policy matches, so
+    an image Kyverno would not even look at cannot run there. Its CEL is run by the Kyverno CLI in
+    cli/tests/supplychain/test_admission.py."""
+    documents = {
+        d["kind"]: d for d in yaml.safe_load_all((ARGOCD_DIR / "demo-shop-namespace.yaml").read_text("utf-8"))
+    }
+    policy, binding = documents["ValidatingAdmissionPolicy"], documents["ValidatingAdmissionPolicyBinding"]
+    prefix = cluster.IMAGE_GLOB.removesuffix("*")
+    assert policy["spec"]["failurePolicy"] == "Fail"
+    assert [v["expression"] for v in policy["spec"]["variables"] if v["name"] == "foreign"] == [
+        f"variables.images.filter(i, !i.lowerAscii().startsWith('{prefix}'))"
+    ]
+    rules = policy["spec"]["matchConstraints"]["resourceRules"]
+    assert {r for rule in rules for r in rule["resources"]} == {
+        "pods", "pods/ephemeralcontainers", "deployments", "replicasets", "statefulsets", "daemonsets",
+        "jobs", "cronjobs",
+    }  # fmt: skip
+    assert all(rule["operations"] == ["CREATE", "UPDATE"] for rule in rules)
+    assert binding["spec"] == {
+        "policyName": policy["metadata"]["name"],
+        "validationActions": ["Deny"],
+        "matchResources": {
+            "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": demo.NAMESPACE}}
+        },
+    }
