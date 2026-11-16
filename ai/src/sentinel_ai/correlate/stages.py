@@ -20,9 +20,10 @@ resolves every member (each a package with known fixed versions). Stage 3 (`labe
 labels the groups it is given; it never forms them) runs on the document `correlate_run` writes. Everything
 here is advisory: the release gate never reads it, and the same findings in any order give the same groups.
 
-`DEFAULT_THRESHOLD` is provisional: it is calibrated on a labelled set other than the one it is tested on (the
-calibration half of demo-shop's seeds, split before any score, SPEC section 17), then committed with the
-embedding model's digest before the test half is measured.
+`DEFAULT_THRESHOLD` is the calibrated threshold (A7): it was chosen on a labelled set other than the one it
+is tested on (the calibration half of demo-shop's seeds, split before any score, SPEC section 17), and
+committed in `eval/correlation/threshold.json` with the embedding model's digest before the test half was
+measured. A test keeps the two equal.
 """
 
 import hashlib
@@ -50,7 +51,7 @@ from sentinel_ai.correlate.models import (
 
 Finding = Mapping[str, Any]
 Embedder = Callable[[list[str]], list[list[float]]]
-DEFAULT_THRESHOLD = 0.8  # provisional: see the module docstring
+DEFAULT_THRESHOLD = 0.75  # calibrated on the calibration half: eval/correlation/threshold.json (A7)
 CORRELATOR_VERSION = "0.1.1"  # 0.1.1: template texts are redacted before they are clipped
 PACKAGE_CATEGORIES = frozenset({"SCA", "CONTAINER"})
 LOCATED_CATEGORIES = frozenset({"SAST", "IAC", "PIPELINE"})
