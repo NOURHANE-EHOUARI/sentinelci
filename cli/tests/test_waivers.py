@@ -250,9 +250,17 @@ def test_waiver_valid_for_more_than_90_days_blocks(tmp_path: Path, opa_binary: P
     assert "expires more than 90 days after evaluation" in decision_at(output)["violations"][1]["message"]
 
 
-@pytest.mark.parametrize("content", [None, "version: 1\nwaivers: [\n"], ids=["missing-file", "bad-yaml"])
+@pytest.mark.parametrize(
+    ("content", "reason"),
+    [
+        (None, None),
+        ("version: 1\nwaivers: [\n", None),
+        ("version: 1\nwaivers: " + "[" * 3000 + "]" * 3000 + "\n", "nested too deeply"),  # #157 review
+    ],
+    ids=["missing-file", "bad-yaml", "too-deep"],
+)
 def test_unreadable_waivers_file_makes_no_decision(
-    tmp_path: Path, opa_binary: Path, content: str | None
+    tmp_path: Path, opa_binary: Path, content: str | None, reason: str | None
 ) -> None:
     waivers = tmp_path / "waivers.yaml"
     if content is not None:
@@ -260,3 +268,15 @@ def test_unreadable_waivers_file_makes_no_decision(
     code, out, output = run_evaluate(tmp_path, opa_binary, "--waivers", str(waivers))
     assert code == 3, out
     assert not output.exists()
+    if reason is not None:
+        assert reason in out
+
+
+@pytest.mark.parametrize("depth", [3000, 100_000])
+def test_a_file_nested_too_deeply_is_refused_not_a_crash(depth: int) -> None:
+    """YAML composes nested sequences recursively, so a deep file reaches Python's recursion limit before the
+    entries are ever copied as JSON. The file cannot be read, so it is refused like any unreadable file (fail
+    closed), with a reason, not a RecursionError (#126 review)."""
+    data = ("version: 1\nwaivers: " + "[" * depth + "]" * depth + "\n").encode()
+    with pytest.raises(EvaluationError, match="nested too deeply"):
+        load_waivers(data)

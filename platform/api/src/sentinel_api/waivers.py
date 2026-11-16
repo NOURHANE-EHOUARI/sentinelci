@@ -36,7 +36,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from sentinel_api.api import _REPO, _SHA256, ErrorOut, SessionDep, _read_body
+from sentinel_api.api import _REPO, _SHA256, NUL_REFUSED, ErrorOut, SessionDep, _read_body
 from sentinel_api.auth import require_writer
 from sentinel_api.models import WaiversFile
 from sentinelci.contracts.decision import DecisionContext, Verdict
@@ -134,11 +134,34 @@ def _out(row: WaiversFile) -> WaiversFileOut:
     return WaiversFileOut(sha256=row.sha256, waiver_count=len(row.entries), created_at=row.created_at)
 
 
+def _unstorable(value: Any) -> str | None:
+    """Why PostgreSQL's jsonb cannot keep a parsed waivers file, or None. The raw body is checked for U+0000
+    before it is parsed, but YAML decodes escapes: `"\\0"` or `"\\x00"` become U+0000, and `"\\ud800"` a
+    lone UTF-16 surrogate, which is not text and cannot be encoded as UTF-8 (#126 on top of #110)."""
+    if isinstance(value, dict):
+        return next((p for item in value.items() for p in map(_unstorable, item) if p), None)
+    if isinstance(value, list):
+        return next((p for item in value if (p := _unstorable(item))), None)
+    if isinstance(value, str):
+        if "\x00" in value:
+            return NUL_REFUSED
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            return "a string holds a lone UTF-16 surrogate, which cannot be stored"
+    return None
+
+
 def _entries(data: bytes) -> list[Any]:
     try:
-        return load_waivers(data)
+        entries = load_waivers(data)
     except EvaluationError as exc:
         raise _invalid(f"not a waivers file the gate could read: {exc}") from exc
+    if problem := _unstorable(entries):
+        raise RequestValidationError(
+            [{"type": "unstorable_text", "loc": ("body",), "msg": problem, "input": None}]
+        )
+    return entries
 
 
 _READ_BY_A_DECISION = text(

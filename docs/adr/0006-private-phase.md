@@ -1,7 +1,8 @@
 # ADR-0006: Private-phase operating mode
 
 - Status: accepted; superseded in part by ADR-0011 (decision 1: the signing key stays on the laptop, not in a
-  repository secret; decision 4: the private GHCR package is optional)
+  repository secret; decision 4: the private GHCR package is optional); amended by ADR-0016 (the repository goes
+  public on 22 November, in two steps: its "when the repository goes public" paragraph is replaced)
 - Date: 2026-10-28
 
 ## Context
