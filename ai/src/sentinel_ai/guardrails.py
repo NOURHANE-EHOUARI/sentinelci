@@ -18,7 +18,7 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -165,7 +165,12 @@ def texts_of(answer: BaseModel) -> list[str]:
     return found
 
 
-def ask[AnswerT: BaseModel, ResultT](
+# TypeVars, not PEP 695 syntax: Opengrep cannot parse `def f[T]`, and code it cannot parse goes unanalysed.
+AnswerT = TypeVar("AnswerT", bound=BaseModel)
+ResultT = TypeVar("ResultT")
+
+
+def ask(
     provider: LLMProvider,
     system: str,
     user: str,
