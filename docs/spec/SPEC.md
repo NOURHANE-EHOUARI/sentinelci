@@ -19,6 +19,7 @@
 | 1.1.121 | A4 release (§6.4, ADR-0011): `.sentinel/waivers.yaml`, the file demo-shop's gates read, holds 77 `base-` waivers for the Debian packages of the official python:3.12.16-slim-trixie image under shop-api's release image, owned by `@NOURHANE-EHOUARI`. The first release run on main (`def5da7`, 15 November) was BLOCK SC-002 on 77 P0 findings, all of them Debian packages of that image; SC-006 warned on 4 P1 SAST findings. One waiver per vulnerability and package (`vulnerability` and `purl`, no version): 14 days for the 2 that Debian has fixed but the official image has not picked up yet (zlib1g), 30 days for the 75 Debian publishes no fix for. Round 2 (#152 review): 15 of those 75, five OpenSSL CVEs of the 10 November advisory on `libssl3t64`, `openssl` and `openssl-provider-legacy`, are open in Debian (no fix, no `no-dsa`; Grype's `not-fixed`), not won't-fix: they get the zlib1g treatment, 14 days and "remove it at the first rebuilt digest with the fix", so 17 waivers run 14 days and 60 run 30. The other 60 now say what Debian does (no security update in trixie, Grype's `wont-fix`), and the file's header says the waivers name a package, not an image. No seed is waived: the BLOCK image (pyyaml 5.3.1, GT-CONTAINER-001) still blocks. |
 | 1.1.120 | Threat model after #114 (§18, A10): T4's status is main for all six required scanners in `pr` and `release` (Gitleaks, Trivy and zizmor, then Opengrep, Syft and Grype with #114), and the residual risk "Opengrep, Syft and Grype are not required scanners yet" is closed: a pull request that deletes one of their steps, or a release scan stopped before one of them reports, is SC-010. |
 | 1.1.110 | B5 (§8, ADR-0009): the Ollama provider stops a generation at `NUM_PREDICT` (2048) tokens. The verified-fix-rate run on `4b6d637` found a model answer that never ends: for GT-SAST-005, the pinned model writes about 430 characters of malformed JSON, then only empty tokens, and with no length limit Ollama kept generating until the 15-minute time limit, so the attempt was a `ProviderError` (cause `"provider"`, "the model server failed") and the seed was not measured. The same request with the limit stops at 2048 tokens (518 s on this CPU). The cut answer is malformed, so it goes to the repair retry like any invalid answer, and a second one makes the outcome unavailable with cause `"answer"`: the model gave no usable answer, which the fix rate counts as an attempt that failed. The largest real answers are about 600 tokens (the explanations of `make eval-explanations`, at most 2,084 characters), so the limit cuts no answer seen so far. A test replays a cut answer through `guardrails.ask`. Found after seeing that run's data; the fix rate's rules are unchanged. |
+| 1.1.115 | B1 (§16 drop order, both of us, AGREED_ON): the GitHub sync (`POST /api/v1/sync/github`, the platform pulling each CI run's evidence through the GitHub API) is dropped, first in §16's drop order. It was never built: since 1.1.24 an upload (`sentinel upload`) meets B1, and GitHub Actions cannot run on this repository before 1 December, so there would be no CI run to pull before the project ends. Building it now would add a GitHub App or token, its secret handling and outbound calls for a feature the plan already marks as the first to cut. §4.1 now says runs reach the platform by upload; §4.4, §13.3, B1's card and the hand-off no longer list the sync. The endpoint was never in `schemas/openapi.yaml`, so no contract changes. Not a §17 metric: no evaluation number changes. |
 | 1.1.108 | B4 waivers (#126 review, nits on `2f9fbf4`): a waivers file nested too deeply for YAML's composer (a `RecursionError`) is refused as an `EvaluationError`, "waivers file is nested too deeply to be read", instead of a crash: `PUT /api/v1/waivers/{sha256}` answers 422 and `sentinel evaluate` fails closed with that reason. YAML gives up before the JSON copy on any such file, so only the composer is guarded; a test searches the deepest file the loader reads through the PUT itself and checks that no depth answers 500, and `sentinel evaluate` on a too-deep file exits 3 with the reason and writes no decision (#157 review). The U+0000 refusal walks keys as well as values, and a case with the escape in a key pins it. No API version change: a request that answered 500 now answers 422, which the contract already lists. |
 | 1.1.107 | B6 and B5 (§8): an "unavailable" outcome of `sentinel_ai.patch.propose_code_fix`, `sentinel_ai.explain.explain_finding` and `sentinel_ai.triage.triage_finding` names its `cause`: `"provider"` when the model server failed (a `ProviderError` or any other provider exception; not retried, nothing was asked of the model) or `"answer"` when the model answered twice and neither answer was usable (invalid, or refused by the guardrails). A provider failure on the repair retry is `"provider"`. Every other outcome has no cause. Callers no longer have to match the reason's words ("the provider failed: ..."), which stay as they were. Additive: the status stays "unavailable", so no contract in `schemas/`, no database status (`explain_requests`) and no caller changes; the platform's worker still records "unavailable" and the reason. Tested with a scripted provider (each cause, both orders of a refused answer and a failure) and 19 mutants of the distinction, all killed. `make remediate-code` keeps the cause in each attempt's record (`"cause"`), which the fix rate reads, and a test pins it for both causes (#158 review). |
 | 1.1.104 | ADR-0016 (proposed, both of us): the repository goes public right after the merge train (22 November at the latest) in two steps, amending ADR-0006. Step 1 at the switch: a Gitleaks scan of the whole history first (15 Nov: 11 findings, none a real secret), branch protection on `main`, approval for fork pull requests' workflows, Dependabot security updates off with `demo-shop/`'s alerts closed as an intentionally vulnerable target (never a waiver), push protection bypassed only for a new listed fake; key-pair signing, the Cosign provenance attestation and the reporting stay. Step 2 after v1.0.0, if time allows: ADR-0006's GitHub mode (keyless signing, artifact attestations, code-scanning upload, public images). The history scan covers every branch and every pull request's head, and runs again on the day, after the last merge. Review of #144: the decision is its own PR; `CLAUDE.md`'s repository status changes in the switch PR on the 22nd, with that day's scan. Branch protection binds the admin too ("Do not allow bypassing"), and the default workflow permissions are read. The residual risk is named: a commit a force-push removed is still served by its SHA. Brought forward (both of us, 15 November): the switch follows the merge train, and its checklist adds the logs and artifacts of past Actions runs, checked before the switch, and one workflow started by hand right after it. |
@@ -209,9 +210,11 @@ images run), **control plane** (FastAPI platform: history, AI and remediation wo
 ### 4.1 Decisions in the pipeline, intelligence in the platform
 
 The gate must work without the platform (hosted runners cannot reach a laptop). The deterministic core
-(normalize → enrich → score → evaluate → attest) is a library + CLI running in CI. The platform **pulls** each
-run's evidence bundle through the GitHub API (GitHub App or fine-grained token) and can **replay** any decision.
-Local CLI runs can **push** to the same ingestion API. No self-hosted runners (anti-pattern for untrusted PRs).
+(normalize → enrich → score → evaluate → attest) is a library + CLI running in CI. Runs reach the platform by
+upload: the CLI **pushes** a run's findings and evidence to the ingestion API (`sentinel upload`), from CI or a
+laptop, and the platform can **replay** any decision. A pull of each CI run through the GitHub API (GitHub App or
+fine-grained token) was planned and dropped (§16, 1.1.115). No self-hosted runners (anti-pattern for untrusted
+PRs).
 
 ### 4.2 Operating modes
 
@@ -245,8 +248,8 @@ Local CLI runs can **push** to the same ingestion API. No self-hosted runners (a
 | `sentinel` CLI / core | scan, normalize, enrich, score, evaluate, sign/attest, verify, replay | Python 3.12, Typer, Pydantic v2 | A + B |
 | Reusable workflows | `sentinel-scan.yml`, `sentinel-release.yml` | GitHub Actions | A |
 | Policy bundle | Rego rules, risk model, tests | OPA (Rego v1) | B |
-| Platform API | ingestion, sync, query, OpenAPI | FastAPI, SQLAlchemy 2, Alembic | B |
-| Workers | sync, enrichment refresh, AI, remediation | Celery + Redis | B / A |
+| Platform API | ingestion (uploads), query, OpenAPI | FastAPI, SQLAlchemy 2, Alembic | B |
+| Workers | enrichment refresh, AI, remediation | Celery + Redis | B / A |
 | AI analyst | explanations, triage hints, patch proposals | Ollama, own provider interface | B |
 | Correlator | dedup, embeddings, clustering, labels | pure Python now (average linkage); numpy or pgvector in the worker | A |
 | Remediation orchestrator | fixers, branches/PRs, verification | GitHub App / token, httpx2 | A |
@@ -1039,7 +1042,7 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
 ### 13.3 Platform API v1 (first cut)
 
 `POST /api/v1/runs` (409 with the existing run for a CI run already recorded) · `GET /api/v1/runs` (newest first, `repo`, `context`, `ref`, paginated) · `POST /api/v1/runs/{id}/findings` (NDJSON) · `GET /api/v1/runs/{id}/findings` (the exact upload) · `POST /api/v1/runs/{id}/artifacts` ·
-`POST /api/v1/sync/github` · `GET /api/v1/findings[/{id}]` · `POST /api/v1/findings/{id}/explain` (queues an explanation, B5c), `GET /api/v1/explain-requests/{id}` and `GET /api/v1/findings/{id}/explanation` (the latest, byte for byte; advisory) ·
+`GET /api/v1/findings[/{id}]` · `POST /api/v1/findings/{id}/explain` (queues an explanation, B5c), `GET /api/v1/explain-requests/{id}` and `GET /api/v1/findings/{id}/explanation` (the latest, byte for byte; advisory) ·
 `POST /api/v1/runs/{id}/correlations`, `GET /api/v1/runs/{id}/correlations[?sha256=]` and `GET /api/v1/runs/{id}/correlations/versions` (Correlation v1 documents, scoped by run, kept byte for byte, advisory) ·
 `POST|GET /api/v1/runs/{id}/decision` (the run's Decision v1, one per run, made on the run's recorded findings and about its subject, kept byte for byte) ·
 `PUT|GET /api/v1/waivers/{sha256}` (a waivers file a recorded decision read, kept byte for byte), `GET /api/v1/waivers[?repo=]` (the waivers each repository's latest default-branch release decision read) and `GET /api/v1/rules` (how many recorded decisions each rule fired in) ·
@@ -1083,7 +1086,7 @@ Vertical ownership; each track has DevOps, security, backend/UI and an AI compon
 
 | ID | Task | Deliverables / acceptance | Sprint | Size |
 |---|---|---|---|---|
-| B1 | Platform backend | FastAPI, PostgreSQL + Alembic, SeaweedFS (S3), Celery + Redis, GitHub sync, OpenAPI in `schemas/`. Accept: `make up`; an upload or a sync ingests a real run (changed in 1.1.24); contract tests | S1 | L |
+| B1 | Platform backend | FastAPI, PostgreSQL + Alembic, SeaweedFS (S3), Celery + Redis, OpenAPI in `schemas/` (the GitHub sync was dropped, 1.1.115). Accept: `make up`; an upload ingests a real run (changed in 1.1.24 and 1.1.115); contract tests | S1 | L |
 | B2 | Enrichment | EPSS, KEV, OSV, reachability, `sentinel.yaml`; snapshots + offline fixtures | S2 | M |
 | B3 | Risk engine | §6.2 model, bands, factor breakdown, CVSS baseline. Accept: property tests (monotonicity, bounds) | S2 | M |
 | B4 | Policy & decisions | Rego SC-001…SC-010, profiles, diff-aware mode, waivers + VEX, Decision v1, `evaluate`, `replay`; minimal SC-001 for S1. Accept: coverage ≥ 90%; replay identical | S1–S2 | L |
@@ -1099,7 +1102,7 @@ Vertical ownership; each track has DevOps, security, backend/UI and an AI compon
 |---|---|---|---|
 | Shared → all | schemas + fixtures | end S0 | — (done in Sprint 0) |
 | A2 → B2, B3, B4 | findings NDJSON | mid S1 | fixtures |
-| B1 → A3, A8 | OpenAPI + ingestion (sync later, 1.1.24) | end S1 | local JSON |
+| B1 → A3, A8 | OpenAPI + ingestion (the sync was dropped, 1.1.115) | end S1 | local JSON |
 | B4 → A4, A5 | Decision v1 | mid S2 | fixture decision |
 | A4 → A5, B1 | evidence bundle | end S2 | sample bundle |
 | B5 → A7 | LLMProvider | start S3 | fake provider (see `ai/tests`) |
@@ -1129,7 +1132,7 @@ protection on `main`; fork pull requests need approval to run. Signing stays wit
 keyless signing, code-scanning upload and GitHub artifact attestations can follow.
 
 **Cut line:** M2 alone is a complete project. Drop order if late: GitHub sync (`POST /api/v1/sync/github`;
-an upload already meets B1, 1.1.24) → the LLM judge (the people's rubric and kappa stay) → Argo CD (Kyverno on
+an upload already meets B1, 1.1.24; **dropped** on 17 November, 1.1.115) → the LLM judge (the people's rubric and kappa stay) → Argo CD (Kyverno on
 kind stays) → correlation stage 2b numbers (reported as not measured) → stretch goals. A cut metric is reported
 as not measured, never as 0. **Stretch:** Jenkins pipeline reusing the CLI, MCP server for coding agents, Check
 Runs annotations, ChatOps, call-graph reachability, fine-tuned triage classifier.

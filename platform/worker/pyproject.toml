@@ -1,7 +1,7 @@
 [project]
 name = "sentinel-worker"
 version = "0.1.0"
-description = "SentinelCI background workers: GitHub sync, enrichment refresh, AI and remediation jobs."
+description = "SentinelCI background workers: enrichment refresh, AI and remediation jobs."
 requires-python = ">=3.12"
 dependencies = [
     "celery[redis]>=5.5",
