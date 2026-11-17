@@ -10,8 +10,9 @@ writes what they ran on and what they wrote to out/eval/all/manifest.json and su
 
 Fail closed, before anything runs: the checkout must be clean, the scanners must match tools.lock.toml, the
 Grype database must be there, Docker must answer and the shop-api test image must be pinned by digest and
-present, and the model server must serve the pinned models (ADR-0009). Only what the chosen steps need is
-checked. A failed check runs nothing and exits 2.
+present, and the model server must serve the pinned model each step uses (ADR-0009): the embedding model for
+correlation, the generation model for canaries, explanations and the fix rate. Only what the chosen steps need
+is checked. A failed check runs nothing and exits 2.
 
 Each step keeps its script's own meaning: exit 0 is measured (and its reports must be there), exit 2 is "not
 measured", anything else failed. Each step runs its scripts directly rather than through `make`, which
@@ -117,28 +118,28 @@ STEPS: tuple[Step, ...] = (
         "eval-correlation",
         ("correlation.json", "correlation.md"),
         needs=("detection",),
-        uses=("model server",),
+        uses=("embedding model",),
     ),
     Step(
         "canaries",
         "eval-canaries",
         ("canaries.json", "canaries.md"),
         needs=("detection",),
-        uses=("model server",),
+        uses=("generation model",),
     ),
     Step(
         "explanations",
         "eval-explanations",
         ("explanations/explanations.json", "explanations/sheet.yaml", "explanations/ratings-judge.yaml"),
         needs=("detection",),
-        uses=("model server",),
+        uses=("generation model",),
     ),
     Step(
         "fixrate",
         "eval-fixrate",
         ("fixrate.json", "fixrate.md"),
         needs=("detection",),
-        uses=("tools", "grype database", "docker", "test image", "model server"),
+        uses=("tools", "grype database", "docker", "test image", "generation model"),
     ),
     Step("timing", "eval-timing", ("timing.json", "timing.md"), uses=("tools", "grype database")),
 )
@@ -151,7 +152,7 @@ class Environment(Protocol):
     def verify_tools(self, tools_dir: Path, report: Path) -> str: ...
     def docker_problem(self) -> str: ...
     def image_problem(self, image: str) -> str: ...
-    def ollama_problem(self, url: str) -> str: ...
+    def ollama_problem(self, url: str, model: str) -> str: ...
 
 
 Runner = Callable[[Sequence[str], Path], int]
@@ -183,8 +184,9 @@ def preflight(s: Settings, env: Environment, steps: Sequence[Step], allow_dirty:
             )
         else:
             found["test image"] = env.image_problem(s.test_image) or "ok"
-    if "model server" in uses:
-        found["model server"] = env.ollama_problem(s.ollama) or "ok"
+    for model in ("generation", "embedding"):
+        if f"{model} model" in uses:
+            found[f"{model} model"] = env.ollama_problem(s.ollama, model) or "ok"
     return found
 
 
@@ -337,13 +339,11 @@ class Real:
         done = subprocess.run(command, capture_output=True, check=False)  # noqa: S603
         return "" if done.returncode == 0 else f"{image} is not present: build Dockerfile.test and pin its id"
 
-    def ollama_problem(self, url: str) -> str:
+    def ollama_problem(self, url: str, model: str) -> str:
         try:
             from sentinel_ai.providers.ollama import EMBEDDING, GENERATION, OllamaProvider
 
-            provider = OllamaProvider(url)
-            for model in (GENERATION, EMBEDDING):
-                provider.verify(model)
+            OllamaProvider(url).verify(GENERATION if model == "generation" else EMBEDDING)
         except Exception as exc:  # unreachable, refused, another digest: all the same here
             return f"{type(exc).__name__}: {exc}"
         return ""

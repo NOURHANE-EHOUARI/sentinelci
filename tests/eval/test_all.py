@@ -49,7 +49,9 @@ class Fake:
     tools: str = ""
     docker: str = ""
     image: str = ""
-    ollama: str = ""
+    ollama: str = ""  # both models
+    generation: str = ""
+    embedding: str = ""
 
     def commit(self) -> str:
         return "c" * 40
@@ -66,8 +68,8 @@ class Fake:
     def image_problem(self, image: str) -> str:
         return self.image
 
-    def ollama_problem(self, url: str) -> str:
-        return self.ollama
+    def ollama_problem(self, url: str, model: str) -> str:
+        return self.ollama or {"generation": self.generation, "embedding": self.embedding}[model]
 
 
 @dataclass
@@ -278,3 +280,19 @@ def test_each_step_runs_exactly_what_its_make_target_runs(tmp_path: Path) -> Non
         joined = done.stdout.replace("\\\n", " ")  # a recipe continued on the next line
         expected = [shlex.split(line) for line in joined.splitlines() if line.strip()]
         assert [list(c) for c in step.commands(s)] == expected, step.target
+
+
+def test_each_model_step_checks_only_the_model_it_uses(tmp_path: Path) -> None:
+    """Correlation needs the embedding model only; canaries, explanations and the fix rate the generation
+    model (#166 review: a laptop without room for the 12B model can still run correlation)."""
+    go(tmp_path, steps=["detection"])
+    code, manifest, _ = go(tmp_path, steps=["correlation"], fake=Fake(generation="gemma4 is not served"))
+    assert code == 0 and statuses(manifest) == {"correlation": "measured"}
+    assert "generation model" not in manifest["preflight"]
+    code, manifest, runner = go(tmp_path, steps=["correlation"], fake=Fake(embedding="qwen3 is not served"))
+    assert code == 2 and runner.calls == []
+    assert "qwen3" in manifest["preflight"]["embedding model"]
+    code, manifest, runner = go(tmp_path, steps=["canaries"], fake=Fake(embedding="qwen3 is not served"))
+    assert code == 0 and "embedding model" not in manifest["preflight"]
+    code, manifest, runner = go(tmp_path, steps=["canaries"], fake=Fake(generation="gemma4 is not served"))
+    assert code == 2 and runner.calls == [] and "gemma4" in manifest["preflight"]["generation model"]
