@@ -151,10 +151,14 @@ def release_repo(tmp_path: Path) -> Path:
 
 def whole_release(repo: Path, tmp_path: Path, **changes: Any) -> tuple[int, Any]:
     recorder = support.Recorder(repo, real=True)
-    # Never a download in a test: the database is SENTINEL_GRYPE_DB_DIR's, or there is none.
+    # Never a download in a test: the database is SENTINEL_GRYPE_DB_DIR's, or there is none. Resolved here,
+    # like SENTINEL_TOOLS_DIR: the release runs in the test's own repository, where a relative path names
+    # nothing.
     recorder.fakes["sentinel tools grype-db"] = lambda call: support.done(returncode=0 if GRYPE_DB else 3)
     settings = release.Settings(
-        root=repo, tools_dir=tools_dir(), grype_db=Path(GRYPE_DB) if GRYPE_DB else tmp_path / "no-grype-db"
+        root=repo,
+        tools_dir=tools_dir(),
+        grype_db=Path(GRYPE_DB).resolve() if GRYPE_DB else tmp_path / "no-grype-db",
     )
     made = release.Release(
         key=tmp_path / "keys" / "release.key", out=repo / "out" / "release", settings=settings, fetch=False,
