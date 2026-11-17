@@ -359,8 +359,10 @@ make eval-fixrate TEST_IMAGE=<that id> GRYPE_DB=out/grype-db OLLAMA_URL=http://1
   `docker build` does not trust its CA. The same 27 wheels were downloaded on the host with `--require-hashes`,
   and a copy of `Dockerfile.test` installs them with `--no-index` on the same base image. shop-api's 12 tests
   pass in it, with no network and a read-only filesystem. The 27 November run builds the image as written.
-- **One machine, one model.** The rate is the pinned model's on this machine's CPU, about 2.9 tokens a second;
-  a CPU slower than 2.3 tokens a second hits the time limit before the length limit.
+- **One machine, one model.** The rate is the pinned model's on this machine's CPU, about 3 tokens a second
+  (each of GT-SAST-005's cut answers took 11 min 15 s). On a CPU slower than about 2.5 tokens a second, 2048
+  tokens and the prompt's evaluation no longer fit in the 15-minute time limit: that seed would be a provider
+  failure again, and the rate not measured. The 27 November run needs a machine as fast as this one.
 
 ---
 
