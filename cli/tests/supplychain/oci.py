@@ -4,8 +4,10 @@ Everything runs with the pinned tools from SENTINEL_TOOLS_DIR (crane, cosign): t
 `registry serve`, in memory on 127.0.0.1, gone when the test module ends; key pairs are made per test.
 """
 
+import contextlib
 import io
 import os
+import shutil
 import socket
 import subprocess
 import tarfile
@@ -47,15 +49,15 @@ def crane() -> Path:
     return entry.path
 
 
-@pytest.fixture(scope="module")
-def registry(crane: Path, tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
-    """A throwaway OCI registry on 127.0.0.1, in memory: gone when the module's tests end."""
+@contextlib.contextmanager
+def serve_registry(crane: Path, home: Path) -> Iterator[str]:
+    """A throwaway OCI registry on 127.0.0.1, in memory: gone when the block ends."""
     port = free_port()
     server = subprocess.Popen(
         [str(crane), "registry", "serve", "--address", f"127.0.0.1:{port}"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path_factory.mktemp("crane-home"))},
+        env={"PATH": "/usr/bin:/bin", "HOME": str(home)},
     )
     try:
         for _ in range(100):
@@ -70,6 +72,13 @@ def registry(crane: Path, tmp_path_factory: pytest.TempPathFactory) -> Iterator[
     finally:
         server.terminate()
         server.wait(timeout=10)
+
+
+@pytest.fixture(scope="module")
+def registry(crane: Path, tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+    """A throwaway OCI registry on 127.0.0.1, in memory: gone when the module's tests end."""
+    with serve_registry(crane, tmp_path_factory.mktemp("crane-home")) as address:
+        yield address
 
 
 def layer_tar(content: bytes) -> bytes:
@@ -95,6 +104,55 @@ def push_image(crane: Path, registry: str, tmp_path: Path, name: str = "demo-sho
     reference = run.stdout.strip()
     assert parse_image(reference).name == f"{registry}/{name}", reference
     return reference
+
+
+HEALTH_SERVER = """package main
+
+import "net/http"
+
+func main() {
+\thttp.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+\t\t_, _ = w.Write([]byte("ok\\n"))
+\t})
+\t_ = http.ListenAndServe(":8080", nil)
+}
+"""
+
+
+def runnable_image(crane: Path, registry: str, work: Path, name: str = "demo-shop/shop-api") -> str:
+    """An image that runs as the release image must (ADR-0011, decision 6): a static Go server answering
+    GET /healthz on port 8080, as UID 10001, with nothing to write. Built for this machine's architecture
+    (a kind node's), pushed by digest. Needs Go."""
+    go = shutil.which("go")
+    if go is None:
+        pytest.skip("builds the test release image with Go")
+    work.mkdir(parents=True, exist_ok=True)
+    (work / "main.go").write_text(HEALTH_SERVER, encoding="utf-8")
+    env = {
+        "PATH": os.environ["PATH"], "HOME": str(work), "GOCACHE": str(work / "go-cache"),
+        "GOTOOLCHAIN": "local", "GOPROXY": "off", "GO111MODULE": "on", "CGO_ENABLED": "0", "GOOS": "linux",
+    }  # fmt: skip
+    arch = subprocess.run(
+        [go, "env", "GOARCH"], capture_output=True, text=True, check=True, env=env
+    ).stdout.strip()
+    subprocess.run([go, "build", "-trimpath", "-ldflags=-s -w", "-o", "server", "main.go"], cwd=work, env=env,
+                   check=True, capture_output=True, timeout=300)  # fmt: skip
+    layer = work / "server.tar"
+    with tarfile.open(layer, "w") as archive:
+        info = archive.gettarinfo(str(work / "server"), arcname="server")
+        info.mode, info.uid, info.gid, info.uname, info.gname = 0o755, 0, 0, "", ""
+        with (work / "server").open("rb") as binary:
+            archive.addfile(info, binary)
+    lock, tools = load_lock(REPO_LOCK), Path(str(TOOLS_DIR))
+    base = run_verified_tool("crane", ["append", "--new_layer", str(layer), "--new_tag",
+                                       f"{registry}/{name}:base", "--insecure"],
+                             lock=lock, tools_dir=tools, cwd=work).stdout.strip()  # fmt: skip
+    mutated = run_verified_tool("crane", ["mutate", base, "--entrypoint", "/server", "--user", "10001:10001",
+                                          "--set-platform", f"linux/{arch}", "--repo", f"{registry}/{name}",
+                                          "--insecure"],
+                                lock=lock, tools_dir=tools, cwd=work).stdout.strip()  # fmt: skip
+    assert parse_image(mutated).name == f"{registry}/{name}", mutated
+    return mutated
 
 
 def make_keys(directory: Path) -> dict[str, Path]:

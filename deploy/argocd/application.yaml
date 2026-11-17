@@ -1,0 +1,27 @@
+# The demo-shop release, deployed by Argo CD from the local GitOps repository (task A5b, ADR-0011 decision 5).
+#
+# The repository holds the chart (deploy/helm/demo-shop, copied by `make demo-release`) and release.yaml, the
+# digest `sentinel verify` trusted. Argo CD renders the chart with that file and syncs automatically; Kyverno
+# then admits the Deployment only if that digest is a release with its evidence.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-shop
+  namespace: argocd
+spec:
+  project: demo-shop
+  source:
+    repoURL: git://gitops.sentinel-gitops.svc.cluster.local/demo-shop.git
+    targetRevision: main
+    path: demo-shop
+    helm:
+      releaseName: demo-shop
+      valueFiles:
+        - release.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo-shop
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
