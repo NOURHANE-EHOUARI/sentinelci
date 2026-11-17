@@ -2,7 +2,7 @@
 repos:
   - repo: local
     hooks:
-      # No server-side branch protection while the repo is private (ADR-0006): refuse commits on main locally.
+      # A local guard on top of main's server-side protection (ADR-0016): refuse commits on main before a push.
       - id: no-commit-to-main
         name: refuse commits on main (work on a task branch and open a PR)
         entry: sh -c 'if [ "$(git rev-parse --abbrev-ref HEAD)" = "main" ]; then echo "Commits on main are not allowed. Create a branch, e.g. git switch -c a2/my-change"; exit 1; fi'

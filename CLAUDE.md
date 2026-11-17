@@ -34,17 +34,22 @@ fixes; it never decides.
 The repository is public (ADR-0016, step 1; it amends ADR-0006). What that changes:
 - Everything pushed is public at once: branches, tags, every pull request's head (`refs/pull/*/head`), and, to
   anyone with its SHA, a commit that a force-push removed. Never push what must not be published.
-- `main` is protected server-side: pull requests only, one approving review, the required checks green
-  (`lint, types, contracts, tests`, `dashboard (typed client, types, tests, build)`, `workflow security (zizmor)`),
-  no force-push, no deletion, no bypass, admins included. Never commit or push to `main` directly: always a task
-  branch and a PR, which the other team member reviews and merges. If GitHub Actions does not run, a local
-  `make check` report on the PR head stands in for CI.
-- GitHub Actions runs on every pull request: keep path filters and caches, and the full image scan nightly on
-  `main`. Workflows from fork pull requests need a maintainer's approval; the repository's default workflow
-  permissions are read-only, and every job still sets its own `permissions:`.
-- GitHub's alerts on `demo-shop/` (Dependabot, secret scanning) are closed with their reason ("intentionally
-  vulnerable demo target", "used in tests", naming the seed in `demo-shop/ground-truth/`): a closed alert is not
-  a waiver. A new fake seed goes into the ground truth in the same PR; push protection is bypassed for it only.
+- `main` is protected server-side: pull requests only; one approving review, dismissed when new commits are
+  pushed and required on the most recent push; no force-push, no deletion, no bypass, admins included. The
+  checks `lint, types, contracts, tests`, `dashboard (typed client, types, tests, build)` and
+  `workflow security (zizmor)` are required once `ci` has run green on GitHub; until then, a local `make check`
+  report on the PR head stands in for them. Never commit or push to `main` directly: always a task branch and a
+  PR, which the other team member reviews and merges.
+- GitHub Actions runs on every pull request a person opens or pushes to: keep path filters and caches, and the
+  full image scan nightly on `main`. A pull request the remediation bot opens with `GITHUB_TOKEN` starts no
+  workflow (GitHub's rule for that token): a person closes and reopens it, or pushes to it, so that `ci` runs; a
+  known gap until the bot has an App token. Workflows from fork pull requests need a maintainer's approval; the
+  repository's default workflow permissions are read-only, and every job still sets its own `permissions:`.
+- GitHub's alerts on `demo-shop/` are closed with a reason and a comment naming the seed in
+  `demo-shop/ground-truth/`: Dependabot as "Risk is tolerable to this project" (comment: "intentionally
+  vulnerable demo target, <seed>"), secret scanning as "Used in tests". A closed alert is not a waiver. A new
+  fake seed goes into the ground truth in the same PR; push protection is bypassed for it only.
+- Vulnerability reports come through GitHub's private vulnerability reporting (`SECURITY.md`).
 
 Unchanged until step 2 (keyless signing, after v1.0.0 and only if there is time):
 - Signing uses Cosign **key pairs** on the laptop that holds the release key (ADR-0011), with no upload to the

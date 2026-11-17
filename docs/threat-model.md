@@ -15,7 +15,7 @@ What SentinelCI defends, against whom, and where each defence lives and is teste
 | The signed release and its evidence | Image, signature and the four attestations (decision, SBOM, vulnerability scan, provenance) |
 | The cluster | What finally runs |
 | Findings and decisions stored by the platform | Evidence; findings may describe secrets (never their values) |
-| Repository write access | `main` is protected server-side since the switch (ADR-0016): pull requests, one approving review, the required checks, no bypass |
+| Repository write access | `main` is protected server-side since the switch (ADR-0016): pull requests, one approving review that a new push dismisses, the required checks, no bypass |
 
 ## 2. Who attacks
 
@@ -27,8 +27,9 @@ What SentinelCI defends, against whom, and where each defence lives and is teste
   invents a fix.
 - **A4, the attacker inside the network path**: a proxy, a redirect, a registry that serves something else.
 - **A5, the insider with push rights**: one of the two team members, or a session acting for one. Since the
-  switch (ADR-0016), `main` needs the other member's approval and a green CI, so one insider alone cannot change
-  it; the release key is still one person's (section 5).
+  switch (ADR-0016), `main` needs the other member's approval of its most recent push and a green CI, so one
+  insider alone cannot change it through a pull request; the owner's account can still turn the protection off,
+  and the release key is still one person's (section 5).
 
 ## 3. Trust boundaries
 
@@ -134,7 +135,7 @@ token or a secret, and a job that holds one runs no repository code.
 
 | Risk | Why it is accepted now | What removes it |
 |---|---|---|
-| `main`'s protection is a GitHub setting, not part of the repository: the owner's account can turn it off | Two people; Scorecard's Branch-Protection check runs on every push to `main` and publishes a weaker setting | — |
+| `main`'s protection is a GitHub setting, not part of the repository: the owner's account can turn it off | Two people. Scorecard's Branch-Protection check runs on every push to `main` and publishes what it can see with the workflow's own token: force-push, deletion and review settings, not the admin bypass, which needs an admin token; the bypass needs a look by hand after any change to the settings | — |
 | Any workflow run can read a repository secret | There is no signing secret on GitHub (ADR-0011), so there is nothing to protect yet | Environment branch rules, available now that the repository is public, when step 2 of ADR-0016 brings a signing identity to CI |
 | The laptop signer trusts the laptop | A local key stays the only signer until keyless signing, after v1.0.0 (ADR-0016, step 2) | Keyless signing in CI (ADR-0016, step 2) |
 | `verify` in the bot runs the same code as `propose` | A compromised dependency could write a false result, but holds no write token: at worst a wrong comment on a pull request a reviewer still judges | — |
@@ -142,7 +143,7 @@ token or a secret, and a job that holds one runs no repository code.
 | The explanation worker (B5c, PR #111) connects to PostgreSQL as the database owner: a compromised dependency of its model path could change any table | It holds no API token, no S3 credential and no published port, it keeps an explanation only if it is a valid Explanation v1 about its own finding (the API and a trigger check it), and the platform records evidence the gate already decided on | A database role for the worker with only `SELECT` on `runs` and `findings`, `SELECT`/`UPDATE` on `explain_requests` and `INSERT` on `explanations` |
 | uv's cache in `ci.yml` can be written by the pull request's own run, and read by its next one | That job runs the change's own code anyway and holds no write token, and no job that judges a change reads that cache (ADR-0015) | — |
 | The platform API's reads need no token: anything on the host, or in the Compose network, can read runs and findings | Every port binds 127.0.0.1, findings never hold a secret's value (only its hash), and nothing but the dashboard reads them yet | A read token (B1), when the dashboard (B7) and the Grafana datasource need one |
-| The Scorecard job (PR #104) runs the image its pinned action's `action.yaml` names by tag (`ghcr.io/ossf/scorecard-action:v2.5.0`), with `id-token: write`: the commit pin does not cover the image | It runs only on a push to `main` or by hand, and only while the repository is public; its repository permissions are reads; its OIDC token names `scorecard.yml`, an identity nothing trusts (keyless verification pins the release workflow, ADR-0010) | No clean way within Scorecard's publish rules; re-checked when the repository goes public |
+| The Scorecard job (PR #104) runs the image its pinned action's `action.yaml` names by tag (`ghcr.io/ossf/scorecard-action:v2.5.0`), with `id-token: write`: the commit pin does not cover the image | It runs only on a push to `main` or by hand, and only while the repository is public; its repository permissions are reads; its OIDC token names `scorecard.yml`, an identity nothing trusts (keyless verification pins the release workflow, ADR-0010) | No clean way within Scorecard's publish rules; looked at again on its first public run, at the switch (#160's checklist) |
 
 ## 6. Keeping this document true
 

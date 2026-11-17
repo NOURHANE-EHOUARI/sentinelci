@@ -10,7 +10,7 @@
 
 | Version | Change |
 |---|---|
-| 1.1.129 | A10 the switch to public, step 1 of ADR-0016: `CLAUDE.md`'s "Repository status" says the public rules (everything pushed is public, `main` protected server-side with the three `ci.yml` checks required, fork workflows approved by hand, read-only default workflow permissions, alerts on `demo-shop/` closed with their reason, never waived) and what stays until step 2 (the laptop's key pair, the in-toto provenance, no code-scanning upload, kind's local registry). The README's status line, the release docs and the threat model follow: `main`'s protection replaces the no-protection residual risk, which becomes "a GitHub setting the owner can turn off"; the laptop signer's and the repository secrets' rows name step 2; the blocked-Actions row is gone. ADR-0016 records the scans before the switch: the history (989 commits, 120 branches, 185 pull-request refs) and the 44 workflow artifacts, no real secret. |
+| 1.1.129 | A10 the switch to public, step 1 of ADR-0016: `CLAUDE.md`'s "Repository status" says the public rules (everything pushed is public, `main` protected server-side with the three `ci.yml` checks required, fork workflows approved by hand, read-only default workflow permissions, alerts on `demo-shop/` closed with their reason, never waived) and what stays until step 2 (the laptop's key pair, the in-toto provenance, no code-scanning upload, kind's local registry). The README's status line, the release docs and the threat model follow: `main`'s protection replaces the no-protection residual risk, which becomes "a GitHub setting the owner can turn off"; the laptop signer's and the repository secrets' rows name step 2; the blocked-Actions row is gone. ADR-0016 records the scans before the switch: the history (989 commits, 120 branches, 185 pull-request refs) and the 44 workflow artifacts, no real secret. Round 2 (Hiba's review of #160): branch protection also dismisses a stale approval and requires one on the most recent push, so one insider alone cannot merge a commit pushed after an approval (threat model A5, which still names the owner's way out); the three required checks are added only once `ci` has run green on GitHub, and a local `make check` report stands in until then (no rule that blocks every merge on the day); a pull request the remediation bot opens with `GITHUB_TOKEN` starts no workflow, so a person reopens or pushes to it; Dependabot's alerts on `demo-shop/` are closed as "Risk is tolerable to this project" with the seed in the comment (its fixed reasons), secret scanning's as "Used in tests"; the residual-risk row says what Scorecard's Branch-Protection check cannot see with the workflow's token (the admin bypass); §4.2, §4.3, §14, §18, the release README and the pre-commit hook no longer say "private" (key-pair mode until step 2); ADR-0016 is accepted with this PR; `SECURITY.md` points to GitHub's private vulnerability reporting; `tests/ci/test_required_checks.py` pins the required checks to `ci.yml`'s job names and its unfiltered `pull_request` trigger. |
 | 1.1.128 | A5c `make demo-attack` over TLS (§7, after 1.1.127): crane pushes the tampered and the BLOCK images to the cluster's registry trusting its CA through `SSL_CERT_FILE`, as `cosign load` does; its `--insecure`, which also skipped the certificate check, is gone. The policy it compares is rendered with no insecure flag. Round 2 (Hiba's kind run on `9da0efc`): the GitOps attack's sync, which Argo CD 3.6 keeps retrying after Kyverno's denial, counts as refused (`demo.refused`, 1.1.127 round 2); with it, all five attacks were refused by their own check on the cluster. |
 | 1.1.127 | A5b `make demo-release` over TLS (§7, after 1.1.126): `cosign load` and `sentinel verify` reach the cluster's registry with no HTTP flag, trusting its CA through `SSL_CERT_FILE`, a bundle of the host's CAs and `.sentinel/kind/tls/ca.crt` that `demo.py` writes once (`cluster.trust_bundle`); without the CA (no `make kind-up`), nothing is loaded and the exit code is 3. The policy it compares is rendered with no insecure flag. Round 2 (Hiba's kind run on `9da0efc`): Argo CD 3.6 retries a failed automated sync by itself, with no `retry` block (phase `Running`, `retryCount` growing), so a sync Kyverno denied never ended `Failed` and the wait timed out after 300 s; a retried sync of that commit now counts as failed (`demo.refused`), and a first sync still running is waited for. `test_kind_demo.py` passes `SSL_CERT_FILE` to its own `cosign load` (the tool runner's minimal environment drops it) and applies its policy inside the `try`, so a failed setup leaves none behind. |
 | 1.1.126 | A5 demo cluster over TLS (§7, Hiba's kind run on #60): Kyverno 1.19 fetches cosign's bundles over HTTPS whatever `allowInsecureRegistry` says (kyverno/kyverno#18350, unmerged), so over plain HTTP it read no signature and denied every image, the good release too. `make kind-up` now issues the registry's TLS certificate with OpenSSL 3 (a CA made for this cluster only, whose key signs `kind-registry`, `localhost` and `127.0.0.1` and is deleted; all in the git-ignored `.sentinel/kind/tls`), serves the registry over TLS, gives containerd the CA in `hosts.toml` and Kyverno's admission controller the CA through `SSL_CERT_DIR`, and refuses a registry an older `kind-up` started over HTTP. `make kind-policy` renders the policy with no insecure flag. The same run found the policy expected the CI workflow's builder: it now expects `local_release_builder_id`, the builder `make release` records. Round 2 (Hiba's kind run on `9da0efc`: TLS works and Kyverno reads the signatures): `Registry.env` passes `SSL_CERT_FILE` and `SSL_CERT_DIR` to Cosign, as Grype's download does. The runner's minimal environment dropped them, so `sentinel attest` and `sentinel verify` could not reach the registry ("certificate signed by unknown authority"). Trust anchors only: a proxy URL, which may hold credentials, still does not reach Cosign. |
@@ -214,28 +214,34 @@ Local CLI runs can **push** to the same ingestion API. No self-hosted runners (a
 
 ### 4.2 Operating modes
 
-| | Private mode (now) | GitHub mode (after going public) | Local mode |
+Since the switch (ADR-0016, step 1) the repository is public, but releases still use the key-pair mode: GitHub mode
+is step 2 (keyless signing), after v1.0.0 and only if there is time.
+
+| | Key-pair mode (now) | GitHub mode (ADR-0016, step 2) | Local mode |
 |---|---|---|---|
 | Pipeline | GitHub Actions | GitHub Actions | `make pipeline-local` |
 | Signing | Cosign key pair, no Rekor upload | Cosign keyless (GitHub OIDC) | Developer key pair |
 | Provenance | SLSA predicate via `cosign attest` | GitHub artifact attestations (reusable workflow → Build L3 target) | `cosign attest` |
-| Registry | GHCR private (CI) + kind local registry (demos) | GHCR public | kind local registry |
+| Registry | kind local registry (demos) | GHCR public | kind local registry |
 | Results | PR comment, artifacts, dashboard | + GitHub code scanning (SARIF) | Terminal + dashboard |
 
-### 4.3 Private-phase constraints (ADR-0006)
+### 4.3 Key-pair phase constraints (ADR-0006, amended by ADR-0016)
 
-- Keyless certificates embed the repository identity and are logged in the public Rekor log → key pairs until public.
-- GitHub artifact attestations require a public repository on non-Enterprise plans → Cosign attestations meanwhile.
+- Keyless certificates embed the repository identity and are logged in the public Rekor log → key pairs until
+  keyless signing (ADR-0016, step 2). The repository is public since step 1, so this is now a choice of timing.
+- GitHub artifact attestations require a public repository on non-Enterprise plans: possible since step 1, Cosign
+  attestations until step 2.
 - The signing key never reaches GitHub (ADR-0011): it lives, password-protected, on the laptop that runs
-  `make release`, the only signer while private; CI holds no signing secret. Keyless signing in CI replaces it
-  when the repository goes public.
-- We stay on GitHub Free: server-side branch protection is not available for this private repository, so `main`
-  is protected **by convention** (every change through a PR, reviewed by the other member, merged only with
-  a green CI, or a local `make check` report on the PR head while Actions cannot run) plus a local pre-commit guard that refuses commits on `main`. Technical protection is enabled when
-  the repository goes public.
-- Actions minutes are capped (Free: 2,000/month for private repositories): path filters, caching of
-  vulnerability DBs, nightly full scans.
-- Going public = switch to GitHub mode (a configuration change, by design).
+  `make release`, the only signer until step 2; CI holds no signing secret. Keyless signing in CI replaces it at
+  ADR-0016's step 2.
+- Since the switch (ADR-0016, step 1), `main` is protected **server-side** (`CLAUDE.md`, "Repository status"): pull
+  requests only, one approval that a new push dismisses, no force-push, no deletion, no bypass, and the three
+  required checks once `ci` has run green on GitHub (a local `make check` report on the PR head until then). Before
+  the switch it was protected by convention; the local pre-commit guard that refuses commits on `main` stays.
+- Path filters, caching of vulnerability DBs and nightly full scans stay, though a public repository has no minutes
+  cap on GitHub-hosted runners.
+- Going public was step 1 of ADR-0016; GitHub mode (keyless signing, artifact attestations, the code-scanning
+  upload) is step 2, a configuration change by design.
 
 ### 4.4 Component catalogue
 
@@ -638,7 +644,7 @@ bump.
   no file catalog; images read from the OCI layout the build wrote (a directory or a tar of one), never pulled,
   and both SBOMs must name the image's manifest digest (`--image-digest`); `--base-path` stops links above the
   tree; a CycloneDX document without `serialNumber` or an SPDX document that is not one fails closed).
-- **Signing:** Cosign v3 (Sigstore bundle format). Private mode: key pair, no transparency-log upload, on the
+- **Signing:** Cosign v3 (Sigstore bundle format). Key-pair mode (now): key pair, no transparency-log upload, on the
   release laptop only (`make release`, ADR-0011: from a clean checkout of `origin/main`, the build context taken
   from the commit, signed only after a non-BLOCK release decision on the built digest, in a throwaway local
   registry, then saved as a bundle). GitHub mode: keyless, identity = release workflow path + ref. Always sign
@@ -1045,8 +1051,8 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
 ## 14. Engineering workflow
 
 - Trunk-based, branches `<task-id>/<name>` (e.g. `a2/normalizer-grype`), Conventional Commits, squash merge.
-- `main` is protected by convention during the private phase (§4.3): PR + approval by the other member + green
-  `ci` before merge; no direct push, no force push. Enforced by branch protection once public.
+- `main` is protected server-side since the switch (§4.3, ADR-0016): PR + approval of its most recent push by the
+  other member + the required checks green before merge; no direct push, no force push, no bypass.
 - **Cross-review rule:** the reviewer must be able to explain the change.
 - **Definition of done:** tests (core decision logic ≥ 80% coverage, policies ≥ 90% `opa test --coverage`),
   docs updated, CI green, contracts valid, reviewed.
@@ -1174,9 +1180,9 @@ manipulate the AI (verdict unchanged) → prove (`sentinel replay`, Grafana).
 | Risk | Mitigation |
 |---|---|
 | Laptop resources | Compose profiles; small quantized model on the stronger machine |
-| Direct push to `main` (no server-side protection while private) | Team convention, local pre-commit guard, CI on every push to `main` |
-| Actions minutes (private) | Path filters, caches, nightly full scans |
-| Signing key (private phase) | Never on GitHub: a laptop signer with a password-protected key, run only from a clean tree at `origin/main` (ADR-0011); keyless signing in CI when public |
+| Direct push to `main` | Server-side branch protection since the switch (ADR-0016), local pre-commit guard, CI on every push to `main`; the owner's account can still turn the protection off (threat model, residual risks) |
+| Actions minutes | Path filters, caches, nightly full scans (a public repository has no cap on GitHub-hosted runners; the habits stay) |
+| Signing key (until keyless signing) | Never on GitHub: a laptop signer with a password-protected key, run only from a clean tree at `origin/main` (ADR-0011); keyless signing in CI at ADR-0016's step 2 |
 | External APIs down | Snapshots and offline fixtures |
 | Scanner noise | Diff-aware gating, risk scoring, correlation, waivers |
 | Integration drift | Contracts + fixtures in CI; weekly sync |

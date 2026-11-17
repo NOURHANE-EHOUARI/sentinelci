@@ -140,5 +140,5 @@ jq -r '.dsseEnvelope.payload | @base64d | fromjson
   sentinelci-1.0.0-py3-none-any.whl.provenance.sigstore.json
 ```
 
-(`--insecure-ignore-tlog=true` because nothing goes to the public transparency log while the repository is
-private, ADR-0006.)
+(`--insecure-ignore-tlog=true` because nothing goes to the public transparency log until keyless signing,
+ADR-0016 step 2; ADR-0011.)

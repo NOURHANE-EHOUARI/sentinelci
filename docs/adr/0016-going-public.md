@@ -1,6 +1,6 @@
 # ADR-0016: Going public right after the merge train, in two steps
 
-- Status: proposed (needs both signatures)
+- Status: accepted by both of us with #160, merged at the switch (step 1); step 2 stays optional
 - Date: 2026-11-15
 - Amends: ADR-0006 (private phase), whose "when the repository goes public" paragraph this replaces
 - Builds on: ADR-0011 (the signing key stays on the laptop), SPEC §16 (the roadmap to 30 November, #142)
@@ -37,20 +37,26 @@ The repository goes public **right after the merge train is merged, on 22 Novemb
      (named), or it is fixed first. The scan of 15 November (below) shows what to expect; the switch PR replaces
      it with that day's result.
    - The fakes of `demo-shop/ground-truth/` checked against what GitHub's secret scanning reports once public.
-     Each alert on a listed fake is closed as "used in tests", naming its seed.
+     Each alert on a listed fake is closed as "Used in tests", naming its seed.
 2. **At the switch:** make the repository public, then at once:
-   - branch protection on `main`: pull requests only, one approving review, no force-push or deletion, the
-     required checks once they have run green once, and "Do not allow bypassing the above settings", so that it
-     binds the repository's admin too;
+   - branch protection on `main`: pull requests only, one approving review, "Dismiss stale pull request
+     approvals when new commits are pushed" and "Require approval of the most recent reviewable push" (so an
+     approval never covers a commit pushed after it), no force-push or deletion, and "Do not allow bypassing the
+     above settings", so that it binds the repository's admin too. The required checks are added only once `ci`
+     has run green on GitHub (they can be picked only then); until then a local `make check` report stands in;
    - Actions: the repository's default workflow permissions set to **read**. Every workflow already sets its
      own `permissions:`, but the default is what a new or edited workflow gets if it forgets;
    - Actions: require approval for workflows from fork pull requests (outside collaborators);
    - Dependabot: version updates already exclude `demo-shop/` (`.github/dependabot.yml`, pinned by
      `test_the_intentionally_vulnerable_demo_is_never_updated`). Security updates stay **off** for the repository.
-     The alerts GitHub raises on `demo-shop/`'s seeded manifests are closed in one pass, each with the reason
-     "intentionally vulnerable demo target (`demo-shop/ground-truth/`)". A closed alert is not a waiver;
-   - push protection: a push that adds a new fake seed is bypassed as "used in tests", and the value goes into
-     `demo-shop/ground-truth/` in the same pull request, as today.
+     The alerts GitHub raises on `demo-shop/`'s seeded manifests are closed in one pass, each as "Risk is
+     tolerable to this project" (Dependabot's fixed reasons) with the comment "intentionally vulnerable demo
+     target, `demo-shop/ground-truth/` <seed>". A closed alert is not a waiver;
+   - secret scanning and push protection confirmed on; a push that adds a new fake seed is bypassed as "Used in
+     tests", and the value goes into `demo-shop/ground-truth/` in the same pull request, as today;
+   - private vulnerability reporting on, which `SECURITY.md` points to;
+   - Scorecard's first public run looked at: what its Branch-Protection check reports with the workflow's token
+     (not the admin bypass), and the image its action runs (threat model, residual risks).
    - **Right after, one workflow is started by hand** (`workflow_dispatch`), to see that Actions really runs now
      that the repository is public, despite the billing block of the private phase (Nourhane, 15 November). If it
      does not start, the local `make check` reports stay the rule until it does.
@@ -68,9 +74,10 @@ already plans.
 `sentinel scan secrets` in git mode over every commit of every branch (891 commits on 142 remote branches), with the
 pinned Gitleaks 8.30.1: **11 findings, 59 places, no real secret.** Re-run by Nourhane with the pull request refs
 too (#144 review: 122 branches and 144 PR refs, 893 commits, one of them reachable only from `refs/pull/59/head`):
-the same 11 findings, nothing new. Run again on 15 November after the merge train, on a `git clone --mirror`
-(120 branches, 185 pull-request refs with their `merge` refs, 989 commits): the same 11 findings, each matched by
-path, line and rule to `GT-SECRET-001` to `005` or by finding ID to the self-gate's waivers (#144).
+the same 11 findings, nothing new. Run again on 15 November, before the merge train of 16 November, on a
+`git clone --mirror` (120 branches, 185 pull-request refs with their `merge` refs, 989 commits): the same 11
+findings, each matched by path, line and rule to `GT-SECRET-001` to `005` or by finding ID to the self-gate's
+waivers (#144).
 
 The **workflow artifacts** (44, 348,935 bytes, none expired: `sentinel-scan`, `sentinel-decision`,
 `sentinel-evidence`, `replay-corpus`) were downloaded one folder each and scanned in dir mode on 15 November: 6

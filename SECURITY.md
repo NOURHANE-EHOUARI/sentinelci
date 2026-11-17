@@ -2,8 +2,9 @@
 
 ## Reporting a vulnerability
 
-Please do not open a public issue. Contact the maintainers privately (repository owners) with a description,
-reproduction steps and the affected version or commit. We aim to acknowledge reports within 72 hours.
+Please do not open a public issue. Use GitHub's private vulnerability reporting: the repository's **Security**
+tab, **Report a vulnerability** (on since the repository went public, ADR-0016). Give a description, reproduction
+steps and the affected version or commit. We aim to acknowledge reports within 72 hours.
 
 ## Scope
 
