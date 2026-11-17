@@ -163,7 +163,7 @@ left:
 | 2 | **That image through GitOps**: its digest committed to the GitOps repository, as someone who can write there would. | Kyverno, when Argo CD syncs it: the sync fails with Kyverno's denial and the release keeps running. The release is then committed back, whatever happened, and Argo CD must sync it again. |
 | 3 | **That image with kubectl**: a copy of the release's Deployment, under another name, with that image. | Kyverno |
 | 4 | **An image from elsewhere**: the same copy with an image from another registry (Argo CD's, already in the cluster). | The API server's image policy |
-| 5 | **The BLOCK image**: the image `make release` built and `sentinel attest` refused to sign (an OCI layout, `out/release/block-image`, or `BLOCK=...`), pushed to the release repository. Skipped until A4c writes it. | Kyverno |
+| 5 | **The BLOCK image**: the image the release gate refused, which nothing signed (the OCI layout `make release-block` writes, `out/release/block-image`, or `BLOCK=...`), pushed to the release repository. Skipped when the layout is missing, and the last line says so: `4/4 attacks refused, 1 skipped`. | Kyverno |
 
 - **A fair test.** The kubectl attacks copy the running release's Deployment and change only its name and
   image, so its Pod Security context passes and only the image can be the reason for a denial. They are real
@@ -221,4 +221,5 @@ minutes, so it does not run on every push (GitHub Free minutes).
   server in `sentinel-gitops`: the policy covers the demo's images (`kind-registry:5000/demo-shop/`).
 - The chart is rendered by Argo CD's Helm in the cluster. Without a cluster, the tests render it with Go's
   `text/template`, the engine Helm uses, and allow no Helm function but `required`; Helm itself is not run.
-- `make demo-attack`'s BLOCK image waits for `make release` (A4c), which writes it.
+- `make demo-attack`'s BLOCK image is the layout `make release-block` writes (`out/release/block-image`). Without
+  it, attack 5 is skipped and the summary says so.

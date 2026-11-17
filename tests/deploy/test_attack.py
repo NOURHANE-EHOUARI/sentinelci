@@ -382,6 +382,28 @@ def test_the_exit_code_says_whether_every_attack_was_refused(
     assert demo.main(["attack"]) == code
 
 
+@pytest.mark.parametrize("present", [True, False])
+def test_the_summary_says_when_the_block_images_attack_was_skipped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str], present: bool
+) -> None:
+    """Without `make release-block`'s layout, four attacks run and all four are refused: "4/4" alone would
+    read as the whole demo, so the summary names the one that did not run (the video's attack 5)."""
+    block = tmp_path / "block-image"
+    if present:
+        block.mkdir()
+    refused = [demo.Attack(str(n), "image", True, "Kyverno", "denied") for n in range(5 if present else 4)]
+    monkeypatch.setattr(demo, "attack", lambda **kwargs: refused)
+    monkeypatch.setattr(cluster, "trust_bundle", lambda tls: Path("/tls/trust.pem"))
+    monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")  # restored after the test
+    assert demo.main(["attack", "--block", str(block)]) == 0
+    last = capsys.readouterr().out.splitlines()[-1]
+    if present:
+        assert last == "demo attack: 5/5 attacks refused"
+    else:
+        skipped = ", 1 skipped (no BLOCK image: run `make release-block`)"
+        assert last == f"demo attack: 4/4 attacks refused{skipped}"
+
+
 # ---------------------------------------------------------------- an attack that could not be run
 
 

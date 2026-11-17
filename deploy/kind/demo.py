@@ -30,8 +30,8 @@ Safe to run twice. Exit 0 deployed, 1 not trusted by `sentinel verify`, 3 anythi
 3. the same image applied directly with kubectl: Kyverno denies it;
 4. an image from outside the release repository: the API server's own policy denies it (Kyverno's matches only
    the release repository);
-5. the BLOCK image `make release` built and `sentinel attest` refused to sign (an OCI layout; skipped until
-   A4c writes it): Kyverno denies it.
+5. the BLOCK image the release gate refused, which nothing signed (the OCI layout `make release-block` writes;
+   skipped when it is missing, and the summary says so): Kyverno denies it.
 
 Exit 0 when every attack was refused, 1 when one was not (it is undone), 3 when an attack could not be run.
 """
@@ -437,8 +437,8 @@ def tamper(reference: str, pins: Pins, tools_dir: Path, run: Run) -> str:
 
 
 def layout_digest(layout: Path) -> str:
-    """The digest of the one image of an OCI layout (the BLOCK image `make release` built), whose manifest
-    must be in it with that digest."""
+    """The digest of the one image of an OCI layout (the BLOCK image `make release-block` built), whose
+    manifest must be in it with that digest."""
     try:
         manifests = json.loads((layout / "index.json").read_text(encoding="utf-8")).get("manifests") or []
     except (OSError, ValueError) as exc:
@@ -570,7 +570,8 @@ def attack(
                   "the API server's image policy", message))  # fmt: skip
     if block is None or not block.exists():
         print(
-            f"attack {len(results) + 1}: the BLOCK image: skipped, no OCI layout at {block} (`make release`)"
+            f"attack {len(results) + 1}: the BLOCK image: skipped, no OCI layout at {block}"
+            " (`make release-block`)"
         )
     else:
         block_digest = layout_digest(block)
@@ -586,7 +587,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("command", choices=["release", "attack"])
     parser.add_argument("--bundle", type=Path, default=ROOT / "out" / "release" / "bundle")
     parser.add_argument("--block", type=Path, default=ROOT / "out" / "release" / "block-image",
-                        help="attack: the BLOCK image's OCI layout, from `make release`")  # fmt: skip
+                        help="attack: the BLOCK image's OCI layout, from `make release-block`")  # fmt: skip
     parser.add_argument("--key", type=Path, default=ROOT / "deploy" / "keys" / "release.pub")
     parser.add_argument("--repo", default=cluster.REPO)
     parser.add_argument("--builder-id", default=cluster.BUILDER_ID)
@@ -611,7 +612,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             if failed:
                 print(f"demo attack: NOT REFUSED: {'; '.join(failed)}", file=sys.stderr)
                 return 1
-            print(f"demo attack: {len(results)}/{len(results)} attacks refused")
+            skipped = "" if args.block.exists() else ", 1 skipped (no BLOCK image: run `make release-block`)"
+            print(f"demo attack: {len(results)}/{len(results)} attacks refused{skipped}")
             return 0
         release(
             args.bundle, key=args.key, repo=args.repo, builder_id=args.builder_id, tools_dir=args.tools_dir,
