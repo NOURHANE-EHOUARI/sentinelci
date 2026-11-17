@@ -97,6 +97,18 @@ NOT_IMPLEMENTED = (
     "strategy implemented"
 )
 NOT_DETECTED = "not detected by the base scan: no finding for a fixer to take"
+# Rule of 17 November, set before the 27 November run: the LLM code fixer's fixes are verified with the seed's
+# security tests, run by pytest in the shop-api test image (A6), so only a Python seed can be verified.
+CODE_OUT_OF_SCOPE = (
+    "the LLM code fixer verifies Python fixes only (A6: its security tests run with pytest in the shop-api "
+    "test image): a SAST seed in another language is not attempted"
+)
+
+
+def in_code_scope(seed: Mapping[str, Any]) -> bool:
+    """Whether the LLM code fixer can take a SAST seed: its file is Python."""
+    return str(seed["location"]["path"]).endswith(".py")
+
 
 # Outcomes. The first three are the verification gate's own (schemas/verification-result.v1.json).
 VERIFIED, REJECTED, FAILED = "VERIFIED", "REJECTED", "FAILED"
@@ -123,8 +135,9 @@ ATTEMPTED = (
     "claimed by a proposal the gate verified; a verified proposal that leaves one of them open makes the "
     "seed PARTIAL, attempted and not verified (rule fixed before any run, knowing the fixers' documented "
     "scope: the Kubernetes fixer leaves hostPath volumes open). Not attempted, listed and counted neither "
-    "way: a seed section 9 has no strategy for, one whose strategy is not implemented, and one the scan did "
-    "not detect."
+    "way: a seed section 9 has no strategy for, one whose strategy is not implemented, one the scan did not "
+    "detect, and a SAST seed outside Python, which the LLM code fixer cannot verify (rule of 17 November, "
+    "set before the 27 November run)."
 )
 
 
@@ -363,6 +376,9 @@ def seed_row(
     if strategy not in IMPLEMENTED:
         row["why"] = NOT_IMPLEMENTED
         return row
+    if strategy == CODE and not in_code_scope(seed):
+        row["why"] = CODE_OUT_OF_SCOPE
+        return row
     if recorded is not None:
         row["make_eval_detected"] = any(score.detects(seed, finding) for finding in recorded)
     if base is None:
@@ -474,7 +490,7 @@ def measure(
         wanted: dict[str, list[str]] = {strategy: [] for strategy in IMPLEMENTED}
         for seed in seeds:
             strategy, _ = strategy_of(seed)
-            if strategy in wanted:
+            if strategy in wanted and (strategy != CODE or in_code_scope(seed)):
                 wanted[strategy] += [str(f["id"]) for f in base if score.detects(seed, f)]
         for strategy in (DOCKERFILE, KUBERNETES):
             if not wanted[strategy]:

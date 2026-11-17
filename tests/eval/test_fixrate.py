@@ -763,3 +763,23 @@ def test_a_deterministic_strategy_that_cannot_run_here_is_not_asked() -> None:
     assert DOCKER not in engine.calls and K8S in engine.calls
     row = rows(data)["GT-IAC-002"]
     assert (row["status"], row["why"]) == ("not measured", "the Dockerfile fixer is not available")
+
+
+# ---------------------------------------------------------------- the code fixer's scope (17 November)
+
+
+def test_a_sast_seed_outside_python_is_listed_not_attempted_and_never_sent() -> None:
+    """A6 verifies Python fixes only (its security tests run with pytest in the shop-api test image), so a
+    SAST seed in another language is not attempted, never a failed attempt (rule set on 17 November, before
+    the 27 November run)."""
+    js = seed("GT-SAST-007", "SAST", "services/web/server.js", ("opengrep", "js-html-from-data"))
+    engine = all_verified()
+    engine.findings = [*BASE, found("xss", "SAST", "opengrep", "js-html-from-data", "services/web/server.js")]
+    with_js = measured(engine, [*SEEDS, js])
+    row = rows(with_js)["GT-SAST-007"]
+    assert (row["strategy"], row["status"], row["outcome"]) == (CODE, "not attempted", None)
+    assert "Python" in row["why"]
+    assert f"code {fid('xss')}" not in engine.calls
+    without = measured(all_verified())
+    assert with_js["summary"]["headline"] == without["summary"]["headline"]
+    assert "GT-SAST-007" in with_js["summary"]["not_attempted"]
