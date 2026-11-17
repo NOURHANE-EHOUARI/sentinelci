@@ -21,12 +21,19 @@ const FILES = {
   "/app.js": ["app.js", "text/javascript; charset=utf-8"],
 };
 
-// GT-SAST-010: shop-api's certificate is never checked (it is signed by the shop's own CA), so anyone on the
-// path between the two pods can read or change the catalogue and the orders.
+// GT-SAST-010: the forward route calls shop-api over TLS (SHOP_API_URL) and never checks its certificate, so
+// anyone on the path between the two pods can read or change the catalogue and the orders.
 const shopApi = new https.Agent({ keepAlive: true, rejectUnauthorized: false });
+const SHOP_API_ORIGIN = new URL(SHOP_API).origin;
 
 function forward(request, response) {
-  const target = new URL(request.url.slice("/api".length), SHOP_API);
+  // Not a seed: only shop-api is reached. "/api//other.host/x" would otherwise resolve to another host.
+  const target = new URL(request.url.slice("/api".length), SHOP_API_ORIGIN);
+  if (target.origin !== SHOP_API_ORIGIN) {
+    response.writeHead(400);
+    response.end();
+    return;
+  }
   const type = request.headers["content-type"] || "text/plain";
   const headers = { accept: "application/json", "content-type": type };
   const upstream = https.request(target, { method: request.method, headers, agent: shopApi }, (answer) => {

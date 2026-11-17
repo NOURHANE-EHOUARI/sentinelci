@@ -494,7 +494,7 @@ seeds:
     relevance: 3  # B8 ranking (README, rubric fixed before any ranking was computed)
     relevance_why: >-
       command injection in a public route of the internet-facing web server
-    location: {path: services/web/server.js, line: 45}
+    location: {path: services/web/server.js, line: 52}
     expected:  # HIGH, P1: a warning
       gate: SC-006
       detections:
