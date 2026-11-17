@@ -13,7 +13,9 @@ goes and what is trusted:
   is a `ProviderError`, like any integrity failure, and nothing is sent.
 - **Bounded.** Every request has a time limit on the whole request, checked while the answer is read (a
   server that sends slowly cannot hold it), and an answer larger than `MAX_RESPONSE_BYTES` is refused.
-  Embeddings go in batches of `EMBEDDING_BATCH` texts, so a large run stays under both.
+  Embeddings go in batches of `EMBEDDING_BATCH` texts, so a large run stays under both. A generation stops
+  at `NUM_PREDICT` tokens: a model that never ends its answer gives a cut, malformed one, which goes to the
+  repair retry as an unusable answer, instead of holding the request to its time limit as a provider failure.
 - **Validated.** `complete` asks Ollama for JSON matching the schema (`format`), deterministic (temperature 0,
   a fixed seed), and validates the answer against the Pydantic model itself: a malformed answer raises
   `pydantic.ValidationError`, which callers answer with their one repair retry (SPEC section 8). `embed`
@@ -45,6 +47,9 @@ DEFAULT_URL = "http://127.0.0.1:11434"
 COMPOSE_HOST = "ollama"  # the Compose service (deploy/compose, profile `ai`)
 SEED = 42
 NUM_CTX = 8192
+# Tokens of one answer at most. The largest real answers are about 600 tokens (an explanation of about 2,100
+# characters). 2048 tokens fit in GENERATION_TIMEOUT_S on a CPU that makes 2.3 tokens a second or more.
+NUM_PREDICT = 2048
 GENERATION_TIMEOUT_S = 900.0  # an explanation takes about 2 minutes on a laptop CPU (ADR-0009)
 EMBEDDING_TIMEOUT_S = 120.0
 METADATA_TIMEOUT_S = 30.0
@@ -233,7 +238,7 @@ class OllamaProvider:
             "stream": False,
             "think": False,  # thinking traces cost minutes on a laptop CPU and are not used
             "format": schema.model_json_schema(),
-            "options": {"temperature": 0, "seed": SEED, "num_ctx": NUM_CTX},
+            "options": {"temperature": 0, "seed": SEED, "num_ctx": NUM_CTX, "num_predict": NUM_PREDICT},
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         }
         if not self._think_supported:

@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from sentinel_ai.guardrails import ask
 from sentinel_ai.providers import LLMProvider
 from sentinel_ai.providers.ollama import (
     EMBEDDING,
@@ -19,6 +20,7 @@ from sentinel_ai.providers.ollama import (
     GENERATION,
     MAX_RESPONSE_BYTES,
     NUM_CTX,
+    NUM_PREDICT,
     SEED,
     OllamaProvider,
     PinnedModel,
@@ -117,7 +119,7 @@ def test_complete_asks_for_json_of_the_schema_deterministically_and_validates_it
     assert method == "POST"
     assert body == {
         "model": GENERATION.name, "stream": False, "think": False, "format": Label.model_json_schema(),
-        "options": {"temperature": 0, "seed": SEED, "num_ctx": NUM_CTX},
+        "options": {"temperature": 0, "seed": SEED, "num_ctx": NUM_CTX, "num_predict": NUM_PREDICT},
         "messages": [{"role": "system", "content": "the system"},
                      {"role": "user", "content": "<finding>x</finding>"}],
     }  # fmt: skip
@@ -166,6 +168,34 @@ def test_an_answer_that_does_not_fit_the_schema_is_a_validation_error_for_the_re
     fake.routes["/api/chat"] = chat_reply("not json")
     with pytest.raises(ValidationError):
         OllamaProvider(fake.url).complete("s", "u", Label)
+
+
+def test_an_answer_cut_at_the_length_limit_is_an_unusable_answer_not_a_provider_failure(
+    fake: FakeOllama,
+) -> None:
+    # The pinned model's first answer for demo-shop's GT-SAST-005 (fix-rate run on 4b6d637): malformed JSON,
+    # then only empty tokens. With no length limit it ran to the time limit (a ProviderError, "the model
+    # server failed"); with one, the server stops at NUM_PREDICT tokens and the cut answer goes to the
+    # repair retry, then counts as no usable answer.
+    cut = (
+        '{"edits": [{"start_line": 75, "end_line": 75, "replacement": ["    return {\\"price\\": price}'
+        ' # (removed eval)\\"}], "rationale": "The eval() call runs code from the rule parameter."}]}'
+    )
+
+    def chat(body: Any) -> Reply:
+        assert body["options"]["num_predict"] == NUM_PREDICT
+        status, answer = chat_reply(cut)
+        assert isinstance(answer, dict)
+        return status, answer | {"done_reason": "length", "eval_count": NUM_PREDICT}
+
+    fake.routes["/api/chat"] = chat
+    provider = OllamaProvider(fake.url)
+    with pytest.raises(ValidationError):
+        provider.complete("s", "u", Label)
+    answer, reason, cause = ask(provider, "s", "u", Label, lambda label: label)
+    assert (answer, cause) == (None, "answer")
+    assert reason.startswith("not a valid answer")
+    assert fake.paths().count("/api/chat") == 3  # the first call, then the answer and its repair retry
 
 
 def test_a_model_without_a_thinking_mode_is_asked_again_without_the_field(fake: FakeOllama) -> None:
