@@ -5,6 +5,8 @@
 # (`run.py` refuses a ground truth with a seed in neither list, or in both).
 calibration:
   - GT-CONTAINER-001
+  - GT-CONTAINER-003
+  - GT-CONTAINER-005
   - GT-IAC-001
   - GT-IAC-003
   - GT-IAC-005
@@ -23,6 +25,8 @@ calibration:
   - GT-SECRET-003
   - GT-SECRET-005
 test:
+  - GT-CONTAINER-002
+  - GT-CONTAINER-004
   - GT-IAC-002
   - GT-IAC-004
   - GT-IAC-006

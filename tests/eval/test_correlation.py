@@ -89,11 +89,19 @@ def test_a_threshold_of_another_correlator_is_said() -> None:
 
 
 def test_the_root_causes_alternate_halves_in_file_order_as_their_header_says() -> None:
-    free = [cause for cause in CAUSES if not cause.seeds]
-    assert [(c.matchers[0][1], min(c.matchers[0][2])) for c in free] == sorted(
-        (c.matchers[0][1], min(c.matchers[0][2])) for c in free
+    """The root causes no seed joins go, in file order, to test, calibration, test, ... Those appended after
+    the first measurement (`appended: true`) come last, in file order among themselves, and go on with the
+    alternation, so no earlier root cause ever changes half."""
+    entries = yaml.safe_load(run.ROOT_CAUSES.read_text(encoding="utf-8"))["root_causes"]
+    assert all(entry.get("appended", True) is True for entry in entries), "`appended: true` or nothing"
+    free = [(bool(entry.get("appended")), c) for entry, c in zip(entries, CAUSES, strict=True) if not c.seeds]
+    assert [appended for appended, _ in free] == sorted(appended for appended, _ in free), (
+        "appended ones last"
     )
-    assert [c.half for c in free] == [("test", "calibration")[i % 2] for i in range(len(free))]
+    for group in (False, True):
+        keys = [(c.matchers[0][1], min(c.matchers[0][2])) for appended, c in free if appended is group]
+        assert keys == sorted(keys), f"appended={group}: not in file order"
+    assert [c.half for _, c in free] == [("test", "calibration")[i % 2] for i in range(len(free))]
 
 
 @pytest.mark.parametrize(

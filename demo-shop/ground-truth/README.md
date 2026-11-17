@@ -116,27 +116,36 @@ code imports the package.
 carry the SCA fields (`package`, `vulnerability`, `cve`, `kev`) and the image they are in:
 
 ```yaml
-    location: {path: services/shop-api/requirements.block.txt, line: 352}   # where the version is pinned
+    location: {path: services/shop-api/requirements.block.txt, line: 357}   # where the version is pinned
     image:
+      name: shop-api-block                                                   # the archive's name
       dockerfile: services/shop-api/Dockerfile.release                       # relative to demo-shop/
-      build_args: {REQUIREMENTS: requirements.block.txt}
+      build_args: {REQUIREMENTS: requirements.block.txt, ONLY_BINARY: ":none:"}   # optional
 ```
+
+The five seeds are five of the SCA seeds' pins as they ship in three images: shop-api's BLOCK image
+(`Dockerfile.release` with `requirements.block.txt`, ADR-0011 decision 6: pyyaml and requests), and the web and
+reports images (`services/web/Dockerfile`, `services/reports/Dockerfile`: lodash, and the Log4Shell and
+Spring4Shell jars). The web and reports images hold the dependencies their manifests pin and nothing else, and
+are built only to be scanned: never pushed, run or deployed.
 
 - A container seed is **detected** when the tool reports its `vulnerability` on its `package` in the built
   image (`sentinel scan image`, CONTAINER findings). Its `location` is the file a developer would change; the
   finding itself names the image and the layer, not a repository path.
-- Other findings of the image (its base image's packages) are real but unlisted. They count neither as hits nor
-  as false positives, like other findings in a seeded file.
-- `tests/demo_shop/test_container_seeds.py` checks the pin at its line, that the release image (the
-  Dockerfile's default) does not ship the seed, the advisory in the feed fixtures and the gate rule. The
-  detection needs the built image and a Grype database:
+- Other findings of the image (its base image's packages, the other jars of a classpath) are real but unlisted.
+  They count neither as hits nor as false positives, like other findings in a seeded file. Among them, the
+  images also ship other seeded versions: minimist 1.2.5 and lodash-es 4.17.20 in web (GT-SCA-005 and -008's
+  pins) and spring-core 5.3.17 in reports. Once an image scan joins `make eval`, they are unlisted CONTAINER
+  findings, not misses: their seeds are SCA seeds, matched in the manifests.
+- `tests/demo_shop/test_container_seeds.py` checks the pin at its line, the image's Dockerfile (bases pinned by
+  digest, the seed's manifest in the build, a final stage with no RUN and a non-root user), that the release
+  image (the Dockerfile's default) does not ship a BLOCK seed, that `make container-seed-images` builds each
+  image as the ground truth says, the advisory in the feed fixtures and the gate rule. The detection needs the
+  built images and a Grype database:
 
   ```bash
-  cd demo-shop/services/shop-api
-  docker buildx build -f Dockerfile.release --build-arg REQUIREMENTS=requirements.block.txt \
-    --output type=oci,dest=/tmp/block.oci.tar .
-  cd -
-  SENTINEL_BLOCK_IMAGE_ARCHIVE=/tmp/block.oci.tar SENTINEL_GRYPE_DB_DIR=<sentinel tools grype-db --db-dir> \
+  make container-seed-images      # out/container-seeds/<name>.oci.tar, with Docker buildx
+  SENTINEL_CONTAINER_IMAGES=out/container-seeds SENTINEL_GRYPE_DB_DIR=<sentinel tools grype-db --db-dir> \
     SENTINEL_TOOLS_DIR=<sentinel tools install --dest> uv run pytest tests/demo_shop/test_container_seeds.py
   ```
 
