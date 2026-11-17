@@ -4,6 +4,7 @@ Advisory only: a proposal is a pull request that the verification gate and a hum
 release gate never imports this package (import contract). See `code` for the guardrails.
 """
 
+from sentinel_ai.guardrails import Cause
 from sentinel_ai.patch.code import (
     MAX_LINES_SENT,
     PROMPT_SHA256,
@@ -21,6 +22,7 @@ __all__ = [
     "PROMPT_SHA256",
     "PROMPT_VERSION",
     "SYSTEM_PROMPT",
+    "Cause",
     "CodeFix",
     "Feedback",
     "LineEdit",
