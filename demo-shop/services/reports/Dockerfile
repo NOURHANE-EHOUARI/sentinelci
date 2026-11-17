@@ -5,6 +5,7 @@
 # worker). `make container-seed-images` builds it to scan it.
 #
 # - The bases are pinned by digest (the tag is only a label): a tag moved upstream cannot change what is built.
+#   At this digest, `mvn -v` is Apache Maven 3.10.0 on Temurin 21 (checked on 17 November).
 # - Maven resolves the classpath with a pinned plugin and checks each download against Maven Central's
 #   checksum (`--strict-checksums`); then every jar must have the SHA-256 jars.sha256 pins, and no other jar may
 #   be there. A dependency of the day fails the build.

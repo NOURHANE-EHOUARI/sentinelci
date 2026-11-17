@@ -416,8 +416,7 @@ seeds:
     kev: false
     relevance: 1  # B8 ranking (README: a seed added later, graded by the rubric; CONTAINER is not ranked yet)
     relevance_why: >-
-      the same template injection as GT-SCA-004, which needs an attacker-controlled template, in an image built
-      only to be scanned
+      the same template injection as GT-SCA-004, which needs an attacker-controlled template
     expected:
       gate: SC-002
       detections:

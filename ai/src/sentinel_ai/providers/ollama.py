@@ -48,7 +48,8 @@ COMPOSE_HOST = "ollama"  # the Compose service (deploy/compose, profile `ai`)
 SEED = 42
 NUM_CTX = 8192
 # Tokens of one answer at most. The largest real answers are about 600 tokens (an explanation of about 2,100
-# characters). 2048 tokens fit in GENERATION_TIMEOUT_S on a CPU that makes 2.3 tokens a second or more.
+# characters). 2048 tokens and up to a minute of prompt evaluation fit in GENERATION_TIMEOUT_S on a CPU that
+# generates 2.5 tokens a second or more: a cut answer took 11 min 15 s at about 3 a second (#164 review).
 NUM_PREDICT = 2048
 GENERATION_TIMEOUT_S = 900.0  # an explanation takes about 2 minutes on a laptop CPU (ADR-0009)
 EMBEDDING_TIMEOUT_S = 120.0

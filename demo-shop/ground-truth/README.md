@@ -133,7 +133,10 @@ are built only to be scanned: never pushed, run or deployed.
   image (`sentinel scan image`, CONTAINER findings). Its `location` is the file a developer would change; the
   finding itself names the image and the layer, not a repository path.
 - Other findings of the image (its base image's packages, the other jars of a classpath) are real but unlisted.
-  They count neither as hits nor as false positives, like other findings in a seeded file.
+  They count neither as hits nor as false positives, like other findings in a seeded file. Among them, the
+  images also ship other seeded versions: minimist 1.2.5 and lodash-es 4.17.20 in web (GT-SCA-005 and -008's
+  pins) and spring-core 5.3.17 in reports. Once an image scan joins `make eval`, they are unlisted CONTAINER
+  findings, not misses: their seeds are SCA seeds, matched in the manifests.
 - `tests/demo_shop/test_container_seeds.py` checks the pin at its line, the image's Dockerfile (bases pinned by
   digest, the seed's manifest in the build, a final stage with no RUN and a non-root user), that the release
   image (the Dockerfile's default) does not ship a BLOCK seed, that `make container-seed-images` builds each
