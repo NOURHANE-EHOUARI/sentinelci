@@ -26,7 +26,12 @@ a missed target and a null result get the same space as a met one. "Not measured
 Section 3 also lists gate correctness and deploy enforcement. They are not in section 17's list, and this
 report does not measure them. For deploy enforcement, the kind tests of #60 to #62 ran on a real cluster on
 16 November (#62 at `dabac05`): the signed release was admitted, and every bad image and all five attacks were
-refused by the check that must refuse them (9 tests passed). That is a test result, not a measured rate.
+refused by the check that must refuse them (9 tests passed). That is a test result, not a measured rate. The
+real release of 16 November (`shop-api@sha256:3bfcde7f…`, built from `main` `39c0ef2`, bundle sha256 `40ae9904…`)
+was checked on 17 November with `sentinel verify` against `deploy/keys/release.pub`: TRUSTED, 16 of 16 checks
+(the five signatures, the WARN release decision, the provenance and the scan), and a throwaway key was refused.
+Its `make demo-release` and `make demo-attack` on kind run on Nourhane's laptop: the sandbox these numbers come
+from no longer runs nested containers.
 
 ---
 
@@ -204,6 +209,14 @@ ollama pull qwen3-embedding:0.6b          # its digest must be ADR-0009's
 make eval DB_DIR=out/grype-db
 make eval-correlation                     # with the committed threshold.json; never recalibrate on the test half
 ```
+
+**Before 27 November, one recalibration.** `make eval-correlation` refuses the committed threshold today:
+"threshold.json was calibrated on other halves (ground_truth_sha256 changed since)", after #121's grades, and #161
+changes the ground truth, `split.yaml` and `root-causes.yaml` again. So once #161 merges, stage 2b is calibrated
+once more, on the calibration half only (`make eval-correlation-calibrate`), and `threshold.json` is committed in
+its own pull request before the run. Recalibrating on the day, once the test half has been seen, is what this
+section's rule forbids. The 16 November recalibration on `main` changed only `ground_truth_sha256` (the same 0.75
+and the same curve).
 
 **Limits.**
 - **#146's two should-fix are fixed on `main`:** the correlator's `DEFAULT_THRESHOLD` is the calibrated 0.75,
