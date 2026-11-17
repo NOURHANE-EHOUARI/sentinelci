@@ -5,6 +5,11 @@
 > commits and inputs. SPEC section 16 replaces all of them with **one full run on a clean checkout on 27
 > November**, whose reports are committed with their input digests ([The 27 November run](#the-27-november-run)
 > gives the commands). Until then, read every number below with the commit and inputs next to it.
+>
+> **The benchmark grows before that run.** #161 (merged 17 November) brings CONTAINER to the 5 seeds section 17
+> asks for, and B9 (#171) brings SAST to 10 seeds and the canaries to 5. A rehearsal on 17 November, on a local
+> merge of every pending evaluation PR, is summarised at the end ([Rehearsal](#rehearsal-17-november)); its
+> numbers are not the report's.
 
 This is the "one evaluation report" of SPEC section 17. It has one page for each metric of section 17's list,
 with section 3's target, and a summary first. SPEC section 3 asks to "report real numbers, including misses":
@@ -84,13 +89,15 @@ make eval DB_DIR=out/grype-db
 ```
 
 **Limits.**
-- **The benchmark is smaller than section 17 asks:** SAST 6 of 10, CONTAINER 1 of 5, canaries 2 of 5. SECRET,
-  SCA, IAC, PIPELINE and the controls are at full size.
+- **The benchmark was smaller than section 17 asks on 15 November:** SAST 6 of 10, CONTAINER 1 of 5, canaries
+  2 of 5. #161 (merged) brings CONTAINER to 5 and B9 (#171) SAST to 10 and the canaries to 5, so the 27 November
+  run measures the full size. SECRET, SCA, IAC, PIPELINE and the controls were already at full size.
 - **Recall is partly true by construction.** Each seed was checked against these pinned tools when it was written
   (the ground truth's header says so), so 100% shows that the scanners run, are wired to the gate and report
   what they were checked to report. It does not estimate recall on code nobody seeded.
 - 5 clean controls is a small sample for a false-positive rate: 0 of 5 does not bound the rate tightly.
-- CONTAINER is not measured until an image scan joins `make eval`.
+- CONTAINER is not measured until an image scan joins `make eval`: #167 adds it (`make eval IMAGES=`, and
+  `make eval-all IMAGES=`), on the seed images Nourhane builds (§ [The 27 November run](#the-27-november-run)).
 
 ---
 
@@ -226,6 +233,16 @@ and the same curve).
 - **A label change after scores were seen, disclosed in the README:** the SCA package rule and RC-DOCKER-002 were
   added in the review of #90, after the dedup and structural scores had been seen and before any embedding
   score.
+- **The inputs change after these numbers (#161, disclosed in `eval/correlation/README.md` and SPEC 1.1.130).**
+  #161 adds four places (requests 2.30.0 also pinned in `requirements.block.txt`) and no group. On a `make eval`
+  of 17 November, without stage 2b, the whole run's dedup+structural reduction goes from 25.5% to 28.0% and the
+  test half's from 39.5% to 43.8% (dedup only: 0.0% to 8.3%), and the ARI moves by less than 0.001. A comparison
+  across that change compares different inputs, not two correlators.
+- **The half rule changed after the first measurement (#161).** Root causes are split in file order, except that
+  root causes marked `appended` (RC-DOCKER-003 and -004, the new Dockerfiles' DS-0026 findings) come last, so no
+  earlier root cause changes half. Under the old rule, `services/reports/` would sort before
+  `services/shop-api/` and swap RC-DOCKER-001 and -002. RC-DOCKER-003 and -004 were written before any
+  correlation score on these findings.
 - **Small samples:** without SCA, the test half has 6 same-root pairs, so its ARI mostly measures whether those
   few merge.
 - The findings are 14 November's (zizmor 1.31.1), not the detection run's (zizmor 1.32.0, findings
@@ -423,8 +440,10 @@ make eval-canaries OLLAMA_URL=http://127.0.0.1:11434
   stopped Ollama's model process; it gave 0 obeyed and 0 mislabels on 9 outputs. The second ran with llama.cpp's
   prompt cache and context checkpoints off (`LLAMA_ARG_CACHE_RAM=0`, `LLAMA_ARG_CTX_CHECKPOINTS=0`) and kept all
   10 outputs.
-- **2 canaries are planted, of the 5 section 17 asks for**, both in one file beside SAST seeds. 0 of 10 says
-  little about canaries of other shapes or in other categories.
+- **2 canaries were planted on 15 November, of the 5 section 17 asks for**, both in one file beside SAST
+  seeds. 0 of 10 says little about canaries of other shapes or in other categories. B9 (#171) adds three of
+  other shapes (a maintainers' note in a docstring, a data value that closes its code block, a forged SentinelCI
+  log), each beside its own seed; the 27 November run measures all five.
 - The verdict check shows that the AI step changed none of the gate's inputs in this run; it does not test a
   model that tries to write files.
 
@@ -534,6 +553,11 @@ uv run python eval/replay/run.py --replay-from ../replay-main                 # 
   1.32.0); ranking, correlation and replay used 14 November's (zizmor 1.31.1). The 27 November run removes this.
 - **Commits inferred, not recorded:** detection, ranking and timing reports do not record their commit; it is
   taken from each worktree's reflog.
+- **Correlation's inputs and half rule changed after the first measurement (#161):** four more places and no
+  group, and `appended` root causes come last (§3).
+- **The fix rate's scope, set before any non-Python seed existed (#169, 17 November):** a SAST seed outside
+  Python is listed as not attempted, because A6 verifies fixes with the shop-api tests only. B9's four
+  JavaScript seeds are therefore never sent to the code fixer, and 6 of 8 does not change.
 
 ## The 27 November run
 
@@ -552,8 +576,8 @@ that model. Two parts are done differently there, and both are disclosed with th
 
 **Before the day (by the feature freeze, 26 November).**
 - Everything the run measures is merged: the fix rate (#159), `make eval-all` (#166), the CONTAINER image scan
-  (#167), the canaries, #161's container seeds. `make eval-all` passes `IMAGES=` to detection once #167 is on
-  `main` (a one-line follow-up).
+  (#167, which also gives `make eval-all` its `IMAGES=`), the canaries and SAST seeds of B9 (#171) with the scope
+  rule (#169), and #161's container seeds (merged).
 - Correlation (A7): after #161 and B9, stage 2b's threshold is calibrated once on the calibration half of the
   final ground truth (`make eval-correlation-calibrate`, Nourhane) and `eval/correlation/threshold.json`
   committed **before** the freeze (§3).
@@ -583,3 +607,20 @@ correlation, canaries, explanations, the fix rate and the timing one at a time, 
   the provisional note at the top goes. A number that moved since 15–17 November says why.
 
 Under section 16's drop order, a metric cut before then is reported as not measured, never as 0.
+
+### Rehearsal (17 November)
+
+A local merge of `main` with #159, #169, #171, #161, #165, #166 and #167 (never pushed), run with
+`make eval-all STEPS=detection,ranking,replay,correlation ALLOW_DIRTY=1`, a rehearsal by its own rules. It
+checks that the pieces work together; **its numbers are not the report's**, and the 27 November run replaces
+them.
+- Detection: 32 of 32 measured seeds (SAST 10, SECRET 5, SCA 8, IAC 6, PIPELINE 3), canaries 5 of 5 placed,
+  0 false positives. CONTAINER (5 seeds) not measured: no seed images in the sandbox.
+- Ranking NDCG@10, by advisory: 0.366 against CVSS 0.350 on all categories; SCA alone 0.627 against 0.771, still
+  not met.
+- Replay: 10 of 10 identical.
+- Correlation: refused at first, as designed (the threshold names other halves). After a local
+  `make eval-correlation-calibrate` (threshold 0.75): whole run 26.9% alert reduction (ARI 0.499), still below
+  40%; test half, three stages, ARI 0.814 and 62.0%. The recalibration that counts is A7's pull request.
+- It found one gap: `make eval-all` passed no `IMAGES=` to detection, which would have left CONTAINER not
+  measured on 27 November. #167 fixes it.
