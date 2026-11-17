@@ -102,7 +102,7 @@ hits.
 | Explanations | (a rubric, §17) | Two people rated 23 explanations on four criteria and agree substantially (Cohen's kappa 0.71). A judge using the same model agrees with neither of them beyond chance (0.00), so people, not that judge, rate explanations | `make eval-rubric` |
 | Replay determinism | 100% identical | 10 of 10 recorded decisions replayed byte for byte | `make eval-replay` |
 | PR feedback time | p95 ≤ 10 min | One pass of the gate's steps: p95 12.8 s over 20 runs. A pull request scans its head and its base, so about 26 s | `make eval-timing` |
-| Verified fix rate | ≥ 60% | Not measured yet | `make eval-fixrate` |
+| Verified fix rate | ≥ 60% | 6 of 8 attempted fixable seeds verified (75.0%): the LLM code fixer 5 of 6 SAST seeds, the Dockerfile fixer 1 of 1, and the Kubernetes fixer's seed partial (it leaves hostPath open by design). Seeds with no implemented strategy (dependency bumps, secrets, workflows, Terraform) are listed, not attempted | `make eval-fixrate` |
 
 ## Try it
 
