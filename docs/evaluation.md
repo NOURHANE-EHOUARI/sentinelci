@@ -212,9 +212,10 @@ make eval-correlation                     # with the committed threshold.json; n
 
 **Before 27 November, one recalibration.** `make eval-correlation` refuses the committed threshold today:
 "threshold.json was calibrated on other halves (ground_truth_sha256 changed since)", after #121's grades, and #161
-changes the ground truth, `split.yaml` and `root-causes.yaml` again. So once #161 merges, stage 2b is calibrated
-once more, on the calibration half only (`make eval-correlation-calibrate`), and `threshold.json` is committed in
-its own pull request before the run. Recalibrating on the day, once the test half has been seen, is what this
+(the container seeds) and B9 (the JavaScript SAST seeds and the canaries) change the ground truth and
+`split.yaml` again, #161 `root-causes.yaml` too. So once both have merged, stage 2b is calibrated once, on the
+final ground truth's calibration half only (`make eval-correlation-calibrate`), and `threshold.json` is
+committed in its own pull request before the feature freeze (26 November). Recalibrating on the day, once the test half has been seen, is what this
 section's rule forbids. The 16 November recalibration on `main` changed only `ground_truth_sha256` (the same 0.75
 and the same curve).
 
@@ -553,8 +554,9 @@ that model. Two parts are done differently there, and both are disclosed with th
 - Everything the run measures is merged: the fix rate (#159), `make eval-all` (#166), the CONTAINER image scan
   (#167), the canaries, #161's container seeds. `make eval-all` passes `IMAGES=` to detection once #167 is on
   `main` (a one-line follow-up).
-- Correlation (A7): stage 2b's threshold is calibrated again on the calibration half of the final ground truth
-  (`make eval-correlation-calibrate`) and `eval/correlation/threshold.json` committed **before** the run (§3).
+- Correlation (A7): after #161 and B9, stage 2b's threshold is calibrated once on the calibration half of the
+  final ground truth (`make eval-correlation-calibrate`, Nourhane) and `eval/correlation/threshold.json`
+  committed **before** the freeze (§3).
 - The sandbox: Docker running, both pinned models served by Ollama with ADR-0009's digests (`38044be4…` and
   `ac6da0df…`), at least 10 GB of free disk, and nothing else running during the run.
 
