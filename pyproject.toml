@@ -25,6 +25,10 @@ dev = [
 [tool.uv]
 package = false
 default-groups = ["dev"]
+# Nothing uploaded in the last week is resolved, transitive dependencies included: Dependabot's cooldown
+# covers only the packages it updates (#135 review, grimp). The lock records the span, not a date, and
+# tests/ci/test_dependabot.py keeps it equal to Dependabot's cooldown.
+exclude-newer = "7 days"
 
 [tool.uv.workspace]
 members = ["cli", "platform/api", "platform/worker", "ai"]
@@ -43,6 +47,10 @@ extend-exclude = ["demo-shop"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
+# No PEP 695 type parameters (`def f[T]`, `class C[T]`, `type X = ...`): Opengrep cannot parse them, and the code
+# it cannot parse goes unanalysed (`sentinel-sast-not-analysed`, P1 in the self-gate). TypeVars instead;
+# tests/ci/test_python_syntax.py keeps the tree free of them.
+ignore = ["UP040", "UP046", "UP047"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["sentinelci", "sentinel_api", "sentinel_worker", "sentinel_ai"]
@@ -54,7 +62,10 @@ known-first-party = ["sentinelci", "sentinel_api", "sentinel_worker", "sentinel_
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["cli/src", "platform/api/src", "platform/worker/src", "ai/src"]
+files = [
+    "cli/src", "platform/api/src", "platform/worker/src", "ai/src", "deploy/kind/cluster.py", "deploy/kind/demo.py",
+    "deploy/release/release.py",
+]
 
 # ---------------------------------------------------------------- pytest
 [tool.pytest.ini_options]

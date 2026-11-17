@@ -1,12 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router";
-import { getCorrelation, getFinding } from "../api/client";
+import { getCorrelation, getExplanation, getFinding } from "../api/client";
 import { groupOf } from "../api/correlation";
+import { asExplanation, referenceLink } from "../api/explanation";
 import { asFinding } from "../api/finding";
-import { Badge, Failure, Loading } from "./common";
+import { Badge, Failure, Loading, utc } from "./common";
 
-/** One finding (its fingerprint): as the latest run reported it, where else it was seen, and its root-cause
- * group in that run's correlation (advisory). */
+/** One finding (its fingerprint): as the latest run reported it, where else it was seen, its root-cause group in
+ * that run's correlation, and its latest explanation (both advisory). */
 export function FindingDetailPage() {
   const { findingId = "" } = useParams();
   const detail = useQuery({ queryKey: ["finding", findingId], queryFn: () => getFinding(findingId) });
@@ -36,6 +37,7 @@ export function FindingDetailPage() {
         <dd className="break-all font-mono text-xs">{finding.id}</dd>
       </dl>
       {latest && <Group runId={latest.run_id} findingId={finding.id} />}
+      <Explanation findingId={finding.id} secret={finding.category === "SECRET"} />
       <h2 className="mb-2 mt-6 font-medium">Seen in {detail.data.occurrence_count} run(s)</h2>
       <table className="w-full border-collapse bg-white text-sm">
         <thead>
@@ -75,6 +77,88 @@ function Group({ runId, findingId }: { runId: string; findingId: string }) {
       <div className="font-medium">{group.title}</div>
       <p className="mt-1">{group.rootCause}</p>
       {group.singleFix && <p className="mt-1"><span className="font-medium">One fix: </span>{group.singleFix}</p>}
+      <Link to={`/runs/${encodeURIComponent(runId)}/groups`} className="mt-2 inline-block text-xs text-sky-700 hover:underline">
+        Every group of this run →
+      </Link>
+    </aside>
+  );
+}
+
+/** The finding's latest explanation (B5c): advisory, written by a model, never read by the gate. */
+function Explanation({ findingId, secret }: { findingId: string; secret: boolean }) {
+  const explanation = useQuery({
+    queryKey: ["explanation", findingId],
+    queryFn: () => getExplanation(findingId),
+    enabled: !secret,
+  });
+  let body;
+  if (secret) {
+    body = <p>A secret&apos;s finding is never sent to a model: rotate the secret.</p>;
+  } else if (explanation.isPending) {
+    body = <Loading />;
+  } else if (explanation.isError) {
+    body = <Failure error={explanation.error} />;
+  } else if (explanation.data === null) {
+    body = (
+      <p>
+        No explanation recorded. An operator asks for one with <code>{`POST /api/v1/findings/${findingId}/explain`}</code>{" "}
+        (the ingestion token): the dashboard never asks.
+      </p>
+    );
+  } else {
+    const view = asExplanation(explanation.data);
+    if (view.findingId !== findingId) {
+      body = <p>The recorded explanation is about another finding: not shown.</p>;
+    } else {
+      const fields: [string, string | null][] = [
+        ["Impact", view.impact],
+        ["How it would be exploited", view.exploitScenario],
+        ["How to fix it", view.fixGuidance],
+      ];
+      body = (
+        <>
+          <p className="font-medium">{view.summary ?? "—"}</p>
+          <dl className="mt-2 space-y-2">
+            {fields.map(([label, value]) => (
+              <div key={label}>
+                <dt className="text-xs font-medium text-slate-600">{label}</dt>
+                <dd>{value ?? "—"}</dd>
+              </div>
+            ))}
+          </dl>
+          {view.references.length > 0 && (
+            <ul className="mt-2 flex flex-wrap gap-x-3 text-xs">
+              {view.references.map((reference) => {
+                const href = referenceLink(reference);
+                return (
+                  <li key={reference} className="break-all">
+                    {href ? (
+                      <a className="text-sky-700 hover:underline" href={href} rel="noreferrer noopener">
+                        {reference}
+                      </a>
+                    ) : (
+                      reference
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          <p className="mt-2 text-xs text-slate-500">
+            {view.provider ?? "—"} {view.modelName ?? "—"}
+            {view.modelDigest && ` (${view.modelDigest.slice(0, 19)}…)`} · confidence{" "}
+            {view.confidence === null ? "—" : `${Math.round(view.confidence * 100)} %`} · {utc(view.createdAt)}
+          </p>
+        </>
+      );
+    }
+  }
+  return (
+    <aside className="mt-4 rounded border border-violet-200 bg-violet-50 p-3 text-sm" aria-label="Explanation">
+      <div className="mb-1 text-xs uppercase tracking-wide text-violet-700">
+        Explanation · Advisory: written by a model, never read by the gate
+      </div>
+      {body}
     </aside>
   );
 }

@@ -1,0 +1,22 @@
+# What Argo CD may do for the demo (task A5b): read the one GitOps repository, and create the chart's three
+# kinds of resource in the demo-shop namespace. Nothing cluster-scoped, no other namespace, no other source.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: demo-shop
+  namespace: argocd
+spec:
+  description: The demo-shop release, from the local GitOps repository only.
+  sourceRepos:
+    - git://gitops.sentinel-gitops.svc.cluster.local/demo-shop.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: demo-shop
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist:
+    - group: apps
+      kind: Deployment
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: ServiceAccount

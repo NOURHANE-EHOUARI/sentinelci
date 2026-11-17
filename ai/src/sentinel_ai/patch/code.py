@@ -22,6 +22,9 @@ and edits nothing but the flagged file. Only a proposal that passes every guardr
 - **Retries.** An answer that breaks a guardrail is refused and asked again once, with the reason. A rejected
   proposal is retried by the remediation loop (attempts 2 and 3) with the previous diff and the CI log
   (`Feedback`), redacted and clipped, in a `<previous_attempt>` block.
+- **Why there is no proposal.** An "unavailable" outcome names its `cause`: "provider" when the model server
+  failed (nothing was measured: retry when it is back), "answer" when the model answered twice and neither
+  answer was a usable fix (an attempt that failed). A caller reads the cause, never the reason's words.
 
 Everything here is advisory: a proposal is a pull request that the verification gate (SPEC section 9) and a
 human review decide on; the bot never merges, and nothing here changes a finding or a verdict.
@@ -46,6 +49,7 @@ from typing import Annotated, Any, Final, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from sentinel_ai.correlate.labels import REDACTED, redact
+from sentinel_ai.guardrails import Cause
 from sentinel_ai.providers import LLMProvider
 from sentinelci.contracts.finding import Finding
 from sentinelci.contracts.remediation import MAX_ATTEMPTS, Model, PatchProposal
@@ -129,12 +133,15 @@ class Feedback:
 
 @dataclass(frozen=True)
 class Outcome:
-    """What the fixer did with one finding. `input_sha256` names exactly what the model was sent."""
+    """What the fixer did with one finding. `input_sha256` names exactly what the model was sent;
+    `cause`, only when the status is "unavailable", whether the provider failed or the answers were not
+    usable."""
 
     status: Literal["proposed", "unavailable", "not sent"]
     reason: str
     proposal: PatchProposal | None = None
     input_sha256: str | None = None
+    cause: Cause | None = None
 
 
 class _NotSent(Exception):
@@ -162,20 +169,22 @@ def _json_line(value: object) -> str:
 
 
 def _clip(value: object) -> str:
-    text = " ".join(str(value).split())
+    """Redacted, then clipped: a token cut at the limit would no longer match its pattern, and its start
+    would be sent (#99 review)."""
+    text = " ".join(redact(str(value)).split())
     return text if len(text) <= MAX_FIELD else text[: MAX_FIELD - 3] + "..."
 
 
 def _described(finding: Finding, start: int, end: int) -> dict[str, Any]:
-    """What is sent of the finding: never its id, snippet or evidence; every text clipped and redacted."""
+    """What is sent of the finding: never its id, snippet or evidence; every text redacted, then clipped."""
     described: dict[str, Any] = {
         "category": finding.category,
-        "rule": redact(_clip(finding.rule_id)),
+        "rule": _clip(finding.rule_id),
         "severity": finding.severity,
-        "title": redact(_clip(finding.title)),
-        "message": redact(_clip(finding.message)) if finding.message else None,
-        "cwe": [redact(_clip(cwe)) for cwe in (finding.cwe or [])[:5]] or None,
-        "file": redact(_clip(finding.location.path)) if finding.location else None,
+        "title": _clip(finding.title),
+        "message": _clip(finding.message) if finding.message else None,
+        "cwe": [_clip(cwe) for cwe in (finding.cwe or [])[:5]] or None,
+        "file": _clip(finding.location.path) if finding.location else None,
         "start_line": start,
         "end_line": end,
     }
@@ -362,8 +371,9 @@ def _git_apply_check(repo_root: Path, diff: str) -> None:
         raise RemediationError(f"git apply --check failed: {checked.stderr.strip()[-300:]}")
 
 
-def _ask(provider: LLMProvider, user: str, check: Any) -> tuple[Any, str]:
-    """The model's fix, checked by `check`, with one repair retry; (None, why) when it could not give one."""
+def _ask(provider: LLMProvider, user: str, check: Any) -> tuple[Any, str, Cause | None]:
+    """The model's fix, checked by `check`, with one repair retry, as (proposal, "", None); (None, why, cause)
+    when it could not give one."""
     reason = ""
     for attempt in range(2):
         message = user if attempt == 0 else (
@@ -377,12 +387,12 @@ def _ask(provider: LLMProvider, user: str, check: Any) -> tuple[Any, str]:
             reason = f"not a valid code fix: {type(exc).__name__}"
             continue
         except Exception as exc:  # the provider is down or refused: its message is not repeated
-            return None, f"the provider failed: {type(exc).__name__}"
+            return None, f"the provider failed: {type(exc).__name__}", "provider"
         try:
-            return check(fix), ""
+            return check(fix), "", None
         except _Refused as exc:
             reason = str(exc)
-    return None, reason
+    return None, reason, "answer"
 
 
 def propose_code_fix(
@@ -437,7 +447,7 @@ def propose_code_fix(
             raise _Refused(str(exc)) from None
         return proposal
 
-    proposal, reason = _ask(provider, user, check)
+    proposal, reason, cause = _ask(provider, user, check)
     if proposal is None:
-        return Outcome("unavailable", reason, input_sha256=input_sha256)
+        return Outcome("unavailable", reason, input_sha256=input_sha256, cause=cause)
     return Outcome("proposed", "", proposal, input_sha256)

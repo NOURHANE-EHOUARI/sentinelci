@@ -21,6 +21,7 @@ from sentinel_ai.patch import (
     Feedback,
     propose_code_fix,
 )
+from sentinel_ai.patch.code import MAX_FIELD, _described
 from sentinel_ai.providers import LLMProvider
 from sentinelci.contracts.finding import Finding
 from sentinelci.remediation.apply import apply_proposal
@@ -239,6 +240,27 @@ def test_anything_that_looks_like_a_secret_is_sent_redacted_and_its_line_cannot_
     )
 
 
+@pytest.mark.parametrize("before", [0, 250, 286, 290, 292])
+@pytest.mark.parametrize("field", ["title", "message", "rule_id", "cwe", "path"])
+def test_a_token_across_the_clip_is_not_sent_even_in_part(tmp_path: Path, field: str, before: int) -> None:
+    """Each text of the finding is redacted whole, then clipped: cut first, a token would lose its pattern
+    and its start would be sent (#99 review)."""
+    text = "x" * before + " " + TOKEN
+    if field == "path":
+        extra: dict[str, Any] = {"location": {"path": text, "start_line": SQL_LINE, "end_line": SQL_LINE}}
+    elif field == "cwe":
+        extra = {"cwe": [text]}
+    else:
+        extra = {field: text}
+    target = finding("python-sql-built-from-strings", SQL_LINE, **extra)
+    described = _described(target, SQL_LINE, SQL_LINE)
+    sent = json.dumps(described)
+    assert "ghp_" not in sent and TOKEN[4:9] not in sent, "not even the start of the token"
+    for value in described.values():
+        for item in value if isinstance(value, list) else [value]:
+            assert not isinstance(item, str) or len(item) <= MAX_FIELD
+
+
 @pytest.mark.parametrize(
     ("target", "findings", "reason"),
     [
@@ -449,6 +471,48 @@ def test_a_provider_failure_is_unavailable_without_its_message(tmp_path: Path) -
     outcome = propose(repo(tmp_path), provider)
     assert (outcome.status, outcome.reason) == ("unavailable", "the provider failed: RuntimeError")
     assert len(provider.calls) == 1
+
+
+REFUSED = fix((SQL_LINE, SQL_LINE, [SAFE_SQL + "  # nosemgrep"]))
+NOT_A_FIX = {"edits": [], "rationale": "x"}
+
+
+@pytest.mark.parametrize(
+    ("answers", "cause"),
+    [
+        ((ConnectionError("down"),), "provider"),
+        ((RuntimeError("anything else"),), "provider"),
+        ((REFUSED, ConnectionError("down")), "provider"),
+        ((NOT_A_FIX, TimeoutError("late")), "provider"),
+        ((REFUSED, REFUSED), "answer"),
+        ((NOT_A_FIX, NOT_A_FIX), "answer"),
+        ((NOT_A_FIX, REFUSED), "answer"),
+    ],
+    ids=[
+        "provider-down",
+        "provider-other-error",
+        "refused-then-provider-down",
+        "invalid-then-provider-late",
+        "refused-twice",
+        "invalid-twice",
+        "invalid-then-refused",
+    ],
+)
+def test_an_unavailable_outcome_says_whether_the_provider_or_the_answer_failed(
+    tmp_path: Path, answers: tuple[Any, ...], cause: str
+) -> None:
+    """A caller tells a model server that failed (nothing was measured) from a model that gave no usable
+    answer (an attempt that failed) by `cause`, never by matching the reason."""
+    provider = Scripted(*answers)
+    outcome = propose(repo(tmp_path), provider)
+    assert (outcome.status, outcome.cause, outcome.proposal) == ("unavailable", cause, None)
+    assert len(provider.calls) == len(answers)
+
+
+def test_only_an_unavailable_outcome_has_a_cause(tmp_path: Path) -> None:
+    assert propose(repo(tmp_path), Scripted(GOOD)).cause is None
+    assert propose(repo(tmp_path), Scripted(REFUSED, GOOD)).cause is None
+    assert propose(repo(tmp_path), Scripted(), target=finding("x", 1, category="SCA")).cause is None
 
 
 def test_the_answer_is_validated_again_whatever_the_provider_returned(tmp_path: Path) -> None:

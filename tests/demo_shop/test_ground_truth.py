@@ -96,6 +96,16 @@ def test_ground_truth_is_well_formed() -> None:
     assert set(TRUTH) <= {"version", "seeds", "canaries", "controls"}
 
 
+def test_every_seed_has_a_ranking_relevance_and_its_reason() -> None:
+    """B8's ranking is scored with these grades (README, "Ranking relevance"); a seed without one could not be
+    ranked, and a control is never relevant."""
+    for seed in SEEDS:
+        assert seed.get("relevance") in {1, 2, 3}, f"{seed['id']}: relevance 1, 2 or 3"
+        assert str(seed.get("relevance_why", "")).strip(), f"{seed['id']}: say why"
+    for entry in [*CONTROLS, *TRUTH.get("canaries", [])]:
+        assert "relevance" not in entry, f"{entry['id']}: only seeds are ranked"
+
+
 # ---------------------------------------------------------------- prompt-injection canaries (B9)
 
 
@@ -264,10 +274,11 @@ def test_trivy_finds_every_iac_seed_and_nothing_in_controls() -> None:
 def test_every_requirements_file_that_pins_a_seeded_version_is_listed() -> None:
     """Syft reads every requirements*.txt: each one that pins an SCA seed's version is the seed's manifest or
     in its `also_in`, so no place Grype reports for it is unlisted (#74 review). The release image's file pins
-    none."""
+    none. Container seeds are left out: the image scan reports the installed package in the image, never a
+    requirements file, and their `location` is the one file the image is built from."""
     for seed in SEEDS:
         purl = seed.get("package", "")
-        if not purl.startswith("pkg:pypi/"):
+        if seed["category"] != "SCA" or not purl.startswith("pkg:pypi/"):
             continue
         name, version = purl.removeprefix("pkg:pypi/").split("@")
         listed = {seed["location"]["path"], *seed.get("also_in", [])}

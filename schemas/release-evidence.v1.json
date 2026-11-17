@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/NOURHANE-EHOUARI/sentinelci/schemas/release-evidence.v1.json",
+  "title": "SentinelCI release evidence v1",
+  "description": "One release decision and what `sentinel verify` found about its image (A4, A8): what `make release` sends to the platform (`POST /api/v1/releases`), for the Releases & evidence page. A BLOCK decision comes without a trust report (nothing was signed). Rules JSON Schema cannot express, checked by the producer and the platform: the decision is a release decision about an image; each report is about that image and repository, at most one per mode; a BLOCK decision has no trusted report.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "decision",
+    "trust_reports"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Minor versions only add (schemas/README.md).",
+      "enum": [
+        "1.0"
+      ]
+    },
+    "decision": {
+      "description": "The release decision record: the same JSON value `sentinel evaluate` wrote, not the same bytes (it is re-serialized here), so its sha256 is not the decision file's or the decision attestation's.",
+      "$ref": "decision.v1.json"
+    },
+    "trust_reports": {
+      "description": "`sentinel verify --report-json` of the signed image: registry mode, evidence mode, or both; none for a BLOCK.",
+      "type": "array",
+      "maxItems": 2,
+      "items": {
+        "$ref": "trust-report.v1.json"
+      }
+    }
+  }
+}

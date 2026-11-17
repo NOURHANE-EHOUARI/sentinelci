@@ -1,0 +1,32 @@
+# Pins and names of the SentinelCI demo cluster (task A5b): read by deploy/kind/cluster.py.
+#
+# kind is pinned in tools.lock.toml and its node image in kind-config.yaml. Everything else the cluster pulls
+# or applies is pinned here, by digest or by sha256, and checked by tests/deploy/test_kind.py. A manifest is
+# downloaded once into .sentinel/cache/kind, and refused before anything is applied if its sha256 differs.
+
+[registry]
+# The local registry of kind's documented setup (kind v0.33.0, site/static/examples/kind-with-registry.sh).
+# Digest of the official registry:3.1.2 index, from docker-library/repo-info (repos/registry/remote/3.md).
+image = "registry:3.1.2@sha256:38907510915c3f1604c7e83d6ab602ab3020d092f73bdaed8696773693ff768c"
+container = "kind-registry"
+# Published on the host's loopback only. Inside the cluster's network it is <container>:5000, plain HTTP: the
+# name the admission policy matches, rendered with --registry-http.
+host_port = 5001
+
+[kyverno]
+# The same release as the Kyverno CLI in tools.lock.toml, which the admission tests run.
+version = "1.19.2"
+url = "https://github.com/kyverno/kyverno/releases/download/v1.19.2/install.yaml"
+# Kyverno publishes no checksum for install.yaml (checksums.txt covers the CLI archives only): this is the
+# sha256 of the file downloaded on 2026-11-10. The manifest names its images by tag (reg.kyverno.io).
+sha256 = "4f785937dc7fe49a0731108b15def1538923c73d9236255bc69d94d498037969"
+
+[argocd]
+# Argo CD core (core-install.yaml): the application controller and the repo server, with no UI, API server or
+# login, so nothing to expose and no admin password. Argo CD publishes its install manifests in the repository at
+# each release tag, not as release assets. 3.6.1 is the latest release (2026-11-04).
+version = "3.6.1"
+url = "https://raw.githubusercontent.com/argoproj/argo-cd/v3.6.1/manifests/core-install.yaml"
+# The sha256 of the file downloaded on 2026-11-10 (no checksum is published for it). The manifest names its
+# images by tag (quay.io/argoproj/argocd:v3.6.1, and Redis from public.ecr.aws).
+sha256 = "0b38189d6e1fd76ef5c3db10355026c48a02020d82bf21a1a1b5ab16dffe4f3c"

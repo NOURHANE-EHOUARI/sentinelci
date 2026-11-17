@@ -14,7 +14,8 @@ COPY pyproject.toml uv.lock ./
 COPY cli cli
 COPY platform platform
 COPY ai ai
-RUN uv sync --locked --no-dev --no-editable --package sentinel-api
+# The worker package depends on the API's: one image runs both (deploy/compose: api, worker).
+RUN uv sync --locked --no-dev --no-editable --package sentinel-worker
 
 FROM python:3.12.16-slim@sha256:8523d6abeb48ceae0b7240d30c5808fc26cb79c1a635bacdf19cf3baecfbec07
 RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin sentinel

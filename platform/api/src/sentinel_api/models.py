@@ -8,9 +8,11 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Identity,
     Index,
     Integer,
@@ -138,5 +140,166 @@ class RunDecision(Base):
     verdict: Mapped[str] = mapped_column(String(8))
     evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     engine_version: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    document: Mapped[bytes] = deferred(mapped_column(LargeBinary, nullable=False))
+
+
+class Release(Base):
+    """One release decision and what `sentinel verify` found about its image (Release evidence v1, A4 and A8),
+    kept byte for byte. A decision is recorded once: its evidence never changes. The columns repeat what the
+    document says, for listing and filtering; the document is the record."""
+
+    __tablename__ = "releases"
+    __table_args__ = (
+        CheckConstraint("sha256 ~ '^[a-f0-9]{64}$'", name="releases_sha256"),
+        CheckConstraint("encode(sha256(document), 'hex') = sha256", name="releases_bytes_match"),
+        CheckConstraint("commit ~ '^[a-f0-9]{40}$'", name="releases_commit"),
+        CheckConstraint("image_digest ~ '^sha256:[a-f0-9]{64}$'", name="releases_image_digest"),
+        CheckConstraint("verdict IN ('PASS', 'WARN', 'BLOCK')", name="releases_verdict"),
+        # The gate blocked it: nothing was signed, so nothing can have been verified as trusted.
+        CheckConstraint("verdict <> 'BLOCK' OR trusted IS NULL", name="releases_block_never_trusted"),
+    )
+
+    decision_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    # The order of recording, for "the latest release of an image": created_at can tie.
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(always=True), unique=True)
+    repo: Mapped[str] = mapped_column(String(200), index=True)
+    commit: Mapped[str] = mapped_column(String(40))
+    ref: Mapped[str | None] = mapped_column(String(255))
+    image_digest: Mapped[str] = mapped_column(String(71), index=True)
+    verdict: Mapped[str] = mapped_column(String(5))
+    # Every trust report trusts the image (True), one does not (False), or none was sent (None: a BLOCK).
+    trusted: Mapped[bool | None] = mapped_column(Boolean)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    sha256: Mapped[str] = mapped_column(String(64))
+    document: Mapped[bytes] = deferred(mapped_column(LargeBinary, nullable=False))
+
+
+class Remediation(Base):
+    """One attempt of the remediation loop (Remediation attempt v1, A6 and A8): the proposal and its
+    verification result, kept byte for byte, once. A retry is another proposal, so another row. The columns
+    repeat what the document says, for listing, filtering and the metric; the document is the record."""
+
+    __tablename__ = "remediations"
+    __table_args__ = (
+        CheckConstraint("sha256 ~ '^[a-f0-9]{64}$'", name="remediations_sha256"),
+        CheckConstraint("encode(sha256(document), 'hex') = sha256", name="remediations_bytes_match"),
+        CheckConstraint(
+            "strategy IN ('deterministic:dependency-bump', 'deterministic:dockerfile', "
+            "'deterministic:kubernetes', 'llm:code')",
+            name="remediations_strategy",
+        ),
+        CheckConstraint("outcome IN ('VERIFIED', 'REJECTED', 'FAILED')", name="remediations_outcome"),
+        CheckConstraint("verdict IN ('PASS', 'WARN', 'BLOCK')", name="remediations_verdict"),
+        CheckConstraint("attempt BETWEEN 1 AND 3", name="remediations_attempt"),
+        # The verification gate of SPEC section 9.2, again: VERIFIED only when every condition holds.
+        CheckConstraint(
+            "outcome <> 'VERIFIED' OR (build_ok AND tests_ok AND target_resolved AND new_finding_count = 0 "
+            "AND verdict <> 'BLOCK')",
+            name="remediations_verified_gate",
+        ),
+    )
+
+    proposal_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    # The order of recording, for "newest first": created_at can tie.
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(always=True), unique=True)
+    repo: Mapped[str] = mapped_column(String(200), index=True)
+    strategy: Mapped[str] = mapped_column(String(40))
+    attempt: Mapped[int] = mapped_column(Integer)
+    finding_count: Mapped[int] = mapped_column(Integer)
+    outcome: Mapped[str] = mapped_column(String(8))
+    verdict: Mapped[str] = mapped_column(String(5))
+    build_ok: Mapped[bool] = mapped_column(Boolean)
+    tests_ok: Mapped[bool] = mapped_column(Boolean)
+    target_resolved: Mapped[bool] = mapped_column(Boolean)
+    new_finding_count: Mapped[int] = mapped_column(Integer)
+    pull_request: Mapped[int | None] = mapped_column(Integer)
+    proposed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    sha256: Mapped[str] = mapped_column(String(64))
+    document: Mapped[bytes] = deferred(mapped_column(LargeBinary, nullable=False))
+
+
+class WaiversFile(Base):
+    """A waivers file the gate read (schemas/waivers.v1.json, SPEC section 6.4), kept byte for byte and named
+    by its sha256: the `inputs.waivers_digest` of the decisions that read it. Kept only when a recorded
+    decision (a run's or a release's) read it, and never changed (trigger `waivers_files_are_kept`)."""
+
+    __tablename__ = "waivers_files"
+    __table_args__ = (
+        CheckConstraint("sha256 ~ '^[a-f0-9]{64}$'", name="waivers_files_sha256"),
+        CheckConstraint("encode(sha256(document), 'hex') = sha256", name="waivers_files_bytes_match"),
+        CheckConstraint("jsonb_typeof(entries) = 'array'", name="waivers_files_entries"),
+    )
+
+    sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    document: Mapped[bytes] = deferred(mapped_column(LargeBinary, nullable=False))
+    # The entries the gate's loader read from the bytes, parsed once when the file is recorded (the bytes stay
+    # the record): listing the waivers in force never parses a file again.
+    entries: Mapped[list[Any]] = mapped_column(JSONB, nullable=False)
+
+
+EXPLAIN_STATUSES = ("queued", "running", "explained", "unavailable", "not_sent", "failed")
+
+
+class ExplainRequest(Base):
+    """A request for an explanation of a finding as one run recorded it (B5c): queued by the API, claimed and
+    finished by the worker. Only a queue's state: the explanation is the record."""
+
+    __tablename__ = "explain_requests"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["run_id", "finding_id"], ["findings.run_id", "findings.finding_id"], ondelete="CASCADE"
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'explained', 'unavailable', 'not_sent', 'failed')",
+            name="explain_requests_status",
+        ),
+        CheckConstraint(
+            "(status = 'explained') = (explanation_sha256 IS NOT NULL)", name="explain_requests_explained"
+        ),
+        Index(
+            "explain_requests_one_open",
+            "finding_id",
+            "run_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    finding_id: Mapped[str] = mapped_column(String(64))
+    run_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    status: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str | None] = mapped_column(Text)
+    explanation_sha256: Mapped[str | None] = mapped_column(
+        String(64),  # Added after both tables (use_alter): the two tables refer to each other.
+        ForeignKey("explanations.sha256", name="explain_requests_explanation", use_alter=True),
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Explanation(Base):
+    """An explanation of a finding (Explanation v1, B5c), kept byte for byte and named by its sha256.
+    Advisory: the gate never reads it. About its own finding and its request's, never changed (trigger
+    `explanations_are_kept`). The latest of a finding is the one recorded last (`seq`)."""
+
+    __tablename__ = "explanations"
+    __table_args__ = (
+        CheckConstraint("sha256 ~ '^[a-f0-9]{64}$'", name="explanations_sha256"),
+        CheckConstraint("encode(sha256(document), 'hex') = sha256", name="explanations_bytes_match"),
+    )
+
+    sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    seq: Mapped[int] = mapped_column(BigInteger, Identity(always=True), unique=True)
+    finding_id: Mapped[str] = mapped_column(String(64), index=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"))
+    request_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("explain_requests.id", ondelete="CASCADE"), unique=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     document: Mapped[bytes] = deferred(mapped_column(LargeBinary, nullable=False))

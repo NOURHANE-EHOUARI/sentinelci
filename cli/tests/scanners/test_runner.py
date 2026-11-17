@@ -43,6 +43,24 @@ def test_successful_run_returns_output(
     assert run.returncode == 0
 
 
+def test_a_relative_tools_dir_runs_the_tool_from_another_directory(
+    tmp_path: Path,
+    releases: FakeReleases,
+    write_lock: Callable[[str], Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--tools-dir .sentinel/tools`, the default: Syft, Grype and Opengrep run in an empty directory of their
+    own, where the relative path named nothing ("could not be started: No such file or directory")."""
+    lock, _ = install_script(tmp_path, releases, write_lock, 'echo "hello $1"\n')
+    monkeypatch.chdir(tmp_path)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    run = run_verified_tool(
+        "rawtool", ["world"], lock=lock, tools_dir=Path("tools"), platform=PLATFORM, cwd=empty
+    )
+    assert run.stdout.strip() == "hello world"
+
+
 def test_tampered_tool_is_never_executed(
     tmp_path: Path, releases: FakeReleases, write_lock: Callable[[str], Path]
 ) -> None:

@@ -40,7 +40,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
-from typing import Any, NoReturn
+from typing import Any, NoReturn, TypeVar
 from urllib.parse import urlsplit
 
 from pydantic import ValidationError
@@ -214,7 +214,11 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         raise UploadError("the platform answered with a redirect: refused, the token would follow it")
 
 
-def _within_deadline[T](call: Callable[[], T]) -> T:
+# A TypeVar, not PEP 695 syntax: Opengrep cannot parse `def f[T]`, and code it cannot parse goes unanalysed.
+T = TypeVar("T")
+
+
+def _within_deadline(call: Callable[[], T]) -> T:
     """`call()`, or UploadError once DEADLINE_S has passed: TIMEOUT_S bounds each socket operation only, so a
     platform that sends one byte at a time could otherwise hold the step for as long as it likes. The worker
     is a daemon thread: the CLI exits without waiting for it."""
@@ -309,6 +313,9 @@ class Platform:
     def upload(self, run_id: str, data: bytes) -> tuple[int, Any]:
         return self._request("POST", f"/api/v1/runs/{run_id}/findings", data, NDJSON)
 
+    def post_release(self, data: bytes) -> tuple[int, Any]:
+        return self.post_json("/api/v1/releases", data)
+
     def post_decision(self, run_id: str, data: bytes) -> tuple[int, Any]:
         return self._request("POST", f"/api/v1/runs/{run_id}/decision", data, JSON)
 
@@ -324,6 +331,9 @@ class Platform:
     def post_json(self, path: str, data: bytes) -> tuple[int, Any]:
         """POST a JSON document's bytes, as they are, to `path` (an API path); the status and the answer."""
         return self._request("POST", path, data, "application/json")
+
+    def post_remediation(self, data: bytes) -> tuple[int, Any]:
+        return self.post_json("/api/v1/remediations", data)
 
 
 def _json(raw: bytes) -> Any:
