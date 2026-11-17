@@ -42,7 +42,8 @@ Node's standard library only: it serves the browser front end (`public/`), answe
 makes product thumbnails and forwards `/api/` to shop-api (`SHOP_API_URL`, never another host). Its four SAST
 seeds (GT-SAST-007 to 010) are JavaScript, so they have no security test and the verified fix rate never attempts
 them: A6's check verifies Python fixes only. It imports none of `package.json`'s dependencies, on purpose: the
-SCA seeds' reachability is the same as at the first ranking. It has no image on this base: it runs only in a
+SCA seeds' reachability is the same as at the first ranking. Its only image is the scan-only one of its
+dependencies (`services/web/Dockerfile`, GT-CONTAINER-003), which never holds the server; the server runs only in a
 container, like shop-api.
 
 **Not a seed:** `services/shop-api/Dockerfile.release` is the hardened release image (ADR-0011, decision 6),
