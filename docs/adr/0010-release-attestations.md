@@ -90,7 +90,9 @@ signed predicate is not byte-identical to the file it came from.
      connection, is "not trusted" (exit 1). A registry that accepts the connection and never answers ends in
      Cosign's 120 s timeout, "could not run" (exit 3). Both refuse the image. Plain HTTP only with
      `--registry-http`, and only for a local registry: a loopback host, or a single-label host with a port
-     (kind's `kind-registry:5000`). Registry credentials reach Cosign only through `DOCKER_CONFIG`.
+     (kind's `kind-registry:5000`). Registry credentials reach Cosign only through `DOCKER_CONFIG`, and the
+     CAs it trusts besides the system's only through `SSL_CERT_FILE` and `SSL_CERT_DIR` (the demo cluster's
+     registry serves TLS with its own CA, 1.1.126).
 
 5. **Keys.** Private mode (now): a key pair, `--key` names the private key file or `env://VAR`; only that
    variable and `COSIGN_PASSWORD` reach the Cosign process (the runner's minimal environment drops the rest);

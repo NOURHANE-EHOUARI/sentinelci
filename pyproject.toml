@@ -54,7 +54,7 @@ known-first-party = ["sentinelci", "sentinel_api", "sentinel_worker", "sentinel_
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["cli/src", "platform/api/src", "platform/worker/src", "ai/src", "deploy/release/release.py"]
+files = ["cli/src", "platform/api/src", "platform/worker/src", "ai/src", "deploy/kind/cluster.py", "deploy/release/release.py"]
 
 # ---------------------------------------------------------------- pytest
 [tool.pytest.ini_options]
