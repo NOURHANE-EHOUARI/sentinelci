@@ -50,8 +50,10 @@ web: ## Dashboard: locked install (no package scripts), typed client up to date,
 
 # The scanners come from SENTINEL_TOOLS_DIR (default .sentinel/tools); DB_DIR=<grype-db dir> measures SCA too.
 EVAL_TOOLS ?= $(or $(SENTINEL_TOOLS_DIR),.sentinel/tools)
-eval: ## Detection report of demo-shop (B8): out/eval/detection.json and detection.md
-	uv run python eval/detection/run.py --tools-dir $(EVAL_TOOLS) $(if $(DB_DIR),--db-dir $(DB_DIR))
+# IMAGES=<dir> (make container-seed-images' out/container-seeds) scans the CONTAINER seeds' images too.
+eval: ## Detection report of demo-shop (B8): out/eval/detection.json and detection.md (IMAGES= for CONTAINER)
+	uv run python eval/detection/run.py --tools-dir $(EVAL_TOOLS) $(if $(DB_DIR),--db-dir $(DB_DIR)) \
+		$(if $(IMAGES),--images $(IMAGES))
 
 OLLAMA_URL ?= http://127.0.0.1:11434
 eval-explanations: ## Explanations of the seeds and the LLM judge's ratings (B8), after make eval: needs Ollama

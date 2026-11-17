@@ -12,6 +12,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -230,3 +232,139 @@ def test_an_ignored_file_in_demo_shop_makes_the_tree_unclean(tmp_path: Path, mon
     assert run_module.demo_shop_tree() is not None
     (tmp_path / "demo-shop" / "local.key").write_text("not a real key\n", encoding="utf-8")
     assert run_module.demo_shop_tree() is None
+
+
+# ---------------------------------------------------------------- CONTAINER: the built images (--images)
+
+IMAGE_SEED = seed(
+    "GT-CONTAINER-001", "CONTAINER", "services/shop-api/requirements.block.txt", "grype", "GHSA-x",
+    package="pkg:pypi/pyyaml@5.3.1", image={"name": "shop-api-block"},
+)  # fmt: skip
+WEB_SEED = seed(
+    "GT-CONTAINER-002", "CONTAINER", "services/web/package.json", "grype", "GHSA-y",
+    package="pkg:npm/lodash@4.17.20", image={"name": "web"},
+)  # fmt: skip
+
+
+def oci_archive(path: Path, digest: str) -> Path:
+    """An OCI layout archive with one image of `digest` (only its index.json matters here)."""
+    import io
+    import tarfile
+
+    index = json.dumps({"schemaVersion": 2, "manifests": [{"digest": digest, "size": 1}]}).encode()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(path, "w") as tar:
+        info = tarfile.TarInfo("index.json")
+        info.size = len(index)
+        tar.addfile(info, io.BytesIO(index))
+    return path
+
+
+class Scans:
+    """`sentinel scan image` as a stand-in: writes one CONTAINER finding per image, or fails."""
+
+    def __init__(self, fail: str = "") -> None:
+        self.fail = fail
+        self.commands: list[list[str]] = []
+
+    def __call__(self, command: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        self.commands.append(command)
+        archive = Path(command[3])
+        name = archive.name.removesuffix(".oci.tar")
+        if name == self.fail:
+            return subprocess.CompletedProcess(command, 3, "", "Error: the database is stale\n")
+        out = Path(command[command.index("--out") + 1])
+        purl = {"shop-api-block": "pkg:pypi/pyyaml@5.3.1", "web": "pkg:npm/lodash@4.17.20"}[name]
+        rule = {"shop-api-block": "GHSA-x", "web": "GHSA-y"}[name]
+        out.write_text(json.dumps(finding("grype", rule, f"image:{name}", "CONTAINER",
+                                          package={"purl": purl})) + "\n", encoding="utf-8")  # fmt: skip
+        return subprocess.CompletedProcess(command, 0, "grype 0.121.0: 1 finding\n", "")
+
+
+def images(tmp_path: Path) -> Path:
+    oci_archive(tmp_path / "images" / "shop-api-block.oci.tar", "sha256:" + "a" * 64)
+    oci_archive(tmp_path / "images" / "web.oci.tar", "sha256:" + "b" * 64)
+    return tmp_path / "images"
+
+
+def test_each_seeds_image_is_scanned_once_by_its_archives_digest(tmp_path: Path) -> None:
+    scans = Scans()
+    run, found, inputs = run_module.scan_images(
+        truth(SCA, IMAGE_SEED, WEB_SEED, IMAGE_SEED | {"id": "GT-CONTAINER-003"}), images(tmp_path),
+        tmp_path / "out", tools_dir=tmp_path / "tools", db_dir=tmp_path / "db", run=scans,
+    )  # fmt: skip
+    assert (run.tool, run.status, run.categories, run.label) == (
+        "grype",
+        "ok",
+        ("CONTAINER",),
+        "grype (images)",
+    )
+    assert len(scans.commands) == 2  # shop-api-block once, though two seeds name it
+    first = scans.commands[0]
+    assert first[1:3] == ["scan", "image"]
+    assert first[first.index("--image-digest") + 1] == "sha256:" + "a" * 64
+    assert first[first.index("--image-ref") + 1] == "kind-registry:5000/demo-shop/shop-api-block"
+    assert first[first.index("--db-dir") + 1] == str(tmp_path / "db")
+    assert first[first.index("--context") + 1] == "local"
+    assert len(found) == 2
+    assert inputs["shop-api-block"]["manifest_digest"] == "sha256:" + "a" * 64
+    archive = tmp_path / "images" / "web.oci.tar"
+    assert inputs["web"]["archive_sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
+    result = score(truth(IMAGE_SEED, WEB_SEED), found, [run])
+    assert (result["categories"]["CONTAINER"]["measured"], result["categories"]["CONTAINER"]["recall"]) == (
+        True, 1.0,
+    )  # fmt: skip
+
+
+@pytest.mark.parametrize("missing", ["web", "shop-api-block"])
+def test_a_missing_archive_scans_nothing_and_container_is_not_measured(tmp_path: Path, missing: str) -> None:
+    directory = images(tmp_path)
+    (directory / f"{missing}.oci.tar").unlink()
+    scans = Scans()
+    run, found, _ = run_module.scan_images(
+        truth(IMAGE_SEED, WEB_SEED), directory, tmp_path / "out", tools_dir=None, db_dir=tmp_path / "db",
+        run=scans,
+    )  # fmt: skip
+    assert (run.status, found, scans.commands) == ("failed", [], [])
+    assert f"{missing}.oci.tar" in str(run.reason) and "make container-seed-images" in str(run.reason)
+    result = score(truth(IMAGE_SEED, WEB_SEED), found, [*OK, run])
+    assert result["categories"]["CONTAINER"]["measured"] is False
+
+
+def test_one_failed_image_scan_keeps_no_container_finding(tmp_path: Path) -> None:
+    run, found, _ = run_module.scan_images(
+        truth(IMAGE_SEED, WEB_SEED), images(tmp_path), tmp_path / "out", tools_dir=None,
+        db_dir=tmp_path / "db", run=Scans(fail="web"),
+    )  # fmt: skip
+    assert (run.status, found) == ("failed", [])
+    assert "web" in str(run.reason) and "stale" in str(run.reason)
+
+
+@pytest.mark.parametrize(("directory", "db", "said"), [
+    (None, "db", "no image archives (--images): make container-seed-images"),
+    ("images", None, "no Grype database (--db-dir)"),
+])  # fmt: skip
+def test_without_archives_or_database_the_image_scan_is_skipped(
+    tmp_path: Path, directory: str | None, db: str | None, said: str
+) -> None:
+    run, found, _ = run_module.scan_images(
+        truth(IMAGE_SEED), images(tmp_path) if directory else None, tmp_path / "out", tools_dir=None,
+        db_dir=tmp_path / db if db else None, run=Scans(),
+    )  # fmt: skip
+    assert (run.status, run.reason, found) == ("skipped", said, [])
+
+
+def test_the_sca_and_the_image_runs_of_grype_both_appear_in_the_report() -> None:
+    image_run = ToolRun("grype", "failed", reason="no web.oci.tar", categories=("CONTAINER",),
+                        label="grype (images)")  # fmt: skip
+    tools = score(truth(SCA, IMAGE_SEED), [], [*OK, image_run])["tools"]
+    assert tools["grype"] == {"status": "ok", "version": "1"}
+    assert tools["grype (images)"] == {"status": "failed", "reason": "no web.oci.tar"}
+
+
+def test_image_findings_stay_out_of_the_findings_the_other_steps_read(tmp_path: Path) -> None:
+    """explanations reads every out/eval/findings/*.ndjson: CONTAINER findings go to findings-images/."""
+    out = tmp_path / "out"
+    run_module.write_image_findings(out, [finding("grype", "GHSA-x", "x", "CONTAINER")])
+    assert (out / "findings-images" / "grype.ndjson").is_file()
+    assert not (out / "findings").exists()

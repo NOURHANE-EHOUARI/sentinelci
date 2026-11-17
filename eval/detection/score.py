@@ -29,8 +29,8 @@ from typing import Any
 SCAN_ROOT = "demo-shop/"
 
 
-# The categories each scan of `make eval` covers (eval/detection/run.py). An image scan, when it is wired in,
-# is another run of grype or trivy that covers CONTAINER.
+# The categories each scan of `make eval` covers (eval/detection/run.py). The image scan (`--images`) is
+# another run of grype, labelled "grype (images)", that covers CONTAINER.
 SCAN_CATEGORIES: dict[str, tuple[str, ...]] = {
     "gitleaks": ("SECRET",),
     "trivy": ("IAC",),
@@ -43,13 +43,15 @@ SCAN_CATEGORIES: dict[str, tuple[str, ...]] = {
 @dataclass(frozen=True)
 class ToolRun:
     """One scanner's run: `ok` with its version, or why it did not run (`failed`, `skipped`); and the
-    categories it scanned (by default, those of its scan in SCAN_CATEGORIES)."""
+    categories it scanned (by default, those of its scan in SCAN_CATEGORIES). `label` names it in the report
+    when one tool runs twice (grype on the manifests, then on the images)."""
 
     tool: str
     status: str  # ok | failed | skipped
     version: str | None = None
     reason: str | None = None
     categories: tuple[str, ...] | None = None
+    label: str | None = None
 
     def scanned(self) -> tuple[str, ...]:
         if self.status != "ok":
@@ -178,7 +180,9 @@ def score(truth: Mapping[str, Any], findings: list[Mapping[str, Any]], runs: lis
 
     measured = [entry for entry in categories.values() if entry["measured"]]
     return {
-        "tools": {run.tool: _run_out(run) for run in sorted(runs, key=lambda r: r.tool)},
+        "tools": {
+            run.label or run.tool: _run_out(run) for run in sorted(runs, key=lambda r: r.label or r.tool)
+        },
         "categories": categories,
         "overall": {
             "seeds_measured": sum(entry["seeds"] for entry in measured),
