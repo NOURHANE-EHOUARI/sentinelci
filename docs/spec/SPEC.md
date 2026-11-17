@@ -10,6 +10,7 @@
 
 | Version | Change |
 |---|---|
+| 1.1.134 | A4 and A8, the demo's dashboard data (after 1.1.132, Hiba's review of #170): `make release` writes each `sentinel verify` mode's trust report as JSON too (`out/release/evidence/trust-report.registry.json` and `trust-report.evidence.json`), the files `cli/README.md`'s `sentinel upload-release --trust-report` example reads and no release wrote until now, so a laptop release reaches the Releases page and Grafana's attestation panel; `deploy/release/README.md` gives the two upload commands, and the real-tools release test checks the reports with `upload-release`'s own validator. Grafana's gate block rate and remediation success leave out a context or a strategy with nothing recorded in the window (`> 0` on the denominator, as MTTR and alert reduction do), instead of a 0/0 NaN series in the legend; both queries are pinned. §10 says which eight of the ten names `/metrics` serves (all but the two durations). |
 | 1.1.132 | A8 Grafana (found while checking the demo script): the dashboard's release-gate row said "no data until the platform stores decisions, B1", but the platform records decisions since API 1.6.0 and `/metrics` serves `sentinel_gate_decisions_total` from them. The row now reads "Release gate (from recorded decisions)". A title only: no query changes. The supply-chain row's "stage and AI durations once stored" stays true: no duration is recorded yet. |
 | 1.1.128 | A5c `make demo-attack` over TLS (§7, after 1.1.127): crane pushes the tampered and the BLOCK images to the cluster's registry trusting its CA through `SSL_CERT_FILE`, as `cosign load` does; its `--insecure`, which also skipped the certificate check, is gone. The policy it compares is rendered with no insecure flag. Round 2 (Hiba's kind run on `9da0efc`): the GitOps attack's sync, which Argo CD 3.6 keeps retrying after Kyverno's denial, counts as refused (`demo.refused`, 1.1.127 round 2); with it, all five attacks were refused by their own check on the cluster. |
 | 1.1.127 | A5b `make demo-release` over TLS (§7, after 1.1.126): `cosign load` and `sentinel verify` reach the cluster's registry with no HTTP flag, trusting its CA through `SSL_CERT_FILE`, a bundle of the host's CAs and `.sentinel/kind/tls/ca.crt` that `demo.py` writes once (`cluster.trust_bundle`); without the CA (no `make kind-up`), nothing is loaded and the exit code is 3. The policy it compares is rendered with no insecure flag. Round 2 (Hiba's kind run on `9da0efc`): Argo CD 3.6 retries a failed automated sync by itself, with no `retry` block (phase `Running`, `retryCount` growing), so a sync Kyverno denied never ended `Failed` and the wait timed out after 300 s; a retried sync of that commit now counts as failed (`demo.refused`), and a first sync still running is waited for. `test_kind_demo.py` passes `SSL_CERT_FILE` to its own `cosign load` (the tool runner's minimal environment drops it) and applies its policy inside the `try`, so a failed setup leaves none behind. |
@@ -903,11 +904,17 @@ Implemented (A8a): the platform API's `GET /metrics` (`platform/api/src/sentinel
 these names, with only these labels, in the Prometheus text format. Values are counted by PostgreSQL in one
 read-only REPEATABLE READ transaction per scrape (one snapshot, so a ratio's two halves come from the same rows),
 and no row is loaded. A metric whose data the platform does not store yet is absent, never 0, so
-Grafana shows "No data" rather than "0 BLOCK". Exposed so far: `sentinel_gate_decisions_total`, the gate decisions
-recorded (`POST /api/v1/runs/{id}/decision`), by verdict and the run's context; and `sentinel_findings_open`, the findings of each
+Grafana shows "No data" rather than "0 BLOCK". Exposed: eight of the ten names, all but the two durations
+(`sentinel_pipeline_stage_duration_seconds`, `sentinel_ai_request_duration_seconds`), whose data the platform
+does not store yet. `sentinel_gate_decisions_total`, the gate decisions
+recorded (`POST /api/v1/runs/{id}/decision`), by verdict and the run's context; `sentinel_findings_open`, the findings of each
 repository's latest release run of its default branch whose findings are recorded (`ref` equal to
 `SENTINEL_DEFAULT_REF`, default `refs/heads/main`: a manual release run on another branch is not counted), by
-priority (`P0` to `P4`, or `unscored` before scoring) and category. Prometheus scrapes it, and Grafana provisions the read-only
+priority (`P0` to `P4`, or `unscored` before scoring) and category; `sentinel_remediation_attempts_total`, the
+recorded attempts of the remediation loop (`POST /api/v1/remediations`), by strategy and outcome;
+`sentinel_attestation_verifications_total`, the recorded releases whose trust reports `sentinel verify` wrote
+(`POST /api/v1/releases`), by result; the MTTR pair and the alert-reduction pair, as above
+(`metrics.py`'s docstring says what each counts). Prometheus scrapes it, and Grafana provisions the read-only
 `SentinelCI overview` dashboard (`deploy/compose/grafana/provisioning/dashboards/`): open findings, gate block rate,
 remediation success, attestation verifications, stage and AI durations.
 

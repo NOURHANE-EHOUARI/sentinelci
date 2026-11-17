@@ -952,8 +952,12 @@ def sign(
         trust = sentinel("verify", reference, "--key", str(settings.public_key), "--repo", REPO,
                          "--builder-id", builder_id(), *settings.tool_args())  # fmt: skip
         reports = []
-        for mode in (["--registry-http"], ["--evidence", str(paths.evidence)]):
-            verified = run([*trust, *mode], check=False)
+        # Each mode's report also as JSON (schemas/trust-report.v1.json), next to the decision: what
+        # `sentinel upload-release --trust-report` sends to the platform (cli/README.md).
+        modes = (("registry", ["--registry-http"]), ("evidence", ["--evidence", str(paths.evidence)]))
+        for name, mode in modes:
+            report_json = ["--report-json", str(paths.evidence / f"trust-report.{name}.json")]
+            verified = run([*trust, *mode, *report_json], check=False)
             reports.append(verified.stdout)
             if verified.returncode != 0:
                 print(verified.stdout, end="", file=sys.stderr)

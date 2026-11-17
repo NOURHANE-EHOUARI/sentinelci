@@ -31,9 +31,25 @@ make release-block   # the demo's BLOCK image (requirements.block.txt): the gate
 | `out/release/bundle` | the image, its signature and its four attestations (`cosign save`) | `make
 demo-release` |
 | `out/release/evidence` | decision, findings, SBOMs, tool status, Sigstore bundles, evidence store, trust
-reports | `sentinel verify --evidence`, `sentinel replay` |
+reports (`trust-report.txt`, and each mode's as JSON: `trust-report.registry.json`, `trust-report.evidence.json`) | `sentinel verify --evidence`, `sentinel replay`, `sentinel upload` and `sentinel upload-release` |
 | `out/release/block-image` | the BLOCK image's OCI layout, never signed | `make demo-attack` |
-| `out/release/block-evidence` | the BLOCK decision and its inputs | |
+| `out/release/block-evidence` | the BLOCK decision and its inputs (no trust report: nothing was signed) | `sentinel upload` |
+
+To show a release on the platform (the Releases page, and Grafana's attestation, decision and open-findings
+panels), with `SENTINEL_API_TOKEN` in the environment and the platform on `127.0.0.1:8000`:
+
+```bash
+commit=$(jq -r .subject.commit out/release/evidence/decision.v1.json)
+uv run sentinel upload --findings out/release/evidence/findings.ndjson \
+  --decision out/release/evidence/decision.v1.json --api-url http://localhost:8000 \
+  --repo NOURHANE-EHOUARI/sentinelci --commit "$commit" --context release --ref refs/heads/main
+uv run sentinel upload-release --decision out/release/evidence/decision.v1.json \
+  --trust-report out/release/evidence/trust-report.registry.json \
+  --trust-report out/release/evidence/trust-report.evidence.json --api-url http://localhost:8000
+```
+
+The BLOCK image's run goes up the same way from `out/release/block-evidence` (its own commit), with
+`sentinel upload` only: the gate's block rate counts it.
 
 Exit codes: 0 released (or, for `release-block`, blocked as expected); 1 the gate blocked the release (or did
 not block the BLOCK image); 3 the release could not be made. Nothing is signed unless the decision is PASS or

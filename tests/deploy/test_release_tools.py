@@ -195,3 +195,14 @@ def test_a_release_that_passes_the_gate_is_signed_end_to_end(tmp_path: Path) -> 
         == decision(out / "evidence" / "decision.v1.json")["subject"]["image_digest"]
     )
     assert "TRUSTED: 16/16 checks passed" in (out / "evidence" / "trust-report.txt").read_text()
+    # What `sentinel upload-release` sends (cli/README.md), checked as the platform checks it, offline.
+    from sentinelci.report.release_upload import release_evidence
+
+    reports = [
+        (out / "evidence" / f"trust-report.{mode}.json").read_bytes() for mode in ("registry", "evidence")
+    ]
+    sent = json.loads(release_evidence((out / "evidence" / "decision.v1.json").read_bytes(), reports))
+    assert [(r["mode"], r["trusted"]) for r in sent["trust_reports"]] == [
+        ("registry", True),
+        ("evidence", True),
+    ]

@@ -284,9 +284,17 @@ class FakeTools:
             "sentinel evaluate": self.evaluate,
             "crane push": self.push,
             "sentinel attest": lambda call: done(),
-            "sentinel verify": lambda call: done("TRUSTED: 16/16 checks passed\n", 0 if self.trusted else 1),
+            "sentinel verify": self.verify,
             "cosign save": self.save,
         })  # fmt: skip
+
+    def verify(self, call: Call) -> Any:
+        """`sentinel verify`: the text report, and the JSON one where `--report-json` names it."""
+        if "--report-json" in call.args:
+            mode = "evidence" if "--evidence" in call.args else "registry"
+            report = {"trusted": self.trusted, "mode": mode}
+            Path(call.option("--report-json")).write_text(json.dumps(report) + "\n", encoding="utf-8")
+        return done("TRUSTED: 16/16 checks passed\n", 0 if self.trusted else 1)
 
     def public_key_of(self, call: Call) -> Any:
         return done(self.public_key, 0 if call.env and call.env.get("COSIGN_PASSWORD") == PASSWORD else 1)
@@ -404,6 +412,16 @@ def test_a_release_the_gate_lets_through_is_signed_and_saved(repo: Path, tmp_pat
         "sentinel verify",
         "cosign save",
     ]
+    # Each mode's report as JSON in the evidence, the names `sentinel upload-release --trust-report` reads
+    # (cli/README.md), registry mode first: the release's trust reports reach the platform as they are.
+    registry, evidence = recorder.named("sentinel verify")
+    work = repo / "out" / "release" / "work" / "evidence"
+    assert "--registry-http" in registry.args and "--evidence" in evidence.args
+    assert registry.option("--report-json") == str(work / "trust-report.registry.json")
+    assert evidence.option("--report-json") == str(work / "trust-report.evidence.json")
+    for name in ("registry", "evidence"):
+        report = json.loads((out / "evidence" / f"trust-report.{name}.json").read_text(encoding="utf-8"))
+        assert report == {"trusted": True, "mode": name}
 
 
 def test_the_password_reaches_only_the_processes_that_use_the_key(repo: Path, tmp_path: Path) -> None:
