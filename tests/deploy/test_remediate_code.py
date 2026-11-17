@@ -126,6 +126,7 @@ class Proposed:
     status: str
     reason: str = ""
     proposal: PatchProposal | None = None
+    cause: str | None = None
 
 
 @dataclass
@@ -407,6 +408,22 @@ def test_a_fixer_that_proposes_nothing_ends_the_finding(repo: Path, tmp_path: Pa
     loop = Loop(repo, tmp_path, Scenario(proposed=[Proposed(status, "a file with a secret is never sent")]))
     (attempts,) = loop().values()
     assert attempts == [{"number": 1, "status": status, "reason": "a file with a secret is never sent"}]
+    assert not loop.named("remediate", "apply")
+
+
+@pytest.mark.parametrize(
+    ("cause", "reason"),
+    [("provider", "the provider failed: connection refused"), ("answer", "no usable fix in two answers")],
+)
+def test_an_unavailable_attempt_records_its_cause(
+    repo: Path, tmp_path: Path, cause: str, reason: str
+) -> None:
+    """The fix rate reads the record, not the outcome: a model server that was down is not measured, an
+    answer that was not usable is an attempt that failed. The cause says which, whatever the reason's words
+    (#158 review)."""
+    loop = Loop(repo, tmp_path, Scenario(proposed=[Proposed("unavailable", reason, cause=cause)]))
+    (attempts,) = loop().values()
+    assert attempts == [{"number": 1, "status": "unavailable", "reason": reason, "cause": cause}]
     assert not loop.named("remediate", "apply")
 
 
