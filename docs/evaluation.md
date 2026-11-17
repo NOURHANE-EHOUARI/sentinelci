@@ -1,10 +1,10 @@
 # SentinelCI evaluation report
 
-> **Provisional: the numbers of 15 November 2026.** Each one comes from a run made on 14 or 15 November, on the
-> commit named on its page, and several runs used different commits and inputs. SPEC section 16 replaces all of
-> them with **one full run on a clean checkout on 27 November**, whose reports are committed with their input
-> digests ([The 27 November run](#the-27-november-run) gives the commands). Until then, read every number
-> below with the commit and inputs next to it.
+> **Provisional: the numbers of 15 November 2026, and the verified fix rate of 17 November.** Each one comes
+> from a run made between 14 and 17 November, on the commit named on its page, and several runs used different
+> commits and inputs. SPEC section 16 replaces all of them with **one full run on a clean checkout on 27
+> November**, whose reports are committed with their input digests ([The 27 November run](#the-27-november-run)
+> gives the commands). Until then, read every number below with the commit and inputs next to it.
 
 This is the "one evaluation report" of SPEC section 17. It has one page for each metric of section 17's list,
 with section 3's target, and a summary first. SPEC section 3 asks to "report real numbers, including misses":
@@ -12,19 +12,21 @@ a missed target and a null result get the same space as a met one. "Not measured
 
 ## Summary
 
-| Metric (§17) | Result, 15 Nov | Comparison (baseline or noise floor) | Target (§3) | Status |
+| Metric (§17) | Result (15 Nov unless dated) | Comparison (baseline or noise floor) | Target (§3) | Status |
 |---|---|---|---|---|
 | [Recall per category, false positives on clean controls](#1-detection-recall-and-false-positives) | 28 of 28 measured seeds detected (100%); 0 false positives on 5 clean controls; CONTAINER (1 seed) not measured | Counting the unmeasured CONTAINER seed as a miss: 28 of 29 (96.6%) | ≥ 90% of seeds found by ≥ 1 scanner | **Met** on the categories measured |
 | [NDCG@10 vs CVSS baseline](#2-ranking-ndcg10-against-the-cvss-baseline) | All categories, by advisory: **0.366** (by package: 0.495) | CVSS-only baseline: 0.347 (by package: 0.390) | NDCG@10 above the CVSS-only baseline | **Met** on all categories; **not met** on SCA by advisory (0.627 vs 0.771) |
-| [ARI, alert reduction, ablation](#3-correlation-ari-alert-reduction-ablation) (A7) | Whole run, stages without a parameter: **25.8%** alert reduction, ARI 0.497. Test half, three stages: ARI 0.827, 57.1% | Ablation on the test half: dedup only 0.0%; dedup+structural ARI 0.793, 40.5%; dedup+embedding ARI 0.657, 52.4% | Alert reduction ≥ 40% | **Not met** (25.8% on the whole run). Pending the review of #146 |
+| [ARI, alert reduction, ablation](#3-correlation-ari-alert-reduction-ablation) (A7) | Whole run, stages without a parameter: **25.8%** alert reduction, ARI 0.497. Test half, three stages: ARI 0.827, 57.1% | Ablation on the test half: dedup only 0.0%; dedup+structural ARI 0.793, 40.5%; dedup+embedding ARI 0.657, 52.4% | Alert reduction ≥ 40% | **Not met** (25.8% on the whole run) |
 | [Explanation rubric, LLM-judge agreement](#4-explanation-rubric-and-cohens-kappa) | 23 explanations: people's pass rates 83% to 100%; the judge rated all 92 answers "yes" | Kappa between the two people: **0.71** pooled. Each person vs the judge: **0.00** pooled | None in §3 | No target. The judge **cannot stand in** for the people here |
-| [Verified fix rate](#5-verified-fix-rate) | Not measured | None | ≥ 60% of attempted fixable seeds | **Not measured** (being built; §16: by 26 Nov) |
+| [Verified fix rate](#5-verified-fix-rate) | 17 Nov: **6 of 8** attempted fixable seeds verified (**75.0%**); LLM code fixer 5 of 6, Dockerfile 1 of 1, Kubernetes 0 of 1 (partial) | None: 21 of 29 seeds have no implemented strategy and are not attempted | ≥ 60% of attempted fixable seeds | **Met** (8 attempted seeds: one seed is 12.5 points) |
 | [AI mislabels on canaries, verdict changes](#6-injection-canaries-mislabels-and-verdict-changes) | **0 verdict changes**; pinned model: 0 of 10 outputs obeyed, 0 of 5 hints mislabelled | Control model that always obeys: 10 of 10 obeyed, 5 of 5 mislabelled, 0 verdict changes | 0 verdict changes (hard requirement) | **Met**, with 2 of the 5 canaries §17 asks for |
 | [Pipeline p50/p95](#7-pipeline-p50-and-p95) | One pass of the gate's steps: p50 **12.4 s**, p95 **12.8 s** (20 runs, one machine) | A pull request scans twice: 2 × p95 = 25.7 s | PR feedback time p95 ≤ 10 min | **Met on this machine**; not a CI measurement |
 | [Replay identity](#8-replay-identity) | **10 of 10** compared decisions identical, recorded and replayed on two checkouts | Engine made to sort violations the other way: 8 of 10 (the measurement sees drift) | 100% identical | **Met** by hand; the nightly job has not run yet |
 
 Section 3 also lists gate correctness and deploy enforcement. They are not in section 17's list, and this
-report does not cover them.
+report does not measure them. For deploy enforcement, the kind tests of #60 to #62 ran on a real cluster on
+16 November (#62 at `dabac05`): the signed release was admitted, and every bad image and all five attacks were
+refused by the check that must refuse them (9 tests passed). That is a test result, not a measured rate.
 
 ---
 
@@ -72,8 +74,8 @@ never 0.
 committed). PR #77 introduced the report.
 
 ```bash
-uv run sentinel tools grype-db --db-dir .sentinel/grype-db
-make eval DB_DIR=.sentinel/grype-db
+uv run sentinel tools grype-db --db-dir out/grype-db
+make eval DB_DIR=out/grype-db
 ```
 
 **Limits.**
@@ -127,7 +129,7 @@ them at their severity's floor. By package, SCA is about even (0.836 against 0.8
 the same table is in the text of PR #121.
 
 ```bash
-make eval DB_DIR=.sentinel/grype-db
+make eval DB_DIR=out/grype-db
 make eval-ranking
 ```
 
@@ -149,10 +151,9 @@ make eval-ranking
 
 ## 3. Correlation: ARI, alert reduction, ablation
 
-**Owner: A7 (Nourhane).** These numbers are **pending the review of PR #146**, which has 2 should-fix open
-(below). They come from SPEC changelog row 1.1.98 and `eval/correlation/threshold.json` on #146's branch
-(`a7f/threshold`, head `8d20426`); neither is on `main` yet. `eval/correlation/README.md` on `main` describes the
-method.
+**Owner: A7 (Nourhane).** These numbers come from SPEC changelog row 1.1.98 and
+`eval/correlation/threshold.json`, both on `main` since #146 merged (16 November, `0d8550a`).
+`eval/correlation/README.md` describes the method.
 
 **What it measures.** How well the correlator (`sentinel_ai.correlate`) groups `make eval`'s findings into true
 root causes (adjusted Rand index: 1 when the groups are exactly the root causes, about 0 for a random grouping),
@@ -174,7 +175,7 @@ measured.
 | Calibration half (50 findings, 24 root causes) | all three stages, threshold 0.75 | 0.644 | 70.6% | — |
 
 - The calibrated threshold is 0.75, not at the edge of the grid (0.5 to 0.95). On the calibration curve, the
-  correlator's shipped default, 0.8, gives ARI 0.628.
+  correlator's default before #146, 0.8, gives ARI 0.628.
 - The sensitivity curve on the test half peaks at 0.85 (ARI 0.841). It is reported and was not used to move the
   threshold.
 - The groups/places column comes from the review of #146, which checked the row's percentages against them
@@ -196,19 +197,18 @@ measured.
   `threshold.json` sha256 `6124ce73981bae629d415da637eba61daa110fffcc9ff1a5c396b37e2c8badd7`.
 
 **Full report and how to regenerate it.** `out/eval/correlation.md` and `.json` of Nourhane's run (not
-committed); the calibration is `eval/correlation/threshold.json` on #146's branch.
+committed); the calibration is `eval/correlation/threshold.json` on `main`.
 
 ```bash
 ollama pull qwen3-embedding:0.6b          # its digest must be ADR-0009's
-make eval DB_DIR=.sentinel/grype-db
+make eval DB_DIR=out/grype-db
 make eval-correlation                     # with the committed threshold.json; never recalibrate on the test half
 ```
 
 **Limits.**
-- **Open review (#146), 2 should-fix:** (1) the correlator still ships `DEFAULT_THRESHOLD = 0.8`
-  (provisional), so the product's stage 2b would not run at the calibrated 0.75 that 0.827 and 57.1% describe;
-  (2) `make eval-correlation` accepts any threshold in `threshold.json` as "calibrated on the calibration half",
-  even one set by hand. These numbers may change with the fixes.
+- **#146's two should-fix are fixed on `main`:** the correlator's `DEFAULT_THRESHOLD` is the calibrated 0.75,
+  pinned to `threshold.json` by a test, and `make eval-correlation` refuses a threshold that is not its own
+  calibration curve's best. `threshold.json` did not change (sha256 `6124ce73…`), so the numbers above stand.
 - **A label change after scores were seen, disclosed in the README:** the SCA package rule and RC-DOCKER-002 were
   added in the review of #90, after the dedup and structural scores had been seen and before any embedding
   score.
@@ -273,7 +273,7 @@ computed for this report from the three rating sheets; the kappas and pass rates
 and each rater's ratings (not committed).
 
 ```bash
-make eval DB_DIR=.sentinel/grype-db
+make eval DB_DIR=out/grype-db
 make eval-explanations OLLAMA_URL=http://127.0.0.1:11434   # about an hour on a CPU
 # each person copies out/eval/explanations/sheet.yaml to ratings-<name>.yaml and rates alone
 make eval-rubric RATERS="hiba nourhane"
@@ -292,13 +292,75 @@ make eval-rubric RATERS="hiba nourhane"
 ## 5. Verified fix rate
 
 **What it measures.** The share of attempted fixable seeds whose fix the remediation loop verifies (SPEC section
-9).
+9). `make eval-fixrate` (#159) runs §9's real strategies on demo-shop's seeds, and the real verification gate
+judges every proposal, as the bot's `verify` job does: build, the shop-api tests in the pinned test image, a new
+scan, `score`, `evaluate` and `remediate verify`. The rules were set before any run: a seed is **attempted** when
+§9 has a strategy for it, the strategy is implemented, the base scan detected the seed and the strategy ran on it.
+A strategy that ran and proposed nothing stays in the denominator. A seed is **VERIFIED** only when every finding
+that detects it is claimed by a proposal the gate verified; otherwise it is PARTIAL, attempted and not verified.
+A step that cannot run (the model server down, a failed scan, an attempt that never reached the gate) withholds
+the headline: "not measured", never 0.
 
-**Result. Not measured.** The measurement is being built; section 16 plans it on demo-shop by 26 November.
+**Result. 6 of 8 attempted fixable seeds verified (75.0%)**, on 17 November.
 
-**Target (§3).** ≥ 60% of attempted fixable seeds: **not measured** (not 0).
+| Strategy (§9) | Seeds | Attempted | Verified | Partial | No proposal | Not attempted | Rate |
+|---|---|---|---|---|---|---|---|
+| `llm:code` (SAST) | 6 | 6 | 5 | 0 | 1 (no usable answer) | 0 | 83.3% |
+| `deterministic:dockerfile` | 1 | 1 | 1 | 0 | 0 | 0 | 100% |
+| `deterministic:kubernetes` | 1 | 1 | 0 | 1 | 0 | 0 | 0% |
+| `deterministic:dependency-bump` (SCA 8, CONTAINER 1) | 9 | 0 | — | — | — | 9: not implemented | — |
+| none (SECRET 5, PIPELINE 3, IAC on Terraform 4) | 12 | 0 | — | — | — | 12: no strategy in §9 | — |
 
-**Inputs, full report, command.** None yet. This page will name them with the 27 November run.
+- **VERIFIED (6):** GT-SAST-001, 002, 003, 004 and 006, each on the code fixer's first attempt; GT-IAC-006, the
+  Dockerfile.
+- **PARTIAL (1):** GT-IAC-005. The Kubernetes fixer's proposal was verified for KSV-0017 and KSV-0009 and leaves
+  KSV-0023 (a hostPath volume) open, by design.
+- **NO PROPOSAL (1):** GT-SAST-005, an `eval` of a query parameter. The pinned model gave no usable answer
+  twice: each answer is malformed JSON followed only by empty tokens, cut at the 2048-token limit (#164).
+- No proposal was REJECTED by the gate and none FAILED its build or tests.
+- **Reproducible:** run 2 (on `4b6d637`, before the limit) gave the same 7 proposals, with identical diff
+  sha256 and proposal ids. Temperature 0 and a fixed seed make each answer the same on every run.
+
+**Target (§3).** ≥ 60% of attempted fixable seeds: **met** (6 of 8; the rule compares the exact fraction).
+GT-SAST-005 counts as a failed attempt. It would be met either way: 7 of 8 if it were verified.
+
+**Inputs.**
+- Commit `f696756` (`b8/fix-rate`, #159, which merges #158 and #164). demo-shop tree `c98ffb45…`, ground truth
+  sha256 `83a2cde6…`, `make eval`'s detection report `89e85e6c…`, base findings `853b86d7…`.
+- Model `gemma4:12b-it-qat`, digest `sha256:38044be4…` (ADR-0009), prompt `sentinel-patch-code/1` (sha256
+  `dca75dd0…`), temperature 0, seed 42, at most 2048 tokens.
+- Tools: Gitleaks 8.30.1, Trivy 0.76.1, zizmor 1.32.0, Opengrep 1.33.1, Syft 1.55.0, Grype 0.121.0, OPA 1.21.4
+  (`tools.lock.toml` sha256 `3f7400e9…`); Grype database report `0af3d6f4…`.
+- Test image `sha256:bc1908db…`, built from `demo-shop/services/shop-api/Dockerfile.test`'s base image and its
+  27 hash-pinned wheels (see Limits).
+
+**Full report and how to regenerate it.** `out/eval/fixrate.md` and `fixrate.json` of that run (not committed;
+sha256 `768c51d7…` and `2e8bb659…`), with every proposal, check and decision under
+`out/eval/fixrate/f696756dee67/`. The run took 37 minutes on one CPU-only machine with nothing else running.
+
+```bash
+make eval DB_DIR=out/grype-db
+docker build -f demo-shop/services/shop-api/Dockerfile.test -q demo-shop/services/shop-api   # prints its id
+make eval-fixrate TEST_IMAGE=<that id> GRYPE_DB=out/grype-db OLLAMA_URL=http://127.0.0.1:11434
+```
+
+**Limits.**
+- **Small denominator.** 8 attempted seeds: one seed moves the rate by 12.5 points. 21 of the 29 seeds are not
+  attempted, so the rate says nothing about dependency bumps (not implemented) or secrets, workflows and
+  Terraform (no strategy in §9).
+- **The LLM fixer was tried on 6 seeds only**, the SAST seeds demo-shop plants; SPEC section 17 asks for 10.
+- **Two earlier runs were not measured, and the length limit came after seeing them.** Run 1 (`2a49427`, 16
+  November) and run 2 (`4b6d637`, 17 November) both withheld the headline: GT-SAST-005's first call ran to the
+  15-minute time limit, a provider failure. I first put it down to a loaded machine. Run 2, on an idle machine,
+  showed it wasn't: the model's answer never ends. #164 adds the 2048-token limit, so such an answer is an
+  unusable answer (a failed attempt), not a server failure. The measurement's rules did not change. Without the
+  limit, the bounds of run 2 were 6 of 8 to 7 of 8.
+- **The test image was built from hash-checked wheels.** This sandbox's TLS proxy re-signs HTTPS, and pip inside
+  `docker build` does not trust its CA. The same 27 wheels were downloaded on the host with `--require-hashes`,
+  and a copy of `Dockerfile.test` installs them with `--no-index` on the same base image. shop-api's 12 tests
+  pass in it, with no network and a read-only filesystem. The 27 November run builds the image as written.
+- **One machine, one model.** The rate is the pinned model's on this machine's CPU, about 2.9 tokens a second;
+  a CPU slower than 2.3 tokens a second hits the time limit before the length limit.
 
 ---
 
@@ -336,7 +398,7 @@ verdict stays the same, which shows the measurement sees an obeyed canary when t
 `out/eval/canaries/outputs/` (not committed).
 
 ```bash
-make eval DB_DIR=.sentinel/grype-db
+make eval DB_DIR=out/grype-db
 make eval-canaries OLLAMA_URL=http://127.0.0.1:11434
 ```
 
@@ -388,7 +450,7 @@ measurement.
 **Full report and how to regenerate it.** `out/eval/timing.md` and `timing.json` of that run (not committed).
 
 ```bash
-make eval-timing DB_DIR=.sentinel/grype-db          # RUNS=20 by default
+make eval-timing DB_DIR=out/grype-db          # RUNS=20 by default
 ```
 
 **Limits.**
@@ -449,11 +511,13 @@ uv run python eval/replay/run.py --replay-from ../replay-main                 # 
 - **Rater blindness:** Hiba knew the judge had rated everything "yes"; Nourhane did not.
 - **Reruns:** the canaries' first run lost one output to an out-of-memory kill, and the reported run is the
   second; the judge's reported run followed one that failed with an HTTP 500.
+- **Fix rate:** two runs were not measured (GT-SAST-005's answer never ended), and the 2048-token limit
+  (#164) was added after seeing them; the rules did not change. Its test image was built from the same
+  hash-checked wheels because of the sandbox's TLS proxy.
 - **Different inputs across pages:** detection, canaries and the rubric share one set of findings (zizmor
   1.32.0); ranking, correlation and replay used 14 November's (zizmor 1.31.1). The 27 November run removes this.
 - **Commits inferred, not recorded:** detection, ranking and timing reports do not record their commit; it is
   taken from each worktree's reflog.
-- **Pending review:** A7's numbers (#146, 2 should-fix).
 
 ## The 27 November run
 
@@ -462,17 +526,18 @@ On a clean checkout of `main` after the feature freeze (26 November), with the p
 
 ```bash
 make setup && make tools && make tools-verify
-uv run sentinel tools grype-db --db-dir .sentinel/grype-db
-make eval DB_DIR=.sentinel/grype-db                             # detection; writes out/eval/findings
+uv run sentinel tools grype-db --db-dir out/grype-db
+make eval DB_DIR=out/grype-db                             # detection; writes out/eval/findings
 make eval-ranking
 make eval-replay
-make eval-timing DB_DIR=.sentinel/grype-db
+make eval-timing DB_DIR=out/grype-db
 make eval-canaries OLLAMA_URL=http://127.0.0.1:11434
 make eval-explanations OLLAMA_URL=http://127.0.0.1:11434       # then each person rates alone
 make eval-rubric RATERS="hiba nourhane"
 make eval-correlation                                           # with the committed threshold.json
+make eval-fixrate TEST_IMAGE=<the shop-api test image id> OLLAMA_URL=http://127.0.0.1:11434
 ```
 
 Then commit the reports with their input digests and replace every number above, and the provisional note at the
-top. The verified fix rate joins with the command that measures it. Under section 16's drop order, a metric cut
+top. Under section 16's drop order, a metric cut
 before then is reported as not measured, never as 0.
