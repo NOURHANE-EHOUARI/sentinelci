@@ -27,8 +27,9 @@ What SentinelCI defends, against whom, and where each defence lives and is teste
   invents a fix.
 - **A4, the attacker inside the network path**: a proxy, a redirect, a registry that serves something else.
 - **A5, the insider with push rights**: one of the two team members, or a session acting for one. Since the
-  switch (ADR-0016), `main` needs the other member's approval of its most recent push and a green CI, so one
-  insider alone cannot change it through a pull request; the owner's account can still turn the protection off,
+  switch (ADR-0016), `main` needs the other member's approval of its most recent push and a green CI (until
+  the required checks are on, step 7 of the switch, a local `make check` report), so one insider alone cannot
+  change it through a pull request; the owner's account can still turn the protection off,
   and the release key is still one person's (section 5).
 
 ## 3. Trust boundaries
@@ -135,7 +136,7 @@ token or a secret, and a job that holds one runs no repository code.
 
 | Risk | Why it is accepted now | What removes it |
 |---|---|---|
-| `main`'s protection is a GitHub setting, not part of the repository: the owner's account can turn it off | Two people. Scorecard's Branch-Protection check runs on every push to `main` and publishes what it can see with the workflow's own token: force-push, deletion and review settings, not the admin bypass, which needs an admin token; the bypass needs a look by hand after any change to the settings | — |
+| `main`'s protection is a GitHub setting, not part of the repository: the owner's account can turn it off | Two people. Scorecard's Branch-Protection check runs on every push to `main` and publishes what it can see with the workflow's own token: force-push, deletion and the number of approvals. It does not see the settings that need an admin token: stale-approval dismissal, approval of the most recent push, the required checks and the admin bypass; those four need a look by hand after any change to the settings | — |
 | Any workflow run can read a repository secret | There is no signing secret on GitHub (ADR-0011), so there is nothing to protect yet | Environment branch rules, available now that the repository is public, when step 2 of ADR-0016 brings a signing identity to CI |
 | The laptop signer trusts the laptop | A local key stays the only signer until keyless signing, after v1.0.0 (ADR-0016, step 2) | Keyless signing in CI (ADR-0016, step 2) |
 | `verify` in the bot runs the same code as `propose` | A compromised dependency could write a false result, but holds no write token: at worst a wrong comment on a pull request a reviewer still judges | — |

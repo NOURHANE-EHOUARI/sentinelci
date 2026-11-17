@@ -69,7 +69,7 @@ CA_CONFIG_MAP = "kind-registry-ca"  # in the kyverno namespace, mounted into its
 CA_MOUNT = "/sentinel-registry-ca"
 KYVERNO_ADMISSION = "kyverno-admission-controller"
 REPO = "NOURHANE-EHOUARI/sentinelci"
-# The builder `make release` records (ADR-0011): in the private phase every release is a laptop release. A
+# The builder `make release` records (ADR-0011): until keyless signing, every release is a laptop release. A
 # release from the CI workflow passes --builder-id (Hiba's kind run, #60: that builder refused it).
 BUILDER_ID = local_release_builder_id(REPO)
 _PINNED_IMAGE = re.compile(r"^[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[a-f0-9]{64}$")

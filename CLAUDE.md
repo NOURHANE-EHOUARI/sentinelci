@@ -39,12 +39,14 @@ The repository is public (ADR-0016, step 1; it amends ADR-0006). What that chang
   checks `lint, types, contracts, tests`, `dashboard (typed client, types, tests, build)` and
   `workflow security (zizmor)` are required once `ci` has run green on GitHub; until then, a local `make check`
   report on the PR head stands in for them. Never commit or push to `main` directly: always a task branch and a
-  PR, which the other team member reviews and merges.
+  PR, which the other team member reviews and merges. Any new push dismisses an approval, a merge of `main`
+  included, and the last pusher's own approval does not count: ask for a new approval, it is not a bug.
 - GitHub Actions runs on every pull request a person opens or pushes to: keep path filters and caches, and the
-  full image scan nightly on `main`. A pull request the remediation bot opens with `GITHUB_TOKEN` starts no
-  workflow (GitHub's rule for that token): a person closes and reopens it, or pushes to it, so that `ci` runs; a
-  known gap until the bot has an App token. Workflows from fork pull requests need a maintainer's approval; the
-  repository's default workflow permissions are read-only, and every job still sets its own `permissions:`.
+  full image scan nightly on `main`. On a pull request the remediation bot opens with `GITHUB_TOKEN`, the `ci`
+  run waits for a person with write access to approve it (**Approve workflows to run** in the merge box);
+  closing and reopening the pull request also works. Workflows from fork pull requests need a maintainer's
+  approval; the repository's default workflow permissions are read-only, and every job still sets its own
+  `permissions:`.
 - GitHub's alerts on `demo-shop/` are closed with a reason and a comment naming the seed in
   `demo-shop/ground-truth/`: Dependabot as "Risk is tolerable to this project" (comment: "intentionally
   vulnerable demo target, <seed>"), secret scanning as "Used in tests". A closed alert is not a waiver. A new

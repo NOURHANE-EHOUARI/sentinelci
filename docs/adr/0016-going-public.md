@@ -55,8 +55,10 @@ The repository goes public **right after the merge train is merged, on 22 Novemb
    - secret scanning and push protection confirmed on; a push that adds a new fake seed is bypassed as "Used in
      tests", and the value goes into `demo-shop/ground-truth/` in the same pull request, as today;
    - private vulnerability reporting on, which `SECURITY.md` points to;
-   - Scorecard's first public run looked at: what its Branch-Protection check reports with the workflow's token
-     (not the admin bypass), and the image its action runs (threat model, residual risks).
+   - Scorecard's first public run looked at: with the workflow's token its Branch-Protection check sees
+     force-push, deletion and the number of approvals, not the settings that need an admin token (stale-approval
+     dismissal, approval of the most recent push, the required checks, the admin bypass), which are looked at
+     by hand; and the image its action runs (threat model, residual risks).
    - **Right after, one workflow is started by hand** (`workflow_dispatch`), to see that Actions really runs now
      that the repository is public, despite the billing block of the private phase (Nourhane, 15 November). If it
      does not start, the local `make check` reports stay the rule until it does.

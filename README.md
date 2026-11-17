@@ -117,7 +117,7 @@ make up             # the platform in Docker (deploy/compose/README.md)
 make eval           # the detection report on demo-shop
 ```
 
-The release demo (the laptop, during the private phase) goes through these steps:
+The release demo (the laptop, until keyless signing: ADR-0016, step 2) goes through these steps:
 1. `make release-block`: the gate blocks an image with a known-vulnerable dependency, and nothing is signed.
 2. `make release`: the release image is built, judged, signed and verified.
 3. `make kind-up`, `make kind-policy` and `make demo-release`: Kyverno gets the release key's policy, and Argo CD
