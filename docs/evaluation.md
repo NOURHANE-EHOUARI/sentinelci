@@ -524,22 +524,44 @@ uv run python eval/replay/run.py --replay-from ../replay-main                 # 
 ## The 27 November run
 
 SPEC section 16: "The full evaluation run on a clean checkout; its numbers committed with their input digests."
-On a clean checkout of `main` after the feature freeze (26 November), with the pinned tools and models:
+It runs on **Nourhane's laptop**, not in a cloud sandbox: the sandbox's TLS proxy stops npm, pip and Maven
+inside `docker build` (the seed images and the test image cannot be built as written), it cannot run kind, and
+its CPU is barely above the speed the fix rate's time limit needs. The laptop has the registries, Docker and
+the speed.
+
+**Before the day (by the feature freeze, 26 November).**
+- Everything the run measures is merged: the fix rate (#159), `make eval-all` (#166), the CONTAINER image scan,
+  the B9 seeds and canaries, #161's container seeds. `make eval-all` passes `IMAGES=` to detection once the
+  image scan is on `main` (a one-line follow-up).
+- Correlation (A7): stage 2b's threshold is calibrated again on the calibration half of the final ground truth
+  (`make eval-correlation-calibrate`) and `eval/correlation/threshold.json` committed **before** the run, so the
+  test half is never seen first. The committed threshold is refused today, because the ground truth changed.
+- Models: `ollama pull gemma4:12b-it-qat` and `ollama pull qwen3-embedding:0.6b`, and `ollama list` shows the
+  pinned digests (`38044be4…` and `ac6da0df…`, ADR-0009). Speed: the explanation of one seed takes about 2
+  minutes; at less than about 2.5 tokens a second, GT-SAST-005's cut answer no longer fits the 15-minute time
+  limit and the fix rate is not measured (§5).
+
+**On the day**, on a clean checkout of `main`, the machine doing nothing else for about three hours:
 
 ```bash
 make setup && make tools && make tools-verify
-uv run sentinel tools grype-db --db-dir out/grype-db
-make eval DB_DIR=out/grype-db                             # detection; writes out/eval/findings
-make eval-ranking
-make eval-replay
-make eval-timing DB_DIR=out/grype-db
-make eval-canaries OLLAMA_URL=http://127.0.0.1:11434
-make eval-explanations OLLAMA_URL=http://127.0.0.1:11434       # then each person rates alone
-make eval-rubric RATERS="hiba nourhane"
-make eval-correlation                                           # with the committed threshold.json
-make eval-fixrate TEST_IMAGE=<the shop-api test image id> OLLAMA_URL=http://127.0.0.1:11434
+uv run sentinel tools grype-db --db-dir out/grype-db             # that day's database
+docker build -f demo-shop/services/shop-api/Dockerfile.test -q demo-shop/services/shop-api   # prints its id
+make container-seed-images                                      # out/container-seeds/<name>.oci.tar
+make eval-all TEST_IMAGE=<that id> DB_DIR=out/grype-db IMAGES=out/container-seeds
 ```
 
-Then commit the reports with their input digests and replace every number above, and the provisional note at the
-top. Under section 16's drop order, a metric cut
-before then is reported as not measured, never as 0.
+`make eval-all` checks its prerequisites first (a clean checkout, the pinned scanners, the database, Docker, the
+test image by digest, both models) and runs nothing if one fails. It then runs detection, ranking, replay,
+correlation, canaries, explanations, the fix rate and the timing one at a time, and writes
+`out/eval/all/manifest.json`: the commit, each step's status and exit codes, each report by sha256.
+
+**After it.**
+- The manifest says `"official": true` and every step `measured`. A step "not measured" or "failed" is
+  reported as such, with its reason, never rerun quietly. A rerun is disclosed with the first run's result.
+- Each person rates `out/eval/explanations/sheet.yaml` alone, as `ratings-<name>.yaml`, then
+  `make eval-rubric RATERS="hiba nourhane"`.
+- The reports and the manifest are committed with their input digests, every number above is replaced, and
+  the provisional note at the top goes. A number that moved since 15–17 November says why.
+
+Under section 16's drop order, a metric cut before then is reported as not measured, never as 0.
