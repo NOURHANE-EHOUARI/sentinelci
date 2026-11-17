@@ -33,7 +33,7 @@ demo-release` |
 | `out/release/evidence` | decision, findings, SBOMs, tool status, Sigstore bundles, evidence store, trust
 reports (`trust-report.txt`, and each mode's as JSON: `trust-report.registry.json`, `trust-report.evidence.json`) | `sentinel verify --evidence`, `sentinel replay`, `sentinel upload` and `sentinel upload-release` |
 | `out/release/block-image` | the BLOCK image's OCI layout, never signed | `make demo-attack` |
-| `out/release/block-evidence` | the BLOCK decision and its inputs (no trust report: nothing was signed) | `sentinel upload` |
+| `out/release/block-evidence` | the BLOCK decision and its inputs (no trust report: nothing was signed) | `sentinel upload-release` alone |
 
 To show a release on the platform (the Releases page, and Grafana's attestation, decision and open-findings
 panels), with `SENTINEL_API_TOKEN` in the environment and the platform on `127.0.0.1:8000`:
@@ -48,8 +48,19 @@ uv run sentinel upload-release --decision out/release/evidence/decision.v1.json 
   --trust-report out/release/evidence/trust-report.evidence.json --api-url http://localhost:8000
 ```
 
-The BLOCK image's run goes up the same way from `out/release/block-evidence` (its own commit), with
-`sentinel upload` only: the gate's block rate counts it.
+The BLOCK image goes to the Releases page with `upload-release` alone, without a trust report (nothing was
+signed):
+
+```bash
+uv run sentinel upload-release --decision out/release/block-evidence/decision.v1.json \
+  --api-url http://localhost:8000
+```
+
+Never upload the BLOCK image's run with `sentinel upload`. Its decision is a release decision of
+`refs/heads/main`, so the platform would take its findings as `main`'s current state: open findings would show
+the seeded PyYAML 5.3.1 as a P0 that `main` has open, and the next release would count it, and every finding
+only the BLOCK image had, as fixed, which skews MTTR. A `releases` row only keeps it out of open findings, MTTR
+and the attestation counts; it is not in the gate block rate's `release` series either.
 
 Exit codes: 0 released (or, for `release-block`, blocked as expected); 1 the gate blocked the release (or did
 not block the BLOCK image); 3 the release could not be made. Nothing is signed unless the decision is PASS or
