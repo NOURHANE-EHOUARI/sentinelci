@@ -1,0 +1,10 @@
+# Values of the demo-shop chart (task A5b). `make demo-release` sets image.digest in the GitOps repository's
+# release.yaml, after `sentinel verify` trusted that digest. Without a digest the chart renders nothing: the
+# schema (values.schema.json) and the template both refuse it.
+image:
+  # The kind cluster's name for its registry (deploy/kind). The admission policy matches this prefix.
+  repository: kind-registry:5000/demo-shop/shop-api
+  digest: ""
+replicas: 1
+# The release image listens here as UID 10001 (ADR-0011, decision 6).
+port: 8080

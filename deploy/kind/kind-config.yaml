@@ -1,0 +1,15 @@
+# kind cluster of the SentinelCI demo (task A5b, SPEC section 7, ADR-0011 decision 5).
+#
+# Created by `make kind-up` (deploy/kind/cluster.py), which also starts the local registry and installs Kyverno.
+# The node image is pinned by digest: kind v0.33.0's default, from pkg/apis/config/defaults/image.go at that tag
+# (kind itself is pinned by sha256 in tools.lock.toml). Images from kind v0.27.0 on already read per-registry
+# hosts.toml files from /etc/containerd/certs.d, so no containerd patch is needed: cluster.py writes the local
+# registry's there.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: sentinel
+networking:
+  apiServerAddress: "127.0.0.1"
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
