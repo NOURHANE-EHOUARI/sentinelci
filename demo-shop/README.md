@@ -26,7 +26,7 @@ planned: `sentinel.yaml`, `.sentinel/waivers.yaml`.
 | Infrastructure as code | 6 | Terraform (S3, security group, RDS, IAM), Kubernetes, Dockerfile | Trivy 6/6 (GT-IAC-004 through SentinelCI's own check SENTINEL-AWS-0001) |
 | CI workflows (never executed) | 3 | `examples/bad-workflows/` | zizmor 3/3 |
 | Dependencies | 8 | `requirements.txt` (shop-api), `package.json` (web), `pom.xml` (reports): 2 CISA KEV, 3 never imported | Syft 8/8 purls; Grype 8/8 (database of 2026-11-01) |
-| Application code (B9) | 6 | `services/shop-api/app/main.py`: SQL built from a query string, a shell command, YAML with FullLoader, TLS verification off, `eval`, debug mode | Opengrep 6/6 (SentinelCI's rules, #40) |
+| Application code (B9) | 10 | `services/shop-api/app/main.py`: SQL built from a query string, a shell command, YAML with FullLoader, TLS verification off, `eval`, debug mode; `services/web/`: HTML from the address (`public/app.js`), `eval` of a promotion (`public/app.js`), a shell command in the thumbnail route (`server.js`), TLS verification off to shop-api (`server.js`) | Opengrep 10/10 (SentinelCI's rules, #40) |
 | Prompt-injection canaries (B9) | 5 | in `app/main.py`: a comment beside the SQL seed, the import route's OpenAPI description, the ping route's docstring, a forged SentinelCI log beside the proxy, a discount-rule example that closes the code block | not findings: an AI output must never contain their tokens |
 | Clean controls | 5 | placeholders, sensitive variable, hardened deployment, pinned workflow, `app/orders.py` (the same operations, written safely) | no detection |
 
@@ -35,8 +35,15 @@ writes only to `/tmp` (its SQLite catalogue). It imports `yaml` (loading with Fu
 about) and `requests`, never `lxml`. It runs only in its container: the release image (`Dockerfile.release`,
 A9) installs `requirements.release.txt` (hash-pinned wheels, no seeded version), and the BLOCK image
 `requirements.block.txt` (the same, with the seeded pyyaml 5.3.1). Still to come: container image seeds (A9,
-with the release pipeline), and the web front end's code, which imports `lodash` (`template`), never `minimist`
-or `lodash-es` (B9).
+with the release pipeline).
+
+web (`services/web/`, B9) is a Node server, `node server.js` on port 8080 (`infra/k8s/web.yaml`), with
+Node's standard library only: it serves the browser front end (`public/`), answers the probes on `/healthz`,
+makes product thumbnails and forwards `/api/` to shop-api over TLS. Its four SAST seeds (GT-SAST-007 to 010)
+are JavaScript, so they have no security test and the verified fix rate never attempts them: A6's check
+verifies Python fixes only. It imports none of `package.json`'s dependencies yet; the planned `lodash`
+(`template`) import is still to come, never `minimist` or `lodash-es`. It has no image on this base: it runs
+only in a container, like shop-api.
 
 **Not a seed:** `services/shop-api/Dockerfile.release` is the hardened release image (ADR-0011, decision 6),
 built once B9's application and requirements exist. Its build context is an allow-list
@@ -45,7 +52,7 @@ built once B9's application and requirements exist. Its build context is an allo
 **shop-api's tests (B9, ADR-0014), not seeds.** They run only in the test image, never outside a container:
 - `services/shop-api/tests/`: behaviour tests (search, product, ping, order import, proxy, discount). They pass
   on the seeded code and must still pass on any correct fix: A6's `llm:code` check runs them on a patch.
-- `services/shop-api/security_tests/`: one file per SAST seed, named after its Opengrep rule
+- `services/shop-api/security_tests/`: one file per Python SAST seed, named after its Opengrep rule
   (`test_<rule>.py`). Each fails on the seeded code and passes once its weakness is fixed. They are kept out of
   `tests/`, because a fix of one seed leaves the other five.
 - `services/shop-api/Dockerfile.test`: the image they run in. It has the release's base digest and its

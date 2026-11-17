@@ -13,6 +13,8 @@ calibration:
   - GT-SAST-001
   - GT-SAST-003
   - GT-SAST-005
+  - GT-SAST-007
+  - GT-SAST-009
   - GT-SCA-001
   - GT-SCA-003
   - GT-SCA-005
@@ -28,6 +30,8 @@ test:
   - GT-SAST-002
   - GT-SAST-004
   - GT-SAST-006
+  - GT-SAST-008
+  - GT-SAST-010
   - GT-SCA-002
   - GT-SCA-004
   - GT-SCA-006

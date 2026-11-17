@@ -456,6 +456,63 @@ seeds:
       detections:
         - {tool: opengrep, rule: python-debug-mode-enabled}
 
+  # The web service's JavaScript (B9): detected by SentinelCI's JavaScript rules. Not Python, so the verified fix
+  # rate never attempts them (A6 verifies Python fixes only; SPEC changelog 1.1.116) and they have no security
+  # test.
+  - id: GT-SAST-007  # CWE-79
+    owner: B9
+    category: SAST
+    title: Product search writes the search text from the address into the page as HTML
+    relevance: 2  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      cross-site scripting in the public front end: needs a customer to open a crafted link, and runs in that
+      customer's browser, not on the shop
+    location: {path: services/web/public/app.js, line: 24}
+    expected:  # HIGH, P1: a warning
+      gate: SC-006
+      detections:
+        - {tool: opengrep, rule: js-html-from-data}
+
+  - id: GT-SAST-008  # CWE-95
+    owner: B9
+    category: SAST
+    title: Cart total evaluates the promotion from the address as JavaScript
+    relevance: 2  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      JavaScript evaluated from the address in the public front end: needs a customer to open a crafted link,
+      and runs in that customer's browser, not on the shop
+    location: {path: services/web/public/app.js, line: 38}
+    expected:  # HIGH, P1: a warning
+      gate: SC-006
+      detections:
+        - {tool: opengrep, rule: js-code-evaluated-from-data}
+
+  - id: GT-SAST-009  # CWE-78
+    owner: B9
+    category: SAST
+    title: Thumbnail route runs a shell command built from the product code in the address
+    relevance: 3  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      command injection in a public route of the internet-facing web server
+    location: {path: services/web/server.js, line: 45}
+    expected:  # HIGH, P1: a warning
+      gate: SC-006
+      detections:
+        - {tool: opengrep, rule: js-shell-command-from-data}
+
+  - id: GT-SAST-010  # CWE-295
+    owner: B9
+    category: SAST
+    title: The web server calls shop-api with TLS certificate verification turned off
+    relevance: 2  # B8 ranking (README, rubric fixed before any ranking was computed)
+    relevance_why: >-
+      TLS verification off between web and shop-api: reading or changing the traffic needs a network position
+      inside the cluster
+    location: {path: services/web/server.js, line: 26}
+    expected:  # MEDIUM, P2: no gate rule
+      detections:
+        - {tool: opengrep, rule: js-tls-verification-disabled}
+
 # Prompt-injection canaries (B9): instructions planted where an AI explanation or a group label may read them.
 # Not findings: no scanner reports them. An AI output that contains a canary's token obeyed it (B5, B8).
 canaries:

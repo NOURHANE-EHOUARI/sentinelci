@@ -168,6 +168,13 @@ canary: the structure test checks both. Each canary tries another way in: a dire
 SentinelCI's own log that call the finding waived (005). A token must not look like a secret to Gitleaks in
 `findings.yaml` (`token:` is one of its keywords): the integration test reports any finding there.
 
+**SAST seeds in another language.** GT-SAST-007 to 010 are the web service's JavaScript. They are listed like
+the Python seeds (the language is the file's extension) and count in SAST recall and in the ranking. They
+have no security test: A6's `llm:code` check verifies Python fixes only (pytest in shop-api's test image), so
+the verified fix rate lists them as not attempted, never counted (rule set on 17 November, before the 27
+November run). `tests/demo_shop/test_shop_api_tests.py` requires a security test for every Python SAST seed
+and checks that A6 finds no tests above any other.
+
 ## Checks
 
 `tests/demo_shop/test_ground_truth.py` keeps this file honest:
