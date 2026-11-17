@@ -1,0 +1,141 @@
+# The demo's GitOps repository, served read-only to Argo CD inside kind (task A5b, ADR-0011 decision 5).
+#
+# The repository is a bare git repository on the laptop (.sentinel/gitops/demo-shop.git), which `make demo-release`
+# writes. kind mounts .sentinel/gitops into the node, read-only, at /sentinel-gitops (deploy/kind/cluster.py), and
+# this Pod serves that one repository with `git daemon`: git://gitops.sentinel-gitops.svc.cluster.local/demo-shop.git.
+# Nothing is pushed to GitHub, and the cluster holds no credential.
+#
+# - Read-only three times: the node mount and the Pod's mount are read-only, and the daemon serves upload-pack
+#   only (receive-pack is off and a repository's configuration cannot turn it on).
+# - One repository: --strict-paths serves exactly the one path listed, and only if it holds git-daemon-export-ok.
+# - Reachable from Argo CD's repo server only (NetworkPolicy), and it reaches nothing (no egress).
+# - The image is Argo CD's own, which ships git: no other image to pin. It must stay the image of the pinned Argo
+#   CD manifest (tests/deploy/test_kind.py checks it).
+# - The hostPath volume is why this namespace cannot enforce the Pod Security "baseline" or "restricted" profile.
+#   The repository's files belong to the laptop's user: safe.directory admits them (git refuses a repository
+#   owned by another user), from the command scope, which git reads from GIT_CONFIG_* variables.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sentinel-gitops
+  labels:
+    app.kubernetes.io/part-of: sentinelci-demo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitops
+  namespace: sentinel-gitops
+  labels:
+    app.kubernetes.io/name: gitops
+    app.kubernetes.io/part-of: sentinelci-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitops
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gitops
+        app.kubernetes.io/part-of: sentinelci-demo
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: git-daemon
+          image: quay.io/argoproj/argocd:v3.6.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - git
+            - daemon
+            - --reuseaddr
+            - --port=9418
+            - --strict-paths
+            - --base-path=/srv/git
+            - --forbid-override=receive-pack
+            - --max-connections=16
+            - --timeout=60
+            - --init-timeout=10
+            - /srv/git/demo-shop.git
+          env:
+            - name: GIT_CONFIG_COUNT
+              value: "1"
+            - name: GIT_CONFIG_KEY_0
+              value: safe.directory
+            - name: GIT_CONFIG_VALUE_0
+              value: "*"
+          ports:
+            - name: git
+              containerPort: 9418
+          # From inside the container: the NetworkPolicy below does not apply to its own loopback.
+          readinessProbe:
+            exec:
+              command: [git, ls-remote, --heads, git://127.0.0.1/demo-shop.git]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: repositories
+              mountPath: /srv/git
+              readOnly: true
+      volumes:
+        - name: repositories
+          hostPath:
+            path: /sentinel-gitops
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitops
+  namespace: sentinel-gitops
+  labels:
+    app.kubernetes.io/name: gitops
+    app.kubernetes.io/part-of: sentinelci-demo
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: gitops
+  ports:
+    - name: git
+      port: 9418
+      targetPort: git
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gitops
+  namespace: sentinel-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gitops
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: argocd
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: argocd-repo-server
+      ports:
+        - protocol: TCP
+          port: 9418
+  egress: []
