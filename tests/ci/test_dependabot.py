@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+import tomllib
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -29,6 +30,16 @@ def entry(ecosystem: str) -> dict[str, Any]:
 def test_every_entry_waits_a_week_before_adopting_a_release() -> None:
     for update in updates():
         assert update["cooldown"]["default-days"] >= 7, update["package-ecosystem"]
+
+
+def test_uv_resolves_nothing_newer_than_dependabots_cooldown() -> None:
+    """Dependabot's cooldown covers only the packages it names, and uv resolves the rest: uv waits the same
+    week for every package it resolves (#135 review: grimp 3.20 came in under import-linter, 25 hours old)."""
+    days = entry("uv")["cooldown"]["default-days"]
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert project["tool"]["uv"]["exclude-newer"] == f"{days} days"
+    lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+    assert lock["options"]["exclude-newer-span"] == f"P{days}D", "the lock was not made with the window"
 
 
 def test_the_intentionally_vulnerable_demo_is_never_updated() -> None:

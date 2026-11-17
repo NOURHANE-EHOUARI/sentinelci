@@ -20,7 +20,17 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from sentinel_ai.guardrails import ModelInfo, ask, block, clip, code_window, described, model_record, redact
+from sentinel_ai.guardrails import (
+    Cause,
+    ModelInfo,
+    ask,
+    block,
+    clip,
+    code_window,
+    described,
+    model_record,
+    redact,
+)
 from sentinel_ai.providers import LLMProvider
 from sentinelci.contracts.finding import Finding
 
@@ -74,6 +84,7 @@ class Outcome:
     reason: str
     hint: dict[str, Any] | None = None  # a TriageHint v1 document
     input_sha256: str | None = None
+    cause: Cause | None = None  # why it is "unavailable": the provider failed, or the answers were not usable
 
 
 def prompt(
@@ -111,10 +122,10 @@ def triage_finding(
     if finding.category == "SECRET":
         return Outcome("not sent", "a secret's finding is never sent: rotate the secret")
     user = prompt(finding, findings, repo_root, past_waivers)
-    answer, reason = ask(provider, SYSTEM_PROMPT, user, TriageAnswer, lambda answer: answer)
+    answer, reason, cause = ask(provider, SYSTEM_PROMPT, user, TriageAnswer, lambda answer: answer)
     record = model_record(provider, model, PROMPT_SHA256, user)
     if answer is None:
-        return Outcome("unavailable", reason, input_sha256=record["input_sha256"])
+        return Outcome("unavailable", reason, input_sha256=record["input_sha256"], cause=cause)
     document = {
         "schema_version": "1.0",
         "finding_id": finding.id,
