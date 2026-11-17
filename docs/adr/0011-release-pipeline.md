@@ -106,7 +106,9 @@ registry (ADR-0006, decision 4). Facts checked with the pinned tools on 2026-11-
    It installs `services/shop-api/requirements.release.txt`, which is hash-pinned (`--require-hashes`) with
    fixed versions and written by B9 with the application code. The demo's BLOCK image is the same Dockerfile
    with `--build-arg REQUIREMENTS=requirements.block.txt`: `requirements.release.txt` with pyyaml replaced by
-   the seeded 5.3.1, hash-pinned (its sdist), which gives one BLOCK reason, GT-SCA-001 (SC-002, P0). The seeded
+   the seeded 5.3.1, hash-pinned (its sdist), which gives one BLOCK reason, GT-SCA-001 (SC-002, P0). Since A9b,
+   requests is the seeded 2.30.0 there too (its wheel and sdist hashes, GT-CONTAINER-002): a MEDIUM advisory,
+   P2, with no gate rule, so the BLOCK reason is still the one. The seeded
    `requirements.txt` cannot be the BLOCK image's: it has no hashes, and lxml 4.6.2 cannot be built on Python
    3.12 (review of #43). The ground truth gets a control for the release Dockerfile (no SC-011 on it). The
    seeded Dockerfile and `requirements.txt` stay scan targets, never built.
