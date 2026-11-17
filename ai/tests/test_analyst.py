@@ -225,6 +225,53 @@ def test_a_provider_failure_is_unavailable_at_once_without_its_message() -> None
     assert len(provider.calls) == 1
 
 
+def explain_with(provider: Scripted) -> Any:
+    return explain_finding(SQL, [SQL], provider, model=MODEL, created_at=WHEN)
+
+
+def triage_with(provider: Scripted) -> Any:
+    return triage_finding(SQL, [SQL], provider, model=MODEL, created_at=WHEN)
+
+
+BAD = {"confidence": 1.5}  # breaks either answer's schema
+SECRET_IN = {"explain": {"summary": f"The key {TOKEN} leaks."}, "triage": {"rationale": f"The key {TOKEN}."}}
+
+
+@pytest.mark.parametrize("task", ["explain", "triage"])
+@pytest.mark.parametrize(
+    ("script", "cause"),
+    [
+        (("down",), "provider"),
+        (("bad", "down"), "provider"),
+        (("secret", "down"), "provider"),
+        (("bad", "bad"), "answer"),
+        (("secret", "secret"), "answer"),
+        (("bad", "secret"), "answer"),
+    ],
+    ids=["down", "bad-then-down", "secret-then-down", "bad-twice", "secret-twice", "bad-then-secret"],
+)
+def test_an_unavailable_outcome_says_whether_the_provider_or_the_answer_failed(
+    task: str, script: tuple[str, ...], cause: str
+) -> None:
+    """The caller (the platform's worker, the evaluations) reads `cause`, never the reason's words."""
+    good = GOOD_EXPLANATION if task == "explain" else GOOD_HINT
+    steps = {"down": ConnectionError("down"), "bad": good | BAD, "secret": good | SECRET_IN[task]}
+    provider = Scripted(*(steps[step] for step in script))
+    outcome = (explain_with if task == "explain" else triage_with)(provider)
+    assert (outcome.status, outcome.cause) == ("unavailable", cause)
+    assert len(provider.calls) == len(script)
+
+
+def test_only_an_unavailable_outcome_has_a_cause() -> None:
+    assert explain_with(Scripted(GOOD_EXPLANATION)).cause is None
+    assert explain_with(Scripted(GOOD_EXPLANATION | BAD, GOOD_EXPLANATION)).cause is None
+    assert triage_with(Scripted(GOOD_HINT)).cause is None
+    assert triage_with(Scripted(GOOD_HINT | BAD, GOOD_HINT)).cause is None
+    secret = finding("SECRET", rule_id="github-pat")
+    assert explain_finding(secret, [secret], Scripted(), model=MODEL, created_at=WHEN).cause is None
+    assert triage_finding(secret, [secret], Scripted(), model=MODEL, created_at=WHEN).cause is None
+
+
 def test_a_secrets_finding_is_never_sent() -> None:
     provider = Scripted()
     secret = finding("SECRET", rule_id="github-pat")
