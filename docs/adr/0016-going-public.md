@@ -74,12 +74,14 @@ already plans.
 ## The scans before the switch
 
 `sentinel scan secrets` in git mode over every commit of every branch (891 commits on 142 remote branches), with the
-pinned Gitleaks 8.30.1: **11 findings, 59 places, no real secret.** Re-run by Nourhane with the pull request refs
+pinned Gitleaks 8.30.1: **11 findings, no real secret.** Re-run by Nourhane with the pull request refs
 too (#144 review: 122 branches and 144 PR refs, 893 commits, one of them reachable only from `refs/pull/59/head`):
 the same 11 findings, nothing new. Run again on 15 November, before the merge train of 16 November, on a
 `git clone --mirror` (120 branches, 185 pull-request refs with their `merge` refs, 989 commits): the same 11
-findings, each matched by path, line and rule to `GT-SECRET-001` to `005` or by finding ID to the self-gate's
-waivers (#144).
+findings in 58 places (a file and a line each), each matched by path, line and rule to `GT-SECRET-001` to `005` or
+by finding ID to the self-gate's waivers (#144). Gitleaks's own report lists more entries than places (62 in Hiba's
+dry run of 17 November, review of #160): places are what this record counts, and the switch PR's scan counts them
+the same way.
 
 The **workflow artifacts** (44, 348,935 bytes, none expired: `sentinel-scan`, `sentinel-decision`,
 `sentinel-evidence`, `replay-corpus`) were downloaded one folder each and scanned in dir mode on 15 November: 6
@@ -91,8 +93,7 @@ The switch PR re-runs the history scan on the day, after the last merge before t
 | Kind | What it is |
 |---|---|
 | GT-SECRET-001 to 005 | `demo-shop/`'s five listed fakes (settings, `.npmrc`, Terraform, the TLS Secret, the Slack webhook) |
-| `secret_hash`, `key_sha256` | sha256 digests in contract fixtures and normalizer fixtures, named after what they hash |
-| `decision_id` | UUIDs in the release-evidence and trust-report fixtures |
+| `secret_hash`, `key_sha256` | sha256 digests in contract fixtures (finding, release-evidence, trust-report) and normalizer fixtures, named after what they hash; the `decision-id-*.json` trust-report fixtures are flagged on their `key_sha256` line |
 | `ai/tests/test_analyst.py` | the fake `UNKNOWN_SECRET`, waived by `self-2026-007` |
 
 ## Consequences
