@@ -53,7 +53,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, cast, get_args
+from typing import Any, Literal, TypeVar, cast, get_args
 
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
@@ -265,7 +265,11 @@ GROUP BY 1
 """
 
 
-def _once[T](session: Session, key: str, compute: Callable[[], T]) -> T:
+# A TypeVar, not PEP 695 syntax: Opengrep cannot parse `def f[T]`, and code it cannot parse goes unanalysed.
+T = TypeVar("T")
+
+
+def _once(session: Session, key: str, compute: Callable[[], T]) -> T:
     """`compute()` once per scrape: the session is the request's, and its transaction one snapshot, so two
     metrics computed from one query (a ratio's two halves) read the same result."""
     cache: dict[str, Any] = session.info.setdefault("sentinel_metrics", {})
