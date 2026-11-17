@@ -219,7 +219,7 @@
     {
       "id": 7,
       "type": "row",
-      "title": "Release gate (no data until the platform stores decisions, B1)",
+      "title": "Release gate (from recorded decisions)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
