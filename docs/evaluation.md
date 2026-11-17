@@ -537,35 +537,38 @@ uv run python eval/replay/run.py --replay-from ../replay-main                 # 
 ## The 27 November run
 
 SPEC section 16: "The full evaluation run on a clean checkout; its numbers committed with their input digests."
-It runs on **Nourhane's laptop**, not in a cloud sandbox: the sandbox's TLS proxy stops npm, pip and Maven
-inside `docker build` (the seed images and the test image cannot be built as written), it cannot run kind, and
-its CPU is barely above the speed the fix rate's time limit needs. The laptop has the registries, Docker and
-the speed.
+It runs **in Hiba's cloud sandbox**, the machine of the 17 November fix-rate run: it holds the 12B generation
+model at about 3 tokens a second, which the fix rate's time limit needs (§5), and Nourhane's laptop cannot hold
+that model. Two parts are done differently there, and both are disclosed with the numbers:
+- **The shop-api test image** is built from the same 27 hash-pinned wheels on the same base image, installed with
+  `--no-index`, because the sandbox's TLS proxy stops pip inside `docker build` (§5). Its id is pinned by digest.
+- **The CONTAINER seed images** cannot be built there (npm, pip and Maven all go through that proxy). Nourhane
+  builds them on her laptop from the same commit (`make container-seed-images`) and sends the three archives,
+  checked by sha256; the run then scans them with `IMAGES=`. If they cannot be sent, CONTAINER comes from her own
+  `make eval IMAGES=out/container-seeds DB_DIR=out/grype-db` on that commit, reported as a manual run with its
+  evidence (commit, the archives' manifest digests, the Grype database's build time and checksum,
+  `tools.lock.toml`'s sha256), like the kind tests.
 
 **Before the day (by the feature freeze, 26 November).**
-- Everything the run measures is merged: the fix rate (#159), `make eval-all` (#166), the CONTAINER image scan,
-  the B9 seeds and canaries, #161's container seeds. `make eval-all` passes `IMAGES=` to detection once the
-  image scan is on `main` (a one-line follow-up).
+- Everything the run measures is merged: the fix rate (#159), `make eval-all` (#166), the CONTAINER image scan
+  (#167), the canaries, #161's container seeds. `make eval-all` passes `IMAGES=` to detection once #167 is on
+  `main` (a one-line follow-up).
 - Correlation (A7): stage 2b's threshold is calibrated again on the calibration half of the final ground truth
-  (`make eval-correlation-calibrate`) and `eval/correlation/threshold.json` committed **before** the run, so the
-  test half is never seen first. The committed threshold is refused today, because the ground truth changed.
-- Models: `ollama pull gemma4:12b-it-qat` and `ollama pull qwen3-embedding:0.6b`, and `ollama list` shows the
-  pinned digests (`38044be4…` and `ac6da0df…`, ADR-0009). Speed: the explanation of one seed takes about 2
-  minutes; at less than about 2.5 tokens a second, GT-SAST-005's cut answer no longer fits the 15-minute time
-  limit and the fix rate is not measured (§5).
+  (`make eval-correlation-calibrate`) and `eval/correlation/threshold.json` committed **before** the run (§3).
+- The sandbox: Docker running, both pinned models served by Ollama with ADR-0009's digests (`38044be4…` and
+  `ac6da0df…`), at least 10 GB of free disk, and nothing else running during the run.
 
-**On the day**, on a clean checkout of `main`, the machine doing nothing else for about three hours:
+**On the day**, on a fresh checkout of `main`, the machine doing nothing else for about three hours:
 
 ```bash
 make setup && make tools && make tools-verify
 uv run sentinel tools grype-db --db-dir out/grype-db             # that day's database
-docker build -f demo-shop/services/shop-api/Dockerfile.test -q demo-shop/services/shop-api   # prints its id
-make container-seed-images                                      # out/container-seeds/<name>.oci.tar
-make eval-all TEST_IMAGE=<that id> DB_DIR=out/grype-db IMAGES=out/container-seeds
+# the test image, by digest (the rebuilt one, see above), and Nourhane's three seed archives in out/container-seeds
+make eval-all TEST_IMAGE=<its id> DB_DIR=out/grype-db IMAGES=out/container-seeds
 ```
 
 `make eval-all` checks its prerequisites first (a clean checkout, the pinned scanners, the database, Docker, the
-test image by digest, both models) and runs nothing if one fails. It then runs detection, ranking, replay,
+test image by digest, each step's model) and runs nothing if one fails. It then runs detection, ranking, replay,
 correlation, canaries, explanations, the fix rate and the timing one at a time, and writes
 `out/eval/all/manifest.json`: the commit, each step's status and exit codes, each report by sha256.
 
