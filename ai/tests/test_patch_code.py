@@ -473,6 +473,48 @@ def test_a_provider_failure_is_unavailable_without_its_message(tmp_path: Path) -
     assert len(provider.calls) == 1
 
 
+REFUSED = fix((SQL_LINE, SQL_LINE, [SAFE_SQL + "  # nosemgrep"]))
+NOT_A_FIX = {"edits": [], "rationale": "x"}
+
+
+@pytest.mark.parametrize(
+    ("answers", "cause"),
+    [
+        ((ConnectionError("down"),), "provider"),
+        ((RuntimeError("anything else"),), "provider"),
+        ((REFUSED, ConnectionError("down")), "provider"),
+        ((NOT_A_FIX, TimeoutError("late")), "provider"),
+        ((REFUSED, REFUSED), "answer"),
+        ((NOT_A_FIX, NOT_A_FIX), "answer"),
+        ((NOT_A_FIX, REFUSED), "answer"),
+    ],
+    ids=[
+        "provider-down",
+        "provider-other-error",
+        "refused-then-provider-down",
+        "invalid-then-provider-late",
+        "refused-twice",
+        "invalid-twice",
+        "invalid-then-refused",
+    ],
+)
+def test_an_unavailable_outcome_says_whether_the_provider_or_the_answer_failed(
+    tmp_path: Path, answers: tuple[Any, ...], cause: str
+) -> None:
+    """A caller tells a model server that failed (nothing was measured) from a model that gave no usable
+    answer (an attempt that failed) by `cause`, never by matching the reason."""
+    provider = Scripted(*answers)
+    outcome = propose(repo(tmp_path), provider)
+    assert (outcome.status, outcome.cause, outcome.proposal) == ("unavailable", cause, None)
+    assert len(provider.calls) == len(answers)
+
+
+def test_only_an_unavailable_outcome_has_a_cause(tmp_path: Path) -> None:
+    assert propose(repo(tmp_path), Scripted(GOOD)).cause is None
+    assert propose(repo(tmp_path), Scripted(REFUSED, GOOD)).cause is None
+    assert propose(repo(tmp_path), Scripted(), target=finding("x", 1, category="SCA")).cause is None
+
+
 def test_the_answer_is_validated_again_whatever_the_provider_returned(tmp_path: Path) -> None:
     class Lenient(Scripted):
         def complete(self, system: str, user: str, schema: type[Any]) -> Any:
