@@ -33,7 +33,9 @@ Safe to run twice. Exit 0 deployed, 1 not trusted by `sentinel verify`, 3 anythi
 5. the BLOCK image the release gate refused, which nothing signed (the OCI layout `make release-block` writes;
    skipped when it is missing, and the summary says so): Kyverno denies it.
 
-Exit 0 when every attack was refused, 1 when one was not (it is undone), 3 when an attack could not be run.
+Exit 0 when every attack that ran was refused: attack 5 is skipped when `make release-block`'s layout is
+missing, and the last line then says so. Exit 1 when one was not refused (it is undone), 3 when an attack
+could not be run, a `--block` that names no layout included.
 """
 
 from __future__ import annotations
@@ -65,6 +67,8 @@ ARGOCD_DIR = ROOT / "deploy" / "argocd"
 IMAGE_PATH = "demo-shop/shop-api"
 APPLICATION = "demo-shop"
 NAMESPACE = "demo-shop"
+ATTACKS = 5  # the attacks of the module docstring
+DEFAULT_BLOCK = ROOT / "out" / "release" / "block-image"  # what `make release-block` writes
 DEPLOYMENT = "shop-api"
 # In the GitOps repository: the chart's directory, and the values file holding the digest.
 CHART_PATH = "demo-shop"
@@ -582,12 +586,24 @@ def attack(
     return results
 
 
+def block_layout(given: Path | None) -> Path:
+    """The BLOCK image's layout for attack 5. Without `--block`, what `make release-block` writes, and
+    attack 5 is skipped when it is missing. A `--block` that names no layout is an attack that cannot be run
+    (exit 3), never a skip: a typo must not read as four refusals and a success."""
+    if given is None:
+        return DEFAULT_BLOCK
+    if not given.exists():
+        raise ClusterError(f"--block {given}: no OCI layout there (`make release-block` writes it)")
+    return given
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("command", choices=["release", "attack"])
     parser.add_argument("--bundle", type=Path, default=ROOT / "out" / "release" / "bundle")
-    parser.add_argument("--block", type=Path, default=ROOT / "out" / "release" / "block-image",
-                        help="attack: the BLOCK image's OCI layout, from `make release-block`")  # fmt: skip
+    parser.add_argument("--block", type=Path, default=None,
+                        help="attack: the BLOCK image's OCI layout, which must exist (default: what "
+                             "`make release-block` writes, skipped when missing)")  # fmt: skip
     parser.add_argument("--key", type=Path, default=ROOT / "deploy" / "keys" / "release.pub")
     parser.add_argument("--repo", default=cluster.REPO)
     parser.add_argument("--builder-id", default=cluster.BUILDER_ID)
@@ -606,14 +622,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "attack":
             results = attack(
                 key=args.key, repo=args.repo, builder_id=args.builder_id, tools_dir=args.tools_dir,
-                block=args.block, timeout_s=args.timeout,
+                block=block_layout(args.block), timeout_s=args.timeout,
             )  # fmt: skip
             failed = [result.name for result in results if not result.refused]
             if failed:
                 print(f"demo attack: NOT REFUSED: {'; '.join(failed)}", file=sys.stderr)
                 return 1
-            skipped = "" if args.block.exists() else ", 1 skipped (no BLOCK image: run `make release-block`)"
-            print(f"demo attack: {len(results)}/{len(results)} attacks refused{skipped}")
+            skipped = ATTACKS - len(results)  # attack() is what skips: only attack 5, without its layout
+            note = f", {skipped} skipped (no BLOCK image: run `make release-block`)" if skipped else ""
+            print(f"demo attack: {len(results)}/{len(results)} attacks refused{note}")
             return 0
         release(
             args.bundle, key=args.key, repo=args.repo, builder_id=args.builder_id, tools_dir=args.tools_dir,
