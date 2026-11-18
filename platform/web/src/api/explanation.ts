@@ -1,8 +1,8 @@
-// What the dashboard shows of an Explanation v1 document (schemas/explanation.v1.json), served byte for byte by
-// `GET /api/v1/findings/{id}/explanation` (B5c). Advisory: written by a model, never read by the gate. The API
-// checked it before keeping it; the dashboard still reads only the fields it shows, and a field of another type
-// is absent, never trusted. A reference becomes a link only when it is one of the canonical pages an
-// explanation may cite (sentinel_ai.explain.allowed_references).
+// What the dashboard shows of an Explanation v1 document (schemas/explanation.v1.json), served byte for byte
+// by `GET /api/v1/findings/{id}/explanation` (B5c). Advisory: written by a model, never read by the gate. The
+// API checks it before keeping it and again before serving it; the dashboard still reads only the fields it
+// shows, and a field of another type is absent, never trusted. A reference becomes a link only when it is one
+// of the canonical pages an explanation may cite (sentinel_ai.explain.allowed_references).
 
 export interface ExplanationView {
   findingId: string | null;

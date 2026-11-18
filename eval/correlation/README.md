@@ -19,11 +19,26 @@
 - A finding no label covers stays in the run but out of the ARI, and is counted (`labelled` in the report).
 
 The labels were written from each finding's tool, file and rule, before the embedding stage ever ran on
-them, and are never changed to improve a score. **One exception, said here:** the SCA package rule and
-RC-DOCKER-002 (the release Dockerfile's missing HEALTHCHECK, which had been missed) were added in the review
-of #90, after the dedup and structural scores had been seen and before any embedding score. Without them,
-the structural stage's right merges (one package's advisories) were all unlabelled, so its ARI could only
-see its wrong ones.
+them, and are never changed to improve a score. **Two exceptions, said here:**
+- The SCA package rule and RC-DOCKER-002 (the release Dockerfile's missing HEALTHCHECK, which had been missed)
+  were added in the review of #90, after the dedup and structural scores had been seen and before any
+  embedding score. Without them, the structural stage's right merges (one package's advisories) were all
+  unlabelled, so its ARI could only see its wrong ones.
+- **The half rule changed after the first measurement (SPEC 1.1.98), with A9b (SPEC 1.1.130).** Its two new
+  Dockerfiles' DS-0026 findings are RC-DOCKER-003 and -004, labelled like RC-DOCKER-001 and -002 and written
+  before any correlation score on these findings (no threshold can run on this ground truth until the
+  recalibration). Under the rule as it stood ("in this file's order"), `services/reports/Dockerfile` sorts
+  before `services/shop-api/`: RC-DOCKER-003 would take calibration, and RC-DOCKER-001 and -002 would swap
+  halves. The `appended: true` clause, added then, puts root causes added after the first measurement last
+  instead, so the measured split stays as it was; `tests/eval/test_correlation.py` enforces it.
+
+**Alert reduction moves with A9b, with no change to the correlator.** `requirements.block.txt` now pins
+requests 2.30.0 as well as pyyaml 5.3.1 (GT-CONTAINER-002), so Grype reports each of requests' four advisories
+in two manifests: one finding each, with a second place in `other_locations` (pyyaml already had two). That
+adds 4 places and no group, so `1 - groups / places` rises: on a `make eval` of 17 November, without stage 2b,
+the whole run's dedup+structural reduction goes from 25.5% to 28.0% and the test half's from 39.5% to 43.8%
+(dedup only: 0.0% to 8.3%), while the ARI moves by less than 0.001 (Hiba's review of #161). A comparison
+across that change compares different inputs, not two correlators.
 
 ## What each number can see
 
