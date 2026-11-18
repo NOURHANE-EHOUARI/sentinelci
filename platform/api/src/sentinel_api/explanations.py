@@ -58,6 +58,8 @@ router = APIRouter(prefix="/api/v1")
 _REASONS = {
     401: "No valid ingestion token (`Authorization: Bearer <token>`).",
     404: "No such finding (in that run), request or explanation.",
+    500: "The finding's latest explanation is not a valid Explanation v1 document about it: it did not come "
+    "through the worker's checks, so it is not served (T33).",
     503: "No database or no job queue is configured, or the queue did not take the job.",
 }
 
@@ -240,11 +242,15 @@ def get_explain_request(request_id: uuid.UUID, session: SessionDep) -> ExplainRe
             "the ETag. Advisory: never read by the gate.",
             "content": {JSON_TYPE: {"schema": {"type": "object"}}},
         },
-        **_errors(404, 503),
+        **_errors(404, 500, 503),
     },
 )
 def get_explanation(finding_id: _FINDING_ID, session: SessionDep) -> Response:
-    """The finding's latest explanation, exactly as the worker recorded it."""
+    """The finding's latest explanation, exactly as the worker recorded it, once checked again."""
+    # Checked again before it is served: `finish` checks it in the worker's own process, and the database
+    # only binds it to its request's finding and run, so a compromised worker could record any JSON naming
+    # the finding (T33). A latest explanation that is not a valid Explanation v1 about this finding is
+    # refused, and nothing is served in its place, an older explanation included.
     row = session.scalars(
         select(Explanation)
         .where(Explanation.finding_id == finding_id)
@@ -256,7 +262,21 @@ def get_explanation(finding_id: _FINDING_ID, session: SessionDep) -> Response:
     data = row.document
     if hashlib.sha256(data).hexdigest() != row.sha256:  # the database refuses this (explanations_bytes_match)
         raise RuntimeError(f"explanation {row.sha256} does not match its bytes")
+    if _not_served(data, finding_id):
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            f"the latest explanation of this finding is not a valid Explanation v1 document about it "
+            f"({row.sha256}): it is not served",
+        )
     return Response(data, media_type=JSON_TYPE, headers={"ETag": f'"{row.sha256}"'})
+
+
+def _not_served(data: bytes, finding_id: str) -> bool:
+    """`finish`'s own check, again: a valid Explanation v1 document about this finding, or nothing."""
+    try:
+        return ExplanationDocument.model_validate_json(data).finding_id != finding_id
+    except (ValidationError, ValueError):
+        return True
 
 
 # ---------------------------------------------------------------- the worker's side

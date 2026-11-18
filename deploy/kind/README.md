@@ -163,15 +163,17 @@ left:
 | 2 | **That image through GitOps**: its digest committed to the GitOps repository, as someone who can write there would. | Kyverno, when Argo CD syncs it: the sync fails with Kyverno's denial and the release keeps running. The release is then committed back, whatever happened, and Argo CD must sync it again. |
 | 3 | **That image with kubectl**: a copy of the release's Deployment, under another name, with that image. | Kyverno |
 | 4 | **An image from elsewhere**: the same copy with an image from another registry (Argo CD's, already in the cluster). | The API server's image policy |
-| 5 | **The BLOCK image**: the image `make release` built and `sentinel attest` refused to sign (an OCI layout, `out/release/block-image`, or `BLOCK=...`), pushed to the release repository. Skipped until A4c writes it. | Kyverno |
+| 5 | **The BLOCK image**: the image the release gate refused, which nothing signed (the OCI layout `make release-block` writes, `out/release/block-image`, or `BLOCK=...`), pushed to the release repository. Skipped when the layout is missing, and the last line says so: `4/4 attacks refused, 1 skipped`. | Kyverno |
 
 - **A fair test.** The kubectl attacks copy the running release's Deployment and change only its name and
   image, so its Pod Security context passes and only the image can be the reason for a denial. They are real
   `kubectl create` calls, not dry runs; a Deployment that is created anyway is deleted at once.
 - **Evidence.** The GitOps attack and the restore stay in the repository's history.
-- **Exit codes.** `0` every attack refused; `1` one was not (it is reported, and undone); `3` an attack could
-  not be run. A `kubectl create` that fails for another reason than an admission denial is a `3`: it proves
-  nothing.
+- **Exit codes.** `0` every attack that ran was refused: attack 5 is skipped when `make release-block`'s layout
+  is missing, and the last line then says `4/4 attacks refused, 1 skipped`; `1` one was not (it is reported,
+  and undone); `3` an attack could not be run. A `kubectl create` that fails for another reason than an
+  admission denial is a `3`: it proves nothing. So is `BLOCK=` naming no layout: a path asked for and missing
+  is never a skip.
 
 ## Pins
 
@@ -198,7 +200,7 @@ change the version and the pin together in one PR, and say in its description wh
 | Test | Needs | What it checks |
 |---|---|---|
 | `tests/deploy/test_kind.py` | nothing | The pins; `up`, `down` and `policy` against a recording fake: the loopback binding, both registry names, the GitOps mount, the install order, a second `up` that keeps what exists, a cluster without the mount, a manifest that is not the pinned one. The git server's own command and environment, run with the local `git daemon`: it serves the one repository, even when another user owns it, and refuses a push. |
-| `tests/deploy/test_attack.py` | git | `make demo-attack` against a fake cluster: each attack and the check that refuses it; the GitOps attack and restore commits, a refused sync Argo CD keeps retrying, and the restore even when Argo CD never answers; the attack Deployments are the release's with another image; an admitted Deployment reported and deleted, a tampered image Argo CD deploys reported and rolled back; nothing tried without a running release; a create that fails before admission. 6 mutants of `demo.py` each killed. |
+| `tests/deploy/test_attack.py` | git | `make demo-attack` against a fake cluster: each attack and the check that refuses it; the GitOps attack and restore commits, a refused sync Argo CD keeps retrying, and the restore even when Argo CD never answers; the attack Deployments are the release's with another image; an admitted Deployment reported and deleted, a tampered image Argo CD deploys reported and rolled back; nothing tried without a running release; a create that fails before admission; the last line with and without attack 5, and `BLOCK=` naming no layout (exit 3, nothing tried). 6 mutants of `demo.py` each killed. |
 | `tests/deploy/test_demo.py` | git | `make demo-release`'s steps against a fake cluster, with real git: their order; the GitOps commit and its content; no second commit; nothing committed when `sentinel verify` refuses or the policy is not the key's; a Kyverno denial during the sync, ended or retried by Argo CD; a first sync still running is waited for; a timeout; another image running. That the Argo CD files name the same repository, chart path, values file and namespace as the git server and `demo.py`. |
 | `tests/deploy/test_chart.py` | Go | The chart rendered as Helm renders it (`chart_render.py`: values merged and checked against the schema, templates run by Go's own `text/template` with Helm's `required`, any other function an error): the three resources the AppProject allows, the image by digest, Pod Security "restricted", the release image's contract, and the values it refuses. |
 | `cli/tests/supplychain/test_demo_bundle.py` | pinned tools | A real release saved with `cosign save`: `demo.py` reads its digest, loads it into another registry and `sentinel verify` trusts it there; the other key and an unsigned image are not trusted. The tampering with the pinned crane: the release's layers and one more, not trusted (0/16), the release still trusted. |
@@ -221,4 +223,5 @@ minutes, so it does not run on every push (GitHub Free minutes).
   server in `sentinel-gitops`: the policy covers the demo's images (`kind-registry:5000/demo-shop/`).
 - The chart is rendered by Argo CD's Helm in the cluster. Without a cluster, the tests render it with Go's
   `text/template`, the engine Helm uses, and allow no Helm function but `required`; Helm itself is not run.
-- `make demo-attack`'s BLOCK image waits for `make release` (A4c), which writes it.
+- `make demo-attack`'s BLOCK image is the layout `make release-block` writes (`out/release/block-image`). Without
+  it, attack 5 is skipped and the summary says so.
