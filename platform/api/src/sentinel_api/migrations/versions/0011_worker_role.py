@@ -26,37 +26,44 @@ down_revision = "0010"
 branch_labels = None
 depends_on = None
 
-ROLE = "sentinel_worker"
-GRANTS = (
-    ("SELECT", "runs"),
-    ("SELECT", "findings"),
-    # Claim and finish change a request's state only. Its finding and run stay the API's: the trigger
-    # `explanations_are_kept` binds an explanation to its request's finding and run, so the worker must not
-    # be able to point a request at another finding before it records an explanation (#140 review).
-    ("SELECT, UPDATE (status, reason, explanation_sha256, updated_at)", "explain_requests"),
-    ("SELECT (seq, created_at), INSERT", "explanations"),
+ROLE = "sentinel_worker"  # migrate.WORKER_ROLE; the statements below name it as a literal
+# Claim and finish change a request's state only. Its finding and run stay the API's: the trigger
+# `explanations_are_kept` binds an explanation to its request's finding and run, so the worker must not
+# be able to point a request at another finding before it records an explanation (#140 review).
+# Every statement is a literal: no SQL is built from strings here, so SentinelCI's own SAST has nothing to
+# flag (python-sql-built-from-strings, #154 review). Same statements as before, same grants.
+UPGRADE = (
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'sentinel_worker') THEN
+            CREATE ROLE sentinel_worker NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+        END IF;
+    END
+    $$
+    """,
+    "REVOKE ALL ON SCHEMA public FROM sentinel_worker",
+    "GRANT USAGE ON SCHEMA public TO sentinel_worker",
+    "GRANT SELECT ON runs TO sentinel_worker",
+    "GRANT SELECT ON findings TO sentinel_worker",
+    "GRANT SELECT, UPDATE (status, reason, explanation_sha256, updated_at) ON explain_requests "
+    "TO sentinel_worker",
+    "GRANT SELECT (seq, created_at), INSERT ON explanations TO sentinel_worker",
+)
+DOWNGRADE = (
+    "REVOKE ALL ON runs FROM sentinel_worker",
+    "REVOKE ALL ON findings FROM sentinel_worker",
+    "REVOKE ALL ON explain_requests FROM sentinel_worker",
+    "REVOKE ALL ON explanations FROM sentinel_worker",
+    "REVOKE ALL ON SCHEMA public FROM sentinel_worker",
 )
 
 
 def upgrade() -> None:
-    op.execute(
-        f"""
-        DO $$
-        BEGIN
-            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{ROLE}') THEN
-                CREATE ROLE {ROLE} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
-            END IF;
-        END
-        $$
-        """
-    )
-    op.execute(f"REVOKE ALL ON SCHEMA public FROM {ROLE}")
-    op.execute(f"GRANT USAGE ON SCHEMA public TO {ROLE}")
-    for privileges, table in GRANTS:
-        op.execute(f"GRANT {privileges} ON {table} TO {ROLE}")
+    for statement in UPGRADE:
+        op.execute(statement)
 
 
 def downgrade() -> None:
-    for _, table in GRANTS:
-        op.execute(f"REVOKE ALL ON {table} FROM {ROLE}")
-    op.execute(f"REVOKE ALL ON SCHEMA public FROM {ROLE}")
+    for statement in DOWNGRADE:
+        op.execute(statement)

@@ -1,5 +1,5 @@
 import { screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fakeApi, renderAt } from "../test-utils";
 
 const ID = "f".repeat(64);
@@ -76,9 +76,60 @@ describe("A finding's explanation", () => {
     fakeApi({ [`/api/v1/findings/${ID}`]: { body: detail() }, [URL]: { status: 503, body: { detail: "down" } } });
     renderAt(`/findings/${ID}`);
     const aside = await panel();
-    expect((await within(aside).findByRole("alert")).textContent).toContain("503");
+    expect((await within(aside).findByRole("alert")).textContent).toBe("The API answered 503.");
     expect(within(aside).queryByText(/No explanation recorded/)).toBeNull();
     expect(screen.getByRole("heading", { name: FINDING.title })).toBeTruthy(); // the finding still shows
+  });
+
+  it("an explanation the API refused (500, T33) says so, shows nothing of it, and no older one", async () => {
+    // The 500's body (ErrorOut) names the refused explanation; the dashboard never reads it, and an
+    // explanation's fields smuggled into it are never shown either.
+    const refusal = { detail: `the latest explanation of this finding is not a valid Explanation v1 document about it (${"9".repeat(64)}): it is not served` };
+    const calls = fakeApi({
+      [`/api/v1/findings/${ID}`]: { body: detail() },
+      [URL]: { status: 500, body: { ...EXPLANATION, ...refusal } },
+    });
+    renderAt(`/findings/${ID}`);
+    const aside = await panel();
+    const alert = await within(aside).findByRole("alert");
+    expect(alert.textContent).toBe(
+      "The API did not serve the latest explanation (it answered 500, as it does for one that fails its check): nothing of it is shown, and no older one is shown in its place.",
+    );
+    for (const value of [refusal.detail, "9".repeat(64), EXPLANATION.summary, EXPLANATION.impact, EXPLANATION.fix_guidance,
+      EXPLANATION.model.name, "CVE-2020-14343"]) {
+      expect(aside.textContent).not.toContain(value);
+    }
+    expect(within(aside).queryAllByRole("link")).toEqual([]);
+    expect(within(aside).queryByText(/No explanation recorded/)).toBeNull();
+    // Asked once, for the latest: nothing older is asked for in its place.
+    expect(calls.filter((call) => call.includes("/explan"))).toEqual([URL]);
+    expect(screen.getByRole("heading", { name: FINDING.title })).toBeTruthy(); // the finding still shows
+  });
+
+  it("another error status keeps the generic error, without the refusal's copy", async () => {
+    fakeApi({ [`/api/v1/findings/${ID}`]: { body: detail() }, [URL]: { status: 502, body: { detail: "bad gateway" } } });
+    renderAt(`/findings/${ID}`);
+    const aside = await panel();
+    expect((await within(aside).findByRole("alert")).textContent).toBe("The API answered 502.");
+    expect(within(aside).queryByText(/did not serve the latest explanation/)).toBeNull();
+  });
+
+  it("a network error keeps the generic error, without the refusal's copy", async () => {
+    fakeApi({ [`/api/v1/findings/${ID}`]: { body: detail() } });
+    const answer = globalThis.fetch;
+    vi.stubGlobal("fetch", (input: RequestInfo | URL) =>
+      String(input) === URL ? Promise.reject(new TypeError("Failed to fetch")) : answer(input));
+    renderAt(`/findings/${ID}`);
+    const aside = await panel();
+    expect((await within(aside).findByRole("alert")).textContent).toBe("The API could not be reached.");
+    expect(within(aside).queryByText(/did not serve the latest explanation/)).toBeNull();
+  });
+
+  it("a 500 from another route is the generic error, not the refusal", async () => {
+    fakeApi({ [`/api/v1/findings/${ID}`]: { status: 500, body: { detail: "boom" } }, [URL]: { body: EXPLANATION } });
+    renderAt(`/findings/${ID}`);
+    expect((await screen.findByRole("alert")).textContent).toBe("The API answered 500.");
+    expect(screen.queryByText(/did not serve the latest explanation/)).toBeNull();
   });
 
   it("an explanation about another finding is not shown", async () => {
