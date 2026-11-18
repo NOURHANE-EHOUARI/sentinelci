@@ -50,8 +50,10 @@ web: ## Dashboard: locked install (no package scripts), typed client up to date,
 
 # The scanners come from SENTINEL_TOOLS_DIR (default .sentinel/tools); DB_DIR=<grype-db dir> measures SCA too.
 EVAL_TOOLS ?= $(or $(SENTINEL_TOOLS_DIR),.sentinel/tools)
-eval: ## Detection report of demo-shop (B8): out/eval/detection.json and detection.md
-	uv run python eval/detection/run.py --tools-dir $(EVAL_TOOLS) $(if $(DB_DIR),--db-dir $(DB_DIR))
+# IMAGES=<dir> (make container-seed-images' out/container-seeds) scans the CONTAINER seeds' images too.
+eval: ## Detection report of demo-shop (B8): out/eval/detection.json and detection.md (IMAGES= for CONTAINER)
+	uv run python eval/detection/run.py --tools-dir $(EVAL_TOOLS) $(if $(DB_DIR),--db-dir $(DB_DIR)) \
+		$(if $(IMAGES),--images $(IMAGES))
 
 OLLAMA_URL ?= http://127.0.0.1:11434
 eval-explanations: ## Explanations of the seeds and the LLM judge's ratings (B8), after make eval: needs Ollama
@@ -86,10 +88,10 @@ eval-fixrate: ## Verified fix rate (B8): VERIFIED / attempted fixable seeds, aft
 # scanners, Grype's database (DB_DIR, default out/grype-db), Docker, the test image (TEST_IMAGE=, by digest) and the
 # pinned models. STEPS=a,b runs a subset and ALLOW_DIRTY=1 a dirty checkout: both are rehearsals. Then rate and
 # make eval-rubric.
-eval-all: ## The whole evaluation run (B8): every step in order, out/eval/all/manifest.json (TEST_IMAGE=, DB_DIR=)
+eval-all: ## The whole evaluation run (B8): every step in order, out/eval/all/manifest.json (TEST_IMAGE=, DB_DIR=, IMAGES=)
 	uv run python eval/all/run.py --tools-dir $(EVAL_TOOLS) --grype-db $(or $(DB_DIR),$(GRYPE_DB),out/grype-db) \
 		$(if $(TEST_IMAGE),--test-image "$(TEST_IMAGE)") --ollama $(OLLAMA_URL) --runs $(RUNS) \
-		$(if $(STEPS),--steps $(STEPS)) $(if $(ALLOW_DIRTY),--allow-dirty)
+		$(if $(IMAGES),--images $(IMAGES)) $(if $(STEPS),--steps $(STEPS)) $(if $(ALLOW_DIRTY),--allow-dirty)
 
 # The correlator on make eval's findings (A7), with the pinned embedding model on a local Ollama (ADR-0009).
 eval-correlation: ## Correlation on demo-shop's test half (A7): out/eval/correlation.json and .md, after make eval

@@ -99,7 +99,7 @@ class Scripted:
 def settings(tmp_path: Path, **overrides: object) -> Any:
     values: dict[str, object] = {
         "tools_dir": tmp_path / "tools", "grype_db": tmp_path / "db", "test_image": DIGEST,
-        "ollama": "http://127.0.0.1:11434", "runs": 20, "out": tmp_path / "out",
+        "ollama": "http://127.0.0.1:11434", "runs": 20, "out": tmp_path / "out", "images": None,
     }  # fmt: skip
     values.update(overrides)
     return run.Settings(**values)
@@ -109,6 +109,9 @@ def go(
     tmp_path: Path, fake: Fake | None = None, codes: Mapping[str, int] | None = None,
     steps: Sequence[str] | None = None, allow_dirty: bool = False, **overrides: object,
 ) -> tuple[int, dict[str, Any], Scripted]:  # fmt: skip
+    if "images" not in overrides:  # an official run needs the seed images (#167 review)
+        overrides["images"] = tmp_path / "container-seeds"
+        (tmp_path / "container-seeds").mkdir(exist_ok=True)
     s = settings(tmp_path, **overrides)
     (tmp_path / "db").mkdir(exist_ok=True)
     (tmp_path / "db" / "vulnerability.db").write_text("db", encoding="utf-8")
@@ -253,6 +256,44 @@ def test_the_test_image_must_be_pinned_by_digest(tmp_path: Path, image: str) -> 
     assert "digest" in manifest["preflight"]["test image"]
 
 
+def test_the_seed_images_reach_detection_and_the_manifest(tmp_path: Path) -> None:
+    """IMAGES= (make container-seed-images' archives) is passed to make eval's detection, so the official
+    run measures CONTAINER recall (#167); without it CONTAINER stays "not measured", as before."""
+    images = tmp_path / "container-seeds"
+    images.mkdir()
+    code, manifest, runner = go(tmp_path, steps=["detection"], images=images)
+    assert code == 0 and manifest["preflight"]["images"] == "ok"
+    assert manifest["settings"]["images"] == str(images)
+    (command,) = [c for c in runner.calls if "eval/detection/run.py" in c]
+    assert command[-2:] == ("--images", str(images))
+    (tmp_path / "none").mkdir()
+    code, manifest, runner = go(tmp_path / "none", steps=["detection"], images=None)
+    assert code == 0 and "images" not in manifest["preflight"]
+    assert manifest["settings"]["images"] is None
+    assert not any("--images" in c for c in runner.calls)
+
+
+def test_the_official_run_is_refused_without_the_seed_images(tmp_path: Path) -> None:
+    """Without IMAGES=, CONTAINER would be "not measured" in the run the report cites (#167 review): the
+    run is refused before anything starts, like a missing test image. A subset (STEPS=) or a dirty checkout
+    allowed as a rehearsal can never be official, so it may leave the images out."""
+    code, manifest, runner = go(tmp_path, images=None)
+    assert code == 2 and runner.calls == [] and manifest["official"] is False
+    assert "CONTAINER" in manifest["preflight"]["images"] and "IMAGES=" in manifest["preflight"]["images"]
+    (tmp_path / "subset").mkdir()
+    code, manifest, runner = go(tmp_path / "subset", steps=["detection", "ranking"], images=None)
+    assert code == 0 and "images" not in manifest["preflight"] and manifest["official"] is False
+    (tmp_path / "dirty").mkdir()
+    code, manifest, runner = go(tmp_path / "dirty", fake=Fake(clean=False), allow_dirty=True, images=None)
+    assert "images" not in manifest["preflight"] and manifest["official"] is False
+
+
+def test_an_images_directory_that_is_not_there_runs_nothing(tmp_path: Path) -> None:
+    code, manifest, runner = go(tmp_path, images=tmp_path / "no-such-dir")
+    assert code == 2 and runner.calls == []
+    assert "no-such-dir" in manifest["preflight"]["images"]
+
+
 def test_without_grype_database_nothing_runs(tmp_path: Path) -> None:
     s = settings(tmp_path, grype_db=tmp_path / "missing")
     runner = Scripted(out=s.out)
@@ -266,11 +307,14 @@ def test_without_grype_database_nothing_runs(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(shutil.which("make") is None, reason="needs make")
-def test_each_step_runs_exactly_what_its_make_target_runs(tmp_path: Path) -> None:
-    s = settings(tmp_path, out=ROOT / "out" / "eval")
+@pytest.mark.parametrize("with_images", [False, True])
+def test_each_step_runs_exactly_what_its_make_target_runs(tmp_path: Path, with_images: bool) -> None:
+    images = tmp_path / "container-seeds" if with_images else None
+    s = settings(tmp_path, out=ROOT / "out" / "eval", images=images)
     variables = [
         f"EVAL_TOOLS={s.tools_dir}", f"DB_DIR={s.grype_db}", f"GRYPE_DB={s.grype_db}",
         f"TEST_IMAGE={s.test_image}", f"OLLAMA_URL={s.ollama}", f"RUNS={s.runs}",
+        *([f"IMAGES={images}"] if images else []),
     ]  # fmt: skip
     for step in run.STEPS:
         done = subprocess.run(

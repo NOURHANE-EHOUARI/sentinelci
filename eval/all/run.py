@@ -12,7 +12,10 @@ Fail closed, before anything runs: the checkout must be clean, the scanners must
 Grype database must be there, Docker must answer and the shop-api test image must be pinned by digest and
 present, and the model server must serve the pinned model each step uses (ADR-0009): the embedding model for
 correlation, the generation model for canaries, explanations and the fix rate. Only what the chosen steps need
-is checked. A failed check runs nothing and exits 2.
+is checked. A failed check runs nothing and exits 2. `--images` (`IMAGES=`, the archives of `make
+container-seed-images`) goes to detection as `make eval IMAGES=` does, so the run measures CONTAINER recall;
+given, the directory must exist. A run that could be official (every step, a clean checkout) is refused
+without it, since CONTAINER would stay "not measured"; a rehearsal may leave it out.
 
 Each step keeps its script's own meaning: exit 0 is measured (and its reports must be there), exit 2 is "not
 measured", anything else failed. Each step runs its scripts directly rather than through `make`, which
@@ -61,6 +64,7 @@ class Settings:
     ollama: str
     runs: int
     out: Path
+    images: Path | None = None  # make container-seed-images' archives (IMAGES=): CONTAINER recall
 
 
 @dataclass(frozen=True)
@@ -77,7 +81,8 @@ class Step:
         ollama = ("--ollama", s.ollama) if s.ollama else ()
         match self.name:
             case "detection":
-                return [(*PY, "eval/detection/run.py", *tools, *db)]
+                images = ("--images", str(s.images)) if s.images else ()
+                return [(*PY, "eval/detection/run.py", *tools, *db, *images)]
             case "ranking":
                 return [(*PY, "eval/ranking/run.py")]
             case "replay":
@@ -162,7 +167,9 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def preflight(s: Settings, env: Environment, steps: Sequence[Step], allow_dirty: bool) -> dict[str, str]:
+def preflight(
+    s: Settings, env: Environment, steps: Sequence[Step], allow_dirty: bool, subset: bool = False
+) -> dict[str, str]:
     """What each requirement of the chosen steps found: "ok", or why the run cannot start."""
     found: dict[str, str] = {"checkout": "ok"}
     if env.dirty():
@@ -174,6 +181,18 @@ def preflight(s: Settings, env: Environment, steps: Sequence[Step], allow_dirty:
         ok = s.grype_db.is_dir() and any(s.grype_db.iterdir())
         found["grype database"] = (
             "ok" if ok else f"no Grype database in {s.grype_db} (sentinel tools grype-db)"
+        )
+    detection = any(step.name == "detection" for step in steps)
+    if s.images is not None and detection:
+        found["images"] = (
+            "ok" if s.images.is_dir() else f"no image archives in {s.images} (make container-seed-images)"
+        )
+    elif detection and not subset and found["checkout"] == "ok":
+        # A run that could be official measures CONTAINER from the seed images (#167 review); a subset or a
+        # dirty checkout is a rehearsal and may leave them out.
+        found["images"] = (
+            "not given: the official run measures CONTAINER from the seed images "
+            "(make container-seed-images, then IMAGES=)"
         )
     if "docker" in uses:
         found["docker"] = env.docker_problem() or "ok"
@@ -195,7 +214,7 @@ def run_all(
 ) -> int:
     chosen = [BY_NAME[name] for name in steps] if steps else list(STEPS)
     chosen.sort(key=STEPS.index)
-    found = preflight(s, env, chosen, allow_dirty)
+    found = preflight(s, env, chosen, allow_dirty, subset=bool(steps))
     blocked = {name: why for name, why in found.items() if why != "ok" and not why.startswith("allowed")}
     names = {step.name for step in chosen}
     records: list[dict[str, object]] = []
@@ -250,6 +269,7 @@ def run_all(
             "test_image": s.test_image,
             "ollama": s.ollama,
             "runs": s.runs,
+            "images": str(s.images) if s.images else None,
         },
         "preflight": found,
         "steps": records,
@@ -366,6 +386,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--test-image", default="", help="the shop-api test image, by digest (sha256:...)")
     parser.add_argument("--ollama", default="http://127.0.0.1:11434")
     parser.add_argument("--runs", type=int, default=20, help="timing runs (make eval-timing's RUNS)")
+    parser.add_argument(
+        "--images", type=Path, default=None, help="make container-seed-images' archives (CONTAINER recall)"
+    )
     parser.add_argument("--steps", default="", help="a comma-separated subset, in any order (a rehearsal)")
     parser.add_argument("--allow-dirty", action="store_true", help="run on a dirty checkout (a rehearsal)")
     args = parser.parse_args(argv)
@@ -376,6 +399,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     settings = Settings(
         tools_dir=args.tools_dir.resolve(), grype_db=args.grype_db.resolve(), test_image=args.test_image,
         ollama=args.ollama, runs=args.runs, out=ROOT / "out" / "eval",
+        images=args.images.resolve() if args.images else None,
     )  # fmt: skip
     # Every step runs the verified binaries: replay and the timing find OPA and the scanners on PATH.
     os.environ["PATH"] = os.pathsep.join([str(settings.tools_dir / "bin"), os.environ.get("PATH", "")])
