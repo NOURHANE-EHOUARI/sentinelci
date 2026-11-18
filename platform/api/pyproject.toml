@@ -1,7 +1,7 @@
 [project]
 name = "sentinel-api"
 version = "0.1.0"
-description = "SentinelCI control-plane API: ingestion, GitHub sync and query endpoints."
+description = "SentinelCI control-plane API: ingestion and query endpoints."
 requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.16",
