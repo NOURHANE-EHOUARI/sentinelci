@@ -1,0 +1,4 @@
+# The build context of Dockerfile: an allow-list, so nothing else of the directory reaches the builder.
+*
+!pom.xml
+!jars.sha256

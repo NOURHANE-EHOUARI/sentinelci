@@ -406,7 +406,7 @@ export interface paths {
         };
         /**
          * Get Explanation
-         * @description The finding's latest explanation, exactly as the worker recorded it.
+         * @description The finding's latest explanation, exactly as the worker recorded it, once checked again.
          */
         get: operations["get_explanation_api_v1_findings__finding_id__explanation_get"];
         put?: never;
@@ -2557,6 +2557,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The finding's latest explanation is not a valid Explanation v1 document about it: it did not come through the worker's checks, so it is not served (T33). */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
                 };
             };
             /** @description No database or no job queue is configured, or the queue did not take the job. */
