@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   INTENTIONALLY VULNERABLE benchmark dependencies (A9): the demo-shop report worker's build file. It holds no
-  code and is never built or deployed; it is here to be scanned. Both dependencies are listed in CISA KEV and in
-  demo-shop/ground-truth/findings.yaml:
-    GT-SCA-006  log4j-core 2.14.1    CVE-2021-44228 (Log4Shell), fixed in 2.15.0
-    GT-SCA-007  spring-beans 5.3.17  CVE-2022-22965 (Spring4Shell), fixed in 5.3.18
+  code and is never deployed: it is scanned, and Dockerfile builds its classpath into an image, scanned too.
+  Both dependencies are listed in CISA KEV and in demo-shop/ground-truth/findings.yaml (manifest, image):
+    GT-SCA-006, GT-CONTAINER-004  log4j-core 2.14.1    CVE-2021-44228 (Log4Shell), fixed in 2.15.0
+    GT-SCA-007, GT-CONTAINER-005  spring-beans 5.3.17  CVE-2022-22965 (Spring4Shell), fixed in 5.3.18
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"

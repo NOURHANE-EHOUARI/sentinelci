@@ -154,17 +154,23 @@ def _pins(name: str) -> dict[str, list[str]]:
     return pins
 
 
-def test_the_release_and_block_requirements_differ_only_in_the_seeded_pyyaml() -> None:
+def test_the_release_and_block_requirements_differ_only_in_the_seeded_pyyaml_and_requests() -> None:
     """ADR-0011 decision 6: the BLOCK image is the release image with pyyaml 5.3.1 (GT-SCA-001), pinned by
-    the hash of its sdist; the release image holds no seeded version."""
+    the hash of its sdist, and requests 2.30.0 (GT-SCA-002), pinned by the hashes of its wheel and sdist
+    (GT-CONTAINER-001 and -002 in the image); the release image holds no seeded version."""
     release, block = _pins("requirements.release.txt"), _pins("requirements.block.txt")
-    pyyaml = [pin for pin in release if pin.startswith("pyyaml==")]
-    assert pyyaml and pyyaml[0] != "pyyaml==5.3.1"
-    assert {k: v for k, v in release.items() if k not in pyyaml} == {
-        k: v for k, v in block.items() if k != "pyyaml==5.3.1"
+    seeded = {"pyyaml==5.3.1", "requests==2.30.0"}
+    replaced = [pin for pin in release if pin.startswith(("pyyaml==", "requests=="))]
+    assert len(replaced) == 2 and not seeded & set(replaced)
+    assert {k: v for k, v in release.items() if k not in replaced} == {
+        k: v for k, v in block.items() if k not in seeded
     }
     sdist = "b8eac752c5e14d3eca0e6dd9199cd627518cb5ec06add0de9d32baeee6fe645d"  # PyYAML-5.3.1.tar.gz
     assert block["pyyaml==5.3.1"] == [sdist]
+    assert block["requests==2.30.0"] == [
+        "10e94cc4f3121ee6da529d358cdaeaff2f1c409cd377dbc72b825852f2f7e294",  # its py3-none-any wheel
+        "239d7d4458afcb28a692cdd298d87542235f4ca8d36d03a15bfc128a6559a2f4",  # its sdist
+    ]
     seeded = {
         line.split()[0]
         for line in (SHOP_API / "requirements.txt").read_text("utf-8").splitlines()

@@ -2,7 +2,7 @@
 .PHONY: help setup check lint format typecheck imports policy test zizmor web eval tools tools-verify compose-env up down \
 	eval-correlation eval-correlation-calibrate remediate-code release release-block release-key self-gate \
 	release-sentinelci eval-canaries eval-replay eval-ranking eval-timing eval-explanations eval-rubric \
-	kind-up kind-policy kind-down demo-release demo-attack
+	kind-up kind-policy kind-down demo-release demo-attack eval-fixrate eval-all
 
 # OPA is a pinned binary, not a Python package: `uv run sentinel tools install opa` (tools.lock.toml).
 OPA ?= $(or $(SENTINEL_OPA),opa)
@@ -75,6 +75,22 @@ eval-replay: ## Replay identity (B8): record the corpus and make eval's decision
 eval-canaries: ## Injection canaries (B8): AI obedience and mislabels, verdict changes (OLLAMA_URL= for the real model)
 	uv run python eval/canaries/run.py --findings out/eval/findings $(if $(OLLAMA_URL),--ollama $(OLLAMA_URL))
 
+# The real strategies and the real verification gate on demo-shop's seeds, after `make eval` (a clean checkout):
+# Grype's database is prepared in GRYPE_DB (default out/grype-db), the code fixes need Docker, the shop-api test
+# image pinned by digest (TEST_IMAGE=) and the pinned model on Ollama. A step that cannot run: not measured, exit 2.
+eval-fixrate: ## Verified fix rate (B8): VERIFIED / attempted fixable seeds, after make eval (TEST_IMAGE=, OLLAMA_URL=)
+	uv run python eval/fixrate/run.py --tools-dir $(EVAL_TOOLS) $(if $(TEST_IMAGE),--test-image "$(TEST_IMAGE)") \
+		$(if $(GRYPE_DB),--grype-db $(GRYPE_DB)) $(if $(OLLAMA_URL),--ollama $(OLLAMA_URL))
+
+# Every automated evaluation in order on a clean checkout (SPEC section 16's 27 November run), after checking the
+# scanners, Grype's database (DB_DIR, default out/grype-db), Docker, the test image (TEST_IMAGE=, by digest) and the
+# pinned models. STEPS=a,b runs a subset and ALLOW_DIRTY=1 a dirty checkout: both are rehearsals. Then rate and
+# make eval-rubric.
+eval-all: ## The whole evaluation run (B8): every step in order, out/eval/all/manifest.json (TEST_IMAGE=, DB_DIR=)
+	uv run python eval/all/run.py --tools-dir $(EVAL_TOOLS) --grype-db $(or $(DB_DIR),$(GRYPE_DB),out/grype-db) \
+		$(if $(TEST_IMAGE),--test-image "$(TEST_IMAGE)") --ollama $(OLLAMA_URL) --runs $(RUNS) \
+		$(if $(STEPS),--steps $(STEPS)) $(if $(ALLOW_DIRTY),--allow-dirty)
+
 # The correlator on make eval's findings (A7), with the pinned embedding model on a local Ollama (ADR-0009).
 eval-correlation: ## Correlation on demo-shop's test half (A7): out/eval/correlation.json and .md, after make eval
 	uv run python eval/correlation/run.py
@@ -108,6 +124,21 @@ release: ## Build, decide on and sign shop-api's release image (KEY=~/.sentinelc
 
 release-block: ## The demo's BLOCK image: the gate must block it, nothing is signed -> out/release/block-image
 	uv run --locked python deploy/release/release.py --requirements requirements.block.txt --expect-block
+
+# The images of demo-shop's CONTAINER seeds (A9, ground truth `image`), built only to be scanned: never pushed,
+# run or deployed. tests/demo_shop/test_container_seeds.py checks these lines against the ground truth, and reads
+# the archives when SENTINEL_CONTAINER_IMAGES names this directory.
+SEED_IMAGES ?= out/container-seeds
+.PHONY: container-seed-images
+container-seed-images: ## Build the CONTAINER seeds' images, to scan them -> out/container-seeds/<name>.oci.tar
+	mkdir -p $(SEED_IMAGES)
+	docker buildx build --provenance=false --sbom=false --file demo-shop/services/shop-api/Dockerfile.release \
+		--build-arg REQUIREMENTS=requirements.block.txt --build-arg ONLY_BINARY=:none: \
+		--output type=oci,dest=$(SEED_IMAGES)/shop-api-block.oci.tar demo-shop/services/shop-api
+	docker buildx build --provenance=false --sbom=false --file demo-shop/services/web/Dockerfile \
+		--output type=oci,dest=$(SEED_IMAGES)/web.oci.tar demo-shop/services/web
+	docker buildx build --provenance=false --sbom=false --file demo-shop/services/reports/Dockerfile \
+		--output type=oci,dest=$(SEED_IMAGES)/reports.oci.tar demo-shop/services/reports
 
 release-key: ## Make the release key pair (~/.sentinelci/release.key) and deploy/keys/release.pub, to commit
 	uv run --locked python deploy/release/release.py key $(if $(KEY),--key $(KEY))
