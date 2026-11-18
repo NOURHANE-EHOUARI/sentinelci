@@ -151,10 +151,14 @@ def release_repo(tmp_path: Path) -> Path:
 
 def whole_release(repo: Path, tmp_path: Path, **changes: Any) -> tuple[int, Any]:
     recorder = support.Recorder(repo, real=True)
-    # Never a download in a test: the database is SENTINEL_GRYPE_DB_DIR's, or there is none.
+    # Never a download in a test: the database is SENTINEL_GRYPE_DB_DIR's, or there is none. Resolved here,
+    # like SENTINEL_TOOLS_DIR: the release runs in the test's own repository, where a relative path names
+    # nothing.
     recorder.fakes["sentinel tools grype-db"] = lambda call: support.done(returncode=0 if GRYPE_DB else 3)
     settings = release.Settings(
-        root=repo, tools_dir=tools_dir(), grype_db=Path(GRYPE_DB) if GRYPE_DB else tmp_path / "no-grype-db"
+        root=repo,
+        tools_dir=tools_dir(),
+        grype_db=Path(GRYPE_DB).resolve() if GRYPE_DB else tmp_path / "no-grype-db",
     )
     made = release.Release(
         key=tmp_path / "keys" / "release.key", out=repo / "out" / "release", settings=settings, fetch=False,
@@ -195,3 +199,14 @@ def test_a_release_that_passes_the_gate_is_signed_end_to_end(tmp_path: Path) -> 
         == decision(out / "evidence" / "decision.v1.json")["subject"]["image_digest"]
     )
     assert "TRUSTED: 16/16 checks passed" in (out / "evidence" / "trust-report.txt").read_text()
+    # What `sentinel upload-release` sends (cli/README.md), checked as the platform checks it, offline.
+    from sentinelci.report.release_upload import release_evidence
+
+    reports = [
+        (out / "evidence" / f"trust-report.{mode}.json").read_bytes() for mode in ("registry", "evidence")
+    ]
+    sent = json.loads(release_evidence((out / "evidence" / "decision.v1.json").read_bytes(), reports))
+    assert [(r["mode"], r["trusted"]) for r in sent["trust_reports"]] == [
+        ("registry", True),
+        ("evidence", True),
+    ]

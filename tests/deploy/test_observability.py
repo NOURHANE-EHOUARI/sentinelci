@@ -136,3 +136,24 @@ def test_mttr_and_alert_reduction_are_the_ratios_of_spec_section_10() -> None:
         "1 - sum by (category) (sentinel_root_cause_groups)"
         " / sum by (category) (sentinel_correlated_findings > 0)"
     ]
+
+
+def test_the_block_rate_and_remediation_success_are_the_ratios_of_spec_section_10() -> None:
+    """BLOCK / all decisions per context, VERIFIED / all attempts per strategy. Every pair of these counters
+    is published at 0 once one is recorded, so without `> 0` a context with no decision in the window
+    (`local`) divides 0 by 0: a NaN series in the legend with nothing drawn. Filtered out instead, as MTTR's
+    and alert reduction's denominators are. Pinned exactly: a swapped ratio reads the same names and
+    labels."""
+    targets = {
+        panel["title"]: [target["expr"] for target in panel.get("targets", [])]
+        for path in DASHBOARDS
+        for panel in dashboard(path)["panels"]
+    }
+    assert targets["Gate block rate, by context"] == [
+        'sum by (context) (increase(sentinel_gate_decisions_total{verdict="BLOCK"}[1d]))'
+        " / sum by (context) (increase(sentinel_gate_decisions_total[1d]) > 0)"
+    ]
+    assert targets["Remediation success, by strategy"] == [
+        'sum by (strategy) (increase(sentinel_remediation_attempts_total{outcome="VERIFIED"}[7d]))'
+        " / sum by (strategy) (increase(sentinel_remediation_attempts_total[7d]) > 0)"
+    ]
