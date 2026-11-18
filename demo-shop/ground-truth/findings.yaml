@@ -241,6 +241,8 @@ seeds:
     cve: CVE-2023-32681
     kev: false
     imported: true  # app/main.py and app/orders.py call requests
+    # The BLOCK image's requirements pin it too (GT-CONTAINER-002): Grype reports one finding with both places.
+    also_in: [services/shop-api/requirements.block.txt]
     expected:  # MEDIUM, P2: no gate rule
       detections:
         - {tool: grype, rule: GHSA-j8r2-6x86-q33q}
@@ -350,18 +352,22 @@ seeds:
       detections:
         - {tool: grype, rule: GHSA-35jh-r3h4-6jhm}
 
-  # ---------------------------------------------------------------- container image (A9)
-  # The BLOCK image (ADR-0011 decision 6): services/shop-api/Dockerfile.release built with the build argument
-  # REQUIREMENTS=requirements.block.txt. `sentinel scan image` reports its CONTAINER findings from the image's
-  # OCI layout archive; README.md ("Container seeds") gives the build and the opt-in check of the detection.
+  # ---------------------------------------------------------------- container images (A9)
+  # Five of the SCA seeds' pins as they ship in images built from demo-shop, each matched on the package and
+  # advisory `sentinel scan image` reports in the image's OCI layout archive (README.md, "Container seeds"):
+  # - shop-api-block, the BLOCK image (ADR-0011 decision 6): services/shop-api/Dockerfile.release with
+  #   requirements.block.txt; built and refused by `make release-block`;
+  # - web and reports: the classpath and node_modules their manifests pin, in images built only to be scanned.
+  # `make container-seed-images` builds the three archives; none is pushed, run or deployed.
   - id: GT-CONTAINER-001
     owner: A9
     category: CONTAINER
     title: The shop-api BLOCK image installs pyyaml 5.3.1 (code execution through FullLoader)
-    location: {path: services/shop-api/requirements.block.txt, line: 352}
+    location: {path: services/shop-api/requirements.block.txt, line: 357}
     image:
+      name: shop-api-block
       dockerfile: services/shop-api/Dockerfile.release
-      build_args: {REQUIREMENTS: requirements.block.txt}
+      build_args: {REQUIREMENTS: requirements.block.txt, ONLY_BINARY: ":none:"}
     package: pkg:pypi/pyyaml@5.3.1
     vulnerability: GHSA-8q59-q68h-6hv4
     cve: CVE-2020-14343
@@ -374,6 +380,89 @@ seeds:
       gate: SC-002
       detections:
         - {tool: grype, rule: GHSA-8q59-q68h-6hv4}
+
+  - id: GT-CONTAINER-002
+    owner: A9
+    category: CONTAINER
+    title: The shop-api BLOCK image installs requests 2.30.0 (Proxy-Authorization leaked on an HTTPS redirect)
+    location: {path: services/shop-api/requirements.block.txt, line: 359}
+    image:
+      name: shop-api-block
+      dockerfile: services/shop-api/Dockerfile.release
+      build_args: {REQUIREMENTS: requirements.block.txt, ONLY_BINARY: ":none:"}
+    package: pkg:pypi/requests@2.30.0
+    vulnerability: GHSA-j8r2-6x86-q33q
+    cve: CVE-2023-32681
+    kev: false
+    relevance: 1  # B8 ranking (README: a seed added later, graded by the rubric; CONTAINER is not ranked yet)
+    relevance_why: >-
+      the same leak as GT-SCA-002, which needs a proxy with credentials and an HTTPS redirect, and only in the
+      BLOCK image, which demo-shop never deploys
+    expected:  # MEDIUM, P2: no gate rule
+      detections:
+        - {tool: grype, rule: GHSA-j8r2-6x86-q33q}
+
+  - id: GT-CONTAINER-003
+    owner: A9
+    category: CONTAINER
+    title: The web image ships lodash 4.17.20 (command injection through template)
+    location: {path: services/web/package.json, line: 8}
+    image:
+      name: web
+      dockerfile: services/web/Dockerfile
+    package: pkg:npm/lodash@4.17.20
+    vulnerability: GHSA-35jh-r3h4-6jhm
+    cve: CVE-2021-23337
+    kev: false
+    relevance: 1  # B8 ranking (README: a seed added later, graded by the rubric; CONTAINER is not ranked yet)
+    relevance_why: >-
+      the same template injection as GT-SCA-004, which needs an attacker-controlled template
+    expected:
+      gate: SC-002
+      detections:
+        - {tool: grype, rule: GHSA-35jh-r3h4-6jhm}
+
+  - id: GT-CONTAINER-004
+    owner: A9
+    category: CONTAINER
+    title: The reports image ships log4j-core 2.14.1 (Log4Shell), listed in CISA KEV
+    location: {path: services/reports/pom.xml, line: 27}
+    image:
+      name: reports
+      dockerfile: services/reports/Dockerfile
+    package: pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1
+    vulnerability: GHSA-jfh8-c2jp-5v3q
+    cve: CVE-2021-44228
+    kev: true
+    relevance: 2  # B8 ranking (README: a seed added later, graded by the rubric; CONTAINER is not ranked yet)
+    relevance_why: >-
+      Log4Shell, exploited in the wild, but the report worker's image is never deployed: no manifest in demo-shop
+      runs it
+    expected:
+      gate: SC-003
+      detections:
+        - {tool: grype, rule: GHSA-jfh8-c2jp-5v3q}
+
+  - id: GT-CONTAINER-005
+    owner: A9
+    category: CONTAINER
+    title: The reports image ships spring-beans 5.3.17 (Spring4Shell), listed in CISA KEV
+    location: {path: services/reports/pom.xml, line: 32}
+    image:
+      name: reports
+      dockerfile: services/reports/Dockerfile
+    package: pkg:maven/org.springframework/spring-beans@5.3.17
+    vulnerability: GHSA-36p3-wjmg-h94x
+    cve: CVE-2022-22965
+    kev: true
+    relevance: 2  # B8 ranking (README: a seed added later, graded by the rubric; CONTAINER is not ranked yet)
+    relevance_why: >-
+      Spring4Shell, exploited in the wild, but it needs Tomcat with a WAR deployment, which this image of jars
+      is not, and the report worker's image is never deployed
+    expected:
+      gate: SC-003
+      detections:
+        - {tool: grype, rule: GHSA-36p3-wjmg-h94x}
 
   # ---------------------------------------------------------------- application code (B9)
   # shop-api's routes (services/shop-api/app/main.py). Detections verified with the pinned Opengrep 1.33.1 and

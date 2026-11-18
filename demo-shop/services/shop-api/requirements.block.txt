@@ -1,9 +1,14 @@
-# INTENTIONALLY VULNERABLE (GT-SCA-001, GT-CONTAINER-001): the demo's BLOCK image (ADR-0011 decision 6).
-# requirements.release.txt with pyyaml replaced by the seeded 5.3.1 (CVE-2020-14343, code execution through
-# FullLoader, which app/main.py uses: GT-SAST-003), pinned by the hash of its sdist (PyYAML-5.3.1.tar.gz): it
-# has no wheel for Python 3.12: the one package built from source, with requirements.build.txt's setuptools.
-# Build it with: docker buildx build -f Dockerfile.release --build-arg REQUIREMENTS=requirements.block.txt .
-# The gate blocks it (SC-002, P0) and the attest step refuses to sign it. Never deploy it.
+# INTENTIONALLY VULNERABLE (GT-SCA-001, GT-CONTAINER-001, GT-SCA-002, GT-CONTAINER-002): the demo's BLOCK
+# image (ADR-0011 decision 6). requirements.release.txt with two of requirements.txt's seeded versions:
+# - pyyaml 5.3.1 (CVE-2020-14343, code execution through FullLoader, which app/main.py uses: GT-SAST-003),
+#   pinned by the hash of its sdist (PyYAML-5.3.1.tar.gz): it has no wheel for Python 3.12, the one package
+#   built from source, with requirements.build.txt's setuptools;
+# - requests 2.30.0 (CVE-2023-32681, the Proxy-Authorization header sent on to the target of an HTTPS
+#   redirect), pinned by the hashes of its wheel and its sdist.
+# Build it with `make release-block`, or with Dockerfile.release's two build arguments:
+#   docker buildx build -f Dockerfile.release --build-arg REQUIREMENTS=requirements.block.txt \
+#     --build-arg ONLY_BINARY=:none: .
+# The gate blocks it (SC-002, P0, for pyyaml) and the attest step refuses to sign it. Never deploy it.
 annotated-doc==0.0.5 \
     --hash=sha256:117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101 \
     --hash=sha256:c7e58ce09192557605d8bbd92836d7e1d520ac9580096042c0bfd197efacf1bb
@@ -351,9 +356,9 @@ pydantic-core==2.50.2 \
     --hash=sha256:fd9aa71a800c87c0f7ab53fa38009169a23a82c685989626ca74a4bd483e1b67
 pyyaml==5.3.1 \
     --hash=sha256:b8eac752c5e14d3eca0e6dd9199cd627518cb5ec06add0de9d32baeee6fe645d
-requests==2.34.2 \
-    --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0 \
-    --hash=sha256:f288924cae4e29463698d6d60bc6a4da69c89185ad1e0bcc4104f584e960b9ed
+requests==2.30.0 \
+    --hash=sha256:10e94cc4f3121ee6da529d358cdaeaff2f1c409cd377dbc72b825852f2f7e294 \
+    --hash=sha256:239d7d4458afcb28a692cdd298d87542235f4ca8d36d03a15bfc128a6559a2f4
 starlette==1.10.0 \
     --hash=sha256:478c0ab3b4ced6e82719849c118fa406f0278a3499c1a898cd15cd31bdc38ce4 \
     --hash=sha256:b8399098d4c1e3522734f7235dc79b1fc967f96cf139c81e0fa30479e0685f9b
