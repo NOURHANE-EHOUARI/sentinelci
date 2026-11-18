@@ -1,5 +1,5 @@
 // The platform API, read only (SPEC section 13.3). The types come from schemas/openapi.yaml (`npm run client`).
-import type { components } from "./schema";
+import type { components, operations } from "./schema";
 
 export type FindingPage = components["schemas"]["FindingPage"];
 export type FindingDetail = components["schemas"]["FindingDetail"];
@@ -101,7 +101,15 @@ export async function getRuleCounts(): Promise<RuleCounts> {
   return (await get("/api/v1/rules")).json() as Promise<RuleCounts>;
 }
 
-/** The finding's latest explanation (Explanation v1, advisory), or null when none is recorded (404). */
+type ExplanationResponses = operations["get_explanation_api_v1_findings__finding_id__explanation_get"]["responses"];
+
+/** What `GET /api/v1/findings/{id}/explanation` answers when the finding's latest explanation is not a valid
+ * Explanation v1 document about it (T33): it is not served, and nothing older is served in its place. Typed
+ * from the contract, so the build fails if schemas/openapi.yaml stops documenting it. Its body is never read. */
+export const EXPLANATION_REFUSED: keyof ExplanationResponses & 500 = 500;
+
+/** The finding's latest explanation (Explanation v1, advisory), or null when none is recorded (404). A refused
+ * one is an ApiError with status EXPLANATION_REFUSED. */
 export async function getExplanation(findingId: string): Promise<unknown> {
   try {
     return await (await get(`/api/v1/findings/${encodeURIComponent(findingId)}/explanation`)).json();
