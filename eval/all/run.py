@@ -14,7 +14,8 @@ present, and the model server must serve the pinned model each step uses (ADR-00
 correlation, the generation model for canaries, explanations and the fix rate. Only what the chosen steps need
 is checked. A failed check runs nothing and exits 2. `--images` (`IMAGES=`, the archives of `make
 container-seed-images`) goes to detection as `make eval IMAGES=` does, so the run measures CONTAINER recall;
-given, the directory must exist. Without it CONTAINER stays "not measured", as in `make eval`.
+given, the directory must exist. A run that could be official (every step, a clean checkout) is refused
+without it, since CONTAINER would stay "not measured"; a rehearsal may leave it out.
 
 Each step keeps its script's own meaning: exit 0 is measured (and its reports must be there), exit 2 is "not
 measured", anything else failed. Each step runs its scripts directly rather than through `make`, which
@@ -166,7 +167,9 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def preflight(s: Settings, env: Environment, steps: Sequence[Step], allow_dirty: bool) -> dict[str, str]:
+def preflight(
+    s: Settings, env: Environment, steps: Sequence[Step], allow_dirty: bool, subset: bool = False
+) -> dict[str, str]:
     """What each requirement of the chosen steps found: "ok", or why the run cannot start."""
     found: dict[str, str] = {"checkout": "ok"}
     if env.dirty():
@@ -179,9 +182,17 @@ def preflight(s: Settings, env: Environment, steps: Sequence[Step], allow_dirty:
         found["grype database"] = (
             "ok" if ok else f"no Grype database in {s.grype_db} (sentinel tools grype-db)"
         )
-    if s.images is not None and any(step.name == "detection" for step in steps):
+    detection = any(step.name == "detection" for step in steps)
+    if s.images is not None and detection:
         found["images"] = (
             "ok" if s.images.is_dir() else f"no image archives in {s.images} (make container-seed-images)"
+        )
+    elif detection and not subset and found["checkout"] == "ok":
+        # A run that could be official measures CONTAINER from the seed images (#167 review); a subset or a
+        # dirty checkout is a rehearsal and may leave them out.
+        found["images"] = (
+            "not given: the official run measures CONTAINER from the seed images "
+            "(make container-seed-images, then IMAGES=)"
         )
     if "docker" in uses:
         found["docker"] = env.docker_problem() or "ok"
@@ -203,7 +214,7 @@ def run_all(
 ) -> int:
     chosen = [BY_NAME[name] for name in steps] if steps else list(STEPS)
     chosen.sort(key=STEPS.index)
-    found = preflight(s, env, chosen, allow_dirty)
+    found = preflight(s, env, chosen, allow_dirty, subset=bool(steps))
     blocked = {name: why for name, why in found.items() if why != "ok" and not why.startswith("allowed")}
     names = {step.name for step in chosen}
     records: list[dict[str, object]] = []

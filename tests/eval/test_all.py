@@ -109,6 +109,9 @@ def go(
     tmp_path: Path, fake: Fake | None = None, codes: Mapping[str, int] | None = None,
     steps: Sequence[str] | None = None, allow_dirty: bool = False, **overrides: object,
 ) -> tuple[int, dict[str, Any], Scripted]:  # fmt: skip
+    if "images" not in overrides:  # an official run needs the seed images (#167 review)
+        overrides["images"] = tmp_path / "container-seeds"
+        (tmp_path / "container-seeds").mkdir(exist_ok=True)
     s = settings(tmp_path, **overrides)
     (tmp_path / "db").mkdir(exist_ok=True)
     (tmp_path / "db" / "vulnerability.db").write_text("db", encoding="utf-8")
@@ -264,10 +267,25 @@ def test_the_seed_images_reach_detection_and_the_manifest(tmp_path: Path) -> Non
     (command,) = [c for c in runner.calls if "eval/detection/run.py" in c]
     assert command[-2:] == ("--images", str(images))
     (tmp_path / "none").mkdir()
-    code, manifest, runner = go(tmp_path / "none", steps=["detection"])
+    code, manifest, runner = go(tmp_path / "none", steps=["detection"], images=None)
     assert code == 0 and "images" not in manifest["preflight"]
     assert manifest["settings"]["images"] is None
     assert not any("--images" in c for c in runner.calls)
+
+
+def test_the_official_run_is_refused_without_the_seed_images(tmp_path: Path) -> None:
+    """Without IMAGES=, CONTAINER would be "not measured" in the run the report cites (#167 review): the
+    run is refused before anything starts, like a missing test image. A subset (STEPS=) or a dirty checkout
+    allowed as a rehearsal can never be official, so it may leave the images out."""
+    code, manifest, runner = go(tmp_path, images=None)
+    assert code == 2 and runner.calls == [] and manifest["official"] is False
+    assert "CONTAINER" in manifest["preflight"]["images"] and "IMAGES=" in manifest["preflight"]["images"]
+    (tmp_path / "subset").mkdir()
+    code, manifest, runner = go(tmp_path / "subset", steps=["detection", "ranking"], images=None)
+    assert code == 0 and "images" not in manifest["preflight"] and manifest["official"] is False
+    (tmp_path / "dirty").mkdir()
+    code, manifest, runner = go(tmp_path / "dirty", fake=Fake(clean=False), allow_dirty=True, images=None)
+    assert "images" not in manifest["preflight"] and manifest["official"] is False
 
 
 def test_an_images_directory_that_is_not_there_runs_nothing(tmp_path: Path) -> None:
