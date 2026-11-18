@@ -48,24 +48,34 @@ and on a slow connection that takes longer: on 18 November, on a home connection
 images on the host the day before, on a fast network, and load them into the node:
 
 ```bash
+uv run sentinel tools verify kind                   # the pinned kind, checked as make kind-up checks it
+mkdir -p .sentinel/cache/kind/images                # ignored by git, kept across make kind-down
+platform="$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')"
 for image in reg.kyverno.io/kyverno/kyvernopre:v1.19.2 reg.kyverno.io/kyverno/kyverno:v1.19.2 \
     reg.kyverno.io/kyverno/background-controller:v1.19.2 reg.kyverno.io/kyverno/cleanup-controller:v1.19.2 \
     reg.kyverno.io/kyverno/reports-controller:v1.19.2 quay.io/argoproj/argocd:v3.6.1 \
     public.ecr.aws/docker/library/redis:8.10.1-alpine; do
-  docker pull "$image" && docker save --platform linux/amd64 -o image.tar "$image" \
-    && .sentinel/tools/bin/kind load image-archive image.tar --name sentinel
+  archive=".sentinel/cache/kind/images/$(echo "$image" | tr '/:' '__').tar"
+  [ -s "$archive" ] || { docker pull "$image" \
+    && docker save --platform "$platform" -o "$archive.part" "$image" && mv "$archive.part" "$archive"; }
+  [ -s "$archive" ] && .sentinel/tools/bin/kind load image-archive "$archive" --name sentinel
 done
-rm -f image.tar
 kubectl --context kind-sentinel -n kyverno delete pod --all   # pods stuck on a pull start again
 make kind-up                                                  # carries on where it stopped
 ```
 
-- These are the tags the pinned install manifests name (Limits, below), so loading them changes nothing the
-  demo checks: the demo's own images still come only from the release bundle, through `sentinel verify` and
-  Kyverno.
-- `docker save --platform` then `kind load image-archive`, not `kind load docker-image`: with Docker Desktop's
-  containerd image store, `docker save` exports the whole multi-platform index while only one platform's
-  layers were pulled, and the node's import fails with "content digest … not found".
+- These are the tags the pinned install manifests name (Limits, below): the list follows `cluster.toml`'s
+  Kyverno and Argo CD versions, and changes with them. Loading them changes nothing the demo checks: the
+  demo's own images still come only from the release bundle, through `sentinel verify` and Kyverno.
+- The archives stay in `.sentinel/cache/kind/images/`, which git ignores, so an interrupted run never leaves a
+  file in the checkout (`make release`, `make self-gate` and an official `make eval-all` refuse a dirty one).
+  A run cut off halfway leaves only a `.part` file, and the next run pulls that image again; a whole archive
+  is loaded again with no download, after any `make kind-down` too. Run the loop again until every image
+  loads.
+- `docker save --platform` (the Docker server's own platform) then `kind load image-archive`, not `kind load
+  docker-image`: with Docker Desktop's containerd image store, `docker save` exports the whole multi-platform
+  index while only one platform's layers were pulled, and the node's import fails with "content digest … not
+  found".
 - Kyverno's pods pull `IfNotPresent`, so a loaded image is used as it is. Four of Argo CD's deployments pull
   `Always`: the node still asks the registry for the manifest, but finds the layers already there.
 
