@@ -2,7 +2,7 @@
 openapi: 3.1.0
 info:
   title: SentinelCI API
-  version: 1.10.2
+  version: 1.10.3
 paths:
   /healthz:
     get:
@@ -1521,7 +1521,7 @@ paths:
       - explanations
       summary: Get Explanation
       description: The finding's latest explanation, exactly as the worker recorded
-        it.
+        it, once checked again.
       operationId: get_explanation_api_v1_findings__finding_id__explanation_get
       parameters:
       - name: finding_id
@@ -1543,6 +1543,14 @@ paths:
                 type: object
         '404':
           description: No such finding (in that run), request or explanation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorOut'
+        '500':
+          description: 'The finding''s latest explanation is not a valid Explanation
+            v1 document about it: it did not come through the worker''s checks, so
+            it is not served (T33).'
           content:
             application/json:
               schema:

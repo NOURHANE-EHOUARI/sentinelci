@@ -9,6 +9,7 @@ gives it one with the password in `SENTINEL_WORKER_DATABASE_PASSWORD` (Compose s
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 import secrets
@@ -189,7 +190,7 @@ def test_the_role_is_created_once_per_server(database_url: str, postgres_server:
     """Roles belong to the server, not to one database: a second database's migration reuses the role."""
     name = f"t_{uuid.uuid4().hex}"
     with psycopg.connect(f"{postgres_server}/sentinel", autocommit=True) as conn:
-        conn.execute(f'CREATE DATABASE "{name}"')
+        conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
     migrate.upgrade(f"{postgres_server}/{name}")  # does not fail on the existing role
     with psycopg.connect(database_url) as conn:
         row = conn.execute(
@@ -216,3 +217,25 @@ def test_the_server_never_sees_the_clear_password(database_url: str, monkeypatch
     assert any("SCRAM-SHA-256$" in statement for statement in sent)
     with psycopg.connect(as_worker(database_url, password)) as conn:
         assert conn.execute("SELECT current_user").fetchone() == (migrate.WORKER_ROLE,)
+
+
+def test_the_migration_names_the_role_the_platform_logs_in_as() -> None:
+    """Migration 0011 writes each statement as a literal, with no SQL built from strings (#154 review): every
+    statement still names the role `sentinel-api migrate` gives a login to, and the upgrade revokes before it
+    grants."""
+    path = Path(migrate.__file__).parent / "migrations" / "versions" / "0011_worker_role.py"
+    spec = importlib.util.spec_from_file_location("migration_0011", path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    assert migration.ROLE == migrate.WORKER_ROLE
+    for statement in (*migration.UPGRADE, *migration.DOWNGRADE):
+        assert f" {migrate.WORKER_ROLE}" in statement or f"'{migrate.WORKER_ROLE}'" in statement, statement
+    assert [s.split()[0] for s in migration.UPGRADE[1:]] == [
+        "REVOKE",
+        "GRANT",
+        "GRANT",
+        "GRANT",
+        "GRANT",
+        "GRANT",
+    ]

@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router";
-import { getCorrelation, getExplanation, getFinding } from "../api/client";
+import { ApiError, EXPLANATION_REFUSED, getCorrelation, getExplanation, getFinding } from "../api/client";
 import { groupOf } from "../api/correlation";
 import { asExplanation, referenceLink } from "../api/explanation";
 import { asFinding } from "../api/finding";
@@ -97,7 +97,17 @@ function Explanation({ findingId, secret }: { findingId: string; secret: boolean
   } else if (explanation.isPending) {
     body = <Loading />;
   } else if (explanation.isError) {
-    body = <Failure error={explanation.error} />;
+    const error = explanation.error;
+    // Not served (T33's refusal, or any other 500 of this route): fail closed, nothing of it and nothing older.
+    body =
+      error instanceof ApiError && error.status === EXPLANATION_REFUSED ? (
+        <p role="alert" className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+          The API did not serve the latest explanation (it answered {EXPLANATION_REFUSED}, as it does for one that
+          fails its check): nothing of it is shown, and no older one is shown in its place.
+        </p>
+      ) : (
+        <Failure error={error} />
+      );
   } else if (explanation.data === null) {
     body = (
       <p>

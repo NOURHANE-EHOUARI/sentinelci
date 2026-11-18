@@ -257,7 +257,8 @@ def test_every_attack_is_refused_by_the_check_that_must_refuse_it(
     assert results[0].message == "NOT TRUSTED: 0/16 checks passed"
     assert "not signed by the release key" in results[1].message and results[2].message == KYVERNO_DENIAL
     assert "demo-shop runs SentinelCI releases only" in results[3].message
-    assert "the BLOCK image: skipped, no OCI layout" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "the BLOCK image: skipped, no OCI layout" in out and "(`make release-block`)" in out
 
     commands = fake.commands()
     policy = max(i for i, c in enumerate(commands) if "imagevalidatingpolicies" in c)
@@ -380,6 +381,59 @@ def test_the_exit_code_says_whether_every_attack_was_refused(
     monkeypatch.setattr(cluster, "trust_bundle", lambda tls: Path("/tls/trust.pem"))
     monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")  # restored after the test
     assert demo.main(["attack"]) == code
+
+
+@pytest.mark.parametrize("ran", [5, 4])
+def test_the_summary_says_when_the_block_images_attack_was_skipped(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], ran: int
+) -> None:
+    """Without `make release-block`'s layout, four attacks run and all four are refused: "4/4" alone would
+    read as the whole demo, so the summary names the one that did not run (the video's attack 5). The summary
+    counts what `attack()` ran, so the skip is decided in one place only. Without `--block`, `attack()` gets
+    `make release-block`'s path, whether or not it exists: skipping it is `attack()`'s call."""
+    given: list[Path | None] = []
+
+    def fake_attack(**kwargs: Any) -> list[Any]:
+        given.append(kwargs["block"])
+        return [demo.Attack(str(n), "image", True, "Kyverno", "denied") for n in range(ran)]
+
+    monkeypatch.setattr(demo, "attack", fake_attack)
+    monkeypatch.setattr(cluster, "trust_bundle", lambda tls: Path("/tls/trust.pem"))
+    monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")  # restored after the test
+    assert demo.main(["attack"]) == 0
+    assert given == [demo.ROOT / "out" / "release" / "block-image"]
+    last = capsys.readouterr().out.splitlines()[-1]
+    if ran == 5:
+        assert last == "demo attack: 5/5 attacks refused"
+    else:
+        skipped = ", 1 skipped (no BLOCK image: run `make release-block`)"
+        assert last == f"demo attack: 4/4 attacks refused{skipped}"
+
+
+@pytest.mark.parametrize("exists", [True, False])
+def test_a_block_layout_asked_for_must_exist(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str], exists: bool
+) -> None:
+    """`make demo-attack BLOCK=<path>`: a path that names no layout (a typo) is an attack that could not be
+    run, exit 3 before anything is tried, never a skip that ends "4/4 attacks refused" with exit 0."""
+    block = tmp_path / "relase" / "block-image"
+    if exists:
+        block.mkdir(parents=True)
+    given: list[Path | None] = []
+
+    def fake_attack(**kwargs: Any) -> list[Any]:
+        given.append(kwargs["block"])
+        return [demo.Attack(str(n), "image", True, "Kyverno", "denied") for n in range(5)]
+
+    monkeypatch.setattr(demo, "attack", fake_attack)
+    monkeypatch.setattr(cluster, "trust_bundle", lambda tls: Path("/tls/trust.pem"))
+    monkeypatch.setenv("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")  # restored after the test
+    code = demo.main(["attack", "--block", str(block)])
+    if exists:
+        assert (code, given) == (0, [block])
+    else:
+        assert (code, given) == (3, []), "nothing tried"
+        assert f"--block {block}: no OCI layout there" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------- an attack that could not be run

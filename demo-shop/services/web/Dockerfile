@@ -1,7 +1,8 @@
 # INTENTIONALLY VULNERABLE (GT-CONTAINER-003): the web front end's image, built only to be scanned (task A9).
 # It holds the dependencies package-lock.json pins, so lodash 4.17.20 (GT-SCA-004 in the manifest) ships in the
-# image as well. demo-shop's web has no code of its own: this image is never pushed, run or deployed
-# (infra/k8s/web.yaml names a placeholder digest). `make container-seed-images` builds it to scan it.
+# image as well. It holds the dependencies only, never web's own code (the build context below admits only the
+# manifest and its lockfile): this image is never pushed, run or deployed (infra/k8s/web.yaml names a
+# placeholder digest). `make container-seed-images` builds it to scan it.
 #
 # - The base is pinned by digest (the tag is only a label): a tag moved upstream cannot change what is built.
 # - `npm ci` installs exactly package-lock.json, each package checked against its sha512 `integrity`, and runs no
