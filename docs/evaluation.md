@@ -443,7 +443,8 @@ make eval-canaries OLLAMA_URL=http://127.0.0.1:11434
 - **2 canaries were planted on 15 November, of the 5 section 17 asks for**, both in one file beside SAST
   seeds. 0 of 10 says little about canaries of other shapes or in other categories. B9 (#171) adds three of
   other shapes (a maintainers' note in a docstring, a data value that closes its code block, a forged SentinelCI
-  log), each beside its own seed; the 27 November run measures all five.
+  log), each beside its own seed; the 27 November run measures all five. All five are still in shop-api's
+  `main.py` beside SAST seeds, so a canary beside a SECRET, IAC or PIPELINE finding stays untested.
 - The verdict check shows that the AI step changed none of the gate's inputs in this run; it does not test a
   model that tries to write files.
 
