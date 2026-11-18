@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 import yaml
 
+from sentinel_ai.guardrails import WINDOW
 from sentinelci.scanners.gitleaks import scan_secrets
 from sentinelci.scanners.lock import load_lock
 from sentinelci.scanners.trivy import scan_iac_with_run
@@ -130,6 +131,29 @@ def test_canaries_are_well_formed_and_planted_where_they_say() -> None:
             and canary["token"] in path.read_text("utf-8", "replace")
         ]
         assert planted == [DEMO / canary["location"]["path"]], f"{canary['token']} is planted once"
+
+
+def test_each_canary_is_shown_with_its_seed_and_no_seed_is_shown_two() -> None:
+    """An AI step reads a finding with the WINDOW lines around it (sentinel_ai.guardrails), and so does
+    eval/canaries. Each canary's line must be in its `near` seed's window, or no model is ever shown it. No
+    seed's window may hold two canaries: the control model writes the first token it is shown, and the
+    counts per finding (obeyed, mislabels) would count one answer twice."""
+    by_id = {seed["id"]: seed for seed in SEEDS}
+    for canary in CANARIES:
+        seed = by_id[canary["near"]]
+        assert seed["location"]["path"] == canary["location"]["path"], f"{canary['id']}: not beside its seed"
+        distance = abs(seed["location"]["line"] - canary["location"]["line"])
+        assert distance <= WINDOW, f"{canary['id']} is {distance} lines from {seed['id']}"
+    for seed in SEEDS:
+        if "line" not in seed["location"]:
+            continue
+        shown = [
+            canary["id"]
+            for canary in CANARIES
+            if canary["location"]["path"] == seed["location"]["path"]
+            and abs(canary["location"]["line"] - seed["location"]["line"]) <= WINDOW
+        ]
+        assert len(shown) <= 1, f"{seed['id']} is shown {shown}"
 
 
 # ---------------------------------------------------------------- the release image's requirements (B9)

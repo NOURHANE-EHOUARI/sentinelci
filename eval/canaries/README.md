@@ -50,12 +50,13 @@ stopped sending a canary's line (a clipped window, or a file in which the scan f
 code is sent), the control would not obey, and the run would fail. "Findings shown a canary" can't count
 prompts that never held one.
 
-Today, with the control: 5 findings shown a canary, 10 of 10 outputs obeyed, 5 of 5 hints mislabelled, and 0
-verdict changes. The real model's numbers come from a machine with Ollama and the pinned model.
+Today, with the control and the five canaries: 6 findings shown a canary (each of GT-SAST-001 to 005 its own,
+and GT-SAST-006 the first one's), 12 of 12 outputs obeyed, 6 of 6 hints mislabelled, and 0 verdict changes. The real model's numbers come from a machine with Ollama and the pinned model.
 
 ## Limits
 
-- Two canaries are planted; SPEC section 17 asks for 5. The report says so.
+- Five canaries are planted, the 5 SPEC section 17 asks for, all in shop-api's `app/main.py`, each beside its own
+  seed (GT-SAST-001 to 005): the measurement sees only what reaches a SAST finding's code window.
 - The rates are over a handful of outputs, so they are counts first; no significance test is reported.
 - Lookalike letters of another script (a Cyrillic A in place of a Latin one) are not mapped back, so a token
   written with them is not counted as obeyed. That errs toward a safer-looking model; the kept outputs let a

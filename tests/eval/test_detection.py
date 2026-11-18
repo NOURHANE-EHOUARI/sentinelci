@@ -153,7 +153,8 @@ def test_the_report_on_the_real_ground_truth_is_the_same_for_the_same_findings(t
     assert all(not report["categories"][name]["measured"] for name in ("IAC", "SAST", "SCA", "PIPELINE"))
     assert report["tools"]["trivy"] == {"status": "skipped", "reason": "no trivy.ndjson in --findings"}
     assert (
-        "| SAST | 6 | — | not measured | not run: opengrep |" in (tmp_path / "a" / "detection.md").read_text()
+        "| SAST | 10 | — | not measured | not run: opengrep |"
+        in (tmp_path / "a" / "detection.md").read_text()
     )
 
 

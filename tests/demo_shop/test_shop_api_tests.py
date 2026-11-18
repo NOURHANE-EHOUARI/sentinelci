@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from sentinelci.remediation.code import service_of
 from sentinelci.scanners.lock import load_lock
 from sentinelci.scanners.trivy import scan_iac_with_run
 
@@ -46,6 +47,14 @@ def sast_seeds() -> list[dict[str, object]]:
     return [seed for seed in truth["seeds"] if seed["category"] == "SAST"]
 
 
+def python_sast_seeds() -> list[dict[str, object]]:
+    """The SAST seeds a security test proves: those in a Python file. The verified fix rate's scope rule
+    (decided 17 November, before the 27 November run): the code fixer's check (A6, ADR-0014 decision 3)
+    verifies Python only, with pytest in this service's test image, so a SAST seed in another language (the
+    web service's JavaScript, GT-SAST-007 to 010) has no security test and is listed as not attempted."""
+    return [seed for seed in sast_seeds() if str(seed["location"]["path"]).endswith(".py")]  # type: ignore[index]
+
+
 def security_test_of(rule: str) -> Path:
     return SECURITY / f"test_{rule.replace('-', '_')}.py"
 
@@ -69,8 +78,8 @@ def pins(path: Path) -> dict[str, list[str]]:
 # ---------------------------------------------------------------- the files
 
 
-@pytest.mark.parametrize("seed", sast_seeds(), ids=lambda seed: str(seed["id"]))
-def test_every_sast_seed_has_its_own_security_test(seed: dict[str, object]) -> None:
+@pytest.mark.parametrize("seed", python_sast_seeds(), ids=lambda seed: str(seed["id"]))
+def test_every_python_sast_seed_has_its_own_security_test(seed: dict[str, object]) -> None:
     (detection,) = seed["expected"]["detections"]  # type: ignore[index]
     test_file = security_test_of(detection["rule"])
     assert test_file.is_file(), f"{seed['id']}: {test_file.relative_to(ROOT)} is missing"
@@ -78,9 +87,22 @@ def test_every_sast_seed_has_its_own_security_test(seed: dict[str, object]) -> N
 
 
 def test_every_security_test_is_a_seeds() -> None:
-    rules = {d["rule"] for seed in sast_seeds() for d in seed["expected"]["detections"]}  # type: ignore[attr-defined]
+    rules = {d["rule"] for seed in python_sast_seeds() for d in seed["expected"]["detections"]}  # type: ignore[attr-defined]
     expected = {security_test_of(rule).name for rule in rules}
     assert {path.name for path in SECURITY.glob("test_*.py")} == expected
+
+
+def test_a_sast_seed_in_another_language_is_never_attempted() -> None:
+    """The scope rule (python_sast_seeds): A6's check finds no service with behaviour tests above a seed
+    that is not Python, so `make remediate-code` lists its finding as not verifiable and never sends it to
+    the model; and no security test is named after its rule."""
+    others = [seed for seed in sast_seeds() if seed not in python_sast_seeds()]
+    assert others, "the web service's JavaScript seeds"
+    for seed in others:
+        path = f"demo-shop/{seed['location']['path']}"  # type: ignore[index]
+        assert service_of(ROOT, path) is None, f"{seed['id']}: {path} has tests above it"
+        (detection,) = seed["expected"]["detections"]  # type: ignore[index]
+        assert not security_test_of(detection["rule"]).exists(), seed["id"]
 
 
 def test_the_behaviour_tests_are_where_the_check_looks_for_them() -> None:
@@ -170,7 +192,7 @@ def test_on_the_seeded_code_the_behaviour_tests_pass(tmp_path: Path) -> None:
 
 
 @in_the_image
-@pytest.mark.parametrize("seed", sast_seeds(), ids=lambda seed: str(seed["id"]))
+@pytest.mark.parametrize("seed", python_sast_seeds(), ids=lambda seed: str(seed["id"]))
 def test_on_the_seeded_code_each_security_test_fails(tmp_path: Path, seed: dict[str, object]) -> None:
     """Each seed is real: its test fails with assertions (pytest exit 1), not with an error (exit 2 to 4)."""
     (detection,) = seed["expected"]["detections"]  # type: ignore[index]

@@ -251,7 +251,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (context) (increase(sentinel_gate_decisions_total{verdict=\"BLOCK\"}[1d])) / sum by (context) (increase(sentinel_gate_decisions_total[1d]))",
+          "expr": "sum by (context) (increase(sentinel_gate_decisions_total{verdict=\"BLOCK\"}[1d])) / sum by (context) (increase(sentinel_gate_decisions_total[1d]) > 0)",
           "legendFormat": "{{context}}"
         }
       ],
@@ -330,7 +330,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (strategy) (increase(sentinel_remediation_attempts_total{outcome=\"VERIFIED\"}[7d])) / sum by (strategy) (increase(sentinel_remediation_attempts_total[7d]))",
+          "expr": "sum by (strategy) (increase(sentinel_remediation_attempts_total{outcome=\"VERIFIED\"}[7d])) / sum by (strategy) (increase(sentinel_remediation_attempts_total[7d]) > 0)",
           "legendFormat": "{{strategy}}"
         }
       ],
