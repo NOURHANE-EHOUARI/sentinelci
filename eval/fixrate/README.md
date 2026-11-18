@@ -17,7 +17,8 @@ make eval-fixrate TEST_IMAGE=<shop-api test image, pinned>     # OLLAMA_URL= if 
 |---|---|---|
 | IAC, Kubernetes manifest (KSV rules) | `deterministic:kubernetes` | as the bot (`sentinel-remediate.yml`) |
 | IAC, Dockerfile (DS rules) | `deterministic:dockerfile` | as the bot |
-| SAST | `llm:code` | as `make remediate-code` (ADR-0014) |
+| SAST in Python | `llm:code` | as `make remediate-code` (ADR-0014) |
+| SAST in another language (JavaScript in `web`) | `llm:code` | out of its scope: not attempted (rule of 17 November, below) |
 | SCA, and CONTAINER (a package in the image) | `deterministic:dependency-bump` | not implemented: not attempted |
 | SECRET, PIPELINE, IAC on Terraform | none | not attempted |
 
@@ -66,6 +67,11 @@ Per seed:
   (build OK, tests pass, target fingerprint gone, no new finding >= MEDIUM, verdict != BLOCK). REJECTED is
   the outcome of an attempt that left retries (a deterministic proposal, or an LLM retry the model could not
   answer); FAILED, of the third.
+- **The code fixer's scope** (rule set on 17 November, before the 27 November run, when SAST seeds in
+  JavaScript were planned): A6 verifies a fix with the seed's security tests, run by pytest in the shop-api test
+  image, so it can only verify Python. A SAST seed in another language is listed as not attempted, with that
+  reason, and never handed to the fixer. Counting it as a failed attempt would lower the rate for the harness's
+  scope, not for the fixer's work.
 - **NO PROPOSAL**: the strategy ran and proposed nothing for it (the fixer left it open, the model gave no
   usable answer, the file was not sent, no patch of it could be verified). Attempted, not verified. Each
   strategy's row counts them by whose they are: `left open` (the fixer), `no usable answer` (the model),
