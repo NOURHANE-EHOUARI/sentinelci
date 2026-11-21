@@ -39,6 +39,48 @@ make kind-down      # delete the cluster and its registry (the GitOps repository
 and bundle. The release key pair and the bundle are made by `make release` (A4c); until then, a test key and
 a bundle from `cosign save` do.
 
+### On a slow network: load the add-ons' images first
+
+`make kind-up` waits up to 300 s for Kyverno and for Argo CD. The cluster's node pulls their images itself,
+and on a slow connection that takes longer: on 18 November, on a home connection, one 42 MB Kyverno image took
+54 minutes and two pulls were cut off, so `kind-up` stopped with "timed out waiting for the condition" or
+"exceeded its progress deadline", the pods still `Init` or `ContainerCreating` on "Pulling image". Pull the
+images on the host the day before, on a fast network, and load them into the node:
+
+```bash
+uv run sentinel tools verify kind \
+  && mkdir -p .sentinel/cache/kind/images \
+  && platform="$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')" \
+  && for image in reg.kyverno.io/kyverno/kyvernopre:v1.19.2 reg.kyverno.io/kyverno/kyverno:v1.19.2 \
+    reg.kyverno.io/kyverno/background-controller:v1.19.2 reg.kyverno.io/kyverno/cleanup-controller:v1.19.2 \
+    reg.kyverno.io/kyverno/reports-controller:v1.19.2 quay.io/argoproj/argocd:v3.6.1 \
+    public.ecr.aws/docker/library/redis:8.10.1-alpine; do
+  archive=".sentinel/cache/kind/images/$(echo "$image" | tr '/:' '__').tar"
+  [ -s "$archive" ] || { docker pull "$image" \
+    && docker save --platform "$platform" -o "$archive.part" "$image" && mv "$archive.part" "$archive"; }
+  [ -s "$archive" ] && .sentinel/tools/bin/kind load image-archive "$archive" --name sentinel
+done
+kubectl --context kind-sentinel -n kyverno delete pod --all   # pods stuck on a pull start again
+make kind-up                                                  # carries on where it stopped
+```
+
+- These are the tags the pinned install manifests name (Limits, below): the list follows `cluster.toml`'s
+  Kyverno and Argo CD versions, and changes with them. Loading them changes nothing the demo checks: the
+  demo's own images still come only from the release bundle, through `sentinel verify` and Kyverno.
+- Nothing runs unless `sentinel tools verify kind` passes: the loop calls the pinned kind, checked as `make
+  kind-up` checks it.
+- The archives stay in `.sentinel/cache/kind/images/`, which git ignores, so an interrupted run never leaves a
+  file in the checkout (`make release`, `make self-gate` and an official `make eval-all` refuse a dirty one).
+  A run cut off halfway leaves only a `.part` file, and the next run pulls that image again; a whole archive
+  is loaded again with no download, after any `make kind-down` too. Run the loop again until every image
+  loads.
+- `docker save --platform` (the Docker server's own platform) then `kind load image-archive`, not `kind load
+  docker-image`: with Docker Desktop's containerd image store, `docker save` exports the whole multi-platform
+  index while only one platform's layers were pulled, and the node's import fails with "content digest … not
+  found".
+- Kyverno's pods pull `IfNotPresent`, so a loaded image is used as it is. Four of Argo CD's deployments pull
+  `Always`: the node still asks the registry for the manifest, but finds the layers already there.
+
 ## What `make kind-up` does
 
 1. Issues the registry's TLS certificate with OpenSSL 3, once: a CA made for this cluster only signs a
