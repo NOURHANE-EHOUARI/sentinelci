@@ -88,13 +88,55 @@ The **workflow artifacts** (44, 348,935 bytes, none expired: `sentinel-scan`, `s
 findings, all `generic-api-key` on a `secret_hash` field (the sha256 the normalizer writes in place of a secret),
 in 2 artifacts. Nothing was deleted (#144). The runs since Actions was blocked hold no logs.
 
-The switch PR re-runs the history scan on the day, after the last merge before the switch, and records it here.
+### The switch's scan (24 November)
+
+The switch came two days after the date above. On 21 November, Hiba's second dry run found that B9's changelog row
+1.1.114 quoted the canaries' tokens, which made `main`'s self-gate block (SC-001); #180 (SPEC 1.1.119) took them
+out of the tree first.
+
+Run by Hiba on the day, after #180, #177, #179 and #181 merged: `main` at `10c3d74`, with every branch and pull
+request head pushed by then (#148's and #182's included). **No finding is a real secret.** 65 Gitleaks entries in
+61 places from 14 commits, the same 65 entries as the dry run of 21 November, compared one by one: the 11 findings
+known since 15 November (58 places, 11 commits) and 3 places in `docs/spec/SPEC.md` from B9's commits `9d47574`,
+`972717d` and the merge `90895c9`.
+
+| Class | Findings | Where | Why it is not a secret |
+|---|---|---|---|
+| `demo-shop/`'s listed fakes | 5 (aws-access-token, github-pat, npm-access-token, private-key, slack-webhook-url) | `demo-shop/` | GT-SECRET-001 to 005, listed in `demo-shop/ground-truth/` |
+| Fixture and test values | 6 (generic-api-key, 53 places) | `schemas/fixtures/`, `cli/tests/`, `ai/tests/` | sha256 digests and test values, each covered by a self-gate waiver (`.sentinel/self-gate-waivers.yaml`) |
+| Planted test values | the canaries' tokens, 3 places | `docs/spec/SPEC.md`, in history only | the benchmark's canaries (`demo-shop/ground-truth/findings.yaml`); out of the tree since #180 |
+
+- **Scanned:** 298 refs (113 branches, 180 `refs/pull/*/head`, 5 `refs/pull/*/merge`, no tag), 1,163 commits, of
+  which Gitleaks scanned the 861 with a patch under these log options; no octopus merge.
+- **The tree:** on `10c3d74`, Gitleaks over the tree without `demo-shop/` gives 53 places, all waived fixtures, none
+  in `docs/`. Nourhane's `make self-gate` on `main` `66621b6` (24 November, after #180; #181 then changed only the
+  correlator's threshold file and the SPEC) says **PASS**, no rule: 6 secret findings, all waived.
+- **Workflow artifacts:** 0 on 24 November (the 44 of 15 November have expired), so nothing to scan.
+
+How, as on 17 and 21 November: `git clone --mirror`, then a fetch of `+refs/pull/*/head:refs/pull/*/head` (with
+GitHub's `refs/pull/*/merge` too, a superset of the refspec above); the pinned Gitleaks 8.30.1; SentinelCI's
+configuration from `main` (`cli/src/sentinelci/scanners/configs/gitleaks.toml`, sha256 `8ed39cfd…`), never a scanned
+branch's; suppressions neutralized as the wrapper does (`--ignore-gitleaks-allow`, an empty
+`--gitleaks-ignore-path`); git with an empty `HOME` and no system config; `--redact`. The wrapper
+(`sentinel scan secrets --mode git`) refuses a redacted report (fail closed), so its Gitleaks invocation ran directly,
+with `--redact` added, in the wrapper's two passes:
+
+```sh
+env -i PATH=/usr/bin:/bin HOME=<empty dir> GIT_CONFIG_NOSYSTEM=1 LANG=C.UTF-8 \
+  gitleaks git histscan.git --config gitleaks.toml --gitleaks-ignore-path <empty dir> --ignore-gitleaks-allow \
+  --redact --report-format json --report-path pass1.json --exit-code 0 --no-banner --no-color \
+  --log-opts="--text --no-textconv --no-ext-diff --diff-merges=remerge --diff-filter=tuxdb --all"
+# pass 2, octopus merges: --log-opts="... --diff-merges=remerge --min-parents=3 --diff-merges=first-parent ..."
+```
+
+The kinds of known false positive:
 
 | Kind | What it is |
 |---|---|
 | GT-SECRET-001 to 005 | `demo-shop/`'s five listed fakes (settings, `.npmrc`, Terraform, the TLS Secret, the Slack webhook) |
 | `secret_hash`, `key_sha256` | sha256 digests in contract fixtures (finding, release-evidence, trust-report) and normalizer fixtures, named after what they hash; the `decision-id-*.json` trust-report fixtures are flagged on their `key_sha256` line |
 | `ai/tests/test_analyst.py` | the fake `UNKNOWN_SECRET`, waived by `self-2026-007` |
+| the canaries' tokens | planted values of the benchmark (`demo-shop/ground-truth/findings.yaml`) that B9's changelog row quoted in three commits; out of the tree since #180 |
 
 ## Consequences
 
