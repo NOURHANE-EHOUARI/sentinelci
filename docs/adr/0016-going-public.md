@@ -112,6 +112,7 @@ known since 15 November (58 places, 11 commits) and 3 places in `docs/spec/SPEC.
   in `docs/`. Nourhane's `make self-gate` on `main` `66621b6` (24 November, after #180; #181 then changed only the
   correlator's threshold file and the SPEC) says **PASS**, no rule: 6 secret findings, all waived.
 - **Workflow artifacts:** 0 on 24 November (the 44 of 15 November have expired), so nothing to scan.
+- **The switch:** Nourhane made the repository public on 24 November at about 14:30 UTC, then did steps 2 to 5. Read back through the API: `main`'s rule (one approval, stale approvals dismissed, approval of the most recent push, enforced for admins, no force push or deletion, no required check yet), secret scanning and push protection on, private vulnerability reporting on, Dependabot security updates off. The Actions settings (read-only default token, approval for every outside contributor's fork workflow) were checked on the settings page, which the API does not serve to this session. The dependency graph and Dependabot alerts stay off: the self-gate's Grype already covers SentinelCI's dependencies, and alerts on `demo-shop/`'s seeded packages would only be closed one by one.
 
 How, as on 17 and 21 November: `git clone --mirror`, then a fetch of `+refs/pull/*/head:refs/pull/*/head` (with
 GitHub's `refs/pull/*/merge` too, a superset of the refspec above); the pinned Gitleaks 8.30.1; SentinelCI's
