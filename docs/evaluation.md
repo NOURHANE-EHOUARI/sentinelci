@@ -609,6 +609,12 @@ correlation, canaries, explanations, the fix rate and the timing one at a time, 
 
 Under section 16's drop order, a metric cut before then is reported as not measured, never as 0.
 
+**The v1.0.0 tag (rule agreed by both of us on 18 November, written down before the run).** The tag of 28
+November goes on the commit named in the run's `out/eval/all/manifest.json`, so the numbers, the release of the
+video and the tag are the same code (engine 1.0.0, #101). If a fix has to land on `main` between the run and the
+tag, the tag goes on the commit with the fix (the release is built from the code that ships), and either the step
+the fix concerns is run again, or the report names the fix, the step and why it was not run again.
+
 ### Rehearsal (17 November)
 
 A local merge of `main` with #159, #169, #171, #161, #165, #166 and #167 (never pushed), run with
