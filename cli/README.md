@@ -223,8 +223,8 @@ waivers:
 
 ADR-0010. `sentinel attest` signs four in-toto statements about the image digest (release decision, CycloneDX
 SBOM, vulnerability scan, SLSA v1 provenance) with the pinned Cosign and a key pair, and writes them as Sigstore
-bundles under `<out>/attestations/`. In the private phase it runs only on the release laptop, inside
-`make release` (ADR-0011, `deploy/release/README.md`):
+bundles under `<out>/attestations/`. Until keyless signing (ADR-0016, step 2) it runs only on the release
+laptop, inside `make release` (ADR-0011, `deploy/release/README.md`):
 
 ```bash
 uv run sentinel attest registry.local/demo-shop/shop-api@sha256:<digest> \
@@ -243,8 +243,8 @@ uv run sentinel attest registry.local/demo-shop/shop-api@sha256:<digest> \
   decision's repository and commit as its source, and nothing about the machine; it is refused in GitHub
   Actions, which holds no release key. `sentinel verify --builder-id` and `sentinel admission-policy
   --builder-id` take that id for such a release.
-- `--key` is a key file or `env://VAR`; only that variable and `COSIGN_PASSWORD` reach Cosign. Private mode
-  (ADR-0006): no transparency-log upload.
+- `--key` is a key file or `env://VAR`; only that variable and `COSIGN_PASSWORD` reach Cosign. Key-pair mode
+  (ADR-0006, ADR-0016): no transparency-log upload.
 
 ```bash
 uv run sentinel verify registry.local/demo-shop/shop-api@sha256:<digest> --evidence out/evidence \
@@ -722,8 +722,8 @@ uv run sentinel admission-policy --key cosign.pub --repo NOURHANE-EHOUARI/sentin
   - a second, different statement of the same type, which `sentinel verify` refuses as ambiguous.
     `sentinel attest --push` refuses to attach a second release of a digest; someone holding the key could
     still attach one with Cosign directly (ADR-0010 decision 4).
-- **Keys.** Private mode only: a key pair. The keyless attestor (GitHub mode) comes with keyless
-  `sentinel verify`, after the repository goes public.
+- **Keys.** Key-pair mode only: a key pair. The keyless attestor (GitHub mode) comes with keyless
+  `sentinel verify`, at keyless signing (ADR-0016, step 2).
 - **Values are checked before they are written** (exit `3`, nothing written): they end up in YAML and in CEL
   string literals.
 - **Tests.** `kyverno apply` (pinned in `tools.lock.toml`) evaluates the policy as the admission controller

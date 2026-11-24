@@ -18,6 +18,7 @@
 | 1.1.133 | A5 `make demo-attack` (§7, the demo video's script): the BLOCK image is the layout `make release-block` writes, as `deploy/release/README.md` says, and the attack's messages, help, docstring and the kind README now name that target, not `make release`; without that layout, the last line reads ``demo attack: 4/4 attacks refused, 1 skipped (no BLOCK image: run `make release-block`)`` instead of a bare 4/4 that reads as the whole demo; the exit code stays 0, and the docstring, the kind README and §7 now say that 0 means every attack that ran was refused. Round 2 (Hiba's review of #172): `BLOCK=` naming no layout is an attack that could not be run (exit 3, nothing tried), never a skip, so a typo cannot read as four refusals and a success; only the default path is skipped when missing; the skip is decided once, in `attack()`, and the summary counts what ran. |
 | 1.1.132 | A8 Grafana (found while checking the demo script): the dashboard's release-gate row said "no data until the platform stores decisions, B1", but the platform records decisions since API 1.6.0 and `/metrics` serves `sentinel_gate_decisions_total` from them. The row now reads "Release gate (from recorded decisions)". A title only: no query changes. The supply-chain row's "stage and AI durations once stored" stays true: no duration is recorded yet. |
 | 1.1.130 | A9 container seeds (§17: container 5, there was 1): GT-CONTAINER-002 to -005 are four of the SCA seeds' pins as they ship in images, so the offline feed fixtures cover them. requests 2.30.0 in shop-api's BLOCK image (`requirements.block.txt`, next to pyyaml; GT-SCA-002 lists that file in `also_in`; MEDIUM, P2, no gate rule, so ADR-0011's one BLOCK reason stays); lodash 4.17.20 in a web image (`services/web/Dockerfile`: `npm ci --ignore-scripts` of package-lock.json, never the seeded `.npmrc`); log4j-core 2.14.1 and spring-beans 5.3.17, both in CISA KEV, as jars in a reports image (`services/reports/Dockerfile`: Maven resolves the runtime classpath with a pinned plugin and `--strict-checksums`, then each jar must have the SHA-256 `jars.sha256` pins, checked against Maven Central's SHA-1 when they were taken, and no other jar may be there). The web and reports images are built only to be scanned, never pushed, run or deployed: bases pinned by digest (docker-library's records), a final stage with no RUN and UID 10001, an allow-list context. The ground truth's `image` gains `name`, the archive `make container-seed-images` writes (`out/container-seeds/<name>.oci.tar`), and GT-CONTAINER-001's build arguments gain `ONLY_BINARY=:none:`, which its sdist needs. `tests/demo_shop/test_container_seeds.py` checks each seed (its pin, its image's Dockerfile, the make target against the ground truth, the feed fixtures, the gate rule: SC-002 for pyyaml and lodash, SC-003 for the two KEV jars, none for requests) and, with `SENTINEL_CONTAINER_IMAGES`, its detection in the built image. A7: the new seeds join `split.yaml` by its rule (002 and 004 test, 003 and 005 calibration); the new Dockerfiles' DS-0026 findings are RC-DOCKER-003 and -004, appended after the first measurement (`appended: true`, last, so no earlier root cause changes half). The ground truth's digest changes, so `make eval-correlation` needs the calibration redone first, as after #121. B8: `make eval` scans no image, so CONTAINER stays not measured there; its benchmark size reads 5 of 5. Round 2 (Hiba's review): alert reduction moves with no change to the correlator, since requests' four advisories gain a second place (`requirements.block.txt`): +4 places and no group, so a `make eval` of 17 November gives 28.0% instead of 25.5% (whole run, dedup+structural) and 43.8% instead of 39.5% (test half), with the ARI within 0.001; the `appended` clause is a rule change made after the first measurement (under the old rule RC-DOCKER-001 and -002 would have swapped halves), and RC-DOCKER-003 and -004 were written before any correlation score on these findings; the ground truth's README names the other seeded versions the images ship (minimist, lodash-es, spring-core); GT-CONTAINER-003's reason drops "built only to be scanned" (the rubric counts web as deployed); the laptop run's evidence is in the PR. |
+| 1.1.129 | A10 the switch to public, step 1 of ADR-0016: `CLAUDE.md`'s "Repository status" says the public rules (everything pushed is public, `main` protected server-side with the three `ci.yml` checks required, fork workflows approved by hand, read-only default workflow permissions, alerts on `demo-shop/` closed with their reason, never waived) and what stays until step 2 (the laptop's key pair, the in-toto provenance, no code-scanning upload, kind's local registry). The README's status line, the release docs and the threat model follow: `main`'s protection replaces the no-protection residual risk, which becomes "a GitHub setting the owner can turn off"; the laptop signer's and the repository secrets' rows name step 2; the blocked-Actions row is gone. ADR-0016 records the scans before the switch: the history (989 commits, 120 branches, 185 pull-request refs) and the 44 workflow artifacts, no real secret. The switch itself came on 24 November, two days late (#180 first): that day's history scan (Hiba; 1,163 commits, 298 refs) gives 65 entries in 61 places, no real secret (the 11 known findings and the canaries' tokens that B9's changelog row quoted, out of the tree since #180), and `make self-gate` on `main` says PASS. Round 2 (Hiba's review of #160): branch protection also dismisses a stale approval and requires one on the most recent push, so one insider alone cannot merge a commit pushed after an approval (threat model A5, which still names the owner's way out); the three required checks are added only once `ci` has run green on GitHub, and a local `make check` report stands in until then (no rule that blocks every merge on the day); a pull request the remediation bot opens with `GITHUB_TOKEN` starts no workflow, so a person reopens or pushes to it; Dependabot's alerts on `demo-shop/` are closed as "Risk is tolerable to this project" with the seed in the comment (its fixed reasons), secret scanning's as "Used in tests"; the residual-risk row says what Scorecard's Branch-Protection check cannot see with the workflow's token (the admin bypass); §4.2, §4.3, §14, §18, the release README and the pre-commit hook no longer say "private" (key-pair mode until step 2); ADR-0016 is accepted with this PR; `SECURITY.md` points to GitHub's private vulnerability reporting; `tests/ci/test_required_checks.py` pins the required checks to `ci.yml`'s job names and its unfiltered `pull_request` trigger. Round 3 (Hiba's second review): with the workflow's token Scorecard's Branch-Protection check sees force-push, deletion and the number of approvals, not stale-approval dismissal, approval of the most recent push, the required checks or the admin bypass, which need an admin token: those four are looked at by hand (threat model, ADR-0016, step 8); `cli/README.md` and the README no longer tie keyless signing to going public, and "private mode" is "key-pair mode" in the SPEC and in the comments of `cosign.py`, the Kyverno policy and the kind code; a bot pull request's `ci` run waits for a person's approval in the merge box; any push, a merge of `main` included, dismisses an approval and the last pusher's own does not count; step 6 is pushed from Nourhane's session and step 9 is Hiba's merge (merge queues are for organizations); §14 and A5 name the local `make check` until step 7. The README's Results table gets the verified fix rate of #159 (6 of 8, 75.0%), in Hiba's wording. The Results table also gains the ranking row it lacked (NDCG@10 0.366 against CVSS 0.347, missed on SCA alone by advisory, from `docs/evaluation.md` section 2), and its detection row names the five container seeds checked in their images (5 of 5, #161). Round 4 (Hiba's third review): this PR merges after #159, #161 and #165, whose results the Results table states (step 9); the ranking row says the by-package item is a definition added after the first result; ADR-0016 counts the history's 11 findings in 58 places (a file and a line each, not Gitleaks's entries) and drops a `decision_id` row no flagged line matched (the trust-report fixtures are flagged on `key_sha256`). |
 | 1.1.128 | A5c `make demo-attack` over TLS (§7, after 1.1.127): crane pushes the tampered and the BLOCK images to the cluster's registry trusting its CA through `SSL_CERT_FILE`, as `cosign load` does; its `--insecure`, which also skipped the certificate check, is gone. The policy it compares is rendered with no insecure flag. Round 2 (Hiba's kind run on `9da0efc`): the GitOps attack's sync, which Argo CD 3.6 keeps retrying after Kyverno's denial, counts as refused (`demo.refused`, 1.1.127 round 2); with it, all five attacks were refused by their own check on the cluster. |
 | 1.1.127 | A5b `make demo-release` over TLS (§7, after 1.1.126): `cosign load` and `sentinel verify` reach the cluster's registry with no HTTP flag, trusting its CA through `SSL_CERT_FILE`, a bundle of the host's CAs and `.sentinel/kind/tls/ca.crt` that `demo.py` writes once (`cluster.trust_bundle`); without the CA (no `make kind-up`), nothing is loaded and the exit code is 3. The policy it compares is rendered with no insecure flag. Round 2 (Hiba's kind run on `9da0efc`): Argo CD 3.6 retries a failed automated sync by itself, with no `retry` block (phase `Running`, `retryCount` growing), so a sync Kyverno denied never ended `Failed` and the wait timed out after 300 s; a retried sync of that commit now counts as failed (`demo.refused`), and a first sync still running is waited for. `test_kind_demo.py` passes `SSL_CERT_FILE` to its own `cosign load` (the tool runner's minimal environment drops it) and applies its policy inside the `try`, so a failed setup leaves none behind. |
 | 1.1.126 | A5 demo cluster over TLS (§7, Hiba's kind run on #60): Kyverno 1.19 fetches cosign's bundles over HTTPS whatever `allowInsecureRegistry` says (kyverno/kyverno#18350, unmerged), so over plain HTTP it read no signature and denied every image, the good release too. `make kind-up` now issues the registry's TLS certificate with OpenSSL 3 (a CA made for this cluster only, whose key signs `kind-registry`, `localhost` and `127.0.0.1` and is deleted; all in the git-ignored `.sentinel/kind/tls`), serves the registry over TLS, gives containerd the CA in `hosts.toml` and Kyverno's admission controller the CA through `SSL_CERT_DIR`, and refuses a registry an older `kind-up` started over HTTP. `make kind-policy` renders the policy with no insecure flag. The same run found the policy expected the CI workflow's builder: it now expects `local_release_builder_id`, the builder `make release` records. Round 2 (Hiba's kind run on `9da0efc`: TLS works and Kyverno reads the signatures): `Registry.env` passes `SSL_CERT_FILE` and `SSL_CERT_DIR` to Cosign, as Grype's download does. The runner's minimal environment dropped them, so `sentinel attest` and `sentinel verify` could not reach the registry ("certificate signed by unknown authority"). Trust anchors only: a proxy URL, which may hold credentials, still does not reach Cosign. |
@@ -238,28 +239,34 @@ untrusted PRs).
 
 ### 4.2 Operating modes
 
-| | Private mode (now) | GitHub mode (after going public) | Local mode |
+Since the switch (ADR-0016, step 1) the repository is public, but releases still use the key-pair mode: GitHub mode
+is step 2 (keyless signing), after v1.0.0 and only if there is time.
+
+| | Key-pair mode (now) | GitHub mode (ADR-0016, step 2) | Local mode |
 |---|---|---|---|
 | Pipeline | GitHub Actions | GitHub Actions | `make pipeline-local` |
 | Signing | Cosign key pair, no Rekor upload | Cosign keyless (GitHub OIDC) | Developer key pair |
 | Provenance | SLSA predicate via `cosign attest` | GitHub artifact attestations (reusable workflow → Build L3 target) | `cosign attest` |
-| Registry | GHCR private (CI) + kind local registry (demos) | GHCR public | kind local registry |
+| Registry | kind local registry (demos) | GHCR public | kind local registry |
 | Results | PR comment, artifacts, dashboard | + GitHub code scanning (SARIF) | Terminal + dashboard |
 
-### 4.3 Private-phase constraints (ADR-0006)
+### 4.3 Key-pair phase constraints (ADR-0006, amended by ADR-0016)
 
-- Keyless certificates embed the repository identity and are logged in the public Rekor log → key pairs until public.
-- GitHub artifact attestations require a public repository on non-Enterprise plans → Cosign attestations meanwhile.
+- Keyless certificates embed the repository identity and are logged in the public Rekor log → key pairs until
+  keyless signing (ADR-0016, step 2). The repository is public since step 1, so this is now a choice of timing.
+- GitHub artifact attestations require a public repository on non-Enterprise plans: possible since step 1, Cosign
+  attestations until step 2.
 - The signing key never reaches GitHub (ADR-0011): it lives, password-protected, on the laptop that runs
-  `make release`, the only signer while private; CI holds no signing secret. Keyless signing in CI replaces it
-  when the repository goes public.
-- We stay on GitHub Free: server-side branch protection is not available for this private repository, so `main`
-  is protected **by convention** (every change through a PR, reviewed by the other member, merged only with
-  a green CI, or a local `make check` report on the PR head while Actions cannot run) plus a local pre-commit guard that refuses commits on `main`. Technical protection is enabled when
-  the repository goes public.
-- Actions minutes are capped (Free: 2,000/month for private repositories): path filters, caching of
-  vulnerability DBs, nightly full scans.
-- Going public = switch to GitHub mode (a configuration change, by design).
+  `make release`, the only signer until step 2; CI holds no signing secret. Keyless signing in CI replaces it at
+  ADR-0016's step 2.
+- Since the switch (ADR-0016, step 1), `main` is protected **server-side** (`CLAUDE.md`, "Repository status"): pull
+  requests only, one approval that a new push dismisses, no force-push, no deletion, no bypass, and the three
+  required checks once `ci` has run green on GitHub (a local `make check` report on the PR head until then). Before
+  the switch it was protected by convention; the local pre-commit guard that refuses commits on `main` stays.
+- Path filters, caching of vulnerability DBs and nightly full scans stay, though a public repository has no minutes
+  cap on GitHub-hosted runners.
+- Going public was step 1 of ADR-0016; GitHub mode (keyless signing, artifact attestations, the code-scanning
+  upload) is step 2, a configuration change by design.
 
 ### 4.4 Component catalogue
 
@@ -409,7 +416,7 @@ image is refused. The tool status names Syft and Grype separately: Grype is `not
 
 **Job isolation.** `scan` (runs repo code; `contents: read`; no secrets) · `build` (runs Dockerfile;
 `packages: write` on main only; PR builds never push) · `gate` (no repo code; calls EPSS/KEV/OSV) · `attest`
-(GitHub mode only, OIDC only here; in private mode signing is `make release` on the laptop, ADR-0011) · `report`
+(GitHub mode only, OIDC only here; in key-pair mode signing is `make release` on the laptop, ADR-0011) · `report`
 (`pull-requests: write`). In PR mode every job checks out
 the pipeline (CLI, `tools.lock.toml`, policies, waivers) at the **base** commit and the change only as data to
 scan; tools live in `$RUNNER_TEMP` (ADR-0008).
@@ -662,7 +669,7 @@ bump.
   no file catalog; images read from the OCI layout the build wrote (a directory or a tar of one), never pulled,
   and both SBOMs must name the image's manifest digest (`--image-digest`); `--base-path` stops links above the
   tree; a CycloneDX document without `serialNumber` or an SPDX document that is not one fails closed).
-- **Signing:** Cosign v3 (Sigstore bundle format). Private mode: key pair, no transparency-log upload, on the
+- **Signing:** Cosign v3 (Sigstore bundle format). Key-pair mode (now): key pair, no transparency-log upload, on the
   release laptop only (`make release`, ADR-0011: from a clean checkout of `origin/main`, the build context taken
   from the commit, signed only after a non-BLOCK release decision on the built digest, in a throwaway local
   registry, then saved as a bundle). GitHub mode: keyless, identity = release workflow path + ref. Always sign
@@ -681,9 +688,9 @@ bump.
   `cosign sign` statement and the four attestations `sentinel attest --push` attached, A4d).
 - **Kyverno ImageValidatingPolicy** (`policies.kyverno.io/v1`, Kyverno 1.19, rendered by
   `sentinel admission-policy`): match our images (a prefix of the lower-cased reference), attestor = our
-  public key (private mode; a keyless identity comes with keyless `sentinel verify` in GitHub mode), require
+  public key (key-pair mode; a keyless identity comes with keyless `sentinel verify` in GitHub mode), require
   the image signature and the four attestations bound as `sentinel verify` binds them (a non-BLOCK Decision v1
-  verdict about this digest, from our repository; provenance from the release builder, in private mode the
+  verdict about this digest, from our repository; provenance from the release builder, in key-pair mode the
   release script at main, `deploy/release/release.py@refs/heads/main`, and from the decision's commit; the
   vulnerability result and SBOM of that decision), `mutateDigest: true`. CEL reads one statement
   per type, so admission is weaker than `sentinel verify` on the full Decision v1 and vuln-result schemas and
@@ -961,7 +968,7 @@ catalogue of §6.3 with how many recorded decisions each rule fired in. The page
 
 | IaC / CI config | Trivy (config) / zizmor (Checkov dropped, ADR-0012) |
 
-| Signing / provenance | Cosign v3 (key pair now, keyless later); GitHub attestations after going public |
+| Signing / provenance | Cosign v3 (key pair now, keyless at ADR-0016's step 2); GitHub attestations at step 2 too |
 | VEX / policy / admission | OpenVEX / OPA (Rego v1) / Kyverno ImageValidatingPolicy |
 | Backend / data | FastAPI, SQLAlchemy 2, Alembic, Celery, Redis / PostgreSQL + pgvector, SeaweedFS (S3) |
 | AI | Ollama (local), own provider interface |
@@ -1079,8 +1086,9 @@ mode in the gate, SPEC section 6.5) read `location` plus `other_locations`.
 ## 14. Engineering workflow
 
 - Trunk-based, branches `<task-id>/<name>` (e.g. `a2/normalizer-grype`), Conventional Commits, squash merge.
-- `main` is protected by convention during the private phase (§4.3): PR + approval by the other member + green
-  `ci` before merge; no direct push, no force push. Enforced by branch protection once public.
+- `main` is protected server-side since the switch (§4.3, ADR-0016): PR + approval of its most recent push by the
+  other member + the required checks green before merge (until they are on, step 7 of the switch, a local
+  `make check` report on the PR head); no direct push, no force push, no bypass.
 - **Cross-review rule:** the reviewer must be able to explain the change.
 - **Definition of done:** tests (core decision logic ≥ 80% coverage, policies ≥ 90% `opa test --coverage`),
   docs updated, CI green, contracts valid, reviewed.
@@ -1208,9 +1216,9 @@ manipulate the AI (verdict unchanged) → prove (`sentinel replay`, Grafana).
 | Risk | Mitigation |
 |---|---|
 | Laptop resources | Compose profiles; small quantized model on the stronger machine |
-| Direct push to `main` (no server-side protection while private) | Team convention, local pre-commit guard, CI on every push to `main` |
-| Actions minutes (private) | Path filters, caches, nightly full scans |
-| Signing key (private phase) | Never on GitHub: a laptop signer with a password-protected key, run only from a clean tree at `origin/main` (ADR-0011); keyless signing in CI when public |
+| Direct push to `main` | Server-side branch protection since the switch (ADR-0016), local pre-commit guard, CI on every push to `main`; the owner's account can still turn the protection off (threat model, residual risks) |
+| Actions minutes | Path filters, caches, nightly full scans (a public repository has no cap on GitHub-hosted runners; the habits stay) |
+| Signing key (until keyless signing) | Never on GitHub: a laptop signer with a password-protected key, run only from a clean tree at `origin/main` (ADR-0011); keyless signing in CI at ADR-0016's step 2 |
 | External APIs down | Snapshots and offline fixtures |
 | Scanner noise | Diff-aware gating, risk scoring, correlation, waivers |
 | Integration drift | Contracts + fixtures in CI; weekly sync |

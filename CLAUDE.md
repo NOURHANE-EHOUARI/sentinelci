@@ -29,18 +29,36 @@ fixes; it never decides.
 8. **Contracts first.** If a change needs a different data shape, update the schema version and its fixtures in
    the same PR; never silently diverge from `schemas/`.
 
-## Repository status: private phase
+## Repository status: public, step 1 of ADR-0016
 
-The repository stays private until the project is complete. Until then (see ADR-0006):
-- Signing uses Cosign **key pairs** with no upload to the public transparency log (no keyless signing, because the
-  keyless certificate would publish the repository identity).
-- SLSA provenance is produced as a Cosign in-toto attestation (GitHub artifact attestations require a public repo).
+The repository is public (ADR-0016, step 1; it amends ADR-0006). What that changes:
+- Everything pushed is public at once: branches, tags, every pull request's head (`refs/pull/*/head`), and, to
+  anyone with its SHA, a commit that a force-push removed. Never push what must not be published.
+- `main` is protected server-side: pull requests only; one approving review, dismissed when new commits are
+  pushed and required on the most recent push; no force-push, no deletion, no bypass, admins included. The
+  checks `lint, types, contracts, tests`, `dashboard (typed client, types, tests, build)` and
+  `workflow security (zizmor)` are required once `ci` has run green on GitHub; until then, a local `make check`
+  report on the PR head stands in for them. Never commit or push to `main` directly: always a task branch and a
+  PR, which the other team member reviews and merges. Any new push dismisses an approval, a merge of `main`
+  included, and the last pusher's own approval does not count: ask for a new approval, it is not a bug.
+- GitHub Actions runs on every pull request a person opens or pushes to: keep path filters and caches, and the
+  full image scan nightly on `main`. On a pull request the remediation bot opens with `GITHUB_TOKEN`, the `ci`
+  run waits for a person with write access to approve it (**Approve workflows to run** in the merge box);
+  closing and reopening the pull request also works. Workflows from fork pull requests need a maintainer's
+  approval; the repository's default workflow permissions are read-only, and every job still sets its own
+  `permissions:`.
+- GitHub's alerts on `demo-shop/` are closed with a reason and a comment naming the seed in
+  `demo-shop/ground-truth/`: Dependabot as "Risk is tolerable to this project" (comment: "intentionally
+  vulnerable demo target, <seed>"), secret scanning as "Used in tests". A closed alert is not a waiver. A new
+  fake seed goes into the ground truth in the same PR; push protection is bypassed for it only.
+- Vulnerability reports come through GitHub's private vulnerability reporting (`SECURITY.md`).
+
+Unchanged until step 2 (keyless signing, after v1.0.0 and only if there is time):
+- Signing uses Cosign **key pairs** on the laptop that holds the release key (ADR-0011), with no upload to the
+  public transparency log.
+- SLSA provenance is produced as a Cosign in-toto attestation.
 - Scan results go to PR comments, workflow artifacts and our dashboard (no GitHub code-scanning upload).
 - Kubernetes demos use the local registry of the kind cluster.
-- GitHub Actions minutes are limited (Free plan): use path filters and caches; run the full image scan nightly on `main`.
-- `main` has no server-side protection: never commit or push to `main` directly. Always work on a task branch
-  and open a PR; the other team member reviews and merges only with
-  a green CI, or a local `make check` report on the PR head while Actions cannot run.
 
 ## Commands
 

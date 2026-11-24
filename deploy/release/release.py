@@ -6,8 +6,8 @@
     uv run python deploy/release/release.py self-gate
     uv run python deploy/release/release.py sentinelci --version X.Y.Z [--key ~/.sentinelci/release.key]
 
-During the private phase the laptop is the only signer (ADR-0011, decision 7): the release key never reaches
-GitHub. In order, and nothing past a failed step runs:
+Until keyless signing (ADR-0016, step 2), the laptop is the only signer (ADR-0011, decision 7): the release
+key never reaches GitHub. In order, and nothing past a failed step runs:
 
 1. Preconditions, the laptop analog of ADR-0008 (the CLI, lock, policies and waivers that decide, and this
    script, are the reviewed ones): the working tree is clean, no tracked file is hidden from `git status` by

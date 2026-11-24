@@ -1,7 +1,7 @@
 # Releases on the laptop (ADR-0011)
 
-While the repository is private, the laptop that holds the release key is the only signer: the key never
-reaches GitHub. `release.py` builds shop-api's release image, decides on it with the release gate, and signs
+Until keyless signing (ADR-0016, step 2), the laptop that holds the release key is the only signer: the key
+never reaches GitHub. `release.py` builds shop-api's release image, decides on it with the release gate, and signs
 it
 only when the gate lets it through. Its docstring lists every step and what each one refuses.
 
@@ -167,5 +167,5 @@ jq -r '.dsseEnvelope.payload | @base64d | fromjson
   sentinelci-1.0.0-py3-none-any.whl.provenance.sigstore.json
 ```
 
-(`--insecure-ignore-tlog=true` because nothing goes to the public transparency log while the repository is
-private, ADR-0006.)
+(`--insecure-ignore-tlog=true` because nothing goes to the public transparency log until keyless signing,
+ADR-0016 step 2; ADR-0011.)

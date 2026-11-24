@@ -35,7 +35,7 @@ STATEMENT_TYPES = frozenset({"https://in-toto.io/Statement/v0.1", "https://in-to
 SIGNATURE_TYPE = (
     "https://sigstore.dev/cosign/sign/v1"  # the statement `cosign sign` writes (Cosign 3 bundles)
 )
-NO_TRANSPARENCY_LOG = ("--tlog-upload=false", "--use-signing-config=false")  # private mode (ADR-0006)
+NO_TRANSPARENCY_LOG = ("--tlog-upload=false", "--use-signing-config=false")  # key-pair mode (ADR-0006)
 # A registry verification that ran and failed: 1, or Cosign's codes for an image without signature (10), a
 # non-existent tag (11), no matching signature (12), no certificate (13). Any other code: it could not run.
 NOT_VERIFIED_EXIT_CODES = (1, 10, 11, 12, 13)
@@ -356,7 +356,7 @@ class Verifier:
                     image.digest_hex,
                     "--digestAlg",
                     "sha256",
-                    "--insecure-ignore-tlog=true",  # private mode: nothing was uploaded to a log
+                    "--insecure-ignore-tlog=true",  # key-pair mode: nothing was uploaded to a log
                 ],
                 lock=self.lock,
                 tools_dir=self.tools_dir,

@@ -7,9 +7,9 @@ replay decides whether the change or release may ship. The artifact is signed to
 that decision, and the demo cluster refuses to run an unsigned or unproven image in the application's
 namespace. AI explains findings, groups them by root cause and proposes fixes. It never decides: an architecture contract keeps it out of the decision path.
 
-> Status: v1.0.0 in preparation. The repository is private until then (ADR-0006), so signing and the runs that
-> need Docker or a local model happen on the maintainers' laptop (ADR-0011, ADR-0014). Signing uses a Cosign key
-> pair kept on that laptop, with nothing uploaded to the public Rekor log, until the repository is public.
+> Status: v1.0.0 in preparation. The repository is public (ADR-0016). Signing and the runs that need Docker or a
+> local model happen on the maintainers' laptop (ADR-0011, ADR-0014). Signing uses a Cosign key pair kept on that
+> laptop, with nothing uploaded to the public Rekor log, until keyless signing (ADR-0016, step 2).
 
 ## Why
 
@@ -96,13 +96,14 @@ hits.
 
 | What | Target (SPEC §3) | Result | Report |
 |---|---|---|---|
-| Detection | ≥ 90% of seeds | All 28 seeds that `make eval` measures detected, no false positive on the clean controls (the container seed is checked in the built BLOCK image by an opt-in test) | `make eval` |
+| Detection | ≥ 90% of seeds | All 28 seeds that `make eval` measures detected, no false positive on the clean controls. The five container seeds are checked in their built images by an opt-in test: 5 of 5 (17 November) | `make eval` |
+| Prioritization | NDCG@10 above the CVSS-only baseline | 0.366 against 0.347 over all categories (0.495 against 0.390 when a seed's item includes its package's other advisories, a definition added after the first result). **Missed** on SCA alone by advisory (0.627 against 0.771): with no feed data, the risk model's defaults rank the seeded packages' other advisories above the seeds | `make eval-ranking` |
 | Alert reduction | ≥ 40% | **Missed:** 25.8% on the whole run, with the stages that have no parameter. With stage 2b, the held-out half reaches an ARI of 0.827 against hand labels (42 findings in 18 groups), its threshold calibrated on the other half | `make eval-correlation` |
 | Prompt-injection robustness | 0 verdict changes | 0 of 10 outputs of `gemma4:12b-it-qat` followed a planted instruction, 0 seeded weaknesses called false positives. With a control model that obeys every instruction, the gate's decision stayed the same, byte for byte | `make eval-canaries` |
 | Explanations | (a rubric, §17) | Two people rated 23 explanations on four criteria and agree substantially (Cohen's kappa 0.71). A judge using the same model agrees with neither of them beyond chance (0.00), so people, not that judge, rate explanations | `make eval-rubric` |
 | Replay determinism | 100% identical | 10 of 10 recorded decisions replayed byte for byte | `make eval-replay` |
 | PR feedback time | p95 ≤ 10 min | One pass of the gate's steps: p95 12.8 s over 20 runs. A pull request scans its head and its base, so about 26 s | `make eval-timing` |
-| Verified fix rate | ≥ 60% | Not measured yet | `make eval-fixrate` |
+| Verified fix rate | ≥ 60% | 6 of 8 attempted fixable seeds verified (75.0%): the LLM code fixer 5 of 6 SAST seeds, the Dockerfile fixer 1 of 1, and the Kubernetes fixer's seed partial (it leaves hostPath open by design). Seeds with no implemented strategy (dependency bumps, secrets, workflows, Terraform) and the SAST seeds outside Python (B9's four in JavaScript: A6 verifies a fix with the shop-api tests) are listed, not attempted | `make eval-fixrate` |
 
 ## Try it
 
@@ -117,7 +118,7 @@ make up             # the platform in Docker (deploy/compose/README.md)
 make eval           # the detection report on demo-shop
 ```
 
-The release demo (the laptop, during the private phase) goes through these steps:
+The release demo (the laptop, until keyless signing: ADR-0016, step 2) goes through these steps:
 1. `make release-block`: the gate blocks an image with a known-vulnerable dependency, and nothing is signed.
 2. `make release`: the release image is built, judged, signed and verified.
 3. `make kind-up`, `make kind-policy` and `make demo-release`: Kyverno gets the release key's policy, and Argo CD

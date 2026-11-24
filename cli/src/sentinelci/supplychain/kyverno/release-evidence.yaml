@@ -46,7 +46,7 @@ spec:
           data: |
 ${public_key}
         ctlog:
-          # Private mode (ADR-0006): nothing is uploaded to a transparency log, so there is no entry to check.
+          # Key-pair mode (ADR-0006): nothing is uploaded to a transparency log, so there is no entry to check.
           insecureIgnoreTlog: true
           insecureIgnoreSCT: true
   attestations:
