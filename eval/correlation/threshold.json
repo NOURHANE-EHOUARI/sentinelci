@@ -1,61 +1,61 @@
 {
   "at_grid_edge": false,
   "calibration": {
-    "alert_reduction": 0.705882,
-    "ari": 0.644054,
-    "labelled": 50,
-    "root_causes": 24,
+    "alert_reduction": 0.709091,
+    "ari": 0.643142,
+    "labelled": 53,
+    "root_causes": 27,
     "same_root_pairs": 96
   },
   "curve": [
     {
-      "ari": 0.249298,
+      "ari": 0.236333,
       "groups": 7,
       "threshold": 0.5
     },
     {
-      "ari": 0.501851,
+      "ari": 0.465196,
       "groups": 9,
       "threshold": 0.55
     },
     {
-      "ari": 0.511487,
+      "ari": 0.473457,
       "groups": 10,
       "threshold": 0.6
     },
     {
-      "ari": 0.568571,
+      "ari": 0.556771,
       "groups": 12,
       "threshold": 0.65
     },
     {
-      "ari": 0.638555,
-      "groups": 14,
+      "ari": 0.637802,
+      "groups": 15,
       "threshold": 0.7
     },
     {
-      "ari": 0.644054,
-      "groups": 15,
+      "ari": 0.643142,
+      "groups": 16,
       "threshold": 0.75
     },
     {
-      "ari": 0.62802,
-      "groups": 22,
+      "ari": 0.627341,
+      "groups": 24,
       "threshold": 0.8
     },
     {
-      "ari": 0.410381,
-      "groups": 30,
+      "ari": 0.409504,
+      "groups": 32,
       "threshold": 0.85
     },
     {
-      "ari": 0.346171,
-      "groups": 36,
+      "ari": 0.344774,
+      "groups": 38,
       "threshold": 0.9
     },
     {
-      "ari": 0.205329,
-      "groups": 41,
+      "ari": 0.204067,
+      "groups": 43,
       "threshold": 0.95
     }
   ],
@@ -67,14 +67,14 @@
     "correlator_version": "0.1.1",
     "findings_sha256": {
       "gitleaks": "c859f350147365e24e1f47c9e822daa192faef0315dd9c9e965687bc2530873a",
-      "grype": "85aba01de4964932968c0376da19c5d979197c0d9bd6a7cd880cc764ce9e4d55",
-      "opengrep": "8d6d8f2460d244e2f35cab3e438930592f41ea3c3b869cc51726cae507d4fb1a",
-      "trivy": "1afe96bcf96da563ac24135303a2ab2899fdab583bcf946efc061a915f0a65cf",
-      "zizmor": "14628d8e41c5a8296c37255c22d680f7e82c557549737a59fccc4b2b4a7cd47a"
+      "grype": "d3f0c1bac5fc95f41c0002d3e4a2e22c9f7d869b493e8788aa9d9e0b2eac29f3",
+      "opengrep": "81d2228309f2a30e854017d62e079604f13b6d04c792fb357fc09d85e7bdae12",
+      "trivy": "5972a86d17fd2593ade46f19991a838dab2c1db4810db415e5f9f757d1905bae",
+      "zizmor": "6b91555e358307011ce2bb6c1459ae510052b628372f03bdc1aad14b7daedd71"
     },
-    "ground_truth_sha256": "bba899c548ad2e6de13515fbaa87d588edc5cbe8cb39cc88f99548a6068f0567",
-    "root_causes_sha256": "2f2fe3c290076de58c5a200ecd1aa19b16c4811f2482bebef353e3924488881a",
-    "split_sha256": "b43973f14cc00825d3c9503681114b192764d276c2002c24c13cdb157b87a659"
+    "ground_truth_sha256": "2c3ce1fb1878c123caac2d175f0002c90586bd2f013937579e7e1b43a1947494",
+    "root_causes_sha256": "2b8c11b132d13e9ebd880852e3b752ef99afc8cc01dc1218bfe1c06179dc569f",
+    "split_sha256": "52aaa2316dcc3e70543ecaa54525eef95f7c818b0a1d4c0c8fd2f658bb209107"
   },
   "threshold": 0.75
 }

@@ -2,7 +2,7 @@
   "name": "demo-shop-web",
   "version": "0.1.0",
   "private": true,
-  "description": "INTENTIONALLY VULNERABLE benchmark front end (demo-shop). Dependency seeds GT-SCA-004 (lodash 4.17.20), GT-SCA-005 (minimist 1.2.5, declared and never imported) and GT-SCA-008 (lodash-es 4.17.20, left over from a migration to lodash and never imported): see demo-shop/ground-truth/findings.yaml.",
+  "description": "INTENTIONALLY VULNERABLE benchmark front end (demo-shop). Dependency seeds GT-SCA-004 (lodash 4.17.20), GT-SCA-005 (minimist 1.2.5, declared and never imported) and GT-SCA-008 (lodash-es 4.17.20, left over from a migration to lodash and never imported); lodash also ships in the image Dockerfile builds (GT-CONTAINER-003): see demo-shop/ground-truth/findings.yaml.",
   "license": "UNLICENSED",
   "dependencies": {
     "lodash": "4.17.20",

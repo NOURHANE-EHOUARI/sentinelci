@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 import yaml
 
+from sentinel_ai.guardrails import WINDOW
 from sentinelci.scanners.gitleaks import scan_secrets
 from sentinelci.scanners.lock import load_lock
 from sentinelci.scanners.trivy import scan_iac_with_run
@@ -132,6 +133,29 @@ def test_canaries_are_well_formed_and_planted_where_they_say() -> None:
         assert planted == [DEMO / canary["location"]["path"]], f"{canary['token']} is planted once"
 
 
+def test_each_canary_is_shown_with_its_seed_and_no_seed_is_shown_two() -> None:
+    """An AI step reads a finding with the WINDOW lines around it (sentinel_ai.guardrails), and so does
+    eval/canaries. Each canary's line must be in its `near` seed's window, or no model is ever shown it. No
+    seed's window may hold two canaries: the control model writes the first token it is shown, and the
+    counts per finding (obeyed, mislabels) would count one answer twice."""
+    by_id = {seed["id"]: seed for seed in SEEDS}
+    for canary in CANARIES:
+        seed = by_id[canary["near"]]
+        assert seed["location"]["path"] == canary["location"]["path"], f"{canary['id']}: not beside its seed"
+        distance = abs(seed["location"]["line"] - canary["location"]["line"])
+        assert distance <= WINDOW, f"{canary['id']} is {distance} lines from {seed['id']}"
+    for seed in SEEDS:
+        if "line" not in seed["location"]:
+            continue
+        shown = [
+            canary["id"]
+            for canary in CANARIES
+            if canary["location"]["path"] == seed["location"]["path"]
+            and abs(canary["location"]["line"] - seed["location"]["line"]) <= WINDOW
+        ]
+        assert len(shown) <= 1, f"{seed['id']} is shown {shown}"
+
+
 # ---------------------------------------------------------------- the release image's requirements (B9)
 
 
@@ -154,17 +178,23 @@ def _pins(name: str) -> dict[str, list[str]]:
     return pins
 
 
-def test_the_release_and_block_requirements_differ_only_in_the_seeded_pyyaml() -> None:
+def test_the_release_and_block_requirements_differ_only_in_the_seeded_pyyaml_and_requests() -> None:
     """ADR-0011 decision 6: the BLOCK image is the release image with pyyaml 5.3.1 (GT-SCA-001), pinned by
-    the hash of its sdist; the release image holds no seeded version."""
+    the hash of its sdist, and requests 2.30.0 (GT-SCA-002), pinned by the hashes of its wheel and sdist
+    (GT-CONTAINER-001 and -002 in the image); the release image holds no seeded version."""
     release, block = _pins("requirements.release.txt"), _pins("requirements.block.txt")
-    pyyaml = [pin for pin in release if pin.startswith("pyyaml==")]
-    assert pyyaml and pyyaml[0] != "pyyaml==5.3.1"
-    assert {k: v for k, v in release.items() if k not in pyyaml} == {
-        k: v for k, v in block.items() if k != "pyyaml==5.3.1"
+    seeded = {"pyyaml==5.3.1", "requests==2.30.0"}
+    replaced = [pin for pin in release if pin.startswith(("pyyaml==", "requests=="))]
+    assert len(replaced) == 2 and not seeded & set(replaced)
+    assert {k: v for k, v in release.items() if k not in replaced} == {
+        k: v for k, v in block.items() if k not in seeded
     }
     sdist = "b8eac752c5e14d3eca0e6dd9199cd627518cb5ec06add0de9d32baeee6fe645d"  # PyYAML-5.3.1.tar.gz
     assert block["pyyaml==5.3.1"] == [sdist]
+    assert block["requests==2.30.0"] == [
+        "10e94cc4f3121ee6da529d358cdaeaff2f1c409cd377dbc72b825852f2f7e294",  # its py3-none-any wheel
+        "239d7d4458afcb28a692cdd298d87542235f4ca8d36d03a15bfc128a6559a2f4",  # its sdist
+    ]
     seeded = {
         line.split()[0]
         for line in (SHOP_API / "requirements.txt").read_text("utf-8").splitlines()

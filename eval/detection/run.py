@@ -8,6 +8,11 @@ report, byte for byte: no clock, sorted keys, and every input named by its diges
 - `--tools-dir`: where `sentinel tools install` put the scanners (default: the CLI's own default).
 - `--db-dir`: a `sentinel tools grype-db` directory. Without it, SCA is not measured (never 0).
 - `--findings DIR`: score existing findings files (`<tool>.ndjson`) instead of scanning, for a recorded run.
+- `--images DIR`: the image archives `make container-seed-images` wrote (`<name>.oci.tar`). Each CONTAINER
+  seed's image is scanned once (`sentinel scan image`, by the digest its archive's index.json names), and
+  CONTAINER is measured only when every one was scanned: a missing archive or a failed scan leaves it "not
+  measured", never a miss. Each archive is named by its sha256 and manifest digest in the report. Its findings
+  go to out/eval/findings-images/, not findings/, which the other evaluations read whole.
 
 Usage: uv run python eval/detection/run.py [--tools-dir DIR] [--db-dir DIR] [--out out/eval]
 Owner: Track B (B8).
@@ -23,6 +28,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +68,9 @@ SCANS: dict[str, list[str]] = {
     "opengrep": ["scan", "sast", "demo-shop"],
     "grype": ["scan", "sca", "demo-shop"],
 }
+# Where the images run (deploy/kind): the reference their CONTAINER findings name, as the release names it.
+IMAGE_REF = "kind-registry:5000/demo-shop/{name}"
+IMAGE_RUN = "grype (images)"
 SUMMARY = re.compile(r"^(?P<tool>[a-z]+) (?P<version>[0-9][0-9A-Za-z.+-]*)\b")
 
 
@@ -117,6 +127,74 @@ def scan(tool: str, out: Path, args: argparse.Namespace) -> tuple[ToolRun, str |
     return ToolRun(tool, "ok", version=version), (lines[-1] if lines else None)
 
 
+def manifest_digest(archive: Path) -> str:
+    """The digest of the one image of an OCI layout archive, as its index.json names it."""
+    with tarfile.open(archive) as tar:
+        member = tar.extractfile("index.json")
+        if member is None:
+            raise ValueError(f"{archive.name} has no index.json: not an OCI layout archive")
+        manifests = json.load(member)["manifests"]
+    if len(manifests) != 1:
+        raise ValueError(f"{archive.name} holds {len(manifests)} images, not one")
+    return str(manifests[0]["digest"])
+
+
+def scan_images(
+    truth: dict[str, Any], images: Path | None, out: Path, *, tools_dir: Path | None, db_dir: Path | None,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> tuple[ToolRun, list[dict[str, Any]], dict[str, Any]]:  # fmt: skip
+    """Scan each CONTAINER seed's image (once per image) with `sentinel scan image`. All or nothing: one
+    missing archive or failed scan keeps no CONTAINER finding, so CONTAINER is not measured, never a miss."""
+
+    def refused(status: str, why: str) -> tuple[ToolRun, list[dict[str, Any]], dict[str, Any]]:
+        return ToolRun("grype", status, reason=why, categories=("CONTAINER",), label=IMAGE_RUN), [], {}
+
+    if images is None:
+        return refused("skipped", "no image archives (--images): make container-seed-images")
+    if db_dir is None:
+        return refused("skipped", "no Grype database (--db-dir)")
+    names = sorted({seed["image"]["name"] for seed in truth["seeds"] if seed["category"] == "CONTAINER"})
+    missing = [f"{name}.oci.tar" for name in names if not (images / f"{name}.oci.tar").is_file()]
+    if missing:
+        return refused("failed", f"no {', '.join(missing)} in {images}: make container-seed-images")
+    found: list[dict[str, Any]] = []
+    recorded: dict[str, Any] = {}
+    version: str | None = None
+    work = out / "findings-images" / "per-image"
+    work.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        archive = images / f"{name}.oci.tar"
+        try:
+            digest = manifest_digest(archive)
+        except (OSError, ValueError, KeyError, tarfile.TarError, json.JSONDecodeError) as exc:
+            return refused("failed", f"{name}: {exc}")
+        path = work / f"{name}.ndjson"
+        path.unlink(missing_ok=True)
+        command = [str(Path(sys.executable).parent / "sentinel"), "scan", "image", str(archive)]
+        command += ["--image-digest", digest, "--image-ref", IMAGE_REF.format(name=name), "--out", str(path)]
+        command += ["--repo", REPO, "--commit", "0" * 40, "--context", "local", "--db-dir", str(db_dir)]
+        if tools_dir is not None:
+            command += ["--tools-dir", str(tools_dir)]
+        # The workspace's own CLI, with fixed arguments and the operator's directories.
+        done = run(command, cwd=ROOT, capture_output=True, text=True, check=False)
+        if done.returncode != 0 or not path.is_file():
+            return refused("failed", f"{name}: exit {done.returncode}: {reason(done.stderr)}")
+        lines = [line for line in done.stdout.splitlines() if SUMMARY.match(line)]
+        version = version or (SUMMARY.match(lines[-1])["version"] if lines else None)  # type: ignore[index]
+        found += load(path)
+        recorded[name] = {"archive_sha256": sha256(archive.read_bytes()), "manifest_digest": digest}
+    ok = ToolRun("grype", "ok", version=version, categories=("CONTAINER",), label=IMAGE_RUN)
+    return ok, found, recorded
+
+
+def write_image_findings(out: Path, findings: list[dict[str, Any]]) -> Path:
+    """The images' findings, beside (never inside) out/eval/findings/, which the other evaluations read."""
+    path = out / "findings-images" / "grype.ndjson"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(f, sort_keys=True) + "\n" for f in findings), encoding="utf-8")
+    return path
+
+
 def reason(stderr: str) -> str:
     """The CLI's own words: its error lines, without the boxes Typer draws around them."""
     lines = [line.strip(" │╭╮╰╯─").strip() for line in stderr.splitlines()]
@@ -164,6 +242,8 @@ def markdown(data: dict[str, Any]) -> str:
         out += [f"- {tool}: {run['status']}" + (f" ({detail})" if detail else "")]
     for line in inputs.get("scanner_summaries", []):
         out += [f"  - `{line}`"]
+    for name, image in sorted((inputs.get("images") or {}).items()):
+        out += [f"- image {name}: `{image['manifest_digest']}` (archive `sha256:{image['archive_sha256']}`)"]
     out += [
         "",
         "## Recall per category",
@@ -215,6 +295,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db-dir", type=Path)
     parser.add_argument("--allow-stale-db", action="store_true")
     parser.add_argument("--findings", type=Path, help="score <tool>.ndjson files from this directory")
+    parser.add_argument("--images", type=Path, help="make container-seed-images' <name>.oci.tar archives")
     args = parser.parse_args(argv)
     args.out.mkdir(parents=True, exist_ok=True)
     findings: dict[str, list[dict[str, Any]]] = {}
@@ -243,6 +324,14 @@ def main(argv: list[str] | None = None) -> int:
         if run.status == "ok":
             findings[tool] = load(path)
             files[tool] = path
+    image_run, image_findings, images = scan_images(
+        yaml.safe_load(GROUND_TRUTH.read_bytes()), args.images, args.out, tools_dir=args.tools_dir,
+        db_dir=args.db_dir,
+    )  # fmt: skip
+    runs.append(image_run)
+    if image_run.status == "ok":
+        findings["grype-images"] = image_findings
+        files["grype-images"] = write_image_findings(args.out, image_findings)
     inputs: dict[str, Any] = {
         # Recorded findings may come from another tree than this checkout's: none is claimed for them.
         "demo_shop_tree": None if args.findings is not None else demo_shop_tree(),
@@ -250,6 +339,7 @@ def main(argv: list[str] | None = None) -> int:
         # The digests of the files themselves, so `sha256sum` checks them.
         "findings_sha256": {tool: sha256(files[tool].read_bytes()) for tool in sorted(findings)},
         "scanner_summaries": [re.sub(r" written to .*$", "", line) for line in summaries],
+        "images": images,
     }
     data = report(GROUND_TRUTH.read_bytes(), findings, runs, inputs)
     (args.out / "detection.json").write_text(
