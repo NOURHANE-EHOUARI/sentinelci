@@ -16,6 +16,7 @@ from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any
 
+import click
 import pytest
 import yaml
 from typer.testing import CliRunner
@@ -495,7 +496,10 @@ def test_cli_a_report_is_never_written_without_the_sbom_it_names(
     report = tmp_path / "sca-report.json"
     report.write_text("an older scan's report")
     result, out, status = _sca_status(tmp_path, dest, "--report", str(report))
-    assert result.exit_code == 2 and "--report needs --sbom-out" in result.output, result.output
+    # On a GitHub runner Typer colours its usage errors (GITHUB_ACTIONS forces a terminal), which splits
+    # the words with escape codes: the message is compared without them.
+    message = click.unstyle(result.output)
+    assert result.exit_code == 2 and "--report needs --sbom-out" in message, result.output
     assert not (fakes.record / "syft.argv").exists(), "nothing ran"
     assert not report.exists() and not out.exists() and status is None, "and nothing older is left behind"
 
